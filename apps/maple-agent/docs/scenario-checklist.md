@@ -53,6 +53,17 @@ stdio MCP server configured in Settings > Integrations.
 | L4 | `web_search` and `open_url` | Ask for a page title | Web results and the title come back |
 | L5 | `request_user_input` | Ask the model to ask you a question | The card shows; the answer reaches the model; Escape skips |
 
+## Permission modes
+
+| # | Scenario | How | Pass when |
+|---|---|---|---|
+| P1 | Read only | In Read only, ask for `git status`, then for a new file | The status runs without a card; the write shows Allow once / Deny with the path |
+| P2 | Auto | In Auto, ask for a file edit, then for `git push origin main` | The edit runs; the push shows the card, and Deny reaches the model as a refusal |
+| P3 | Full access | The same in Full access | Nothing asks, and no System One request is sent |
+| P4 | New task mode | Pick a mode on a new task, send, then start another | The next new task opens in that mode; with none picked ever, Auto |
+| P5 | Old task | Open a task made before modes existed | Its chip reads Full access |
+| P6 | Stop on a card | Stop the run while a card waits | The card goes and the run ends |
+
 ## External agents
 
 | # | Scenario | How | Pass when |

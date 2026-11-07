@@ -17,7 +17,8 @@ const MAX_TEXT_BYTES: usize = 16 * 1024;
 // SQLite bounds even anomalously long model/title values before Rust allocates.
 const TASK_COLUMNS: &str = "id,uuid,project_id,substr(title,1,4096),state,kind,pinned_ms,web_enabled,\
     substr(model,1,1024),message_count,created_ms,updated_ms,\
-    (length(title)>4096 OR coalesce(length(model)>1024,0))";
+    (length(title)>4096 OR coalesce(length(model)>1024,0)),\
+    substr(json_extract(settings,'$.permissionMode'),1,32)";
 const PROJECT_COLUMNS: &str = "id,root,substr(display_name,1,4096),position,last_used_ms,\
     coalesce(length(display_name)>4096,0),name_revision";
 
@@ -32,6 +33,9 @@ pub struct TaskSummary {
     pub kind: String,
     pub pinned_ms: Option<i64>,
     pub web_enabled: bool,
+    /// The saved mode; none on a task from before modes existed.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub permission_mode: Option<String>,
     pub model: Option<String>,
     pub message_count: u64,
     pub created_ms: i64,
@@ -916,6 +920,7 @@ fn read_summary(row: &Row<'_>) -> rusqlite::Result<SummaryRow> {
             kind: row.get(5)?,
             pinned_ms: row.get(6)?,
             web_enabled: row.get(7)?,
+            permission_mode: row.get(13)?,
             model: row.get(8)?,
             message_count,
             created_ms: row.get(10)?,

@@ -68,8 +68,10 @@ agent runtime; its desktop Agent page points users to Maple Work.
   for the next launch; only a refusal from the server signs the user out.
 - Agent chat with streaming Markdown, tool calls, agent questions, image
   attachments (picker, paste, or drag and drop), a per-message Copy button,
-  and a context-window indicator. Every tool call runs without asking for
-  approval.
+  and a context-window indicator.
+- Each task has a permission mode, on the composer's chip: Read only, Auto or
+  Full access. A System One classifier judges each tool call, and what it does
+  not clear asks the user. See [permission modes](docs/permissions.md).
 - A task can switch models between messages: its model menu offers every
   model, a pick applies from the next message, and the transcript notes the
   switch. When the new model's context window is smaller, the model that
@@ -559,8 +561,9 @@ adapters: it injects into an active run at Pi's next steering opportunity.
 Ordinary overlapping `session/prompt` calls retain ACP's busy response; clients
 should use the advertised steering extension. Questions use negotiated form
 elicitation or a connected desktop; with neither, the tool asks the agent to use
-plain text. Project trust remains an explicit choice; tools do not ask for
-individual approval and there are no session modes.
+plain text. Project trust remains an explicit choice. ACP tasks run with Full
+access and there are no session modes; a desktop task loaded over ACP keeps its
+permission mode, and its approvals use the same questions.
 
 Client-supplied HTTP MCP bindings are temporary and become unavailable on
 disconnect. Conflicting server names are refused. Transient stdio MCP injection

@@ -7,8 +7,8 @@ use std::sync::Arc;
 
 use gpui::{Div, Entity, IntoElement, SharedString, Window, div, prelude::*, px};
 use maple_agent::agent::{
-    AgentTimelineItem, EXTERNAL_AGENT_ACTIVITY_KEY, ExternalAgentActivity, ExternalAgentRef,
-    USAGE_LIMIT_MESSAGE,
+    AgentPermissionReason, AgentTimelineItem, EXTERNAL_AGENT_ACTIVITY_KEY, ExternalAgentActivity,
+    ExternalAgentRef, USAGE_LIMIT_MESSAGE,
 };
 
 use super::cache::{MAX_DIFF_LINES, MarkdownKind};
@@ -1726,6 +1726,26 @@ fn render_system(item: &AgentTimelineItem, transcript: &TranscriptCtx) -> Div {
         ))
 }
 
+fn permission_reason_key(reason: AgentPermissionReason) -> &'static str {
+    match reason {
+        AgentPermissionReason::Secrets => "chat-permission-reason-secrets",
+        AgentPermissionReason::SecretsLeaving => "chat-permission-reason-secrets-leaving",
+        AgentPermissionReason::SendsOut => "chat-permission-reason-sends-out",
+        AgentPermissionReason::RemoteCode => "chat-permission-reason-remote-code",
+        AgentPermissionReason::RewritesHistory => "chat-permission-reason-rewrites-history",
+        AgentPermissionReason::DiscardsWork => "chat-permission-reason-discards-work",
+        AgentPermissionReason::DisablesSafeguards => "chat-permission-reason-disables-safeguards",
+        AgentPermissionReason::Destructive => "chat-permission-reason-destructive",
+        AgentPermissionReason::ChangesProject => "chat-permission-reason-changes-project",
+        AgentPermissionReason::ChangesOutsideProject => {
+            "chat-permission-reason-changes-outside-project"
+        }
+        AgentPermissionReason::Uncertain => "chat-permission-reason-uncertain",
+        AgentPermissionReason::Unavailable => "chat-permission-reason-unavailable",
+        AgentPermissionReason::TooLong => "chat-permission-reason-too-long",
+    }
+}
+
 pub(super) fn render_question_card(
     question: &crate::backend::PendingQuestion,
     step: usize,
@@ -1754,13 +1774,22 @@ pub(super) fn render_question_card(
         .flex_col()
         .gap_2();
     let step = step.min(question.questions.len().saturating_sub(1));
+    let card_label = if question
+        .questions
+        .get(step)
+        .is_some_and(|entry| entry.permission.is_some())
+    {
+        tr("chat-permission-label")
+    } else {
+        tr("chat-question-label")
+    };
     // Folding works like the Plan card: the header stays, naming the
     // question, so the transcript above can be read before answering.
     let header = div()
         .id("question-card-header")
         .debug_selector(|| "question-card-header".to_string())
         .role(gpui::Role::DisclosureTriangle)
-        .aria_label(tr("chat-question-label"))
+        .aria_label(card_label.clone())
         .aria_expanded(!collapsed)
         .flex()
         .items_center()
@@ -1784,14 +1813,16 @@ pub(super) fn render_question_card(
                 .flex_none()
                 .font_weight(gpui::FontWeight::SEMIBOLD)
                 .text_color(gpui::rgb(theme::text_primary()))
-                .child(tr("chat-question-label")),
+                .child(card_label),
         )
         .when_some(
             collapsed
                 .then(|| question.questions.get(step))
                 .flatten()
                 .map(|entry| {
-                    if entry.header.trim().is_empty() {
+                    if let Some(prompt) = &entry.permission {
+                        prompt.action.clone()
+                    } else if entry.header.trim().is_empty() {
                         entry.question.clone()
                     } else {
                         entry.header.clone()
@@ -1835,19 +1866,43 @@ pub(super) fn render_question_card(
                     )),
             );
         }
-        block = block.child(
-            div()
-                .text_xs()
-                .font_weight(gpui::FontWeight::MEDIUM)
-                .text_color(gpui::rgb(theme::text_secondary()))
-                .child(entry.header.clone()),
-        );
-        block = block.child(
-            div()
-                .text_sm()
-                .text_color(gpui::rgb(theme::text_secondary()))
-                .child(entry.question.clone()),
-        );
+        if let Some(prompt) = &entry.permission {
+            block = block.child(
+                div()
+                    .text_sm()
+                    .text_color(gpui::rgb(theme::text_secondary()))
+                    .child(gpui::text!(tr(permission_reason_key(prompt.reason)))),
+            );
+            block = block.child(
+                div()
+                    .id("permission-action")
+                    .debug_selector(|| "permission-action".to_string())
+                    .max_h(px(160.))
+                    .overflow_y_scroll()
+                    .px_2()
+                    .py_1p5()
+                    .rounded(theme::RADIUS_SM)
+                    .bg(gpui::rgb(theme::bg_sidebar_pill()))
+                    .font_family(crate::assets::FONT_MONO)
+                    .text_xs()
+                    .text_color(gpui::rgb(theme::text_primary()))
+                    .child(gpui::text!(prompt.action.clone())),
+            );
+        } else {
+            block = block.child(
+                div()
+                    .text_xs()
+                    .font_weight(gpui::FontWeight::MEDIUM)
+                    .text_color(gpui::rgb(theme::text_secondary()))
+                    .child(entry.header.clone()),
+            );
+            block = block.child(
+                div()
+                    .text_sm()
+                    .text_color(gpui::rgb(theme::text_secondary()))
+                    .child(entry.question.clone()),
+            );
+        }
         if entry.multi_select {
             block = block.child(
                 div()
@@ -1874,6 +1929,13 @@ pub(super) fn render_question_card(
                     theme::border()
                 }))
                 .when(is_picked, |dot| dot.bg(gpui::rgb(theme::accent())));
+            // The answer stays the option's own label; only what shows is
+            // translated.
+            let label = match (&entry.permission, option_index) {
+                (Some(_), 0) => tr("chat-permission-allow").to_string(),
+                (Some(_), _) => tr("chat-permission-deny").to_string(),
+                (None, _) => option.label.clone(),
+            };
             // flex_1 is load-bearing: without it the row squeezes this
             // block to a character wide and the label wraps vertically.
             let label_element = if option.description.is_empty() {
@@ -1882,7 +1944,7 @@ pub(super) fn render_question_card(
                     .min_w_0()
                     .text_sm()
                     .text_color(gpui::rgb(theme::text_primary()))
-                    .child(option.label.clone())
+                    .child(label)
             } else {
                 div()
                     .flex_1()

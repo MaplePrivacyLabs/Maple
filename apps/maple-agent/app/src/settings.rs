@@ -83,6 +83,10 @@ pub struct AppSettings {
     /// Whether new tasks can use the web tools.
     #[serde(default = "default_web_enabled")]
     pub default_web_enabled: bool,
+    /// The mode last picked for a new task, which the next one starts in.
+    /// It stays in saved settings while unset: host patches name known keys.
+    #[serde(default)]
+    pub new_task_permission_mode: Option<maple_agent::agent::AgentPermissionMode>,
     /// Whether completed tool calls get a one-line model summary.
     #[serde(default = "default_tool_summaries")]
     pub tool_summaries: bool,
@@ -298,6 +302,7 @@ impl Default for AppSettings {
         Self {
             tool_details: default_tool_details(),
             default_web_enabled: default_web_enabled(),
+            new_task_permission_mode: None,
             tool_summaries: default_tool_summaries(),
             composer_vim_enabled: false,
             application_vim_enabled: false,
@@ -1062,6 +1067,25 @@ mod tests {
                 serde_json::json!(locale)
             );
         }
+    }
+
+    #[test]
+    fn the_new_task_mode_saves_from_unset_and_reads_back() {
+        use maple_agent::agent::AgentPermissionMode;
+        let settings: AppSettings = serde_json::from_str("{}").unwrap();
+        assert_eq!(settings.new_task_permission_mode, None);
+        let root = tempfile::tempdir().unwrap();
+        let store =
+            maple_agent::store::Store::open(maple_agent::store::StorePaths::new(root.path()))
+                .unwrap();
+        let patch = serde_json::json!({"new_task_permission_mode": "readOnly"});
+        apply_host_patch(&store, None, &patch).unwrap();
+        assert_eq!(
+            load_host_settings(&store, None)
+                .unwrap()
+                .new_task_permission_mode,
+            Some(AgentPermissionMode::ReadOnly)
+        );
     }
 
     #[test]

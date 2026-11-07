@@ -513,6 +513,7 @@ fn summary_fit_preserves_exact_identity_and_marks_shortened_metadata() {
         kind: "desktop".to_owned(),
         pinned_ms: None,
         web_enabled: true,
+        permission_mode: None,
         model: Some("test".repeat(1024)),
         message_count: 1,
         created_ms: 1,
