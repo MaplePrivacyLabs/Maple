@@ -974,11 +974,7 @@ fn reconnect_and_password_maintenance_preserve_saved_language(cx: &mut gpui::Tes
     let settings = crate::settings::SETTINGS_IO_LOCK.lock();
     ui::i18n::apply_preference(None);
     let system = ui::i18n::current_locale();
-    let saved = if system == "es" {
-        "en"
-    } else {
-        "es"
-    };
+    let saved = if system == "es" { "en" } else { "es" };
     let host = FixtureHost::new();
     let app = shell(&host, cx, true, &settings);
     ui::i18n::apply_preference(Some(saved));
