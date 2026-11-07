@@ -150,7 +150,7 @@ done"#;
         assert_eq!(saved.len(), 1);
         assert_eq!(saved[0].name, "Fake App");
         assert!(saved[0].enabled);
-        assert_eq!(saved[0].target, app.target());
+        assert_eq!(Some(saved[0].target.clone()), app.target());
         // The check is only for connecting: tasks get the normal limit.
         assert_eq!(saved[0].timeout_seconds, default_mcp_timeout_seconds());
     }

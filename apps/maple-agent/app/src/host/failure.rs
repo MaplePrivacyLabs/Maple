@@ -69,6 +69,21 @@ impl From<maple_agent::store::keys::KeyError> for HostFailure {
     }
 }
 
+impl From<maple_agent::agent::McpSignInError> for HostFailure {
+    fn from(error: maple_agent::agent::McpSignInError) -> Self {
+        use maple_agent::agent::McpSignInError as E;
+        let message = error.to_string();
+        let code = match error {
+            E::NoAddress => "mcp-no-address",
+            E::InvalidAddress => "mcp-invalid-address",
+            E::Unreachable => "mcp-unreachable",
+            E::NoServerHere => "mcp-no-server",
+            E::Other(_) => return message.into(),
+        };
+        Self::new(code, message)
+    }
+}
+
 impl From<maple_agent::store::lifecycle::LifecycleError> for HostFailure {
     fn from(error: maple_agent::store::lifecycle::LifecycleError) -> Self {
         use maple_agent::store::lifecycle::LifecycleError as E;

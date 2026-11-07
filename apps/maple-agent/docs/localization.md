@@ -131,6 +131,12 @@ they do not read the GPUI thread's active locale.
   stored text remains unchanged. Known metadata supplies translated titles and
   bodies. Missing or unknown metadata falls back to original text without
   classifying English strings. Partial updates preserve existing tool detail.
+- MCP sign-in failures that change what the UI does (no address, an unusable
+  address, nothing answering, no MCP server there) cross the host as
+  `HostFailure` codes. Its other failures and the browser page after sign-in
+  stay English. A catalog app saves its English summary when connected, so a
+  connected row shows the translated summary while that text is unchanged and
+  leaves anything a person wrote as written.
 - Model-facing tool descriptions, system prompts, notices sent to models, user
   content and generated content are never translated by UI extraction.
 - Local hosted-OAuth completion captures a supported locale per attempt and

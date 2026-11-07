@@ -1,17 +1,28 @@
 //! The Apps section of Integrations: the bundled catalog, by search and
 //! category, one click from connecting.
 
-use crate::ui::i18n::tr;
-use gpui::{App, Context, Div, div, prelude::*, px};
+use crate::ui::host_errors::failure_text;
+use crate::ui::i18n::{UiText, tr};
+use crate::ui::task::Failure;
+use gpui::{App, Context, Div, Entity, Focusable, Window, div, prelude::*, px};
 use maple_agent::agent::{
-    AgentMcpServer, McpAppConnection, McpCatalogAuth, McpCatalogCategory, McpCatalogEntry,
-    McpSignIn, mcp_catalog,
+    AgentMcpServer, McpAppConnection, McpCatalogAddress, McpCatalogAuth, McpCatalogCategory,
+    McpCatalogEntry, McpSignIn, mcp_catalog,
 };
 use maple_agent::store::records::{McpDefinition, McpTarget};
 
 use super::{
-    SettingsScreen, SettingsTarget, icon, pill_button, spinner, subsection_title, theme, widgets,
+    SettingsScreen, SettingsTarget, TextInput, icon, pill_button, spinner, subsection_title, theme,
+    widgets,
 };
+
+/// The pop-up that asks where an app is, for one only the person can find.
+pub(super) struct McpAddressPrompt {
+    entry: &'static McpCatalogEntry,
+    pub input: Entity<TextInput>,
+    error: Option<UiText>,
+    focus_pending: bool,
+}
 
 /// A heading that starts a new part of the page.
 pub(super) fn section_heading(heading: Div) -> Div {
@@ -60,6 +71,8 @@ fn summary(entry: &McpCatalogEntry) -> gpui::SharedString {
         "evernote" => tr("settings-catalog-summary-evernote"),
         "miro" => tr("settings-catalog-summary-miro"),
         "zapier" => tr("settings-catalog-summary-zapier"),
+        "vana" => tr("settings-catalog-summary-vana"),
+        "home-assistant" => tr("settings-catalog-summary-home-assistant"),
         "atlassian" => tr("settings-catalog-summary-atlassian"),
         "linear" => tr("settings-catalog-summary-linear"),
         "monday" => tr("settings-catalog-summary-monday"),
@@ -79,6 +92,43 @@ fn summary(entry: &McpCatalogEntry) -> gpui::SharedString {
         "xcode" => tr("settings-catalog-summary-xcode"),
         _ => entry.summary.clone().into(),
     }
+}
+
+/// What a saved server says about itself. One connected from the catalog holds
+/// the catalog's words, which read in the person's language; anything the person
+/// wrote stays as they wrote it.
+pub(crate) fn saved_description(name: &str, description: &str) -> gpui::SharedString {
+    mcp_catalog()
+        .iter()
+        .find(|entry| entry.name == name && entry.summary == description)
+        .map_or_else(|| description.to_string().into(), summary)
+}
+
+/// What the address field is called, in the person's language.
+fn address_label(entry: &McpCatalogEntry, address: &McpCatalogAddress) -> gpui::SharedString {
+    match entry.id.as_str() {
+        "vana" => tr("settings-catalog-address-label-vana"),
+        "home-assistant" => tr("settings-catalog-address-label-home-assistant"),
+        _ => address.label.clone().into(),
+    }
+}
+
+/// Where to find the address, in the person's language.
+fn address_help(entry: &McpCatalogEntry, address: &McpCatalogAddress) -> gpui::SharedString {
+    match entry.id.as_str() {
+        "vana" => tr("settings-catalog-address-help-vana"),
+        "home-assistant" => tr("settings-catalog-address-help-home-assistant"),
+        _ => address.help.clone().into(),
+    }
+}
+
+/// Whether nothing useful is at the address, so a different one might work.
+/// This reads the failure's code: its words depend on the language.
+fn is_address_failure(failure: &Failure) -> bool {
+    matches!(
+        failure,
+        Failure::Host(failure) if matches!(failure.code.as_str(), "mcp-unreachable" | "mcp-no-server")
+    )
 }
 
 fn matches_search(entry: &McpCatalogEntry, query: &str) -> bool {
@@ -112,13 +162,14 @@ impl SettingsScreen {
         }
         let name = request.name.clone();
         self.mcp_signing_in = Some(name.clone());
+        self.mcp_usual_address = None;
         self.mcp_sign_in_error = None;
         self.mcp_app_missing = None;
         self.mcp_notice = None;
         cx.notify();
         let backend = self.integrations_backend.clone();
         let user_id = self.user_id.clone();
-        self.call(
+        self.call_presented(
             async move { backend.sign_in_mcp_server(&user_id, request).await },
             cx,
             move |this, result, cx| {
@@ -137,7 +188,7 @@ impl SettingsScreen {
                             }
                             this.refresh_catalog();
                         }
-                        Err(message) => this.mcp_sign_in_error = Some((name, message)),
+                        Err(failure) => this.mcp_sign_in_failed(name, failure, cx),
                     }
                     if this.settings.application_vim_enabled {
                         this.reconcile_application_vim_target();
@@ -178,7 +229,7 @@ impl SettingsScreen {
                         Ok(McpAppConnection::Missing(missing)) => {
                             this.mcp_app_missing = Some((name, missing));
                         }
-                        Err(message) => this.mcp_sign_in_error = Some((name, message)),
+                        Err(message) => this.mcp_sign_in_error = Some((name, message.into())),
                     }
                     if this.settings.application_vim_enabled {
                         this.reconcile_application_vim_target();
@@ -216,7 +267,7 @@ impl SettingsScreen {
             cx,
             move |this, result, cx| {
                 if let Err(message) = result {
-                    this.mcp_sign_in_error = Some((name, message));
+                    this.mcp_sign_in_error = Some((name, message.into()));
                     cx.notify();
                 }
             },
@@ -232,11 +283,11 @@ impl SettingsScreen {
     }
 
     /// Why the last sign-in to this server failed, shown where it started.
-    pub(super) fn sign_in_error_for(&self, name: &str) -> Option<&str> {
+    pub(super) fn sign_in_error_for(&self, name: &str) -> Option<gpui::SharedString> {
         self.mcp_sign_in_error
             .as_ref()
             .filter(|(failed, _)| failed == name)
-            .map(|(_, message)| message.as_str())
+            .map(|(_, message)| message.resolve())
     }
 
     pub(super) fn connect_catalog_entry(&mut self, id: &str, cx: &mut Context<Self>) {
@@ -244,6 +295,9 @@ impl SettingsScreen {
             return;
         };
         match &entry.auth {
+            McpCatalogAuth::Oauth if entry.address().is_some() => {
+                self.connect_mcp_address(entry, cx);
+            }
             McpCatalogAuth::Oauth => {
                 if let Some(request) = entry.sign_in() {
                     self.start_mcp_sign_in(request, cx);
@@ -251,6 +305,230 @@ impl SettingsScreen {
             }
             McpCatalogAuth::None => self.start_mcp_app(entry, cx),
         }
+    }
+
+    /// Try where an app usually is, so most people are never asked. The pop-up
+    /// is for an app that is somewhere else.
+    fn connect_mcp_address(&mut self, entry: &'static McpCatalogEntry, cx: &mut Context<Self>) {
+        if self.mcp_signing_in.is_some() {
+            return;
+        }
+        let Some(address) = entry.address() else {
+            return;
+        };
+        match entry.sign_in_at(&address.default) {
+            Ok(request) => {
+                self.start_mcp_sign_in(request, cx);
+                self.mcp_usual_address = Some(entry);
+            }
+            Err(error) => self.open_mcp_address(entry, Some(failure_text(&error.into())), cx),
+        }
+    }
+
+    fn mcp_sign_in_failed(&mut self, name: String, failure: Failure, cx: &mut Context<Self>) {
+        let ask = self
+            .mcp_usual_address
+            .take()
+            .filter(|_| is_address_failure(&failure));
+        let notice = UiText::from(failure);
+        match ask {
+            Some(entry) => self.open_mcp_address(entry, Some(notice), cx),
+            None => self.mcp_sign_in_error = Some((name, notice)),
+        }
+    }
+
+    fn open_mcp_address(
+        &mut self,
+        entry: &'static McpCatalogEntry,
+        error: Option<UiText>,
+        cx: &mut Context<Self>,
+    ) {
+        let Some(address) = entry.address() else {
+            return;
+        };
+        self.mcp_sign_in_error = None;
+        let application_vim = self.settings.application_vim_enabled;
+        let screen = cx.entity().downgrade();
+        let submit = screen.clone();
+        let input = cx.new(move |cx| {
+            let mut input = TextInput::localized("settings-catalog-address", cx)
+                .with_tab_index(1)
+                .application_vim(application_vim)
+                .on_key(move |event, _text, _window, cx| {
+                    let cancelled = event.keystroke.key == "escape";
+                    if cancelled {
+                        let _ = screen.update(cx, |screen, cx| screen.close_mcp_address(cx));
+                    }
+                    cancelled
+                })
+                .on_enter(move |text, _window, cx| {
+                    let _ = submit.update(cx, |screen, cx| screen.submit_mcp_address(&text, cx));
+                });
+            input.set_text(&address.default, cx);
+            input
+        });
+        self.mcp_address = Some(McpAddressPrompt {
+            entry,
+            input,
+            error,
+            focus_pending: true,
+        });
+        cx.notify();
+    }
+
+    fn close_mcp_address(&mut self, cx: &mut Context<Self>) {
+        self.mcp_address = None;
+        self.application_focus_pending = true;
+        cx.notify();
+    }
+
+    fn submit_mcp_address(&mut self, given: &str, cx: &mut Context<Self>) {
+        let Some(prompt) = self.mcp_address.as_mut() else {
+            return;
+        };
+        match prompt.entry.sign_in_at(given) {
+            Ok(request) => {
+                self.close_mcp_address(cx);
+                self.start_mcp_sign_in(request, cx);
+            }
+            Err(error) => {
+                prompt.error = Some(failure_text(&error.into()));
+                cx.notify();
+            }
+        }
+    }
+
+    /// Focus the pop-up's field the first time it draws.
+    pub(super) fn focus_mcp_address(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        if let Some(prompt) = self.mcp_address.as_mut()
+            && std::mem::take(&mut prompt.focus_pending)
+        {
+            window.focus(&prompt.input.read(cx).focus_handle(cx), cx);
+        }
+    }
+
+    pub(super) fn render_mcp_address(
+        &self,
+        window: &Window,
+        cx: &mut Context<Self>,
+    ) -> Option<impl IntoElement + use<>> {
+        let prompt = self.mcp_address.as_ref()?;
+        let address = prompt.entry.address()?;
+        let title = self.messages.get(
+            "settings-catalog-address-title",
+            [("name", prompt.entry.name.clone().into())],
+        );
+        let get_app = self.messages.get(
+            "settings-catalog-get-app",
+            [("name", address.app_name.clone().into())],
+        );
+        let get_url = address.get_url.clone();
+        let width = (window.viewport_size().width - px(48.)).clamp(px(0.), px(480.));
+        Some(
+            div()
+                .id("mcp-address-backdrop")
+                .absolute()
+                .inset_0()
+                .size_full()
+                .occlude()
+                .bg(theme::scrim())
+                .flex()
+                .items_center()
+                .justify_center()
+                .child(
+                    div()
+                        .id("mcp-address")
+                        .debug_selector(|| "mcp-address".to_string())
+                        .role(gpui::Role::Dialog)
+                        .aria_label(title.clone())
+                        .key_context("Dialog")
+                        .w(width)
+                        .p_5()
+                        .rounded(theme::RADIUS_XL)
+                        .shadow_lg()
+                        .bg(gpui::rgb(theme::bg_elevated()))
+                        .border_1()
+                        .border_color(gpui::rgb(theme::border()))
+                        .flex()
+                        .flex_col()
+                        .gap_4()
+                        .text_color(gpui::rgb(theme::text_primary()))
+                        .child(div().text_lg().child(title))
+                        .child(
+                            div()
+                                .text_sm()
+                                .text_color(gpui::rgb(theme::text_secondary()))
+                                .child(gpui::text!(address_help(prompt.entry, address))),
+                        )
+                        .child(
+                            div()
+                                .flex()
+                                .flex_col()
+                                .gap_1()
+                                .child(
+                                    div()
+                                        .text_xs()
+                                        .font_weight(gpui::FontWeight::MEDIUM)
+                                        .text_color(gpui::rgb(theme::text_secondary()))
+                                        .child(gpui::text!(address_label(prompt.entry, address))),
+                                )
+                                .child(widgets::input_frame().text_sm().child(prompt.input.clone()))
+                                .when_some(prompt.error.as_ref(), |col, error| {
+                                    col.child(
+                                        div()
+                                            .text_xs()
+                                            .text_color(gpui::rgb(theme::status_error()))
+                                            .child(gpui::text!(error.resolve())),
+                                    )
+                                }),
+                        )
+                        .child(
+                            div()
+                                .flex()
+                                .items_center()
+                                .justify_between()
+                                .gap_2()
+                                .child(
+                                    div()
+                                        .id("mcp-address-get")
+                                        .role(gpui::Role::Link)
+                                        .aria_label(get_app.clone())
+                                        .text_xs()
+                                        .text_color(gpui::rgb(theme::link()))
+                                        .hover(|style| style.underline().cursor_pointer())
+                                        .on_click(move |_, _, _| {
+                                            crate::ui::rich_text::open_link(&get_url)
+                                        })
+                                        .child(get_app),
+                                )
+                                .child(
+                                    div()
+                                        .flex()
+                                        .items_center()
+                                        .gap_2()
+                                        .child(
+                                            widgets::ghost_button("mcp-address-cancel")
+                                                .on_click(cx.listener(|this, _, _, cx| {
+                                                    this.close_mcp_address(cx);
+                                                }))
+                                                .child(gpui::text!(tr("settings-catalog-cancel"))),
+                                        )
+                                        .child(
+                                            widgets::primary_button("mcp-address-connect")
+                                                .on_click(cx.listener(|this, _, _, cx| {
+                                                    let given = this
+                                                        .mcp_address
+                                                        .as_ref()
+                                                        .map(|prompt| prompt.input.read(cx).text())
+                                                        .unwrap_or_default();
+                                                    this.submit_mcp_address(&given, cx);
+                                                }))
+                                                .child(gpui::text!(tr("settings-catalog-connect"))),
+                                        ),
+                                ),
+                        ),
+                ),
+        )
     }
 
     fn set_catalog_category(
@@ -455,6 +733,12 @@ impl SettingsScreen {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use maple_agent::agent::McpSignInError;
+
+    fn address_error(screen: &SettingsScreen) -> String {
+        let prompt = screen.mcp_address.as_ref().unwrap();
+        prompt.error.as_ref().unwrap().resolve().to_string()
+    }
 
     #[test]
     fn translated_catalog_search_follows_locale() {
@@ -549,7 +833,10 @@ mod tests {
             screen.mcp_signing_in = None;
 
             screen.mcp_sign_in_error = Some(("Custom".into(), "Not approved".into()));
-            assert_eq!(screen.sign_in_error_for("Custom"), Some("Not approved"));
+            assert_eq!(
+                screen.sign_in_error_for("Custom").as_deref(),
+                Some("Not approved")
+            );
             assert_eq!(screen.sign_in_error_for("Notion"), None);
         });
     }
@@ -570,6 +857,192 @@ mod tests {
         // Entities are released when effects flush, which parking never does.
         cx.update(|_| {});
         assert!(released.get());
+    }
+
+    #[gpui::test]
+    fn the_address_pop_up_checks_what_it_is_given(cx: &mut gpui::TestAppContext) {
+        cx.executor().allow_parking();
+        let screen = cx.new(screen);
+        let vana = mcp_catalog()
+            .iter()
+            .find(|entry| entry.id == "vana")
+            .unwrap();
+        screen.update(cx, |screen, cx| {
+            screen.open_mcp_address(vana, None, cx);
+            assert_eq!(
+                screen.mcp_signing_in, None,
+                "nothing starts until it is given"
+            );
+
+            screen.submit_mcp_address("", cx);
+            assert_eq!(address_error(screen), "Enter an address first.");
+
+            screen.submit_mcp_address("ftp://example.com/mcp", cx);
+            assert_eq!(
+                address_error(screen),
+                "Sign-in needs an http:// or https:// address."
+            );
+            assert_eq!(screen.mcp_signing_in, None);
+
+            screen.close_mcp_address(cx);
+            assert!(screen.mcp_address.is_none());
+
+            screen.open_mcp_address(vana, None, cx);
+            screen.submit_mcp_address("http://127.0.0.1:47321/mcp", cx);
+            assert!(screen.mcp_address.is_none());
+            assert_eq!(screen.mcp_signing_in.as_deref(), Some("Vana"));
+            screen.mcp_signing_in = None;
+        });
+    }
+
+    #[gpui::test]
+    fn an_apps_usual_address_is_tried_before_asking(cx: &mut gpui::TestAppContext) {
+        cx.executor().allow_parking();
+        let screen = cx.new(screen);
+        screen.update(cx, |screen, cx| {
+            screen.connect_catalog_entry("home-assistant", cx);
+            assert!(screen.mcp_address.is_none(), "nothing to ask yet");
+            assert_eq!(screen.mcp_signing_in.as_deref(), Some("Home Assistant"));
+            screen.mcp_signing_in = None;
+
+            // Not there: ask, starting from where it looked and saying why.
+            screen.mcp_sign_in_failed(
+                "Home Assistant".into(),
+                Failure::Host(McpSignInError::Unreachable.into()),
+                cx,
+            );
+            let prompt = screen.mcp_address.as_ref().unwrap();
+            assert_eq!(
+                prompt.input.read(cx).text(),
+                "http://homeassistant.local:8123"
+            );
+            assert!(address_error(screen).contains("could not reach"));
+            assert_eq!(screen.sign_in_error_for("Home Assistant"), None);
+            screen.close_mcp_address(cx);
+
+            // A typed address reports on the card, and does not ask again.
+            screen.submit_mcp_address("http://192.168.1.20:8123", cx);
+            assert_eq!(screen.mcp_usual_address.map(|entry| &entry.id), None);
+            screen.mcp_signing_in = None;
+        });
+    }
+
+    #[gpui::test]
+    fn only_a_missing_server_asks_for_another_address(cx: &mut gpui::TestAppContext) {
+        cx.executor().allow_parking();
+        let screen = cx.new(screen);
+        screen.update(cx, |screen, cx| {
+            screen.connect_catalog_entry("home-assistant", cx);
+            screen.mcp_signing_in = None;
+            screen.mcp_sign_in_failed(
+                "Home Assistant".into(),
+                "Access was not approved.".into(),
+                cx,
+            );
+            assert!(screen.mcp_address.is_none());
+            assert_eq!(
+                screen.sign_in_error_for("Home Assistant").as_deref(),
+                Some("Access was not approved.")
+            );
+
+            // The code decides, never the words, which change with the language.
+            screen.connect_catalog_entry("home-assistant", cx);
+            screen.mcp_signing_in = None;
+            screen.mcp_sign_in_failed(
+                "Home Assistant".into(),
+                McpSignInError::Unreachable.to_string().into(),
+                cx,
+            );
+            assert!(screen.mcp_address.is_none());
+        });
+    }
+
+    #[gpui::test]
+    fn sign_in_failures_follow_a_language_change(cx: &mut gpui::TestAppContext) {
+        use crate::ui::i18n::{TestLocalizationGuard, apply_preference};
+        let _locale = TestLocalizationGuard::enable();
+        cx.executor().allow_parking();
+        let screen = cx.new(screen);
+        screen.update(cx, |screen, cx| {
+            apply_preference(Some("en"));
+            screen.connect_catalog_entry("home-assistant", cx);
+            screen.mcp_signing_in = None;
+            screen.mcp_sign_in_failed(
+                "Home Assistant".into(),
+                Failure::Host(McpSignInError::NoServerHere.into()),
+                cx,
+            );
+            screen.mcp_sign_in_error = Some((
+                "Vana".into(),
+                failure_text(&McpSignInError::Unreachable.into()),
+            ));
+            assert_eq!(
+                address_error(screen),
+                "Maple reached this address, but found no MCP server there."
+            );
+            apply_preference(Some("es"));
+            assert_eq!(
+                address_error(screen),
+                "Maple se conectó con esta dirección, pero no encontró ningún servidor MCP."
+            );
+            assert_eq!(
+                screen.sign_in_error_for("Vana").as_deref(),
+                Some("Maple no pudo conectarse con esta dirección. Revísala e inténtalo de nuevo.")
+            );
+            apply_preference(Some("en"));
+            screen.mcp_address = None;
+        });
+    }
+
+    #[gpui::test]
+    fn an_app_with_nothing_to_ask_starts_straight_away(cx: &mut gpui::TestAppContext) {
+        cx.executor().allow_parking();
+        let screen = cx.new(screen);
+        screen.update(cx, |screen, cx| {
+            screen.connect_catalog_entry("notion", cx);
+            assert!(screen.mcp_address.is_none());
+            assert_eq!(screen.mcp_signing_in.as_deref(), Some("Notion"));
+            screen.mcp_signing_in = None;
+        });
+    }
+
+    #[test]
+    fn a_connected_app_reads_in_each_language_but_a_persons_own_words_do_not() {
+        use crate::ui::i18n::{TestLocalizationGuard, apply_preference};
+        let _locale = TestLocalizationGuard::enable();
+        let (name, words) = (&notion().name, &notion().summary);
+        apply_preference(Some("es"));
+        assert_eq!(
+            saved_description(name, words).as_ref(),
+            "Busca y actualiza tus páginas y bases de datos"
+        );
+        assert_eq!(
+            saved_description(name, "Our team wiki").as_ref(),
+            "Our team wiki"
+        );
+        assert_eq!(saved_description("Our wiki", words).as_ref(), words);
+        apply_preference(Some("en"));
+        assert_eq!(saved_description(name, words).as_ref(), words);
+    }
+
+    #[test]
+    fn every_app_reads_in_each_language() {
+        use crate::ui::i18n::{TestLocalizationGuard, apply_preference};
+        let _locale = TestLocalizationGuard::enable();
+        for entry in mcp_catalog() {
+            apply_preference(Some("en"));
+            assert_eq!(summary(entry).as_ref(), entry.summary, "{}", entry.id);
+            if let Some(address) = entry.address() {
+                assert_eq!(address_label(entry, address).as_ref(), address.label);
+                assert_eq!(address_help(entry, address).as_ref(), address.help);
+            }
+            apply_preference(Some("es"));
+            assert_ne!(summary(entry).as_ref(), entry.summary, "{}", entry.id);
+            if let Some(address) = entry.address() {
+                assert_ne!(address_label(entry, address).as_ref(), address.label);
+                assert_ne!(address_help(entry, address).as_ref(), address.help);
+            }
+        }
     }
 
     #[test]

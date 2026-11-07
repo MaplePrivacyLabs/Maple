@@ -3154,17 +3154,18 @@ impl LocalBackend {
 
     /// The local host owns the entire sign-in and its credentials. Only public
     /// MCP metadata returns to the desktop once the server is installed.
-    pub async fn sign_in_mcp_server(
+    pub async fn sign_in_mcp_server_presented(
         &self,
         user_id: &str,
         request: maple_agent::agent::McpSignIn,
-    ) -> Result<Vec<maple_agent::store::records::McpDefinition>, String> {
-        self.authorize_account(user_id)?;
-        self.service
+    ) -> Result<Vec<maple_agent::store::records::McpDefinition>, HostFailure> {
+        self.authorize_account_presented(user_id)?;
+        Ok(self
+            .service
             .handle_for_user(user_id)
             .await?
             .sign_in_mcp_server(request, Arc::new(open_sign_in))
-            .await
+            .await?)
     }
 
     pub async fn cancel_mcp_sign_in(&self, user_id: &str, name: &str) -> Result<(), String> {

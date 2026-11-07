@@ -1821,6 +1821,10 @@ flows-task-cancelled = La tarea se canceló
 ## Flows: direct pricing-page browser errors
 runtime-error-browser-pricing-link = No se pudo abrir la página de precios: enlace inesperado
 runtime-error-browser-pricing-open = No se pudo abrir la página de precios en tu navegador
+runtime-error-mcp-no-address = Primero escribe una dirección.
+runtime-error-mcp-invalid-address = Para iniciar sesión se necesita una dirección http:// o https://.
+runtime-error-mcp-unreachable = Maple no pudo conectarse con esta dirección. Revísala e inténtalo de nuevo.
+runtime-error-mcp-no-server = Maple se conectó con esta dirección, pero no encontró ningún servidor MCP.
 
 settings-settings-connected = Conectados
 
@@ -1867,6 +1871,18 @@ settings-catalog-summary-supabase = Administra tus bases de datos y proyectos
 settings-catalog-summary-sentry = Investiga tus errores e incidencias
 settings-catalog-summary-playwright = Navega por sitios web, haz clic en las páginas y llena formularios
 settings-catalog-summary-xcode = Compila y prueba tus proyectos de Xcode
+settings-catalog-summary-vana = Usa los datos personales que elijas compartir
+settings-catalog-summary-home-assistant = Consulta y controla tu casa inteligente
+# El campo de la ventana que pregunta dónde está una aplicación. También es su nombre para lectores de pantalla.
+settings-catalog-address = Dirección
+# Título de esa ventana. $name es la aplicación, como Home Assistant.
+settings-catalog-address-title = Conectar { $name }
+settings-catalog-address-label-vana = Punto de conexión MCP local
+# Settings > Server y Local MCP endpoint son las palabras exactas de Vana Desktop.
+settings-catalog-address-help-vana = En Vana Desktop, abre Settings > Server y copia el Local MCP endpoint.
+settings-catalog-address-label-home-assistant = Dirección de Home Assistant
+# Model Context Protocol es el nombre de la integración en Home Assistant.
+settings-catalog-address-help-home-assistant = Agrega la integración Model Context Protocol en Home Assistant y luego revisa que esta sea la dirección con la que lo abres.
 
 # ACP client setup
 settings-section-acp = ACP

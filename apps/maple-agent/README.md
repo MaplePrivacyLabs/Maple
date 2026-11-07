@@ -247,10 +247,17 @@ Settings > Integrations also lists well-known apps from the bundled
 `server.json`, so adding an app needs no code. Connecting one, or choosing
 **Sign in with browser** for a custom HTTP server, signs in on this computer: the
 browser returns to a loopback listener, Maple registers itself with the server
-(Dynamic Client Registration), and tokens stay in this computer's store. A new
-connection is on for new tasks until someone turns it off. A server that only
-accepts registered apps cannot be signed in to yet, and neither can a paired
-computer from its controller.
+(Dynamic Client Registration) or, where a server says it knows clients by their
+address, names itself by the callback's origin, and tokens stay in this computer's
+store. A new connection is on for new tasks until someone turns it off. A server
+that only accepts registered apps cannot be signed in to yet, and neither can a
+paired computer from its controller.
+
+Some apps run at an address that depends on the person's setup, such as Vana
+Desktop and Home Assistant. Their entry gives the usual address, which Connect
+tries first, and a pop-up asks for another only if nothing is there.
+Sign-in takes any `http://` or `https://` address. Over plain HTTP every sign-in
+request stays on the address given, and tokens can be read on the way.
 
 Some catalog apps run on this computer, such as Playwright and, on macOS, Xcode.
 An entry names a pinned package or a command, what must be installed first, and
