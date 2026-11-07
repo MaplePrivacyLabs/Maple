@@ -2068,7 +2068,7 @@ impl SettingsScreen {
                 div()
                     .text_xs()
                     .text_color(gpui::rgb(theme::text_muted()))
-                    .child(self.messages.get("settings-shortcut-counts", [("arg1", (self.shortcut_snapshot.rows.len()).to_string().into()), ("modified-count", (modified_count).to_string().into())]).to_string()),
+                    .child(self.messages.get("settings-shortcut-counts", [("binding-count", (self.shortcut_snapshot.rows.len()).to_string().into()), ("modified-count", (modified_count).to_string().into())]).to_string()),
             );
 
         if let Some(error) = &self.shortcut_snapshot.last_error {
@@ -2210,11 +2210,11 @@ impl SettingsScreen {
                                     "settings-shortcut-collision",
                                     [
                                         (
-                                            "arg1",
+                                            "conflict",
                                             (shortcut_conflict_label(conflict)).to_string().into(),
                                         ),
-                                        ("arg2", (other).to_string().into()),
-                                        ("arg3", (conflict.other_slot_id).to_string().into()),
+                                        ("other", (other).to_string().into()),
+                                        ("slot-id", (conflict.other_slot_id).to_string().into()),
                                     ],
                                 )
                                 .to_string(),
@@ -2330,7 +2330,7 @@ impl SettingsScreen {
                                     self.messages
                                         .get(
                                             "settings-shortcut-conflicts",
-                                            [("arg1", (row.conflicts.len()).to_string().into())],
+                                            [("count", (row.conflicts.len()).to_string().into())],
                                         )
                                         .to_string(),
                                 ),
@@ -2352,7 +2352,7 @@ impl SettingsScreen {
                                 self.messages
                                     .get(
                                         "settings-shortcut-default",
-                                        [("arg1", (row.default_sequence).to_string().into())],
+                                        [("shortcut", (row.default_sequence).to_string().into())],
                                     )
                                     .to_string(),
                             ),
@@ -2477,7 +2477,7 @@ impl SettingsScreen {
             .gap_4()
             .child(section_title(&tr("settings-settings-integrations")))
             .child(div().text_sm().child(match self.integrations_backend.remote_host() {
-                Some(host) => self.messages.get("settings-execution-computer", [("arg1", (host[..host.len().min(10)]).to_string().into())]).to_string(),
+                Some(host) => self.messages.get("settings-execution-computer", [("computer", (host[..host.len().min(10)]).to_string().into())]).to_string(),
                 None => tr("settings-settings-execution-computer-this-computer").to_string(),
             }))
             .child(
@@ -3064,7 +3064,7 @@ fn plan_card(plan: &crate::billing::PlanUsage, messages: &super::i18n::MessageCa
                             messages
                                 .get(
                                     "settings-usage-percent",
-                                    [("arg1", (plan.percent_used).to_string().into())],
+                                    [("percent", (plan.percent_used).to_string().into())],
                                 )
                                 .to_string(),
                         ),
@@ -3079,7 +3079,7 @@ fn plan_card(plan: &crate::billing::PlanUsage, messages: &super::i18n::MessageCa
                                 .get(
                                     "settings-usage-resets",
                                     [(
-                                        "arg1",
+                                        "reset",
                                         presentation::reset_date(plan, messages).to_string().into(),
                                     )],
                                 )

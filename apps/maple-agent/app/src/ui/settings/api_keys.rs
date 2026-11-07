@@ -496,7 +496,7 @@ impl SettingsScreen {
             .flex_col()
             .gap_2()
             .child(super::setting_copy(
-                self.messages.get("settings-api-key-ready", [("arg1", created.name.clone().into())]),
+                self.messages.get("settings-api-key-ready", [("name", created.name.clone().into())]),
                 tr("settings-api-keys-copy-the-key-now-for-your-privacy-it-is-not-stored-anywhere-you-c"),
             ))
             .child(
@@ -627,7 +627,7 @@ impl SettingsScreen {
                 self.messages.get(
                     "settings-api-key-created",
                     [(
-                        "arg1",
+                        "date",
                         super::account::member_since(&key.created_at, &self.messages)
                             .to_string()
                             .into(),

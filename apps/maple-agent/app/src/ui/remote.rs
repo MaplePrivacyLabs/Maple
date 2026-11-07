@@ -46,7 +46,7 @@ pub(crate) fn computer_name(key: &str, advertised: &str, alias: &str) -> String 
         tr_args(
             "settings-computer-name",
             [(
-                "arg1",
+                "id",
                 (key.chars().take(8).collect::<String>()).to_string().into(),
             )],
         )
@@ -286,7 +286,7 @@ impl ComputerUpdate {
                 [
                     ("running", (running).to_string().into()),
                     (
-                        "arg1",
+                        "activity",
                         (if checking {
                             tr("settings-remote-checking-for-updates-more")
                         } else {
@@ -609,7 +609,7 @@ impl RemoteScreen {
             self.messages
                 .get(
                     "settings-computer-name",
-                    [("arg1", key.chars().take(8).collect::<String>().into())],
+                    [("id", key.chars().take(8).collect::<String>().into())],
                 )
                 .to_string()
         } else {
@@ -1616,7 +1616,7 @@ impl RemoteScreen {
                                         div()
                                             .text_xs()
                                             .text_color(gpui::rgb(theme::text_muted()))
-                                            .child(self.messages.get("settings-pairing-expiry", [("arg1", (left / 60).to_string().into()), ("arg2", (format!("{:02}", left % 60)).to_string().into())]).to_string()),
+                                            .child(self.messages.get("settings-pairing-expiry", [("minutes", (left / 60).to_string().into()), ("seconds", (format!("{:02}", left % 60)).to_string().into())]).to_string()),
                                     )
                                     .child(
                                         widgets::secondary_button("cancel-window")
