@@ -171,6 +171,9 @@ pub struct SettingsScreen {
     /// Account MCP servers; None until loaded.
     mcp_servers: Option<Vec<McpDefinition>>,
     mcp_editor: Option<McpEditor>,
+    mcp_address: Option<catalog::McpAddressPrompt>,
+    /// The app being tried at its usual address, before asking for another.
+    mcp_usual_address: Option<&'static maple_agent::agent::McpCatalogEntry>,
     mcp_notice: Option<String>,
     mcp_saving: bool,
     /// The server whose browser sign-in is in progress.
@@ -488,6 +491,8 @@ impl SettingsScreen {
             plan: None,
             mcp_servers: None,
             mcp_editor: None,
+            mcp_address: None,
+            mcp_usual_address: None,
             mcp_notice: None,
             mcp_saving: false,
             mcp_signing_in: None,
@@ -1639,6 +1644,8 @@ impl Render for SettingsScreen {
         if std::mem::take(&mut self.api_keys.reveal_card) {
             self.api_keys.card_anchor.scroll_to(window, cx);
         }
+        self.focus_mcp_address(window, cx);
+        let mcp_address = self.render_mcp_address(window, cx);
         div()
             .key_context(self.application_vim_context())
             .track_focus(&self.application_focus)
@@ -1660,6 +1667,7 @@ impl Render for SettingsScreen {
             .on_action(cx.listener(Self::app_vim_previous_annotation))
             .on_action(cx.listener(Self::app_vim_count))
             .on_action(cx.listener(Self::app_vim_move_region))
+            .relative()
             .size_full()
             .flex()
             .flex_col()
@@ -1734,6 +1742,7 @@ impl Render for SettingsScreen {
                             )),
                     ),
             )
+            .children(mcp_address)
     }
 }
 

@@ -22,7 +22,7 @@ mod maintenance;
 mod mcp;
 pub use mcp::apps::{McpAppConnection, McpAppMissing};
 pub use mcp::catalog::{McpCatalogAuth, McpCatalogCategory, McpCatalogEntry, mcp_catalog};
-pub use mcp::oauth::{McpBrowser, McpSignIn};
+pub use mcp::oauth::{McpBrowser, McpSignIn, is_address_failure};
 mod persistence;
 mod projects;
 pub(crate) mod provider;

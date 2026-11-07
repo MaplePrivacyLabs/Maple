@@ -14,40 +14,102 @@ use sha2::{Digest, Sha256};
 use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 
 #[test]
-fn rejects_nonlocal_or_ambiguous_endpoints() {
+fn a_sign_in_takes_any_http_or_https_address() {
     for value in [
-        "https://example.com/mcp",
+        "https://mcp.example.com/mcp?tenant=a",
+        "http://127.0.0.1:49123/mcp",
         "http://localhost:1234/mcp",
-        "http://127.0.0.2:1234/mcp",
-        "http://0.0.0.0:1234/mcp",
-        "http://127.0.0.1/mcp",
-        "http://127.0.0.1:1234/mcp?token=x",
-        "http://user@127.0.0.1:1234/mcp",
-        "http://127.0.0.1:1234/mcp#x",
-        "http://127.0.0.1:1234/other",
+        "http://[::1]:1234/mcp",
+        "http://192.168.1.20:8123/api/mcp",
+        "http://100.64.0.1:8123/api/mcp",
+        "http://homeassistant:8123/api/mcp",
+        "http://homeassistant.local:8123/api/mcp",
+        "http://home.example.com:8123/api/mcp",
     ] {
-        assert!(local_endpoint(value).is_err());
+        assert!(sign_in_endpoint(value).is_ok(), "{value}");
     }
+}
+
+#[test]
+fn a_sign_in_address_cannot_carry_more_than_an_address() {
+    for value in [
+        "ftp://example.com/mcp",
+        "file:///etc/passwd",
+        "https://user@example.com/mcp",
+        "http://user:secret@homeassistant.local:8123/api/mcp",
+        "https://example.com/mcp#x",
+        "http://127.0.0.1:1234/mcp#x",
+        "not an address",
+    ] {
+        assert!(sign_in_endpoint(value).is_err(), "{value}");
+    }
+}
+
+#[test]
+fn a_plain_http_servers_metadata_stays_on_that_server() {
+    let endpoint = sign_in_endpoint("http://homeassistant.local:8123/api/mcp").unwrap();
+    let check = |value: &str| check_sign_in_url(&endpoint, &reqwest::Url::parse(value).unwrap());
+    for value in [
+        "http://other.local:8123/auth/authorize",
+        "http://homeassistant.local:8124/auth/authorize",
+        "https://homeassistant.local:8123/auth/authorize",
+        "https://example.com/auth/authorize",
+        "http://user@homeassistant.local:8123/auth/authorize",
+    ] {
+        assert!(check(value).is_err(), "{value}");
+    }
+    assert!(check("http://homeassistant.local:8123/auth/authorize").is_ok());
+}
+
+fn metadata_with(authorization: &str, token: &str, issuer: Option<&str>) -> AuthorizationMetadata {
+    serde_json::from_value(serde_json::json!({
+        "authorization_endpoint": authorization,
+        "token_endpoint": token,
+        "issuer": issuer,
+    }))
+    .unwrap()
+}
+
+#[test]
+fn paths_in_metadata_mean_the_server_they_came_from() {
+    let endpoint = sign_in_endpoint("http://homeassistant.local:8123/api/mcp").unwrap();
+    let mut metadata = metadata_with("/auth/authorize", "/auth/token", None);
+    assert!(fill_in_paths(&endpoint, &mut metadata));
     assert_eq!(
-        local_endpoint("http://127.0.0.1:49123/mcp").unwrap().port(),
-        Some(49123)
+        metadata.authorization_endpoint,
+        "http://homeassistant.local:8123/auth/authorize"
+    );
+    assert_eq!(
+        metadata.token_endpoint,
+        "http://homeassistant.local:8123/auth/token"
+    );
+    assert_eq!(
+        metadata.issuer.as_deref(),
+        Some("http://homeassistant.local:8123")
     );
 }
 
 #[test]
-fn a_sign_in_address_is_https_or_this_computers_listener() {
-    for value in [
-        "http://example.com/mcp",
-        "ftp://example.com/mcp",
-        "https://user@example.com/mcp",
-        "https://example.com/mcp#x",
-        "http://127.0.0.1:1234/other",
-        "not an address",
+fn only_paths_are_filled_in() {
+    let endpoint = sign_in_endpoint("http://homeassistant.local:8123/api/mcp").unwrap();
+    for (authorization, token, issuer) in [
+        // A name for another host is not a path.
+        ("//example.com/authorize", "/auth/token", None),
+        ("/auth/authorize", "//example.com/token", None),
+        // An absolute address has to pass the checks that apply to it.
+        ("https://example.com/authorize", "/auth/token", None),
+        // A server that names an issuer has answered for itself.
+        (
+            "/auth/authorize",
+            "/auth/token",
+            Some("https://example.com"),
+        ),
     ] {
-        assert!(sign_in_endpoint(value).is_err());
+        let mut metadata = metadata_with(authorization, token, issuer);
+        assert!(!fill_in_paths(&endpoint, &mut metadata), "{authorization}");
+        assert_eq!(metadata.authorization_endpoint, authorization);
+        assert_eq!(metadata.token_endpoint, token);
     }
-    assert!(sign_in_endpoint("https://mcp.example.com/mcp?tenant=a").is_ok());
-    assert!(sign_in_endpoint("http://127.0.0.1:49123/mcp").is_ok());
 }
 
 #[test]
@@ -126,7 +188,7 @@ async fn timeout_drops_the_callback_listener() {
 
 #[test]
 fn oauth_http_cannot_follow_metadata_to_another_listener_or_public_service() {
-    let http = LocalOAuthHttp::new(local_endpoint("http://127.0.0.1:1234/mcp").unwrap()).unwrap();
+    let http = PlainOAuthHttp::new(sign_in_endpoint("http://127.0.0.1:1234/mcp").unwrap()).unwrap();
     for value in [
         "http://127.0.0.1:1235/token",
         "https://account.vana.org/token",
@@ -196,6 +258,22 @@ struct FakeOAuth {
     moved_token_calls: AtomicUsize,
     secret_refreshes: AtomicUsize,
     challenge: Mutex<Option<String>>,
+    /// No registration, and nothing to say a client's address will do.
+    no_registration: AtomicBool,
+    /// No registration: the server knows a client by its address.
+    by_address: AtomicBool,
+    /// Sign-in addresses given as paths, with no issuer.
+    gives_paths: AtomicBool,
+    /// No MCP server here, though sign-in metadata is still published.
+    no_server: AtomicBool,
+    /// Names its sign-in server by a private address, as a server does that is
+    /// reached at its own one.
+    names_private_address: AtomicBool,
+    registrations: AtomicUsize,
+    /// The client and callback the browser was sent with.
+    browser_client: Mutex<Option<(String, String)>>,
+    /// The client each token request named.
+    token_clients: Mutex<Vec<String>>,
 }
 
 const CLIENT_SECRET: &str = "synthetic-client-secret";
@@ -225,6 +303,14 @@ impl Server {
             moved_token_calls: AtomicUsize::new(0),
             secret_refreshes: AtomicUsize::new(0),
             challenge: Mutex::new(None),
+            no_registration: AtomicBool::new(false),
+            by_address: AtomicBool::new(false),
+            gives_paths: AtomicBool::new(false),
+            no_server: AtomicBool::new(false),
+            names_private_address: AtomicBool::new(false),
+            registrations: AtomicUsize::new(0),
+            browser_client: Mutex::new(None),
+            token_clients: Mutex::new(Vec::new()),
         });
         let app = Router::new()
             .fallback(any(fake_http))
@@ -257,6 +343,10 @@ impl Server {
                 Some("S256")
             );
             *state.challenge.lock().unwrap() = params.get("code_challenge").cloned();
+            *state.browser_client.lock().unwrap() = Some((
+                params.get("client_id").cloned().unwrap(),
+                params.get("redirect_uri").cloned().unwrap(),
+            ));
             let mut callback = reqwest::Url::parse(params.get("redirect_uri").unwrap()).unwrap();
             let csrf = params.get("state").unwrap().clone();
             let issuer = overridden_issuer
@@ -312,6 +402,8 @@ async fn fake_http(
         (Method::GET, "/.well-known/oauth-protected-resource/mcp") => {
             let issuer = if state.decoy_issuer.load(Ordering::SeqCst) {
                 format!("{}/.well-known/decoy", state.base)
+            } else if state.names_private_address.load(Ordering::SeqCst) {
+                "http://192.168.70.254:8123".to_string()
             } else {
                 state.base.clone()
             };
@@ -325,7 +417,23 @@ async fn fake_http(
             } else {
                 "/mcp/oauth/token"
             };
-            json_response(authorization_metadata(&state, path))
+            let mut metadata = authorization_metadata(&state, path);
+            let by_address = state.by_address.load(Ordering::SeqCst);
+            if by_address || state.no_registration.load(Ordering::SeqCst) {
+                metadata
+                    .as_object_mut()
+                    .unwrap()
+                    .remove("registration_endpoint");
+            }
+            if by_address {
+                metadata["client_id_metadata_document_supported"] = json!(true);
+            }
+            if state.gives_paths.load(Ordering::SeqCst) {
+                metadata.as_object_mut().unwrap().remove("issuer");
+                metadata["authorization_endpoint"] = json!("/mcp/oauth/authorize");
+                metadata["token_endpoint"] = json!(path);
+            }
+            json_response(metadata)
         }
         (Method::GET, "/.well-known/decoy") => {
             json_response(authorization_metadata(&state, "/moved/token"))
@@ -335,6 +443,7 @@ async fn fake_http(
             StatusCode::BAD_REQUEST.into_response()
         }
         (Method::POST, "/mcp/oauth/register") => {
+            state.registrations.fetch_add(1, Ordering::SeqCst);
             let input: Value = serde_json::from_slice(&body).unwrap();
             assert_eq!(input["client_name"], "Maple");
             let mut client = json!({"client_id":"synthetic-maple-client","redirect_uris":input["redirect_uris"],"token_endpoint_auth_method":"none"});
@@ -350,6 +459,11 @@ async fn fake_http(
                 .query_pairs()
                 .map(|(k, v)| (k.into_owned(), v.into_owned()))
                 .collect();
+            state
+                .token_clients
+                .lock()
+                .unwrap()
+                .extend(params.get("client_id").cloned());
             if params.get("grant_type").map(String::as_str) == Some("refresh_token") {
                 state.refreshes.fetch_add(1, Ordering::SeqCst);
                 if state.confidential.load(Ordering::SeqCst) {
@@ -392,6 +506,9 @@ async fn fake_http(
             json_response(
                 json!({"access_token":format!("synthetic-access-{n}"),"token_type":"Bearer","expires_in":3600,"refresh_token":format!("synthetic-refresh-{n}"),"scope":"vana:read"}),
             )
+        }
+        (_, "/mcp") if state.no_server.load(Ordering::SeqCst) => {
+            StatusCode::NOT_FOUND.into_response()
         }
         (Method::GET, "/mcp") => challenge(&state),
         (Method::POST, "/mcp") => {
@@ -611,6 +728,141 @@ async fn native_pkce_callback_persists_refreshes_and_revocation_requires_reconne
             .await
             .is_ok()
     );
+}
+
+/// Age the saved sign-in, then refresh it from the store alone, as after a
+/// restart.
+async fn refresh_after_restart(harness: &crate::agent::tests::Harness, server: &Server) {
+    let context = OAuthAccountContext::new(harness.handle.store().unwrap());
+    let target = McpTarget::StreamableHttp {
+        url: server.endpoint(),
+    };
+    let record = context
+        .store
+        .mcp_oauth_credentials(context.account, "vana", &target)
+        .unwrap()
+        .unwrap();
+    let mut expired = decode_saved(&record).unwrap();
+    expired.credentials.token_received_at = Some(0);
+    context
+        .store
+        .rotate_mcp_oauth_credentials(
+            context.account,
+            "vana",
+            &target,
+            &record,
+            saved_secret(&expired).unwrap(),
+        )
+        .unwrap();
+    runtime_client(&context, "vana", &server.endpoint())
+        .await
+        .unwrap()
+        .unwrap()
+        .access_token(None)
+        .await
+        .unwrap();
+}
+
+#[tokio::test]
+async fn a_server_with_no_registration_knows_maple_by_its_address() {
+    let harness = crate::agent::tests::Harness::new().await;
+    let server = Server::start().await;
+    server.state.by_address.store(true, Ordering::SeqCst);
+    let definitions = harness
+        .handle
+        .sign_in_mcp_server(sign_in(&server), server.browser())
+        .await
+        .unwrap();
+    assert_eq!(definitions.len(), 1);
+    assert_eq!(server.state.registrations.load(Ordering::SeqCst), 0);
+
+    // The client is the callback's own origin, which is how a server like this
+    // checks the way back without fetching anything from this computer.
+    let (client, callback) = server.state.browser_client.lock().unwrap().clone().unwrap();
+    let callback = reqwest::Url::parse(&callback).unwrap();
+    assert_eq!(
+        client,
+        format!("{}/", callback.origin().ascii_serialization())
+    );
+    assert!(client.starts_with("http://127.0.0.1:"));
+
+    refresh_after_restart(&harness, &server).await;
+    assert_eq!(server.state.refreshes.load(Ordering::SeqCst), 1);
+    let named = server.state.token_clients.lock().unwrap().clone();
+    assert_eq!(named, [client.clone(), client]);
+}
+
+#[tokio::test]
+async fn a_server_that_gives_paths_signs_in_and_refreshes() {
+    let harness = crate::agent::tests::Harness::new().await;
+    let server = Server::start().await;
+    server.state.by_address.store(true, Ordering::SeqCst);
+    server.state.gives_paths.store(true, Ordering::SeqCst);
+    harness
+        .handle
+        .sign_in_mcp_server(sign_in(&server), server.browser())
+        .await
+        .unwrap();
+    assert_eq!(server.state.exchanges.load(Ordering::SeqCst), 1);
+    refresh_after_restart(&harness, &server).await;
+    assert_eq!(server.state.refreshes.load(Ordering::SeqCst), 1);
+}
+
+#[tokio::test]
+async fn a_server_on_the_local_network_signs_in_at_its_own_address() {
+    let harness = crate::agent::tests::Harness::new().await;
+    let server = Server::start().await;
+    server
+        .state
+        .names_private_address
+        .store(true, Ordering::SeqCst);
+    server.state.by_address.store(true, Ordering::SeqCst);
+    harness
+        .handle
+        .sign_in_mcp_server(sign_in(&server), server.browser())
+        .await
+        .unwrap();
+    assert_eq!(server.state.exchanges.load(Ordering::SeqCst), 1);
+}
+
+#[tokio::test]
+async fn a_server_that_says_nothing_about_addresses_still_needs_a_registered_app() {
+    let harness = crate::agent::tests::Harness::new().await;
+    let server = Server::start().await;
+    server.state.no_registration.store(true, Ordering::SeqCst);
+    let error = harness
+        .handle
+        .sign_in_mcp_server(sign_in(&server), server.browser())
+        .await
+        .unwrap_err();
+    assert_eq!(error, NEEDS_REGISTERED_APP);
+    assert!(server.state.browser_client.lock().unwrap().is_none());
+}
+
+#[tokio::test]
+async fn nobody_is_sent_to_sign_in_for_a_server_that_is_not_there() {
+    let harness = crate::agent::tests::Harness::new().await;
+    let server = Server::start().await;
+    server.state.no_server.store(true, Ordering::SeqCst);
+    let error = harness
+        .handle
+        .sign_in_mcp_server(sign_in(&server), server.browser())
+        .await
+        .unwrap_err();
+    assert_eq!(error, NO_SERVER_HERE);
+    assert!(server.state.browser_client.lock().unwrap().is_none());
+
+    let closed = TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let address = closed.local_addr().unwrap();
+    drop(closed);
+    let mut unreachable = sign_in(&server);
+    unreachable.url = format!("http://{address}/mcp");
+    let error = harness
+        .handle
+        .sign_in_mcp_server(unreachable, server.browser())
+        .await
+        .unwrap_err();
+    assert_eq!(error, UNREACHABLE);
 }
 
 #[tokio::test]

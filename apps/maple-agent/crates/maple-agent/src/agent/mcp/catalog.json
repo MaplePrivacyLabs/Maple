@@ -94,6 +94,42 @@
     }
   },
   {
+    "id": "vana",
+    "name": "Vana",
+    "summary": "Use the personal data you choose to share",
+    "category": "productivity",
+    "connect": {
+      "type": "address",
+      "label": "Local MCP endpoint",
+      "help": "In Vana Desktop, open Settings > Server and copy the Local MCP endpoint.",
+      "default": "http://127.0.0.1:47321/mcp",
+      "path": "/mcp",
+      "appName": "Vana Desktop",
+      "getUrl": "https://vana.org/use"
+    },
+    "auth": {
+      "kind": "oauth"
+    }
+  },
+  {
+    "id": "home-assistant",
+    "name": "Home Assistant",
+    "summary": "See and control your smart home",
+    "category": "productivity",
+    "connect": {
+      "type": "address",
+      "label": "Home Assistant address",
+      "help": "Add the Model Context Protocol integration in Home Assistant, then check this is the address you open it at.",
+      "default": "http://homeassistant.local:8123",
+      "path": "/api/mcp",
+      "appName": "Home Assistant",
+      "getUrl": "https://www.home-assistant.io/installation/"
+    },
+    "auth": {
+      "kind": "oauth"
+    }
+  },
+  {
     "id": "atlassian",
     "registry": "com.atlassian/atlassian-mcp-server",
     "name": "Jira and Confluence",

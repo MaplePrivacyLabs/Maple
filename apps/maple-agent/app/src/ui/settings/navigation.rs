@@ -112,6 +112,9 @@ impl SettingsScreen {
                 editor.headers.clone(),
             ]);
         }
+        if let Some(prompt) = &self.mcp_address {
+            inputs.push(prompt.input.clone());
+        }
         for input in inputs {
             input.update(cx, |input, cx| {
                 input.set_application_vim_enabled(enabled, cx)
@@ -470,6 +473,9 @@ impl SettingsScreen {
                 &editor.environment,
                 &editor.headers,
             ]);
+        }
+        if let Some(prompt) = &self.mcp_address {
+            inputs.push(&prompt.input);
         }
         inputs
             .into_iter()

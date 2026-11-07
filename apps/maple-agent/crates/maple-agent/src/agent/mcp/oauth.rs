@@ -4,7 +4,7 @@
 //! this host's store, and no Maple service takes part.
 //!
 //! A server is reached over HTTPS, through rmcp's client that refuses private
-//! addresses, or on this computer's loopback, held to that exact listener.
+//! addresses, or over plain HTTP, held to that exact listener.
 
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex, OnceLock, Weak};
@@ -53,9 +53,20 @@ const NOT_APPROVED: &str = "Access was not approved.";
 const NEEDS_REGISTERED_APP: &str =
     "This server only accepts apps registered with it, so Maple cannot sign in to it yet.";
 const CLIENT_REFUSED: &str = "This server did not accept Maple as an app.";
+const UNREACHABLE: &str = "Maple could not reach this address. Check it and try again.";
+const NO_SERVER_HERE: &str = "Maple reached this address, but found no MCP server there.";
+/// How long a plain HTTP server gets to answer. These are usually close by, and
+/// someone waits on this when an app's usual address is tried for them.
+const PLAIN_ANSWER_TIMEOUT: Duration = Duration::from_secs(5);
 pub(super) const SIGN_IN_CANCELLED: &str = "Sign-in was cancelled.";
 /// How Maple names itself when it registers with a server.
 const CLIENT_NAME: &str = "Maple";
+
+/// Whether a sign-in failed because nothing useful is at its address, so a
+/// different address might work.
+pub fn is_address_failure(message: &str) -> bool {
+    matches!(message, UNREACHABLE | NO_SERVER_HERE)
+}
 
 /// The browser launcher is injected by the local host, never by MCP output.
 pub type McpBrowser = Arc<dyn Fn(String) -> Result<(), String> + Send + Sync>;
@@ -73,14 +84,12 @@ pub struct McpSignIn {
     pub scopes: Vec<String>,
 }
 
-/// An address a sign-in may use: HTTPS, or a server on this computer's
-/// loopback, which [`local_endpoint`] holds to one exact shape.
+/// An address a sign-in may use, HTTP or HTTPS. A token sent over plain HTTP
+/// can be read on the way, so [`PlainOAuthHttp`] at least holds the sign-in to
+/// the address the person gave.
 pub(crate) fn sign_in_endpoint(value: &str) -> Result<reqwest::Url, String> {
     let url = reqwest::Url::parse(value.trim()).map_err(|_| endpoint_error())?;
-    if url.scheme() == "http" {
-        return local_endpoint(value);
-    }
-    if url.scheme() != "https"
+    if !matches!(url.scheme(), "http" | "https")
         || url.host_str().is_none()
         || !url.username().is_empty()
         || url.password().is_some()
@@ -91,28 +100,12 @@ pub(crate) fn sign_in_endpoint(value: &str) -> Result<reqwest::Url, String> {
     Ok(url)
 }
 
-fn is_local(endpoint: &reqwest::Url) -> bool {
+fn is_plain_http(endpoint: &reqwest::Url) -> bool {
     endpoint.scheme() == "http"
 }
 
-pub(crate) fn local_endpoint(value: &str) -> Result<reqwest::Url, String> {
-    let url = reqwest::Url::parse(value.trim()).map_err(|_| endpoint_error())?;
-    if url.scheme() != "http"
-        || url.host_str() != Some("127.0.0.1")
-        || url.port().is_none_or(|port| port == 0)
-        || url.path() != "/mcp"
-        || !url.username().is_empty()
-        || url.password().is_some()
-        || url.query().is_some()
-        || url.fragment().is_some()
-    {
-        return Err(endpoint_error());
-    }
-    Ok(url)
-}
-
 fn endpoint_error() -> String {
-    "Sign-in needs an https:// address, or http://127.0.0.1:<port>/mcp for a server on this computer.".into()
+    "Sign-in needs an http:// or https:// address.".into()
 }
 
 fn auth_error(_: impl std::fmt::Debug) -> String {
@@ -124,16 +117,16 @@ fn store_auth_error(_: impl std::fmt::Debug) -> AuthError {
     AuthError::CredentialStoreError(STORAGE_FAILURE.into())
 }
 
-/// Every OAuth operation of a server on this computer is constrained to its
-/// exact listener. In particular metadata cannot redirect credential-bearing
-/// registration/token operations to a public or different loopback endpoint.
+/// Every OAuth operation of a server reached over plain HTTP is constrained to
+/// its exact listener. In particular metadata cannot redirect credential-bearing
+/// registration/token operations to a public or different local endpoint.
 #[derive(Clone)]
-struct LocalOAuthHttp {
+struct PlainOAuthHttp {
     endpoint: reqwest::Url,
     client: reqwest::Client,
 }
 
-fn local_http_builder() -> reqwest::ClientBuilder {
+fn plain_http_builder() -> reqwest::ClientBuilder {
     reqwest::Client::builder()
         .no_proxy()
         .redirect(reqwest::redirect::Policy::none())
@@ -144,8 +137,8 @@ fn local_http_builder() -> reqwest::ClientBuilder {
 /// client. An exchange-wide timeout here would also terminate healthy SSE
 /// streams and long-running tools after the OAuth exchange deadline.
 fn mcp_client(endpoint: &reqwest::Url) -> Result<reqwest::Client, String> {
-    let builder = if is_local(endpoint) {
-        local_http_builder()
+    let builder = if is_plain_http(endpoint) {
+        plain_http_builder()
     } else {
         reqwest::Client::builder()
             .redirect(reqwest::redirect::Policy::none())
@@ -159,13 +152,21 @@ fn mcp_client(endpoint: &reqwest::Url) -> Result<reqwest::Client, String> {
 
 /// The sign-in manager for an endpoint, with the client its network rules need.
 async fn oauth_manager(endpoint: &reqwest::Url) -> Result<AuthorizationManager, String> {
-    if is_local(endpoint) {
-        let http = LocalOAuthHttp::new(endpoint.clone())?;
-        AuthorizationManager::new_with_oauth_http_client(endpoint.as_str(), Arc::new(http)).await
+    if is_plain_http(endpoint) {
+        let http = PlainOAuthHttp::new(endpoint.clone())?;
+        let mut manager =
+            AuthorizationManager::new_with_oauth_http_client(endpoint.as_str(), Arc::new(http))
+                .await
+                .map_err(auth_error)?;
+        // A server that gives paths names no issuer. [`validate_metadata`]
+        // still refuses one that gives neither paths nor an issuer.
+        manager.set_allow_missing_issuer(true);
+        Ok(manager)
     } else {
-        AuthorizationManager::new(endpoint.as_str()).await
+        AuthorizationManager::new(endpoint.as_str())
+            .await
+            .map_err(auth_error)
     }
-    .map_err(auth_error)
 }
 
 async fn capped_body(response: &mut reqwest::Response) -> Result<Vec<u8>, String> {
@@ -179,9 +180,9 @@ async fn capped_body(response: &mut reqwest::Response) -> Result<Vec<u8>, String
     Ok(bytes)
 }
 
-impl LocalOAuthHttp {
+impl PlainOAuthHttp {
     fn new(endpoint: reqwest::Url) -> Result<Self, String> {
-        let client = local_http_builder()
+        let client = plain_http_builder()
             .timeout(HTTP_TIMEOUT)
             .build()
             .map_err(auth_error)?;
@@ -195,14 +196,14 @@ impl LocalOAuthHttp {
             || url.fragment().is_some()
         {
             return Err(AuthError::MetadataError(
-                "A local server's sign-in must use its exact listener.".into(),
+                "A plain HTTP sign-in must use its exact listener.".into(),
             ));
         }
         Ok(())
     }
 }
 
-impl OAuthHttpClient for LocalOAuthHttp {
+impl OAuthHttpClient for PlainOAuthHttp {
     fn execute(&self, operation: OAuthHttpRequest) -> OAuthHttpClientFuture<'_> {
         Box::pin(async move {
             let (parts, body) = operation.request.into_parts();
@@ -223,11 +224,101 @@ impl OAuthHttpClient for LocalOAuthHttp {
     }
 }
 
+/// Fill in sign-in addresses a server gave as paths, and say whether it did.
+/// Home Assistant does this when it is reached by a name it was not told, which
+/// includes the `.local` name most people use. A path can only mean this server,
+/// which then stands as its own issuer.
+fn fill_in_paths(endpoint: &reqwest::Url, metadata: &mut AuthorizationMetadata) -> bool {
+    let is_path = |value: &str| value.starts_with('/') && !value.starts_with("//");
+    if metadata.issuer.is_some()
+        || !is_path(&metadata.authorization_endpoint)
+        || !is_path(&metadata.token_endpoint)
+    {
+        return false;
+    }
+    let (Ok(authorization), Ok(token)) = (
+        endpoint.join(&metadata.authorization_endpoint),
+        endpoint.join(&metadata.token_endpoint),
+    ) else {
+        return false;
+    };
+    metadata.authorization_endpoint = authorization.to_string();
+    metadata.token_endpoint = token.to_string();
+    metadata.issuer = Some(endpoint.origin().ascii_serialization());
+    true
+}
+
+/// Whether a server may be known by no more than a client's address. Such a
+/// server has no registration, and says so with this flag.
+fn accepts_client_address(metadata: &AuthorizationMetadata) -> bool {
+    metadata
+        .additional_fields
+        .get("client_id_metadata_document_supported")
+        .and_then(serde_json::Value::as_bool)
+        .unwrap_or(false)
+}
+
+/// A server's sign-in metadata. rmcp refuses a private address named in
+/// metadata whichever client it is given, so a plain HTTP server that
+/// names itself by its address is read directly, from that address.
+/// [`PlainOAuthHttp`] holds everything after this to the same listener.
+async fn discover_metadata(
+    manager: &AuthorizationManager,
+    endpoint: &reqwest::Url,
+) -> Result<AuthorizationMetadata, String> {
+    let discovered = manager
+        .resolve_metadata()
+        .with_subscriber(tracing::subscriber::NoSubscriber::default())
+        .await;
+    match discovered {
+        Ok(resolution) if resolution.source.is_discovered() => Ok(resolution.metadata),
+        _ if is_plain_http(endpoint) => {
+            let mut url = endpoint.clone();
+            url.set_path("/.well-known/oauth-authorization-server");
+            let mut response = plain_http_builder()
+                .timeout(HTTP_TIMEOUT)
+                .build()
+                .map_err(auth_error)?
+                .get(url)
+                .send()
+                .await
+                .map_err(auth_error)?;
+            if !response.status().is_success() {
+                return Err(AUTH_FAILURE.into());
+            }
+            serde_json::from_slice(&capped_body(&mut response).await?).map_err(auth_error)
+        }
+        _ => Err(AUTH_FAILURE.into()),
+    }
+}
+
+/// Whether an MCP server answers here, before asking the person to sign in.
+/// Sign-in metadata alone does not show that: Home Assistant publishes it
+/// whether or not its MCP integration is added.
+async fn check_server_answers(endpoint: &reqwest::Url) -> Result<(), String> {
+    let response = mcp_client(endpoint)?
+        .post(endpoint.clone())
+        .header(http::header::CONTENT_TYPE, "application/json")
+        .body("{}")
+        .timeout(if is_plain_http(endpoint) {
+            PLAIN_ANSWER_TIMEOUT
+        } else {
+            HTTP_TIMEOUT
+        })
+        .send()
+        .await
+        .map_err(|_| UNREACHABLE.to_string())?;
+    if response.status() == reqwest::StatusCode::NOT_FOUND {
+        return Err(NO_SERVER_HERE.into());
+    }
+    Ok(())
+}
+
 /// Whether sign-in metadata, which the server chooses, may be followed: an
-/// address on HTTPS, or on a local server's own listener. This also keeps the
+/// address on HTTPS, or on a plain HTTP server's own listener. This also keeps the
 /// browser from being sent to any other kind of address.
 fn check_sign_in_url(endpoint: &reqwest::Url, url: &reqwest::Url) -> Result<(), String> {
-    let allowed = if is_local(endpoint) {
+    let allowed = if is_plain_http(endpoint) {
         url.origin() == endpoint.origin()
     } else {
         url.scheme() == "https"
@@ -1076,6 +1167,7 @@ impl AgentRuntimeHandle {
             .map_err(|_| format!("Sign-in to {} is already in progress.", edit.name))?;
         let (_running, cancel) = RunningSignIn::start(self.sign_in_key(&edit.key));
         let attempt = tokio::time::timeout(AUTH_TIMEOUT, async {
+            check_server_answers(&endpoint).await?;
             let listener = TcpListener::bind((std::net::Ipv4Addr::LOCALHOST, 0))
                 .await
                 .map_err(auth_error)?;
@@ -1088,38 +1180,43 @@ impl AgentRuntimeHandle {
             let mut manager = oauth_manager(&endpoint).await?;
             let memory = InMemoryCredentialStore::new();
             manager.set_credential_store(memory.clone());
-            let resolution = manager
-                .resolve_metadata()
-                .with_subscriber(tracing::subscriber::NoSubscriber::default())
-                .await
-                .map_err(auth_error)?;
-            if !resolution.source.is_discovered() {
-                return Err(AUTH_FAILURE.into());
-            }
-            validate_metadata(&endpoint, &resolution.metadata)?;
-            if resolution.metadata.registration_endpoint.is_none() {
+            let mut metadata = discover_metadata(&manager, &endpoint).await?;
+            let filled_in = fill_in_paths(&endpoint, &mut metadata);
+            validate_metadata(&endpoint, &metadata)?;
+            let registers = metadata.registration_endpoint.is_some();
+            if !registers && !accepts_client_address(&metadata) {
                 return Err(NEEDS_REGISTERED_APP.into());
             }
-            confirm_issuer(&resolution.metadata).await?;
-            let metadata = resolution.metadata.clone();
-            manager.set_metadata(resolution.metadata);
+            // Paths came from this server and stay on it, so there is no other
+            // issuer to ask.
+            if !filled_in {
+                confirm_issuer(&metadata).await?;
+            }
+            manager.set_metadata(metadata.clone());
             let scopes = if request.scopes.is_empty() {
                 manager.select_scopes(None, &[])
             } else {
                 request.scopes.clone()
             };
             let scope_names: Vec<&str> = scopes.iter().map(String::as_str).collect();
-            // Registered here rather than by the session, which keeps what the
-            // server issues to itself: a refresh after a restart needs it.
-            let client = manager
-                .register_client(CLIENT_NAME, callback.as_str(), &scope_names)
-                .with_subscriber(tracing::subscriber::NoSubscriber::default())
-                .await
-                .map_err(|_| CLIENT_REFUSED.to_string())?;
+            let (client_id, client_secret) = if registers {
+                // Registered here rather than by the session, which keeps what
+                // the server issues to itself: a refresh after a restart needs it.
+                let client = manager
+                    .register_client(CLIENT_NAME, callback.as_str(), &scope_names)
+                    .with_subscriber(tracing::subscriber::NoSubscriber::default())
+                    .await
+                    .map_err(|_| CLIENT_REFUSED.to_string())?;
+                (client.client_id, client.client_secret)
+            } else {
+                // The callback's own origin names Maple, so the server can check
+                // the way back without fetching anything from this computer.
+                (format!("http://127.0.0.1:{port}/"), None)
+            };
             let mut authorization = AuthorizationRequest::new(callback.as_str())
-                .with_preregistered_client(client.client_id.clone())
+                .with_preregistered_client(client_id)
                 .with_scopes(scopes);
-            if let Some(secret) = &client.client_secret {
+            if let Some(secret) = &client_secret {
                 authorization = authorization.with_client_secret(secret.clone());
             }
             let session = AuthorizationSession::new(manager, authorization)
@@ -1143,7 +1240,6 @@ impl AgentRuntimeHandle {
                 .with_subscriber(tracing::subscriber::NoSubscriber::default())
                 .await
                 .map_err(auth_error)?;
-            let client_secret = client.client_secret;
             let quiet = QuietAuthClient {
                 inner: AuthClient::new(mcp_client(&endpoint)?, session.auth_manager),
                 endpoint: endpoint.clone(),
