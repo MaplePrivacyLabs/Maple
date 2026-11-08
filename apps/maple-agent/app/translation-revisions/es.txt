@@ -1202,7 +1202,7 @@ settings-font-note-geist 3ba714cb9ed44fb7
 settings-font-note-manrope c3a9e50b3e82d9c9
 settings-font-note-serif d7ba27972b9d4546
 settings-font-note-system d957acd68f18cad8
-settings-general-subtitle 21323bcea97a2643
+settings-general-subtitle 108988c7434eb0f9
 settings-group-account b23e782b606d2b23
 settings-group-connections 90bead48136b7c36
 settings-group-workspace 21cecdca1fa874c6
@@ -1219,9 +1219,8 @@ settings-keywords-account 291c31da702e369d
 settings-keywords-appearance 2810172f7551c986
 settings-keywords-billing 2f018149058b669c
 settings-keywords-developer 136446487145060e
-settings-keywords-general f3778d78ab2ea019
+settings-keywords-general 1c5b86883f5b5711
 settings-keywords-integrations 392c764146f2d901
-settings-keywords-prompt 529c150f4b44ddb3
 settings-keywords-remote 7c8f31884b6425d0
 settings-keywords-shortcuts 9fcdf7d586f8ae1a
 settings-keywords-usage 54cbc174f526c678
@@ -1511,7 +1510,6 @@ settings-section-billing 18dcceb0581c7437
 settings-section-developer 6cea264138233c64
 settings-section-general dbe125bf7b1b0e1a
 settings-section-integrations c6934bf244517566
-settings-section-prompt c9fc661d55ad03a4
 settings-section-remote 932b0e0770174e06
 settings-section-shortcuts b3bd3507768f51d7
 settings-section-usage 54debe827b73f10e

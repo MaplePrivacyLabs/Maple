@@ -167,6 +167,11 @@ impl SettingsScreen {
             ]
             .into_iter()
             .map(SettingsTarget::General)
+            .chain([
+                SettingsTarget::PromptEditor,
+                SettingsTarget::PromptSave,
+                SettingsTarget::PromptClear,
+            ])
             .collect(),
             Section::Appearance => [
                 AppearanceTarget::Theme(crate::ui::theme::Preference::System),
@@ -212,11 +217,6 @@ impl SettingsScreen {
                 .filter_map(|&index| self.shortcut_snapshot.rows.get(index))
                 .map(|row| SettingsTarget::Shortcut(row.slot_id.clone()))
                 .collect(),
-            Section::Prompt => vec![
-                SettingsTarget::PromptEditor,
-                SettingsTarget::PromptSave,
-                SettingsTarget::PromptClear,
-            ],
             Section::Integrations => {
                 // Display order: built-ins, connected servers, the add row,
                 // then every catalog app.

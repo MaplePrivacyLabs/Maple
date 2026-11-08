@@ -75,7 +75,6 @@ pub struct AccountDeleted;
 pub enum Section {
     General,
     Appearance,
-    Prompt,
     Shortcuts,
     Integrations,
     Api,
@@ -117,7 +116,6 @@ impl Section {
         match self {
             Self::General => "General",
             Self::Appearance => "Appearance",
-            Self::Prompt => "Additional instructions",
             Self::Shortcuts => "Keyboard Shortcuts",
             Self::Integrations => "Integrations",
             Self::Api => "API",
@@ -133,7 +131,6 @@ impl Section {
         match self {
             Self::General => "settings",
             Self::Appearance => "palette",
-            Self::Prompt => "square-pen",
             Self::Shortcuts => "keyboard",
             Self::Integrations => "plug",
             Self::Api => "terminal",
@@ -147,9 +144,7 @@ impl Section {
 
     fn group(self) -> Option<NavGroup> {
         match self {
-            Self::General | Self::Appearance | Self::Prompt | Self::Shortcuts => {
-                Some(NavGroup::Workspace)
-            }
+            Self::General | Self::Appearance | Self::Shortcuts => Some(NavGroup::Workspace),
             Self::Integrations | Self::Api | Self::Remote => Some(NavGroup::Connections),
             Self::Account | Self::Usage | Self::Billing => Some(NavGroup::Account),
             Self::About => None,
@@ -160,7 +155,6 @@ impl Section {
         super::i18n::tr(match self {
             Self::General => "settings-section-general",
             Self::Appearance => "settings-section-appearance",
-            Self::Prompt => "settings-section-prompt",
             Self::Shortcuts => "settings-section-shortcuts",
             Self::Integrations => "settings-section-integrations",
             #[cfg(feature = "acp")]
@@ -179,9 +173,6 @@ impl Section {
         super::i18n::tr(match self {
             Self::General => "settings-general-subtitle",
             Self::Appearance => "settings-appearance-subtitle",
-            Self::Prompt => {
-                "settings-settings-added-to-every-task-after-maple-s-own-system-prompt-use-it-for-pr"
-            }
             Self::Shortcuts => "settings-shortcuts-subtitle",
             Self::Integrations => {
                 "settings-settings-manage-integrations-here-enable-coding-agents-to-make-them-availa"
@@ -206,7 +197,6 @@ impl Section {
         super::i18n::tr(match self {
             Self::General => "settings-keywords-general",
             Self::Appearance => "settings-keywords-appearance",
-            Self::Prompt => "settings-keywords-prompt",
             Self::Shortcuts => "settings-keywords-shortcuts",
             Self::Integrations => "settings-keywords-integrations",
             Self::Api => "settings-keywords-developer",
@@ -221,7 +211,6 @@ impl Section {
     const ALL: &[Self] = &[
         Self::General,
         Self::Appearance,
-        Self::Prompt,
         Self::Shortcuts,
         Self::Integrations,
         Self::Api,
@@ -2086,9 +2075,6 @@ impl SettingsScreen {
             Section::Shortcuts => {
                 pane = pane.child(self.render_shortcuts_pane(cx));
             }
-            Section::Prompt => {
-                pane = pane.child(self.render_prompt_pane(cx));
-            }
             Section::Integrations => {
                 pane = pane.child(self.render_integrations_pane(cx));
             }
@@ -2687,8 +2673,10 @@ impl SettingsScreen {
         self.application_target(|| SettingsTarget::Shortcut(row.slot_id.clone()), card)
     }
 
-    fn render_prompt_pane(&self, cx: &mut Context<Self>) -> Div {
-        let editor_card = widgets::card_stack([
+    /// The additional-instructions editor, rendered as the last General
+    /// subsection.
+    pub(super) fn render_prompt_editor_card(&self, cx: &mut Context<Self>) -> Div {
+        widgets::card_stack([
             self.application_target(
                 || SettingsTarget::PromptEditor,
                 div()
@@ -2735,16 +2723,7 @@ impl SettingsScreen {
                         ),
                 )
                 .into_any_element(),
-        ]);
-        div()
-            .flex()
-            .flex_col()
-            .gap_4()
-            .child(page_header(
-                &tr("settings-settings-additional-instructions"),
-                &tr("settings-settings-added-to-every-task-after-maple-s-own-system-prompt-use-it-for-pr"),
-            ))
-            .child(editor_card)
+        ])
     }
 
     fn render_integrations_pane(&self, cx: &mut Context<Self>) -> Div {
