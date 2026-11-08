@@ -5530,6 +5530,14 @@ impl ChatScreen {
         if let Some(session) = self.selected_session.clone() {
             let id = item.id.clone();
             if self.apply_timeline_item(&session, item).is_some() {
+                // A failed send's message and status leave the slot under
+                // the transcript as its error arrives: the error opens from
+                // all of that space, so nothing above it jumps.
+                if self.row_motion.slot_on_screen && !self.waiting_slot_shown() {
+                    self.row_motion.slot_on_screen = false;
+                    let space = self.row_motion.slot_height();
+                    self.row_motion.open_from_more(&id, space);
+                }
                 self.local_error_text.insert(id, presentation);
             }
         }
@@ -6966,8 +6974,9 @@ impl ChatScreen {
             }
             AgentRunEvent::Error(item) => {
                 if self.is_selected(session_id) {
-                    self.load_attachment_images_for(&item, cx);
-                    self.apply_timeline_item(session_id, item);
+                    // Like any reply, an error ends the wait: the waiting
+                    // row leaves and the error opens from its space.
+                    self.apply_incoming_item(session_id, item, cx);
                 } else {
                     self.bump_timeline_revision(session_id);
                     return false;
@@ -7254,14 +7263,24 @@ impl Render for ChatScreen {
                 .when_some(self.current_question(), |container, question| {
                     let input = self.pending_question_input.clone();
                     let step = self.question_step;
-                    container.child(render_question_card(
-                        question,
-                        step,
-                        self.question_collapsed,
-                        input,
-                        &self.question_selected,
-                        &self.messages,
-                        cx,
+                    let enter = gpui::ElementId::Name(
+                        format!("question-card-enter-{}", question.request_id).into(),
+                    );
+                    // Like the cards above the composer, a new question
+                    // rises in and leaves at once.
+                    container.child(motion::slide_in(
+                        render_question_card(
+                            question,
+                            step,
+                            self.question_collapsed,
+                            input,
+                            &self.question_selected,
+                            &self.messages,
+                            cx,
+                        ),
+                        enter,
+                        motion::ENTER,
+                        rise,
                     ))
                 })
                 .child(composer::glide(

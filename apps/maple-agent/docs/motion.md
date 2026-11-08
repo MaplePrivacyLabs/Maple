@@ -104,13 +104,18 @@ appear only after 300 ms, so fast loads never flash a spinner.
   when it settles: the sidebar collapse clips its column only while it
   moves, which forces a fresh paint each frame and a full-opacity one at
   rest.
+- Covers and fades never block input. `swap_in`'s cover paints without a
+  hitbox, and a fading transcript or an entering card takes clicks and keys
+  from its first frame. Do not add a hit-blocking cover to hide a change.
 - Menus open from their trigger: the panel's fade and slide are drawn inside
   the deferred draw, because opacity does not reach into `deferred()`.
   A menu the keyboard opens appears at once, and keyboard highlight moves
   inside a menu settle at once; pointer openings and hover ease.
 - Transcript rows sit in a `gpui::list`, whose items lose element state when
   they scroll away. Their entrance is driven by the arrival time kept in view
-  state, so a row animates once and never replays.
+  state, so a row animates once and never replays. A row that replaces the
+  slot under the transcript (the waiting dots, a sent message, a failed
+  send) opens from the slot's height, so nothing above it jumps.
 - Every animated frame re-renders the window. Keep animations short, request
   frames only while something moves, and never animate inside cached views
   without an element id that is stable across frames.

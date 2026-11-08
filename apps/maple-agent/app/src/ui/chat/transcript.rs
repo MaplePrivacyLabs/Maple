@@ -622,6 +622,11 @@ impl RowMotion {
         }
     }
 
+    /// The slot's height on screen last frame.
+    pub(super) fn slot_height(&self) -> Pixels {
+        self.slot_shown.get()
+    }
+
     /// The next row with `id` replaces the send preview on screen.
     pub(super) fn hand_off(&mut self, id: String) {
         self.handed_off = Some((id, self.preview_body.get(), self.slot_shown.get()));
@@ -2956,6 +2961,119 @@ mod motion_tests {
             sent < open,
             "the send opens the slot rather than showing it at full height: {sent:?} then {open:?}"
         );
+    }
+
+    /// The newest history row's top before `land`, and through the entrance
+    /// of the row it adds, once the slot under the transcript is open.
+    fn older_row_through_error(
+        chat: &Entity<ChatScreen>,
+        clock: &Clock,
+        land: impl FnOnce(&mut ChatScreen, &mut Context<ChatScreen>),
+        cx: &mut gpui::VisualTestContext,
+    ) -> (Pixels, Vec<Pixels>) {
+        // The slot appears, then opens over ENTER.
+        redraw(chat, cx);
+        let start = motion::ENTER * 2;
+        clock.at(start);
+        redraw(chat, cx);
+        assert!(
+            chat.read_with(cx, |chat, _| chat.row_motion.slot_shown.get()) > px(0.),
+            "the slot is open before the error"
+        );
+        let before = bounds(cx, "timeline-row-h29").origin.y;
+        chat.update(cx, land);
+        let tops = tops_through_entrance(chat, clock, start, &["timeline-row-h29"], cx).remove(0);
+        (before, tops)
+    }
+
+    #[gpui::test]
+    fn a_run_error_takes_the_waiting_rows_place(cx: &mut TestAppContext) {
+        let clock = Clock::start();
+        let (chat, cx) = pane(cx, 30);
+        // A run is going and nothing has come back yet: the waiting dots show.
+        chat.update(cx, |chat, _| {
+            chat.active_runs.insert("s1".into(), "run-1".into());
+            chat.awaiting_first_token = true;
+        });
+        let (before, tops) = older_row_through_error(
+            &chat,
+            &clock,
+            |chat, cx| {
+                for event in [
+                    maple_agent::agent::AgentRunEvent::Error(item(
+                        "failed",
+                        "error",
+                        Some("The model is unavailable."),
+                    )),
+                    maple_agent::agent::AgentRunEvent::Finished(
+                        maple_agent::agent::AgentRunTerminal::Completed,
+                    ),
+                ] {
+                    chat.handle_service_event(
+                        AgentServiceEvent::Run {
+                            session_id: "s1".into(),
+                            run_id: "run-1".into(),
+                            event,
+                        },
+                        cx,
+                    );
+                }
+            },
+            cx,
+        );
+        assert!(
+            (tops[0] - before).abs() <= px(1.),
+            "older rows hold still as the error replaces the dots: {before:?} then {tops:?}"
+        );
+        assert_glides(&tops, "an older row");
+    }
+
+    #[gpui::test]
+    fn a_failed_send_reports_its_error_in_the_slots_place(cx: &mut TestAppContext) {
+        let clock = Clock::start();
+        let (chat, cx) = pane(cx, 30);
+        chat.update(cx, |chat, _| {
+            let preview = sending::SendPreview::new(Some("s1".into()), "hello", &[])
+                .capture_timeline(&chat.timeline);
+            chat.sending_previews.insert("send-1".into(), preview);
+            chat.awaiting_first_token = true;
+        });
+        let (before, tops) = older_row_through_error(
+            &chat,
+            &clock,
+            |chat, cx| {
+                let backend = chat.backend.clone();
+                chat.finish_send(
+                    "send-1".into(),
+                    UnresolvedSend {
+                        backend,
+                        outcome: None,
+                        session: "s1".into(),
+                        text: "hello".into(),
+                        attachments: vec![],
+                        from_composer: false,
+                    },
+                    Err(UiFailure::Local(
+                        "chat-upload-cancelled-unsent",
+                        "Upload cancelled. No message was sent.",
+                    )),
+                    cx,
+                );
+            },
+            cx,
+        );
+        assert!(
+            chat.read_with(cx, |chat, _| chat
+                .timeline
+                .iter()
+                .any(|row| row.item_type == "error")),
+            "the failure shows as an error row"
+        );
+        assert!(
+            (tops[0] - before).abs() <= px(1.),
+            "older rows hold still as the error replaces the bubble: {before:?} then {tops:?}"
+        );
+        assert_glides(&tops, "an older row");
     }
 
     #[gpui::test]
