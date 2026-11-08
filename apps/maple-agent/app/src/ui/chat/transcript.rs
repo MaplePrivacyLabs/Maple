@@ -389,6 +389,122 @@ impl ChatScreen {
                 "jump-to-latest-reveal",
             ))
     }
+
+    /// The slot under the transcript: the message being sent with its
+    /// status line, or the waiting dots, both `WAITING_ROW_HEIGHT` tall so
+    /// one taking over from the other moves nothing.
+    ///
+    /// It sits outside the list, so its height is taken from the list's
+    /// viewport. When it appears, or its content grows, it opens over
+    /// `ENTER` instead of all at once, and the transcript above glides up.
+    /// Its content stays pinned to its bottom while the top is clipped. It
+    /// shrinks at once: the row taking its place opens from the space it
+    /// leaves.
+    pub(super) fn render_under_transcript(
+        &mut self,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> Option<gpui::AnyElement> {
+        let appeared = !self.row_motion.slot_on_screen;
+        let snap = std::mem::take(&mut self.row_motion.slot_snap);
+        let preview = self.render_send_preview(window, cx);
+        let dots = self.awaiting_first_token && self.is_run_active() && !self.has_send_feedback();
+        let slot = &mut self.row_motion;
+        slot.slot_on_screen = preview.is_some() || dots;
+        if !slot.slot_on_screen {
+            slot.slot_open = None;
+            slot.slot_natural.set(None);
+            slot.slot_shown.set(px(0.));
+            return None;
+        }
+        let now = motion::now();
+        let reduced = cx.reduce_motion();
+        // Measured last frame; `None` on the frame it appears.
+        let natural = slot.slot_natural.get().map(f32::from);
+        if reduced {
+            slot.slot_open = None;
+        } else if appeared {
+            // A send opens it; a task switch or history load shows it at
+            // once.
+            slot.slot_open = (!snap).then(|| motion::Tween::new(0.));
+            slot.slot_since = Some(now);
+        }
+        let cap = match (&mut slot.slot_open, natural) {
+            (None, None) => None,
+            (None, Some(natural)) => {
+                if !reduced {
+                    slot.slot_open = Some(motion::Tween::new(natural));
+                }
+                None
+            }
+            // Closed on its first frame while its content is measured.
+            (Some(open), None) => {
+                window.request_animation_frame();
+                Some(px(open.value(now)))
+            }
+            (Some(open), Some(natural)) => {
+                // Shrinking follows the content at once; growing opens.
+                // The first opening runs from when the slot appeared, not
+                // from the frame its content was first measured.
+                if natural < open.value(now) {
+                    *open = motion::Tween::new(natural);
+                }
+                let start = match slot.slot_since.take() {
+                    Some(since) if open.target() == 0. => since,
+                    _ => now,
+                };
+                open.set(
+                    natural,
+                    motion::ENTER,
+                    motion::ease_out_cubic,
+                    start,
+                    reduced,
+                );
+                if open.is_moving(now) {
+                    window.request_animation_frame();
+                }
+                Some(px(open.value(now)))
+            }
+        };
+        let natural_height = slot.slot_natural.clone();
+        let shown_height = slot.slot_shown.clone();
+        let content = div()
+            .flex_none()
+            .w_full()
+            .flex()
+            .flex_col()
+            .children(preview)
+            .when(dots, |content| {
+                // Same gutter as transcript text so the dots line up.
+                content.child(
+                    div()
+                        .w_full()
+                        .max_w(CONTENT_WIDTH)
+                        .mx_auto()
+                        .px_6()
+                        .child(render_waiting_indicator()),
+                )
+            });
+        Some(
+            div()
+                .flex_none()
+                .w_full()
+                .flex()
+                .flex_col()
+                .justify_end()
+                .overflow_hidden()
+                .when_some(cap, |slot, cap| slot.max_h(cap))
+                .child(content)
+                .on_children_prepainted(move |bounds, _, _| {
+                    if let Some(content) = bounds.first() {
+                        let height = content.size.height;
+                        natural_height.set(Some(height));
+                        shown_height.set(cap.map_or(height, |cap| height.min(cap)));
+                    }
+                })
+                .into_any_element(),
+        )
+    }
 }
 
 /// Height of the row under the transcript that shows the waiting dots or,
@@ -416,9 +532,10 @@ pub(super) struct RowMotion {
     disclosed: HashMap<String, Instant>,
     /// When another task's transcript landed.
     switched: Option<Instant>,
-    /// The user row that takes over from the send preview on screen, and
-    /// where the preview's bubble was.
-    handed_off: Option<(String, Option<Bounds<Pixels>>)>,
+    /// The user row that takes over from the send preview on screen,
+    /// where the preview's bubble was, and how tall the slot under the
+    /// transcript was then.
+    handed_off: Option<(String, Option<Bounds<Pixels>>, Pixels)>,
     /// Where the send preview's bubble painted last frame, if it showed.
     pub(super) preview_body: Rc<Cell<Option<Bounds<Pixels>>>>,
     /// Rows apply without an entrance (events replayed on reconnect).
@@ -426,6 +543,17 @@ pub(super) struct RowMotion {
     /// The slot under the transcript (waiting dots or the sent message's
     /// status) showed last frame.
     pub(super) slot_on_screen: bool,
+    /// The slot's height cap while it opens and after, so it grows rather
+    /// than appearing at full height; `None` draws it at its natural height.
+    slot_open: Option<motion::Tween>,
+    /// The slot's natural height and the height it drew, last frame.
+    slot_natural: Rc<Cell<Option<Pixels>>>,
+    slot_shown: Rc<Cell<Pixels>>,
+    /// The next slot to appear shows at once: it came with a task switch
+    /// or a history load, not a send.
+    slot_snap: bool,
+    /// When the slot last appeared, for its first opening.
+    slot_since: Option<Instant>,
 }
 
 #[derive(Clone, Copy)]
@@ -463,13 +591,14 @@ impl RowMotion {
         }
         let grow = match handed_off {
             // The preview's bubble becomes this row: it opens from the
-            // space the bubble left and glides from where it was.
-            Some((handed, body)) if handed == id => {
+            // space the bubble left (all of the slot but the status line
+            // that stays) and glides from where the bubble was.
+            Some((handed, body, slot)) if handed == id => {
                 let Some(body) = body.filter(|_| at_tail) else {
                     return;
                 };
                 Some(Grow {
-                    from: body.size.height + PREVIEW_GAP,
+                    from: (slot - WAITING_ROW_HEIGHT).max(px(0.)),
                     glide_from: Some(body.origin.y),
                 })
             }
@@ -495,7 +624,7 @@ impl RowMotion {
 
     /// The next row with `id` replaces the send preview on screen.
     pub(super) fn hand_off(&mut self, id: String) {
-        self.handed_off = Some((id, self.preview_body.get()));
+        self.handed_off = Some((id, self.preview_body.get(), self.slot_shown.get()));
     }
 
     /// Apply rows without an entrance until called again with `false`.
@@ -537,6 +666,7 @@ impl RowMotion {
         self.heights.borrow_mut().clear();
         self.disclosed.clear();
         self.handed_off = None;
+        self.slot_snap = true;
     }
 
     /// The row's entrance, or `None` for a row that did not arrive live or
@@ -2532,7 +2662,7 @@ mod motion_tests {
                     .flex()
                     .flex_col()
                     .child(transcript)
-                    .children(under.into_iter().flatten())
+                    .children(under)
             });
             div().w(px(1200.)).h(px(800.)).flex().flex_col().child(pane)
         }
@@ -2745,6 +2875,40 @@ mod motion_tests {
             "the status line has no offset of its own or its parent's"
         );
         assert_eq!(status.size.height, WAITING_ROW_HEIGHT);
+    }
+
+    #[gpui::test]
+    fn sending_opens_the_slot_so_older_rows_glide_up(cx: &mut TestAppContext) {
+        let clock = Clock::start();
+        let (chat, cx) = pane(cx, 30);
+        let before = bounds(cx, "timeline-row-h29");
+        chat.update(cx, |chat, _| {
+            let preview = sending::SendPreview::new(Some("s1".into()), "hello", &[])
+                .capture_timeline(&chat.timeline);
+            chat.sending_previews.insert("send-1".into(), preview);
+        });
+        let tops = tops_through_entrance(&chat, &clock, Duration::ZERO, &["timeline-row-h29"], cx)
+            .remove(0);
+        assert!(
+            (tops[0] - before.origin.y).abs() <= px(1.),
+            "older rows hold still on the send frame: {before:?} then {tops:?}"
+        );
+        assert!(tops[tops.len() - 1] < before.origin.y, "the slot made room");
+        assert!(
+            tops.windows(2).all(|pair| pair[1] <= pair[0]),
+            "older rows only rise: {tops:?}"
+        );
+        assert_glides(&tops, "an older row");
+        let older = bounds(cx, "timeline-row-h29");
+        let bubble = bounds(cx, "pending-send-body");
+        let status = bounds(cx, "pending-send-status");
+
+        // The settled layout is the one without motion.
+        cx.update(|_, cx| cx.set_reduce_motion(true));
+        redraw(&chat, cx);
+        assert_eq!(bounds(cx, "timeline-row-h29"), older);
+        assert_eq!(bounds(cx, "pending-send-body"), bubble);
+        assert_eq!(bounds(cx, "pending-send-status"), status);
     }
 
     #[gpui::test]

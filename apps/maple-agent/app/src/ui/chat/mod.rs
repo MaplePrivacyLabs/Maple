@@ -6202,32 +6202,6 @@ impl ChatScreen {
         self.has_send_feedback() || (self.awaiting_first_token && self.is_run_active())
     }
 
-    /// The slot under the transcript: the message being sent with its
-    /// status line, or the waiting dots, both `WAITING_ROW_HEIGHT` tall so
-    /// one taking over from the other moves nothing.
-    pub(super) fn render_under_transcript(
-        &mut self,
-        window: &mut Window,
-        cx: &mut Context<Self>,
-    ) -> [Option<gpui::AnyElement>; 2] {
-        let preview = self.render_send_preview(window, cx);
-        let dots = self.awaiting_first_token && self.is_run_active() && !self.has_send_feedback();
-        self.row_motion.slot_on_screen = preview.is_some() || dots;
-        [
-            preview.map(IntoElement::into_any_element),
-            // Same gutter as transcript text so the dots line up.
-            dots.then(|| {
-                div()
-                    .w_full()
-                    .max_w(CONTENT_WIDTH)
-                    .mx_auto()
-                    .px_6()
-                    .child(render_waiting_indicator())
-                    .into_any_element()
-            }),
-        ]
-    }
-
     /// One timeline item arrived for the selected session.
     fn apply_incoming_item(
         &mut self,
@@ -7270,11 +7244,7 @@ impl Render for ChatScreen {
                 // takes scrolls the transcript.
                 .on_scroll_wheel(cx.listener(Self::scroll_transcript_from_pane))
                 .child(self.render_transcript(window, cx))
-                .children(
-                    self.render_under_transcript(window, cx)
-                        .into_iter()
-                        .flatten(),
-                )
+                .children(self.render_under_transcript(window, cx))
                 .when_some(self.current_question(), |container, question| {
                     let input = self.pending_question_input.clone();
                     let step = self.question_step;
