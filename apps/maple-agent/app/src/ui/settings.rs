@@ -296,6 +296,10 @@ pub struct SettingsScreen {
     /// Account MCP servers; None until loaded.
     mcp_servers: Option<Vec<McpDefinition>>,
     mcp_editor: Option<McpEditor>,
+    /// Pages left through an in-app link (See all apps, Manage plan). Back
+    /// unwinds these before it closes Settings; choosing a sidebar item
+    /// clears them.
+    section_history: Vec<Section>,
     mcp_address: Option<catalog::McpAddressPrompt>,
     /// The app being tried at its usual address, before asking for another.
     mcp_usual_address: Option<&'static maple_agent::agent::McpCatalogEntry>,
@@ -666,6 +670,7 @@ impl SettingsScreen {
             plan: None,
             mcp_servers: None,
             mcp_editor: None,
+            section_history: Vec::new(),
             mcp_address: None,
             mcp_usual_address: None,
             mcp_notice: None,
@@ -1733,6 +1738,7 @@ impl SettingsScreen {
     }
 
     fn select_section(&mut self, section: Section, cx: &mut Context<Self>) {
+        self.section_history.clear();
         if self.password_operation_busy(cx) {
             return;
         }
@@ -1785,6 +1791,29 @@ impl SettingsScreen {
         }
         self.stop_shortcut_recording();
         cx.emit(SettingsClosed(self.settings.clone()));
+    }
+
+    /// Back: return to the page an in-app link was followed from, or close
+    /// Settings when there is none.
+    pub(super) fn go_back(&mut self, cx: &mut Context<Self>) {
+        match self.section_history.pop() {
+            Some(section) => {
+                let history = std::mem::take(&mut self.section_history);
+                self.select_section(section, cx);
+                self.section_history = history;
+            }
+            None => self.close(cx),
+        }
+    }
+
+    /// Follow an in-app link to another page, so Back can return here.
+    pub(super) fn navigate_to(&mut self, section: Section, cx: &mut Context<Self>) {
+        if self.section == section {
+            return;
+        }
+        let from = self.section;
+        self.select_section(section, cx);
+        self.section_history.push(from);
     }
 }
 
@@ -1894,7 +1923,7 @@ impl Render for SettingsScreen {
                                 cx.stop_propagation();
                             })
                             .on_click(cx.listener(|this, _event, _window, cx| {
-                                this.close(cx);
+                                this.go_back(cx);
                             }))
                             .child(super::i18n::tr("settings-back")),
                     )
@@ -3057,12 +3086,16 @@ impl SettingsScreen {
                             .child(
                                 div()
                                     .id("cua-project-link")
+                                    .flex()
+                                    .items_center()
+                                    .gap_0p5()
                                     .text_color(gpui::rgb(theme::link()))
                                     .hover(|style| style.underline().cursor_pointer())
                                     .on_click(|_, _, _| {
                                         crate::ui::rich_text::open_link(CUA_PROJECT_URL)
                                     })
-                                    .child(tr("settings-settings-cua-team")),
+                                    .child(tr("settings-settings-cua-team"))
+                                    .child(widgets::external_mark(theme::link())),
                             )
                             .child("."),
                     ),
@@ -3381,6 +3414,7 @@ impl SettingsScreen {
                                         this.sign_in_mcp_editor(cx);
                                     }))
                                     .child(tr("settings-catalog-browser-sign-in"))
+                                    .child(widgets::external_mark(theme::text_secondary()))
                             })
                         },
                     )

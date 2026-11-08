@@ -812,7 +812,7 @@ fn stepped_index(current: Option<usize>, len: usize, direction: isize, count: us
 
 #[cfg(test)]
 mod tests {
-    use super::super::option_id;
+    use super::super::{SettingsClosed, option_id};
     use super::*;
     use gpui::{AppContext, Context, Entity, IntoElement, Render, TestAppContext, Window, div, px};
 
@@ -1623,6 +1623,49 @@ mod tests {
                 this.select_application_edge(false, window, cx);
             });
         });
+    }
+
+    /// Back unwinds in-app links (See all apps, Manage plan) before it closes
+    /// Settings; a sidebar choice resets that.
+    #[gpui::test]
+    fn back_returns_to_the_page_an_in_app_link_left(cx: &mut TestAppContext) {
+        let (settings, cx) = dropdown_window(cx, false);
+        let closed = std::rc::Rc::new(std::cell::Cell::new(0));
+        let seen = closed.clone();
+        cx.update(|_, app| {
+            app.subscribe(&settings, move |_, _: &SettingsClosed, _| {
+                seen.set(seen.get() + 1)
+            })
+            .detach();
+        });
+        settings.update(cx, |this, cx| {
+            this.select_section(Section::Integrations, cx);
+            this.open_apps_directory(cx);
+            assert_eq!(this.section, Section::Apps);
+            this.go_back(cx);
+            assert_eq!(
+                this.section,
+                Section::Integrations,
+                "Back returns to Integrations"
+            );
+            assert_eq!(closed.get(), 0, "Settings stays open");
+
+            this.navigate_to(Section::Billing, cx);
+            this.navigate_to(Section::Billing, cx);
+            assert_eq!(
+                this.section_history,
+                vec![Section::Integrations],
+                "no duplicate entry"
+            );
+            this.select_section(Section::General, cx);
+            assert!(
+                this.section_history.is_empty(),
+                "a sidebar choice resets history"
+            );
+            this.go_back(cx);
+        });
+        cx.run_until_parked();
+        assert_eq!(closed.get(), 1, "with nothing to unwind, Back closes");
     }
 
     /// Coming back from a portal or checkout tab refetches billing while the

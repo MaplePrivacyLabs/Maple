@@ -190,7 +190,7 @@ impl SettingsScreen {
         match target {
             BillingTarget::ManageSubscription => self.open_billing_portal(cx),
             BillingTarget::ViewPlans => self.open_pricing_page(cx),
-            BillingTarget::ManagePlan => self.select_section(Section::Billing, cx),
+            BillingTarget::ManagePlan => self.navigate_to(Section::Billing, cx),
             BillingTarget::Product(id) => self.choose_product(&id, cx),
             BillingTarget::Credits(target) => self.activate_credits_target(target, window, cx),
         }
@@ -247,9 +247,10 @@ impl SettingsScreen {
                             .flex_none()
                             .py_1p5()
                             .on_click(cx.listener(|this, _event, _window, cx| {
-                                this.select_section(Section::Billing, cx);
+                                this.navigate_to(Section::Billing, cx);
                             }))
-                            .child(tr("settings-usage-manage-plan")),
+                            .child(tr("settings-usage-manage-plan"))
+                            .child(widgets::navigate_mark(theme::text_primary())),
                     ),
             ),
         ];
@@ -457,7 +458,8 @@ impl SettingsScreen {
                                 this.open_billing_portal(cx);
                             }))
                         })
-                        .child(tr("settings-billing-change-plan")),
+                        .child(tr("settings-billing-change-plan"))
+                        .child(widgets::external_mark(theme::text_primary())),
                 ),
             ),
             Some(PlanAction::Web) => Some(
@@ -469,7 +471,8 @@ impl SettingsScreen {
                         .on_click(cx.listener(|this, _event, _window, cx| {
                             this.open_pricing_page(cx);
                         }))
-                        .child(tr("settings-billing-view-plans")),
+                        .child(tr("settings-billing-view-plans"))
+                        .child(widgets::external_mark(theme::text_primary())),
                 ),
             ),
             None => None,
@@ -559,7 +562,8 @@ impl SettingsScreen {
                 this.choose_product(&id, cx);
             }))
         })
-        .child(label);
+        .child(label)
+        .child(widgets::external_mark(theme::text_primary()));
         let row = div()
             .flex()
             .items_center()

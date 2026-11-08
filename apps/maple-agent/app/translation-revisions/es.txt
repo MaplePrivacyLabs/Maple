@@ -1053,8 +1053,7 @@ settings-api-credits-anonymous-accounts-pay-with-bitcoin 2736f360c19e0c62
 settings-api-credits-api-credits f27d1733d7f579dd
 settings-api-credits-balance-unavailable 6c50c79d56864b59
 settings-api-credits-buy-credits 1c392a209120cc35
-settings-api-credits-checkout-opens-in-your-browser 426d8154aa3ae192
-settings-api-credits-checkout-opens-in-your-browser-anonymous-accounts-pay-with-bitcoi 5d9158a463ae31f7
+settings-api-credits-checkout-opens-in-your-browser-anonymous-accounts-pay-with-bitcoi 377793113ef329b0
 settings-api-credits-custom-amount fc01683f9f42228f
 settings-api-credits-enter-an-amount 0d0a7930f78168fc
 settings-api-credits-extra-credit-balance c52f3552172fbb60

@@ -91,6 +91,19 @@ fn pill(id: impl Into<ElementId>) -> Stateful<Div> {
         .focus_visible(focus_ring)
 }
 
+/// The mark that says a control leaves the app for the browser. Goes after
+/// the label inside any button or link that opens a URL, in that control's
+/// text color.
+pub fn external_mark(color: u32) -> gpui::Svg {
+    icon("external-link", px(12.), color)
+}
+
+/// The mark for a control that navigates within the app (to another page or
+/// section), as opposed to [`external_mark`].
+pub fn navigate_mark(color: u32) -> gpui::Svg {
+    icon("chevron-right", px(12.), color)
+}
+
 /// Accessible default/primary action button: high-contrast neutral inverted pill.
 pub fn default_button(id: impl Into<ElementId>) -> Stateful<Div> {
     pill(id)

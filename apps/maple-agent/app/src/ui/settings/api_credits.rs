@@ -474,6 +474,10 @@ impl SettingsScreen {
                     }))
                 })
                 .child(label)
+                .child(widgets::external_mark(match method {
+                    PaymentMethod::Stripe => theme::text_on_default_button(),
+                    PaymentMethod::Zaprite => theme::text_primary(),
+                }))
         };
         // Guests see card checkout disabled, as on the web.
         let card = pay_button(PaymentMethod::Stripe, ready && !guest).when(guest, |el| {
@@ -503,16 +507,18 @@ impl SettingsScreen {
                     .text_color(gpui::rgb(theme::text_secondary()))
                     .child(notice.clone()),
             ),
-            None => purchase.child(
-                div()
-                    .text_xs()
-                    .text_color(gpui::rgb(theme::text_muted()))
-                    .child(if guest {
-                        tr("settings-api-credits-checkout-opens-in-your-browser-anonymous-accounts-pay-with-bitcoi")
-                    } else {
-                        tr("settings-api-credits-checkout-opens-in-your-browser")
-                    }),
-            ),
+            // The buttons carry the external-link mark; only guests need a
+            // word about why card checkout is off.
+            None => purchase.when(guest, |purchase| {
+                purchase.child(
+                    div()
+                        .text_xs()
+                        .text_color(gpui::rgb(theme::text_muted()))
+                        .child(tr(
+                            "settings-api-credits-checkout-opens-in-your-browser-anonymous-accounts-pay-with-bitcoi",
+                        )),
+                )
+            }),
         };
         section.child(purchase)
     }

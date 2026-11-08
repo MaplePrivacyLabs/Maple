@@ -578,6 +578,7 @@ impl SettingsScreen {
                     "settings-catalog-get-app",
                     [("name", missing.name.clone().into())],
                 ))
+                .child(widgets::external_mark(theme::text_primary()))
         } else if waiting {
             widgets::ghost_button(button_id)
                 .on_click(cx.listener(|this, _event, _window, cx| this.cancel_mcp_sign_in(cx)))
@@ -690,7 +691,7 @@ impl SettingsScreen {
             .update(cx, |input, cx| input.set_text("", cx));
         self.catalog_query.clear();
         self.refresh_catalog();
-        self.select_section(Section::Apps, cx);
+        self.navigate_to(Section::Apps, cx);
     }
 
     /// "Popular apps": a short strip of well-known apps above the built-ins,
@@ -719,7 +720,8 @@ impl SettingsScreen {
                         .child(self.messages.get(
                             "settings-catalog-see-all",
                             [("count", total.to_string().into())],
-                        )),
+                        ))
+                        .child(widgets::navigate_mark(theme::text_secondary())),
                 ),
             );
         let tiles = div().flex().flex_wrap().gap_2().children(

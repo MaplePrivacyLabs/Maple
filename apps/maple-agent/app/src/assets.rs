@@ -60,6 +60,7 @@ assets!(
     "icons/cua-mark-white.svg",
     "icons/download.svg",
     "icons/ellipsis.svg",
+    "icons/external-link.svg",
     "icons/folder-open.svg",
     "icons/folder-plus.svg",
     "icons/folder.svg",
