@@ -3953,6 +3953,92 @@ mod state_tests {
         });
     }
 
+    /// A paired computer released before remote mode changes refuses them.
+    /// Changing an open task's chip puts it back. A new task opens in the
+    /// mode that computer gave it, with the text kept and nothing sent, so
+    /// it never runs in a mode the user did not see. Both say why in the
+    /// interface's language.
+    #[gpui::test]
+    fn test_an_older_paired_computer_refuses_a_mode_change_in_the_interface_language(
+        cx: &mut TestAppContext,
+    ) {
+        use maple_agent::agent::AgentPermissionMode;
+        let _locale = crate::ui::i18n::TestLocalizationGuard::enable();
+        let root = absolute_fixture_root("work");
+        let (chat, cx) = chat_window(cx, |this, _| {
+            this.project_root = Some(root.clone());
+        });
+        let refusal = || {
+            crate::ui::task::Failure::Host(crate::backend::HostFailure::new(
+                "remote-permissions-unsupported",
+                "Update Maple on the remote computer to change permissions from here.",
+            ))
+        };
+        let reads = |notice: Option<&UiText>| {
+            [
+                (
+                    "en",
+                    "Could not change the mode: Update Maple on the remote computer first.",
+                ),
+                (
+                    "es",
+                    "No se pudo cambiar el modo: Primero actualiza Maple en la computadora remota.",
+                ),
+            ]
+            .into_iter()
+            .all(|(locale, text)| {
+                crate::ui::i18n::apply_preference(Some(locale));
+                notice.map(UiText::resolve).as_deref() == Some(text)
+            })
+        };
+        chat.update(cx, |this, cx| {
+            this.selected_session = Some("s1".into());
+            this.permission_mode = AgentPermissionMode::Auto;
+            this.finish_permission_mode_change(
+                "s1",
+                AgentPermissionMode::ReadOnly,
+                Err(refusal()),
+                cx,
+            );
+            assert_eq!(
+                this.permission_mode,
+                AgentPermissionMode::ReadOnly,
+                "the chip goes back"
+            );
+            assert!(reads(this.notice.as_ref()));
+            crate::ui::i18n::apply_preference(Some("en"));
+
+            this.notice = None;
+            this.selected_session = None;
+            this.new_session(cx);
+            this.permission_mode = AgentPermissionMode::ReadOnly;
+            this.session_setup_pending = true;
+            this.pending_first_send = Some(FirstSend::Message {
+                text: "hello".to_string(),
+                steer: false,
+            });
+            let generation = this.selection_generation;
+            let mut created = summary_at("created", "New Task", &root);
+            created.permission_mode = AgentPermissionMode::FullAccess;
+            let failure = refusal().with_context(
+                "chat-mode-change-error",
+                vec![],
+                Some("Could not change the mode: update the remote computer".into()),
+            );
+            this.fail_new_session_setup(created, failure.into(), generation, cx);
+            assert!(!this.awaiting_first_token, "nothing was sent");
+            assert_eq!(this.selected_session.as_deref(), Some("created"));
+            assert_eq!(
+                this.permission_mode,
+                AgentPermissionMode::FullAccess,
+                "the chip shows the mode the computer gave the task"
+            );
+            assert_eq!(this.composer.clone().unwrap().read(cx).text(), "hello");
+            assert!(reads(this.notice.as_ref()));
+            crate::ui::i18n::apply_preference(Some("en"));
+        });
+    }
+
     /// The text typed into the draft stays in the composer until the send
     /// goes out. While the create is in flight the composer shows it as
     /// waiting, the Send button and Enter keep the text; a failed create

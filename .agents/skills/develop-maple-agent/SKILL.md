@@ -93,6 +93,13 @@ contained host. The `claude_native_*` tests re-execute the
 Rust test binary as a CLI fixture and need no Claude account or inference
 request. Keep fixture launch and environment setup shared with the Codex tests.
 
+## Remote parity
+
+Chat and agent features are remote-first. Before calling task work done, follow
+[adding task features](../../../apps/maple-agent/docs/remote-access.md#adding-task-features):
+the remote method, its capability, a translated refusal for older hosts, and
+tests of both sides.
+
 ## Security and publication
 
 Apply `$review-maple-security`'s trust-boundary and evidence methodology to the

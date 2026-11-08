@@ -781,7 +781,17 @@ impl AgentRuntimeHandle {
             .store()?
             .update(&session_id, |row| row.web_enabled = request.enabled)?
             .ok_or_else(|| format!("Failed to load Agent task: {session_id} was not found"))?;
-        Ok(row.summary())
+        // Every window showing the task follows, here and on paired computers.
+        let summary = row.summary();
+        emit_agent_event(
+            &self.service.host.events,
+            AgentServiceEvent::SessionUpdated {
+                session_id,
+                run_id: None,
+                session: summary.clone(),
+            },
+        );
+        Ok(summary)
     }
 
     /// Set what a task may do without asking, from its next tool call.
@@ -799,7 +809,17 @@ impl AgentRuntimeHandle {
         if let Some(runtime) = self.current_runtime().await? {
             runtime.set_permission_mode(&session_id, request.mode).await;
         }
-        Ok(row.summary())
+        // Every window showing the task follows, here and on paired computers.
+        let summary = row.summary();
+        emit_agent_event(
+            &self.service.host.events,
+            AgentServiceEvent::SessionUpdated {
+                session_id,
+                run_id: None,
+                session: summary.clone(),
+            },
+        );
+        Ok(summary)
     }
 
     /// Delete a task, its history and its attachments. Refused while it runs.

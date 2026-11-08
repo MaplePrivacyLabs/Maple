@@ -3840,6 +3840,59 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn a_remote_mode_command_decodes_into_the_task_setter() {
+        let root = tempfile::tempdir().unwrap();
+        let backend = LocalBackend::isolated_for_test(root.path());
+        assert!(backend.persisted_auth.claim_and_persist(&auth_snapshot(
+            "fixture-user",
+            "fixture-session",
+            1,
+            "fixture-token"
+        )));
+        const TASK: &str = "0195f3a0-0000-7000-8000-000000000001";
+        // The command a paired viewer sends, as it travels on the wire.
+        let command: crate::remote::wire::Command = serde_json::from_value(serde_json::json!({
+            "id": 1,
+            "method": "set_session_permission_mode",
+            "send_id": null,
+            "params": ["fixture-user", TASK, "readOnly"]
+        }))
+        .unwrap();
+        assert_eq!(
+            command.method,
+            crate::remote::wire::Method::SetSessionPermissionMode
+        );
+        let dispatch = |params| {
+            super::super::dispatch_remote_inner(
+                &backend,
+                crate::host::protocol::Request {
+                    id: command.id,
+                    method: command.method.name(),
+                    params,
+                    send_id: None,
+                },
+            )
+        };
+        // Every mode decodes and reaches the task setter, which has no
+        // such task here; an unknown mode never reaches it.
+        for mode in ["readOnly", "auto", "fullAccess"] {
+            assert_eq!(
+                dispatch(serde_json::json!(["fixture-user", TASK, mode]))
+                    .await
+                    .unwrap_err(),
+                format!("Failed to load Agent task: {TASK} was not found"),
+                "{mode}"
+            );
+        }
+        assert_eq!(
+            dispatch(serde_json::json!(["fixture-user", TASK, "anything"]))
+                .await
+                .unwrap_err(),
+            "Invalid host request parameters"
+        );
+    }
+
+    #[tokio::test]
     async fn project_mcp_operations_use_the_host_account_and_shared_settings_lock() {
         let root = tempfile::tempdir().unwrap();
         let project = tempfile::tempdir().unwrap();

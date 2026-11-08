@@ -23,6 +23,13 @@ original SDK prepared handle only once. Publish through the existing backend
 account authority; never log callback queries or grants. Update profile metadata
 and release verification together when changing the compiled Auth destination.
 
+## Remote computers
+
+Chat and agent features are remote-first: a paired computer can do with a task
+what this one can, in the same change. Desktop preferences, browser and
+credential flows, and host administration stay local. Before adding or changing
+a task operation, follow [adding task features](docs/remote-access.md#adding-task-features).
+
 ## Build, test, run
 
 `just` lists the recipes. `just ci` runs the checks of CI's Agent lanes

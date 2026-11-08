@@ -640,7 +640,7 @@ pub async fn bridge(
     connection: crate::host::ipc::Connection,
     mut link: Link,
 ) -> Result<bool, String> {
-    let folder_grant = link
+    let connected_grant = link
         .node
         .store
         .read()
@@ -745,11 +745,11 @@ pub async fn bridge(
                         let _slot = slot;
                         let id = request.id;
                         let send_id = request.send_id.clone();
-                        let authorize_folders = async {
+                        let authorize = async {
                             node.ensure_valid().await?;
                             if !node.store.read().map_err(|_| "Remote grant unavailable")?.peers()
                                 .get(&peer.to_string())
-                                .is_some_and(|current| current.can_connect && current.grant == folder_grant) {
+                                .is_some_and(|current| current.can_connect && current.grant == connected_grant) {
                                 return Err("Remote access changed. Reopen this computer.".into());
                             }
                             Ok(())
@@ -761,7 +761,7 @@ pub async fn bridge(
                                 if user != node.account { return Err("Remote request account mismatch".into()); }
                                 node.backend.authorize_account(&user)?;
                                 let prepared = crate::backend::attachments::prepare_presented(&import).await?;
-                                authorize_folders.await?;
+                                authorize.await?;
                                 Ok::<_, crate::backend::HostFailure>(client.upload(id, user, import, prepared).await?)
                             }.await;
                             return match result {
@@ -769,7 +769,7 @@ pub async fn bridge(
                                 Err(error) => Message::Response { id, result: Err(error.message.clone()), failure: Some(error) },
                             };
                         }
-                        match client.call(wire::Command { id, method, send_id: request.send_id, params: request.params }, authorize_folders).await {
+                        match client.call(wire::Command { id, method, send_id: request.send_id, params: request.params }, authorize).await {
                             Ok(frame) => streams::decode_result(method, frame),
                             Err(error) => Message::Response { failure: None, id, result: Err(match send_id {
                                 Some(id) => format!("Send outcome unknown ({id}). {error}. Checking the host receipt is safe; resending is not."),
