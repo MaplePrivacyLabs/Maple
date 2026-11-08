@@ -235,6 +235,13 @@ Project-change events carry only changed metadata; snapshots and project pages
 provide authoritative names, revisions, and default-workspace flags.
 Version 6 and earlier peers receive an explicit version refusal. Bounded frames
 and an explicit task-operation allowlist apply.
+
+Task features are remote-first: what a user can do with a task on this computer,
+including its settings, questions and approvals, should work the same from a
+paired computer. Desktop-only settings such as the account, appearance and
+language stay local. Because the allowlist is explicit, each new task operation
+is added to it in the same change, behind a capability when older hosts cannot
+serve it.
 The viewing desktop applies sidebar grouping and manual ordering to summaries
 received through the existing navigation and project APIs. These preferences
 stay on that desktop; no ordering parameters, commands, or capabilities are
@@ -287,6 +294,13 @@ offers and installation readiness are always read afresh.
 Input-only tool summaries require `tool_summary_start_v1`; without it, the
 controller summarizes that call from its output once it finishes, as earlier
 versions did, and the next call checks support again.
+Changing a task's [permission mode](permissions.md) requires
+`permission_modes_v1`. Agent 0.0.19 has the modes but not this capability, and
+earlier hosts have no modes, so a controller refuses the change itself and asks
+for the remote computer to be updated; their tasks keep the mode they have.
+Answering a permission request needs no capability, since it is an ordinary
+question. A controller rechecks account and grant authority after this
+discovery, as it does for folders.
 
 Four pre-admission handshakes and eight paired control connections have capacity
 separate from local IPC. Each control connection bounds ordinary calls and keeps

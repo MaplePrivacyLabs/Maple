@@ -23,6 +23,26 @@ original SDK prepared handle only once. Publish through the existing backend
 account authority; never log callback queries or grants. Update profile metadata
 and release verification together when changing the compiled Auth destination.
 
+## Remote computers
+
+A paired desktop drives tasks that run on another computer
+([remote access](docs/remote-access.md), `app/src/remote/`). Chat and agent
+features are remote-first: what a user does with a task (sending, its settings
+such as model, web access, integrations and permission mode, answering its
+questions and approvals) and what the task shows must work the same from a
+paired computer, in the same change. Settings that belong to one desktop, such
+as the account, appearance, language, store password and local API, stay local.
+
+A new backend operation is not remotely callable until it is added to `Method`
+in `app/src/remote/wire.rs`. When hosts released before the change cannot do
+it, advertise a capability in `app/src/remote/update.rs` and check it in the
+viewer before sending, as folder browsing and permission modes do. Give an
+older host a coded refusal the viewer translates. Prefer a capability to a wire
+version bump, which makes both computers update before they can pair. Test the
+viewer against hosts with and without the capability and the host's remote
+dispatch, and check it live with two isolated profiles where possible. Leaving a
+task feature local-only needs the owner's explicit agreement, stated in the PR.
+
 ## Build, test, run
 
 `just` lists the recipes. `just ci` runs the checks of CI's Agent lanes

@@ -63,6 +63,7 @@ stdio MCP server configured in Settings > Integrations.
 | P4 | New task mode | Pick a mode on a new task, send, then start another | The next new task opens in that mode; with none picked ever, Auto |
 | P5 | Old task | Open a task made before modes existed | Its chip reads Full access |
 | P6 | Stop on a card | Stop the run while a card waits | The card goes and the run ends |
+| P7 | Paired computer | From a paired computer, pick each mode on a remote task, then ask for a write; repeat against an older host | Each change applies to the next call and shows in both windows; the card answers from either; an older host refuses the change and asks for an update |
 
 ## External agents
 

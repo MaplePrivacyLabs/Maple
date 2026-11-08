@@ -1637,6 +1637,8 @@ runtime-error-store-damaged = Maple's local store needs attention. Open Maple to
 runtime-error-host-disconnected = Host disconnected
 runtime-error-host-updated = Maple has been updated. Quit and reopen Maple to continue.
 runtime-error-local-desktop = Store lifecycle commands require the local desktop
+runtime-error-remote-permissions-unsupported = Update Maple on the remote computer first.
+runtime-error-remote-permissions-unconfirmed = Could not check the remote computer. Try again, or update Maple there.
 
 # $name is a model name, not translated.
 runtime-timeline-model-switched = Switched to { $name }

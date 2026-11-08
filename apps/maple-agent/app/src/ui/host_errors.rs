@@ -56,6 +56,8 @@ pub(crate) fn failure_text(failure: &HostFailure) -> UiText {
         "host-disconnected-retry" => "runtime-error-host-disconnected-retry",
         "host-updated" => "runtime-error-host-updated",
         "local-desktop-required" => "runtime-error-local-desktop",
+        "remote-permissions-unsupported" => "runtime-error-remote-permissions-unsupported",
+        "remote-permissions-unconfirmed" => "runtime-error-remote-permissions-unconfirmed",
         "request-encoding" => "runtime-error-request-encoding",
         "request-parameters" => "runtime-error-request-parameters",
         "response-encoding" => "runtime-error-response-encoding",
@@ -292,5 +294,35 @@ mod pricing_tests {
             apply_preference(Some(locale));
             assert_eq!(raw.resolve().as_ref(), "Original diagnostic");
         }
+    }
+
+    #[test]
+    fn a_remote_mode_refusal_reads_in_the_interface_language() {
+        let _locale = TestLocalizationGuard::enable();
+        let notice = |code| {
+            crate::ui::i18n::UiText::context(
+                "chat-mode-failed",
+                "message",
+                failure_text(&HostFailure::new(code, "English diagnostic")),
+            )
+        };
+        for (code, english, spanish) in [
+            (
+                "remote-permissions-unsupported",
+                "Could not change the mode: Update Maple on the remote computer first.",
+                "No se pudo cambiar el modo: Primero actualiza Maple en la computadora remota.",
+            ),
+            (
+                "remote-permissions-unconfirmed",
+                "Could not change the mode: Could not check the remote computer. Try again, or update Maple there.",
+                "No se pudo cambiar el modo: No se pudo comprobar la computadora remota. Inténtalo de nuevo o actualiza Maple ahí.",
+            ),
+        ] {
+            apply_preference(Some("en"));
+            assert_eq!(notice(code).resolve().as_ref(), english);
+            apply_preference(Some("es"));
+            assert_eq!(notice(code).resolve().as_ref(), spanish);
+        }
+        apply_preference(Some("en"));
     }
 }

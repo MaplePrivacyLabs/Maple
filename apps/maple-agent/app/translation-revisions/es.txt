@@ -833,6 +833,8 @@ runtime-error-refusal-operation c337202a89bb3757
 runtime-error-refusal-path f30698caea97bd7b
 runtime-error-refusal-schema 386cf62ab178ac7b
 runtime-error-refusal-unavailable fb3fc41a113af831
+runtime-error-remote-permissions-unconfirmed c47f9b1d52fffe9a
+runtime-error-remote-permissions-unsupported ac424e62f3b88f2e
 runtime-error-repair-busy b120888272be72ea
 runtime-error-repair-confirmation e90f6e93f7f2f3f8
 runtime-error-repair-damaged ca1b450777311198
