@@ -24,6 +24,8 @@ pub(super) enum BillingTarget {
     /// Checkout, or the web pricing page for plans this app cannot start.
     Product(String),
     Credits(super::api_credits::CreditsTarget),
+    /// The full Usage page's controls.
+    Usage(super::usage::UsageTarget),
 }
 
 pub(super) struct BillingState {
@@ -111,6 +113,9 @@ impl SettingsScreen {
     pub(super) fn load_billing(&mut self, cx: &mut Context<Self>) {
         self.billing.loads = self.billing.loads.wrapping_add(1);
         self.load_credit_balance(cx);
+        if self.section == Section::Usage {
+            self.load_usage_flag(cx);
+        }
         let backend = self.backend.clone();
         let user_id = self.user_id.clone();
         self.call_presented(
@@ -124,6 +129,7 @@ impl SettingsScreen {
                     }
                     Err(message) => this.billing.status_error = Some(message.into()),
                 }
+                this.usage_status_changed(cx);
                 if this.settings.application_vim_enabled {
                     this.reconcile_application_vim_target();
                 }
@@ -198,12 +204,20 @@ impl SettingsScreen {
             BillingTarget::ManagePlan => self.navigate_to(Section::Billing, cx),
             BillingTarget::Product(id) => self.choose_product(&id, cx),
             BillingTarget::Credits(target) => self.activate_credits_target(target, window, cx),
+            BillingTarget::Usage(target) => self.activate_usage_target(target, cx),
         }
     }
 
     /// Usage: the plan meter and extra-credit balance at a glance; plan
-    /// changes and purchases stay on Plan & Billing.
-    pub(super) fn render_usage_pane(&self, cx: &mut Context<Self>) -> Div {
+    /// changes and purchases stay on Plan & Billing. Accounts with the full
+    /// page also get credits against the allowance in the plan card, and
+    /// their history below (`usage.rs`).
+    pub(super) fn render_usage_pane(
+        &self,
+        window: &mut gpui::Window,
+        cx: &mut Context<Self>,
+    ) -> Div {
+        let insights = self.usage.shows_insights(self.billing.status.as_ref());
         let mut pane = div().flex().flex_col().gap_4().child(
             div()
                 .flex()
@@ -217,8 +231,17 @@ impl SettingsScreen {
                 .child(self.page_refresh_button("usage-refresh", cx)),
         );
         pane = pane.child(subsection_title(&tr("settings-billing-plan")));
-        pane = pane.child(match &self.plan {
-            Some(usage) => plan_card(usage, &self.messages).into_any_element(),
+        // Flagged accounts read the card and the lines under it from one
+        // status, so the percent and the credits agree.
+        let plan = if insights {
+            self.usage_plan_usage()
+        } else {
+            self.plan.as_ref()
+        };
+        pane = pane.child(match plan {
+            Some(usage) => plan_card(usage, &self.messages)
+                .children(insights.then(|| self.usage_plan_details()).flatten())
+                .into_any_element(),
             None => div()
                 .text_sm()
                 .text_color(gpui::rgb(theme::text_muted()))
@@ -264,7 +287,11 @@ impl SettingsScreen {
                     ),
             ),
         ]);
-        pane.child(widgets::card_stack(rows))
+        let pane = pane.child(widgets::card_stack(rows));
+        if insights {
+            return pane.child(self.render_usage_insights(window, cx));
+        }
+        pane
     }
 
     pub(super) fn refresh_billing(&mut self, cx: &mut Context<Self>) {

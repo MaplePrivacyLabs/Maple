@@ -810,6 +810,172 @@ settings-month-october = octubre
 settings-month-november = noviembre
 settings-month-december = diciembre
 settings-date = { $day } de { $month } de { $year }
+settings-usage-scope = Toda tu cuenta: Maple Chat y Maple Work en todos tus dispositivos, más las solicitudes hechas con tus claves de API. No solo esta computadora.
+settings-usage-loading = Cargando el uso…
+settings-usage-retry = Reintentar
+settings-usage-left = Quedan { $left }
+settings-usage-plan-amount = { $used } de { $allowance } créditos del plan usados
+settings-usage-team-amount = { $used } de { $allowance } créditos del equipo usados
+settings-usage-team-you = Tú { $credits }
+settings-usage-team-rest = Resto del equipo { $credits }
+settings-usage-team-footer = Todo lo de abajo es tu propio uso. La bolsa de arriba incluye a todo el equipo.
+settings-usage-pace-exhausted = Se agotaron los créditos del plan. Agrega créditos adicionales para seguir antes de que se restablezcan el { $reset }.
+settings-usage-pace-exhausted-extra = Se agotaron los créditos del plan. Los créditos adicionales cubren el uso mientras dure tu saldo. Los créditos del plan se restablecen el { $reset }.
+settings-usage-pace-team-exhausted = La bolsa del equipo se agotó. El uso del equipo se detiene hasta que se restablezca el { $reset }.
+settings-usage-pace-runs-out = { $count ->
+    [one] Un crédito al día alcanza
+   *[other] Unos { $pace } créditos al día alcanzan
+} { $allowance } hacia el { $date }. Después, necesitarás créditos adicionales hasta que se restablezcan.
+settings-usage-pace-runs-out-extra = { $count ->
+    [one] Un crédito al día alcanza
+   *[other] Unos { $pace } créditos al día alcanzan
+} { $allowance } hacia el { $date }. Después, los créditos adicionales cubren el resto.
+settings-usage-pace-team-runs-out = { $count ->
+    [one] Un crédito al día alcanza
+   *[other] Unos { $pace } créditos al día alcanzan
+} { $allowance } hacia el { $date }. Después, el uso del equipo se detiene hasta que se restablezca.
+settings-usage-pace-on-track = { $count ->
+    [one] Un crédito al día suma
+   *[other] Unos { $pace } créditos al día suman
+} aproximadamente { $projected } de { $allowance } para el { $reset }.
+settings-usage-history-title = Historial de uso
+settings-usage-range-picker = Intervalo de uso
+settings-usage-range-last-30-days = Últimos 30 días
+settings-usage-range-this-month = Este mes
+settings-usage-range-this-month-dates = Este mes · { $dates }
+settings-usage-range-previous = Meses anteriores
+settings-usage-range-month-to-date = { $dates }, en lo que va de mes
+settings-usage-range-error = No se pudo cargar el uso de este intervalo.
+settings-usage-tile-credits = Créditos usados
+settings-usage-tile-requests = Solicitudes
+settings-usage-tile-active = Días con actividad
+settings-usage-tile-active-value = { $active } de { $days }
+settings-usage-show = Mostrar
+settings-usage-split-by = Dividir por
+settings-usage-metric-credits = Créditos
+settings-usage-metric-requests = Solicitudes
+settings-usage-metric-tokens = Tokens
+settings-usage-split-model = Modelo
+settings-usage-split-app = App
+settings-usage-split-pool = Plan / Adicionales
+settings-usage-split-token = Tipo de token
+settings-usage-split-word-model = modelo
+settings-usage-split-word-app = app
+settings-usage-split-word-pool = el saldo que pagó
+settings-usage-split-word-token = entrada, entrada en caché y salida
+settings-usage-daily-title-credits = Créditos por día
+settings-usage-daily-title-requests = Solicitudes por día
+settings-usage-daily-title-tokens = Tokens por día
+settings-usage-daily-label = { $title }, por { $split }
+settings-usage-marker-reset = Se restablecen los créditos del plan
+settings-usage-extra-span = Créditos del plan agotados · se usaron créditos adicionales
+settings-usage-no-usage = Sin uso en este intervalo.
+settings-usage-apps-title = Por app
+settings-usage-apps-description = Créditos según la app que envió cada solicitud.
+settings-usage-apps-api-share = { $percent } con claves de API, en cualquier app
+settings-usage-models-title = Por modelo
+settings-usage-models-description = Todos los modelos que se usaron en tu cuenta en este intervalo, incluidas las solicitudes en segundo plano que Maple hace por ti.
+settings-usage-col-model = Modelo
+settings-usage-col-requests = Solicitudes
+settings-usage-col-input = Entrada
+settings-usage-col-cached = Entrada en caché
+settings-usage-col-output = Salida
+settings-usage-col-credits = Créditos
+settings-usage-col-share = Proporción
+settings-usage-col-time = Hora
+settings-usage-col-source = Origen
+settings-usage-col-app = App
+settings-usage-origin-more = { $count } más
+settings-usage-origin-share = { $percent } { $origin }
+settings-usage-origin-chat = Chat
+settings-usage-origin-work = Work
+settings-usage-origin-proxy = Proxy
+settings-usage-origin-api = Claves de API
+settings-usage-token-input = Entrada
+settings-usage-token-cached = Entrada en caché
+settings-usage-token-output = Salida
+settings-usage-more-models = Más modelos
+settings-usage-pool-plan = Créditos del plan
+settings-usage-pool-extra = Créditos adicionales
+settings-usage-months-title = Últimos 12 meses
+settings-usage-months-description = Créditos por mes calendario y por app. El mes actual se muestra hasta hoy.
+settings-usage-months-label = Créditos por mes calendario y por app
+settings-usage-requests-title = Solicitudes recientes
+settings-usage-requests-description = Todas las solicitudes de tu cuenta, de la más reciente a la más antigua.
+settings-usage-requests-loading = Cargando solicitudes…
+settings-usage-requests-error = No se pudieron cargar las solicitudes recientes.
+settings-usage-requests-empty = Aún no hay solicitudes.
+settings-usage-requests-more-error = No se pudieron cargar más solicitudes.
+settings-usage-load-more = Cargar más
+settings-usage-source-api-key = Clave de API
+settings-usage-source-with-key = { $app } · clave de API
+settings-usage-paid-extra = Adicional
+settings-usage-prices-title = Precios actuales de los modelos
+settings-usage-prices-description = Créditos por cada millón de tokens, según se cobran hoy. 1,000 créditos equivalen a $1 a precio de lista.
+settings-usage-prices-loading = Cargando precios…
+settings-usage-prices-error = No se pudieron cargar los precios.
+settings-usage-price-same-as-input = Igual que la entrada
+settings-usage-prices-note = El uso de arriba muestra los créditos que se cobraron en su momento, así que las solicitudes antiguas pueden no coincidir con los precios de hoy.
+settings-usage-prices-unlisted = Los modelos marcados con — ya no tienen precio publicado.
+settings-usage-prices-vary = * Depende del proveedor que atendió la solicitud; se muestra el predeterminado.
+settings-usage-about-title = Sobre estas cifras
+settings-usage-about-account-title = Toda tu cuenta
+settings-usage-about-account = Maple Chat, Maple Work y Maple Proxy en todos tus dispositivos, más tus claves de API.
+settings-usage-about-apps-title = Apps y claves de API
+settings-usage-about-apps = Cada solicitud cuenta para la app que la envió, aunque usara una clave de API, incluido el proxy local de Chat y la API local de Work. Las claves de API por sí solas son solicitudes que no indicaron ninguna app, como las llamadas directas a la API. Las solicitudes anteriores a que las apps indicaran su nombre cuentan como Chat, salvo que usaran una clave de API.
+settings-usage-about-credits-title = Créditos
+settings-usage-about-credits-plan = Los créditos miden el uso según nuestros precios de lista de la API: 1,000 créditos equivalen a $1 de uso. Tu plan { $plan } incluye { $allowance } créditos en cada periodo de facturación. Los créditos adicionales solo se usan cuando se agotan los del plan y no vencen.
+settings-usage-about-credits-unnamed = Los créditos miden el uso según nuestros precios de lista de la API: 1,000 créditos equivalen a $1 de uso. Tu plan incluye { $allowance } créditos en cada periodo de facturación. Los créditos adicionales solo se usan cuando se agotan los del plan y no vencen.
+settings-usage-about-credits-team = Los créditos miden el uso según nuestros precios de lista de la API: 1,000 créditos equivalen a $1 de uso. Tu equipo comparte { $allowance } créditos en cada periodo de facturación.
+settings-usage-about-background-title = Solicitudes en segundo plano
+settings-usage-about-background = Maple también envía solicitudes por ti, por ejemplo para poner nombre a los chats, resumir los resultados de herramientas, elegir un modelo para Auto o acortar conversaciones largas. Se ejecutan en el modelo que Maple use para esa tarea, que puede cambiar, y cuentan para tu uso. Aparecen bajo ese modelo.
+settings-usage-about-auto-title = Auto, Rápido y Potente
+settings-usage-about-auto = Eligen un modelo para cada solicitud. El uso aparece bajo el modelo que se ejecutó realmente.
+settings-usage-about-tokens-title = Entrada, entrada en caché y salida
+settings-usage-about-tokens = La entrada es texto nuevo del prompt. La entrada en caché es texto del prompt que el modelo reutilizó de una solicitud reciente; los modelos que lo admiten cobran menos por ella y algunos no la informan (se muestra como —). La salida es lo que escribió el modelo. Las tres suman el total de tokens.
+settings-usage-about-prices-title = Precios
+settings-usage-about-prices = La tabla de precios muestra los precios de hoy. El uso muestra los créditos que se cobraron en su momento.
+settings-usage-about-free-title = No cuenta
+settings-usage-about-free = La entrada de voz, la lectura en voz alta y la búsqueda web no usan créditos.
+settings-usage-about-zone-title = Zona horaria
+settings-usage-about-zone = Los días se muestran en tu zona horaria ({ $zone }).
+settings-usage-short-date = { $day } { $month }
+settings-usage-weekday-date = { $weekday }, { $date }
+settings-usage-month-year = { $month } de { $year }
+settings-usage-month-jan = ene
+settings-usage-month-feb = feb
+settings-usage-month-mar = mar
+settings-usage-month-apr = abr
+settings-usage-month-may = may
+settings-usage-month-jun = jun
+settings-usage-month-jul = jul
+settings-usage-month-aug = ago
+settings-usage-month-sep = sept
+settings-usage-month-oct = oct
+settings-usage-month-nov = nov
+settings-usage-month-dec = dic
+settings-usage-weekday-mon = lun
+settings-usage-weekday-tue = mar
+settings-usage-weekday-wed = mié
+settings-usage-weekday-thu = jue
+settings-usage-weekday-fri = vie
+settings-usage-weekday-sat = sáb
+settings-usage-weekday-sun = dom
+settings-usage-time-today = Hoy { $time }
+settings-usage-time-yesterday = Ayer { $time }
+settings-usage-time-date = { $date }, { $time }
+settings-usage-tip-credits = { $value } { $count ->
+    [one] crédito
+   *[other] créditos
+}
+settings-usage-tip-tokens = { $value } tokens
+settings-usage-tip-more-models = Más modelos: { $models }
+settings-usage-tip-requests = { $count ->
+    [one] { $requests } solicitud
+   *[other] { $requests } solicitudes
+}
+settings-usage-tip-extra = { $credits } con créditos adicionales
+settings-usage-tip-so-far = { $label } (hasta hoy)
 settings-plan-name = Plan { $name }
 settings-reset-monthly = cada mes
 settings-reset-soon = en menos de 1 hora

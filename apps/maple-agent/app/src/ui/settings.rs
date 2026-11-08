@@ -47,6 +47,7 @@ mod mcp;
 mod navigation;
 pub(crate) mod presentation;
 mod shortcut_labels;
+mod usage;
 
 use self::account::AccountState;
 #[cfg(feature = "acp")]
@@ -240,6 +241,8 @@ pub(super) enum SettingMenu {
     ChatSize,
     Voice,
     SpeechSpeed,
+    /// The Usage page's range: last 30 days or a calendar month.
+    UsageRange,
 }
 
 impl SettingMenu {
@@ -251,6 +254,7 @@ impl SettingMenu {
             Self::ChatSize => "chat-size",
             Self::Voice => "voice",
             Self::SpeechSpeed => "speech-speed",
+            Self::UsageRange => "usage-range",
         }
     }
 }
@@ -293,6 +297,8 @@ pub struct SettingsScreen {
     acp: AcpUiState,
     /// Plan usage meter, same source as the sidebar card.
     plan: Option<crate::billing::PlanUsage>,
+    /// The Usage page's history, when the account has the full page.
+    usage: usage::UsageState,
     /// Account MCP servers; None until loaded.
     mcp_servers: Option<Vec<McpDefinition>>,
     mcp_editor: Option<McpEditor>,
@@ -670,6 +676,7 @@ impl SettingsScreen {
             #[cfg(feature = "acp")]
             acp: AcpUiState::new(),
             plan: None,
+            usage: usage::UsageState::new(),
             mcp_servers: None,
             mcp_editor: None,
             section_history: Vec::new(),
@@ -1289,6 +1296,7 @@ impl SettingsScreen {
                     current: (speed - self.settings.tts_speed).abs() < 0.01,
                 })
                 .collect(),
+            SettingMenu::UsageRange => self.usage_range_options(),
         }
     }
 
@@ -1308,6 +1316,9 @@ impl SettingsScreen {
             ),
             SettingMenu::Voice => voice_label(&self.settings.tts_voice),
             SettingMenu::SpeechSpeed => format!("{:.1}\u{d7}", self.settings.tts_speed),
+            SettingMenu::UsageRange => self
+                .usage_range_name(self.usage.range, chrono::Local::now().date_naive())
+                .to_string(),
         }
     }
 
@@ -1372,6 +1383,7 @@ impl SettingsScreen {
                 let speed = *speed;
                 self.edit_setting(move |settings| settings.tts_speed = speed, cx);
             }
+            SettingMenu::UsageRange => self.pick_usage_range(index, cx),
         }
         self.close_setting_menu(cx);
     }
@@ -1494,6 +1506,7 @@ impl SettingsScreen {
             SettingMenu::ChatSize => "text-size",
             SettingMenu::Voice => "speech-voice",
             SettingMenu::SpeechSpeed => "speech-speed",
+            SettingMenu::UsageRange => "usage-range",
         }
         .to_owned();
         let button =
@@ -2158,7 +2171,7 @@ impl SettingsScreen {
                 pane = pane.child(self.render_account_pane(cx));
             }
             Section::Usage => {
-                pane = pane.child(self.render_usage_pane(cx));
+                pane = pane.child(self.render_usage_pane(window, cx));
             }
             Section::Billing => {
                 pane = pane.child(self.render_billing_pane(cx));

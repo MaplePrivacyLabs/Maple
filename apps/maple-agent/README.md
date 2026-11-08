@@ -635,6 +635,8 @@ ignored. See [build profiles](docs/release-profiles.md).
 | --- | --- | --- |
 | `MAPLE_API_URL` | OpenSecret backend. Use `http://127.0.0.1:3000` for a local dev backend. | `https://enclave.trymaple.ai` |
 | `MAPLE_BILLING_API_URL` | Maple billing API. | `https://billing.opensecret.cloud` |
+| `MAPLE_FLAGS_URL` | OpenSecret feature flag service. | `https://flags.opensecret.cloud` (`flags-dev` for the Dev profile) |
+| `MAPLE_FORCE_FEATURE_FLAGS` | Comma-separated flag keys to turn on without the flag service, such as `usage_page`. | unset |
 | `MAPLE_CLIENT_ID` | OpenSecret client id (UUID). | Maple's id |
 | `MAPLE_MODEL` | Model to select at start. | Runtime default |
 | `MAPLE_CONTEXT_LIMIT` | Context window in tokens, used instead of the model catalog's for compaction and the context ring. | Catalog value |

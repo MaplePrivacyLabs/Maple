@@ -13,6 +13,7 @@ mod desktop;
 mod env;
 #[cfg(feature = "desktop")]
 mod feedback;
+mod flags;
 mod framing;
 mod host;
 mod hosted_oauth;
