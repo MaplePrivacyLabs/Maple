@@ -282,6 +282,8 @@ operations! {
     select_project_root(user_id: (&str), path: (String)) -> SelectedProject;
     browse_project_folders(user_id: (&str), request: (ProjectFolderRequest)) -> ProjectFolderPage;
     create_project_folder(user_id: (&str), parent_path: (String), name: (String)) -> String;
+    [dispatch_only] create_scratch_project(user_id: (&str)) -> SelectedProject;
+    recent_project_roots(user_id: (&str)) -> Vec<RecentProjectRoot>;
     rename_project_root(user_id: (&str), path: (String), name: (String)) -> RecentProjectRoot;
     archive_project_root(user_id: (&str), path: (String), fallback: (Option<String>)) -> ();
     [dispatch_only] create_session(user_id: (&str), request: (Option<AgentCreateSessionRequest>)) -> AgentSessionDetail;
@@ -1135,6 +1137,14 @@ async fn dispatch_inner_presented(
         let result = backend
             .create_project_folder_presented(&user, path, name)
             .await?;
+        return serde_json::to_value(result)
+            .map_err(|_| HostFailure::new("response-encoding", "Could not encode host response"));
+    }
+    if request.method == "create_scratch_project" {
+        let (user,): (String,) = serde_json::from_value(request.params).map_err(|_| {
+            HostFailure::new("request-parameters", "Invalid host request parameters")
+        })?;
+        let result = backend.create_scratch_project_presented(&user).await?;
         return serde_json::to_value(result)
             .map_err(|_| HostFailure::new("response-encoding", "Could not encode host response"));
     }
