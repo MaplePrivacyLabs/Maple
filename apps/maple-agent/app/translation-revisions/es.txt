@@ -1047,6 +1047,7 @@ settings-advanced-while-maple-is-locked-your-other-computers-can-t-reach-this-on
 settings-advanced-your-conversation-text-settings-and-sign-in-are-stored-on-this-co 20b54f2f03070f17
 settings-advanced-your-unlock-password-was-changed 157bdb7bf0082791
 settings-advanced-your-unlock-password-was-removed 04b31297fac97971
+settings-agent-instructions e4a2402110ffb375
 settings-api-credits-1-per-1-000-credits-extends-your-plan-when-its-included-usage-run aa54b751189791f3
 settings-api-credits-anonymous-accounts-pay-with-bitcoin 2736f360c19e0c62
 settings-api-credits-api-credits f27d1733d7f579dd
@@ -1202,7 +1203,7 @@ settings-font-note-geist 3ba714cb9ed44fb7
 settings-font-note-manrope c3a9e50b3e82d9c9
 settings-font-note-serif d7ba27972b9d4546
 settings-font-note-system d957acd68f18cad8
-settings-general-subtitle 108988c7434eb0f9
+settings-general-subtitle e4b68fdb2ab6a553
 settings-group-account b23e782b606d2b23
 settings-group-connections 90bead48136b7c36
 settings-group-workspace 21cecdca1fa874c6
@@ -1219,7 +1220,7 @@ settings-keywords-appearance 2810172f7551c986
 settings-keywords-apps cf504915b2ac1282
 settings-keywords-billing 2f018149058b669c
 settings-keywords-developer 136446487145060e
-settings-keywords-general 1c5b86883f5b5711
+settings-keywords-general 7247f792c23d1342
 settings-keywords-integrations ff53b7e6945ae8b0
 settings-keywords-remote 7c8f31884b6425d0
 settings-keywords-shortcuts 9fcdf7d586f8ae1a
@@ -1519,8 +1520,6 @@ settings-server-exists f5a24b98248ad68c
 settings-settings-a-shortcut-can-contain-at-most-four-strokes 9ff0e2ea21d2e63d
 settings-settings-about f0499e5aad8e333a
 settings-settings-add-instructions-for-every-task 57ad27b181bf493c
-settings-settings-added-to-every-task-after-maple-s-own-system-prompt-use-it-for-pr 9c255280c55353b6
-settings-settings-additional-instructions 730b5b111cbd1ee7
 settings-settings-automatically-download-updates 2c911778add68a00
 settings-settings-available 6ea672b5f01b4156
 settings-settings-built-into-maple 36c56545aefe0464

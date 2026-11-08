@@ -121,17 +121,7 @@ impl SettingsScreen {
             .child(widgets::card_stack(editing_rows))
             .child(subsection_title(&tr("settings-voice")))
             .child(widgets::card_stack(voice_rows))
-            .child(subsection_title(&tr(
-                "settings-settings-additional-instructions",
-            )))
-            .child(
-                div()
-                    .text_xs()
-                    .text_color(gpui::rgb(theme::text_muted()))
-                    .child(gpui::text!(tr(
-                        "settings-settings-added-to-every-task-after-maple-s-own-system-prompt-use-it-for-pr"
-                    ))),
-            )
+            .child(subsection_title(&tr("settings-agent-instructions")))
             .child(self.render_prompt_editor_card(cx))
     }
 
