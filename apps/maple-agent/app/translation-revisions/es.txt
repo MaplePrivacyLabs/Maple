@@ -1,6 +1,5 @@
 # English each translation was last reviewed against. Written by `just translations-reviewed`.
 chat-absolute-path a2ba378ac24704c4
-chat-account 49b98c124662185d
 chat-active 196d1c9462f99ad3
 chat-activity-outside dc914a2d8037659c
 chat-agent-task-cancelled e26bb0917a4c240b
