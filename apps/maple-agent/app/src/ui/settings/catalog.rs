@@ -130,10 +130,26 @@ fn matches_search(entry: &McpCatalogEntry, query: &str) -> bool {
             .contains(query)
 }
 
+/// The apps promoted at the top of Integrations, in display order. Connected
+/// ones drop out; the strip is not backfilled, so it only ever shows these.
+pub(super) const FEATURED_APPS: [&str; 6] = [
+    "stripe",
+    "cloudflare",
+    "vercel",
+    "notion",
+    "dropbox",
+    "linear",
+];
+
 impl SettingsScreen {
     /// Work out which entries show, when something they depend on changes.
     pub(super) fn refresh_catalog(&mut self) {
         let servers = self.mcp_servers.as_deref().unwrap_or_default();
+        self.catalog_featured = FEATURED_APPS
+            .iter()
+            .filter_map(|id| mcp_catalog().iter().find(|entry| entry.id == *id))
+            .filter(|entry| !is_connected(entry, servers))
+            .collect();
         self.catalog_visible = mcp_catalog()
             .iter()
             .filter(|entry| {
@@ -521,7 +537,7 @@ impl SettingsScreen {
         )
     }
 
-    fn set_catalog_category(
+    pub(super) fn set_catalog_category(
         &mut self,
         category: Option<McpCatalogCategory>,
         cx: &mut Context<Self>,
@@ -643,8 +659,144 @@ impl SettingsScreen {
             .into_any_element()
     }
 
-    pub(super) fn render_app_catalog(&self, cx: &mut Context<Self>) -> Div {
+    /// Jump to the full directory, with search and category cleared so the
+    /// person sees everything.
+    pub(super) fn reveal_catalog(&mut self, cx: &mut Context<Self>) {
+        self.catalog_category = None;
+        self.catalog_search
+            .update(cx, |input, cx| input.set_text("", cx));
+        self.catalog_query.clear();
+        self.refresh_catalog();
+        self.catalog_reveal = true;
+        cx.notify();
+    }
+
+    /// "Popular apps": a short strip of well-known apps above the built-ins,
+    /// so the directory is visible before anyone scrolls. `None` when every
+    /// featured app is connected.
+    pub(super) fn render_featured_apps(&self, cx: &mut Context<Self>) -> Option<Div> {
+        if self.catalog_featured.is_empty() {
+            return None;
+        }
+        let total = mcp_catalog().len();
+        let header = div()
+            .flex()
+            .items_center()
+            .justify_between()
+            .gap_4()
+            .child(subsection_title(&tr("settings-catalog-popular")))
+            .child(
+                self.application_target(
+                    || SettingsTarget::McpCatalogSeeAll,
+                    widgets::ghost_button("catalog-see-all")
+                        .py_1()
+                        .on_click(cx.listener(|this, _event, _window, cx| {
+                            this.reveal_catalog(cx);
+                        }))
+                        .child(self.messages.get(
+                            "settings-catalog-see-all",
+                            [("count", total.to_string().into())],
+                        )),
+                ),
+            );
+        let tiles = div().flex().flex_wrap().gap_2().children(
+            self.catalog_featured
+                .iter()
+                .map(|entry| self.render_featured_tile(entry, cx)),
+        );
+        Some(div().flex().flex_col().gap_2().child(header).child(tiles))
+    }
+
+    fn render_featured_tile(
+        &self,
+        entry: &'static McpCatalogEntry,
+        cx: &mut Context<Self>,
+    ) -> gpui::AnyElement {
+        let waiting = self.mcp_signing_in.as_deref() == Some(entry.name.as_str());
+        let busy = self.mcp_signing_in.is_some() && !waiting;
+        let tile = div()
+            .id(gpui::SharedString::from(format!(
+                "catalog-featured-{}",
+                entry.id
+            )))
+            .debug_selector(move || format!("catalog-featured-{}", entry.id))
+            .flex_1()
+            .min_w(px(150.))
+            .flex()
+            .items_center()
+            .gap_3()
+            .px_3()
+            .py_2()
+            .rounded(theme::RADIUS_LG)
+            .bg(gpui::rgb(theme::bg_elevated()))
+            .border_1()
+            .border_color(gpui::rgb(theme::border_subtle()))
+            .when(busy, |tile| tile.opacity(0.5))
+            .when(!busy, |tile| {
+                tile.cursor_pointer()
+                    .hover(|style| style.bg(gpui::rgb(theme::bg_sidebar_row_hover())))
+                    .on_click(cx.listener(move |this, _event, _window, cx| {
+                        if this.mcp_signing_in.as_deref() == Some(entry.name.as_str()) {
+                            this.cancel_mcp_sign_in(cx);
+                        } else {
+                            this.connect_catalog_entry(&entry.id, cx);
+                        }
+                    }))
+            })
+            .child(
+                div()
+                    .size(px(32.))
+                    .flex_none()
+                    .flex()
+                    .items_center()
+                    .justify_center()
+                    .rounded(theme::RADIUS_SM)
+                    .bg(gpui::white())
+                    .border_1()
+                    .border_color(gpui::rgb(theme::border_subtle()))
+                    .child(
+                        gpui::img(logo_path(entry))
+                            .size(px(24.))
+                            .rounded(theme::RADIUS_SM),
+                    ),
+            )
+            .child(
+                div()
+                    .flex()
+                    .flex_col()
+                    .min_w_0()
+                    .child(
+                        div()
+                            .text_sm()
+                            .font_weight(gpui::FontWeight::MEDIUM)
+                            .text_color(gpui::rgb(theme::text_primary()))
+                            .truncate()
+                            .child(entry.name.clone()),
+                    )
+                    .child(
+                        div()
+                            .flex()
+                            .items_center()
+                            .gap_1()
+                            .text_xs()
+                            .text_color(gpui::rgb(theme::text_muted()))
+                            .when(waiting, |row| {
+                                row.child(spinner(&entry.id, px(10.), theme::text_muted()))
+                            })
+                            .child(tr(if waiting {
+                                "settings-catalog-cancel"
+                            } else {
+                                "settings-catalog-connect"
+                            })),
+                    ),
+            );
+        self.application_target(move || SettingsTarget::McpFeatured(entry.id.clone()), tile)
+    }
+
+    pub(super) fn render_app_catalog(&self, cx: &mut Context<Self>) -> gpui::Stateful<Div> {
         let mut section = div()
+            .id("catalog-section")
+            .anchor_scroll(Some(self.catalog_anchor.clone()))
             .flex()
             .flex_col()
             .gap_3()

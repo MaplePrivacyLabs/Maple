@@ -73,6 +73,11 @@ pub(super) enum SettingsTarget {
     McpAdd,
     McpServer(String),
     McpCatalog(String),
+    /// A tile on the Popular apps strip; distinct from the same app's
+    /// catalog card so cursor motion resolves to one element.
+    McpFeatured(String),
+    /// "See all" on the Popular apps strip.
+    McpCatalogSeeAll,
 }
 
 #[derive(Clone, Debug)]
@@ -218,25 +223,37 @@ impl SettingsScreen {
                 .map(|row| SettingsTarget::Shortcut(row.slot_id.clone()))
                 .collect(),
             Section::Integrations => {
+                // Display order: the Popular apps strip, built-ins, connected
+                // servers, the add row, then every catalog app.
                 // Display order: built-ins, connected servers, the add row,
                 // then every catalog app.
-                let mut targets: Vec<SettingsTarget> = self
-                    .integrations
-                    .as_deref()
-                    .unwrap_or_default()
-                    .iter()
-                    .filter(|integration| integration_is_visible(integration))
-                    .flat_map(|integration| {
-                        [
-                            integration_can_setup(integration)
-                                .then(|| SettingsTarget::IntegrationSetup(integration.id.clone())),
-                            integration_can_toggle(integration)
-                                .then(|| SettingsTarget::Integration(integration.id.clone())),
-                        ]
-                        .into_iter()
-                        .flatten()
-                    })
-                    .collect();
+                let mut targets: Vec<SettingsTarget> = Vec::new();
+                if !self.catalog_featured.is_empty() {
+                    targets.push(SettingsTarget::McpCatalogSeeAll);
+                    targets.extend(
+                        self.catalog_featured
+                            .iter()
+                            .map(|entry| SettingsTarget::McpFeatured(entry.id.clone())),
+                    );
+                }
+                targets.extend(
+                    self.integrations
+                        .as_deref()
+                        .unwrap_or_default()
+                        .iter()
+                        .filter(|integration| integration_is_visible(integration))
+                        .flat_map(|integration| {
+                            [
+                                integration_can_setup(integration).then(|| {
+                                    SettingsTarget::IntegrationSetup(integration.id.clone())
+                                }),
+                                integration_can_toggle(integration)
+                                    .then(|| SettingsTarget::Integration(integration.id.clone())),
+                            ]
+                            .into_iter()
+                            .flatten()
+                        }),
+                );
                 targets.extend(
                     self.mcp_servers
                         .as_deref()
@@ -460,7 +477,10 @@ impl SettingsScreen {
             Some(SettingsTarget::IntegrationSetup(id)) => self.setup_integration(&id, cx),
             Some(SettingsTarget::McpAdd) => self.open_mcp_editor(None, cx),
             Some(SettingsTarget::McpServer(name)) => self.edit_mcp_server(&name, cx),
-            Some(SettingsTarget::McpCatalog(id)) => self.connect_catalog_entry(&id, cx),
+            Some(SettingsTarget::McpCatalog(id) | SettingsTarget::McpFeatured(id)) => {
+                self.connect_catalog_entry(&id, cx)
+            }
+            Some(SettingsTarget::McpCatalogSeeAll) => self.reveal_catalog(cx),
             None => {}
         }
     }
@@ -849,19 +869,104 @@ mod tests {
 
             assert_eq!(
                 this.visible_application_targets(),
-                vec![
-                    SettingsTarget::IntegrationSetup("cua-driver".to_string()),
-                    SettingsTarget::Integration("cua-driver".to_string()),
-                    SettingsTarget::McpServer("custom".to_string()),
-                    SettingsTarget::McpAdd,
-                ]
-                .into_iter()
-                .chain(
-                    maple_agent::agent::mcp_catalog()
-                        .iter()
-                        .map(|entry| SettingsTarget::McpCatalog(entry.id.clone()))
-                )
-                .collect::<Vec<_>>()
+                std::iter::once(SettingsTarget::McpCatalogSeeAll)
+                    .chain(
+                        this.catalog_featured
+                            .iter()
+                            .map(|entry| SettingsTarget::McpFeatured(entry.id.clone()))
+                    )
+                    .chain([
+                        SettingsTarget::IntegrationSetup("cua-driver".to_string()),
+                        SettingsTarget::Integration("cua-driver".to_string()),
+                        SettingsTarget::McpServer("custom".to_string()),
+                        SettingsTarget::McpAdd,
+                    ])
+                    .chain(
+                        maple_agent::agent::mcp_catalog()
+                            .iter()
+                            .map(|entry| SettingsTarget::McpCatalog(entry.id.clone()))
+                    )
+                    .collect::<Vec<_>>()
+            );
+        });
+    }
+
+    /// The strip and the directory list the same apps under different
+    /// targets, so `j` from the first catalog card must land on the second
+    /// card, not resolve to the strip tile and jump back up.
+    #[gpui::test]
+    fn featured_strip_drops_connected_apps_and_keeps_catalog_motion_linear(
+        cx: &mut TestAppContext,
+    ) {
+        let (settings, cx) = dropdown_window(cx, true);
+        settings.update(cx, |this, cx| {
+            this.select_section(Section::Integrations, cx);
+            let notion = maple_agent::agent::mcp_catalog()
+                .iter()
+                .find(|entry| entry.id == "notion")
+                .expect("notion in catalog");
+            this.mcp_servers = Some(vec![maple_agent::store::records::McpDefinition {
+                key: maple_agent::agent::AgentMcpServer::key_for_name(&notion.name),
+                name: notion.name.clone(),
+                description: String::new(),
+                enabled: true,
+                timeout_seconds: 300,
+                target: maple_agent::store::records::McpTarget::Stdio {
+                    command: "notion-mcp".to_string(),
+                },
+                environment: Vec::new(),
+                headers: Vec::new(),
+            }]);
+            this.refresh_catalog();
+
+            let featured: Vec<&str> = this
+                .catalog_featured
+                .iter()
+                .map(|entry| entry.id.as_str())
+                .collect();
+            assert_eq!(
+                featured,
+                ["stripe", "cloudflare", "vercel", "dropbox", "linear"],
+                "connected apps leave the strip and nothing backfills"
+            );
+            assert!(
+                !this
+                    .catalog_visible
+                    .iter()
+                    .any(|entry| entry.id == "notion"),
+                "connected apps leave the directory too"
+            );
+        });
+
+        cx.update(|window, app| {
+            settings.update(app, |this, cx| {
+                let first = this.catalog_visible[0].id.clone();
+                let second = this.catalog_visible[1].id.clone();
+                this.application_vim.region = SettingsRegion::Pane;
+                this.application_vim.target = Some(SettingsTarget::McpCatalog(first));
+                this.move_application_selection(1, 1, window, cx);
+                assert_eq!(
+                    this.application_vim.target,
+                    Some(SettingsTarget::McpCatalog(second))
+                );
+            });
+        });
+
+        // No parking here: the test backend's server list would land and
+        // replace the connected Notion above.
+        settings.update(cx, |this, cx| {
+            this.set_catalog_category(Some(maple_agent::agent::McpCatalogCategory::Developer), cx);
+            this.catalog_query = "git".to_string();
+            this.refresh_catalog();
+            assert!(this.catalog_visible.len() < maple_agent::agent::mcp_catalog().len() - 1);
+            this.reveal_catalog(cx);
+            assert_eq!(this.catalog_category, None);
+            assert!(this.catalog_query.is_empty());
+            assert!(this.catalog_reveal);
+            assert_eq!(
+                this.catalog_visible.len(),
+                maple_agent::agent::mcp_catalog().len() - 1,
+                "See all shows every app that is not connected"
             );
         });
     }
@@ -1593,11 +1698,15 @@ mod tests {
             "catalog cards render without a tab switch"
         );
         // Shift-Tab out of the catalog search (tab 3) lands on the add row
-        // (tab 1); Space presses it.
-        let search = cx
-            .debug_bounds("catalog-search")
-            .expect("catalog search renders");
-        cx.simulate_click(search.center(), gpui::Modifiers::default());
+        // (tab 1); Space presses it. The search sits below the test window's
+        // viewport, so focus it directly rather than by pointer.
+        assert!(cx.debug_bounds("catalog-search").is_some());
+        cx.update(|window, app| {
+            settings.update(app, |this, cx| {
+                let handle = this.catalog_search.read(cx).focus_handle(cx);
+                window.focus(&handle, cx);
+            });
+        });
         cx.simulate_keystrokes("shift-tab space");
         cx.run_until_parked();
         settings.update(cx, |this, cx| {

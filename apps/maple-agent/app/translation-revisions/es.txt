@@ -1141,8 +1141,10 @@ settings-catalog-get-app 07d01cb222b53a83
 settings-catalog-intro 35245733d8419e6b
 settings-catalog-needs-app 79cafb6aae71a1ff
 settings-catalog-needs-version 0ca7cc821cf49dd8
+settings-catalog-popular 2bab777393359d62
 settings-catalog-productivity 45c49f7939d93f80
 settings-catalog-search 517b931f3b231f5c
+settings-catalog-see-all 53c8258707c749f2
 settings-catalog-server-required 59eb088832c0e30a
 settings-catalog-stop-sign-in 67ea80657c5ad1c0
 settings-catalog-summary-airtable 5a8a5f4c1bbef83e

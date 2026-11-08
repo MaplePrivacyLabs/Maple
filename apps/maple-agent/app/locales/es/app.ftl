@@ -1900,6 +1900,9 @@ settings-catalog-search = Buscar aplicaciones…
 settings-catalog-cancel = Cancelar
 settings-catalog-connect = Conectar
 settings-catalog-apps = Aplicaciones disponibles
+settings-catalog-popular = Aplicaciones populares
+# $count is the number of apps in the directory.
+settings-catalog-see-all = Ver las { $count } aplicaciones
 settings-catalog-custom = Servidor personalizado
 settings-catalog-intro = Las nuevas tareas pueden usar las aplicaciones que conectes. Tus sesiones se quedan en esta computadora.
 settings-catalog-all = Todas

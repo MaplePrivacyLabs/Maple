@@ -2023,6 +2023,9 @@ settings-catalog-search = Search apps…
 settings-catalog-cancel = Cancel
 settings-catalog-connect = Connect
 settings-catalog-apps = Available apps
+settings-catalog-popular = Popular apps
+# $count is the number of apps in the directory.
+settings-catalog-see-all = See all { $count } apps
 settings-catalog-custom = Custom server
 settings-catalog-intro = New tasks can use the apps you connect. Your sign-ins stay on this computer.
 settings-catalog-all = All

@@ -303,6 +303,11 @@ pub struct SettingsScreen {
     catalog_category: Option<maple_agent::agent::McpCatalogCategory>,
     /// The catalog entries showing, worked out when they change.
     catalog_visible: Vec<&'static maple_agent::agent::McpCatalogEntry>,
+    /// The handful of well-known apps shown at the top of Integrations.
+    catalog_featured: Vec<&'static maple_agent::agent::McpCatalogEntry>,
+    /// Scrolls the full directory into view after "See all".
+    catalog_anchor: ScrollAnchor,
+    catalog_reveal: bool,
     /// Device-local integrations discovered by the runtime; None until loaded.
     integrations: Option<Vec<AgentIntegration>>,
     integration_notice: Option<UiText>,
@@ -658,6 +663,9 @@ impl SettingsScreen {
             catalog_query: String::new(),
             catalog_category: None,
             catalog_visible: Vec::new(),
+            catalog_featured: Vec::new(),
+            catalog_anchor: ScrollAnchor::for_handle(pane_scroll.clone()),
+            catalog_reveal: false,
             integrations: None,
             integration_notice: None,
             integration_saving: HashSet::new(),
@@ -1785,6 +1793,9 @@ impl Render for SettingsScreen {
         if std::mem::take(&mut self.api_keys.reveal_card) {
             self.api_keys.card_anchor.scroll_to(window, cx);
         }
+        if std::mem::take(&mut self.catalog_reveal) {
+            self.catalog_anchor.scroll_to(window, cx);
+        }
         self.focus_mcp_address(window, cx);
         let mcp_address = self.render_mcp_address(window, cx);
         div()
@@ -2767,6 +2778,10 @@ impl SettingsScreen {
         }
         if let Some(editor) = &self.mcp_editor {
             pane = pane.child(self.render_mcp_editor(editor, cx));
+        }
+
+        if let Some(featured) = self.render_featured_apps(cx) {
+            pane = pane.child(featured);
         }
 
         pane = pane.child(subsection_title(&tr("settings-built-in")));
