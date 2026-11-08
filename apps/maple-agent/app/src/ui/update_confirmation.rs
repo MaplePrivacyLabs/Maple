@@ -86,11 +86,11 @@ impl Render for UpdateConfirmation {
             .inset_0()
             .size_full()
             .occlude()
-            .bg(theme::scrim())
             .flex()
             .items_center()
             .justify_center()
-            .child(
+            .child(widgets::dialog_scrim())
+            .child(widgets::dialog_card(
                 div()
                     .id("update-confirmation")
                     .debug_selector(|| "update-confirmation".to_string())
@@ -177,7 +177,7 @@ impl Render for UpdateConfirmation {
                                     })),
                             ),
                     ),
-            )
+            ))
             .into_any_element()
     }
 }
@@ -340,6 +340,39 @@ mod tests {
         );
         cx.simulate_keystrokes("tab enter");
         assert_eq!(answer.try_recv().unwrap(), 1);
+    }
+
+    /// The card rises into place as the dialog opens (the test executor
+    /// draws its first frames well inside the entrance), at rest under
+    /// reduced motion, and leaves on the frame that answers it.
+    #[gpui::test]
+    fn the_dialog_rises_in_and_leaves_at_once(cx: &mut gpui::TestAppContext) {
+        cx.update(|cx| cx.set_reduce_motion(false));
+        let (_host, mut answer, cx) = show(cx);
+        cx.run_until_parked();
+        let arriving = cx.debug_bounds("update-confirmation").unwrap();
+        cx.update(|_, cx| cx.set_reduce_motion(true));
+        cx.run_until_parked();
+        let rest = cx.debug_bounds("update-confirmation").unwrap();
+        let rise = arriving.top() - rest.top();
+        assert!(
+            px(0.) < rise && rise <= px(8.),
+            "the card rises from up to 8 px below: {arriving:?} -> {rest:?}"
+        );
+        assert_eq!(arriving.size, rest.size);
+        // Frames the entrance asked for before reduced motion came on.
+        cx.update(|window, cx| {
+            window.simulate_next_frame(cx);
+        });
+        cx.run_until_parked();
+        assert_eq!(cx.update(|window, cx| window.simulate_next_frame(cx)), 0);
+
+        cx.simulate_keystrokes("escape");
+        assert_eq!(answer.try_recv().unwrap(), 0);
+        assert!(
+            cx.debug_bounds("update-confirmation").is_none(),
+            "the dialog leaves on the frame it closes"
+        );
     }
 
     #[gpui::test]

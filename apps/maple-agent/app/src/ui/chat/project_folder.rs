@@ -644,11 +644,11 @@ impl Render for ProjectFolderDialog {
             .inset_0()
             .size_full()
             .occlude()
-            .bg(theme::scrim())
             .flex()
             .items_center()
             .justify_center()
-            .child(
+            .child(widgets::dialog_scrim())
+            .child(widgets::dialog_card(
                 div()
                     .id("project-folder-dialog")
                     .debug_selector(|| "project-folder-dialog".into())
@@ -959,7 +959,7 @@ impl Render for ProjectFolderDialog {
                                     ),
                             ),
                     ),
-            )
+            ))
     }
 }
 
