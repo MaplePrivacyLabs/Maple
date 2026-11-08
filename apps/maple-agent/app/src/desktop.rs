@@ -2364,6 +2364,20 @@ impl Render for MapleApp {
             cx.refresh_windows();
         }
         let titlebar = self.titlebar.clone();
+        // The screen fades in when it changes kind; the first screen and a
+        // screen that only re-renders draw at once.
+        let screen_kind = if self.updater.restart_path().is_some() {
+            "restart"
+        } else {
+            match &self.screen {
+                Screen::Restoring => "restoring",
+                Screen::StoreGate(_) => "store-gate",
+                Screen::Login(_) => "login",
+                Screen::Chat(_) => "chat",
+                Screen::Settings(_) => "settings",
+                Screen::PlanGate(_) => "plan-gate",
+            }
+        };
         let root = div()
             .relative()
             .size_full()
@@ -2378,7 +2392,7 @@ impl Render for MapleApp {
             // on transcript/composer via `typography::chat_reading`.
             .text_sm()
             .child(titlebar)
-            .child(
+            .child(ui::motion::swap_in(
                 div()
                     .flex_1()
                     .min_h_0()
@@ -2423,7 +2437,9 @@ impl Render for MapleApp {
                             Screen::PlanGate(gate) => gate.clone().into_any_element(),
                         }
                     }),
-            );
+                "maple-screen",
+                screen_kind,
+            ));
         #[cfg(target_os = "linux")]
         let root = root.children(self.restart_confirmation.clone());
         root
