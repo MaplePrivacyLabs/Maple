@@ -117,25 +117,6 @@ struct QueueEdit {
 const SIDEBAR_WIDTH: gpui::Pixels = px(300.);
 /// Width of the rail that stands in for the sidebar while it is collapsed.
 const SIDEBAR_RAIL_WIDTH: gpui::Pixels = px(48.);
-const SIDEBAR_TRANSITION_DURATION: std::time::Duration = std::time::Duration::from_millis(200);
-
-/// One reversible transition. Sampling the current position when retargeting
-/// avoids jumping back to an endpoint on a second press.
-struct SidebarTransition {
-    from: f32,
-    to: f32,
-    started: std::time::Instant,
-    duration: std::time::Duration,
-}
-
-impl SidebarTransition {
-    fn value(&self, now: std::time::Instant) -> f32 {
-        let elapsed = now.saturating_duration_since(self.started).as_secs_f32();
-        let t = (elapsed / self.duration.as_secs_f32()).clamp(0., 1.);
-        let eased = 1. - (1. - t).powi(3);
-        self.from + (self.to - self.from) * eased
-    }
-}
 /// Height of the task header and the clear strip above the collapsed rail.
 const CHAT_HEADER_HEIGHT: gpui::Pixels = px(40.);
 /// Where the header's toolbar starts, from the window's left edge, as the
@@ -631,7 +612,8 @@ pub struct ChatScreen {
     watched_git_dir: Option<std::path::PathBuf>,
     /// Sidebar hidden; a toggle in the main pane brings it back.
     sidebar_collapsed: bool,
-    sidebar_transition: Option<SidebarTransition>,
+    /// Collapse (0) or expand (1) under way; `None` at rest.
+    sidebar_transition: Option<crate::ui::motion::Tween>,
     /// Files staged for the next message.
     draft_attachments: Vec<DraftAttachment>,
     unresolved_sends: HashMap<String, UnresolvedSend>,
@@ -1100,7 +1082,7 @@ impl ChatScreen {
         if self.sidebar_collapsed == collapsed {
             return;
         }
-        let now = std::time::Instant::now();
+        let now = crate::ui::motion::now();
         let from = self
             .sidebar_transition
             .as_ref()
@@ -1109,13 +1091,17 @@ impl ChatScreen {
         let to = if collapsed { 0. } else { 1. };
         self.sidebar_collapsed = collapsed;
         let distance = (to - from).abs();
-        self.sidebar_transition =
-            (!cx.reduce_motion() && distance > f32::EPSILON).then(|| SidebarTransition {
-                from,
+        self.sidebar_transition = (!cx.reduce_motion() && distance > f32::EPSILON).then(|| {
+            let mut transition = crate::ui::motion::Tween::new(from);
+            transition.set(
                 to,
-                started: now,
-                duration: SIDEBAR_TRANSITION_DURATION.mul_f32(distance),
-            });
+                crate::ui::motion::PANEL.mul_f32(distance),
+                crate::ui::motion::ease_out_cubic,
+                now,
+                false,
+            );
+            transition
+        });
         if self.popup.is_open(&ChatPopup::Settings) {
             self.popup.close(cx);
         }
@@ -1131,9 +1117,9 @@ impl ChatScreen {
         if cx.reduce_motion() {
             self.sidebar_transition = None;
         }
-        let now = std::time::Instant::now();
+        let now = crate::ui::motion::now();
         if let Some(transition) = &self.sidebar_transition {
-            if now.saturating_duration_since(transition.started) < transition.duration {
+            if transition.is_moving(now) {
                 window.request_animation_frame();
                 return transition.value(now);
             }

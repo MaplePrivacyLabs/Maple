@@ -247,8 +247,8 @@ overlay). All share 8 px vertical and 20 px horizontal padding
 The coral fill replaces the kit's translucent "glass" gradient, which is
 designed to sit on a Pebble 300 panel and washes out on the app's white
 and near-black surfaces. The hover and press scale motion is not applied:
-gpui has no transition primitive, and a stepped scale change on hover
-reads as a flicker.
+gpui cannot scale a `div`. Hover eases the background instead, and press
+stays immediate; see [motion](motion.md).
 
 ### Spacing
 

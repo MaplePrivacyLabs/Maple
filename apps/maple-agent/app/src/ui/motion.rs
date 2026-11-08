@@ -1,18 +1,23 @@
-//! Motion primitives that keep the frame rate low.
+//! Motion primitives. The rules and tokens are in `docs/motion.md`.
 //!
-//! gpui's own animation element asks for a frame on every display tick,
-//! and each frame re-renders the whole window. Two patterns keep motion
-//! cheap:
+//! Every animated frame re-renders the window, so motion here is short
+//! and asks for frames only while something moves:
 //!
 //! - Looping effects (spinners, pulsing dots) run through [`ticker`]: a
 //!   shared phase clock plus one coalesced repaint per view per interval,
 //!   at a rate the eye still reads as continuous (`LOOP_FPS`).
-//! - One-shot effects (a popup fading in) use [`fade_in`], which wraps
-//!   gpui's oneshot `with_animation`: it requests frames only until the
-//!   animation ends, then the window goes idle again.
+//! - One-shot entrances ([`fade_in`], [`rise_in`], [`slide_in`]) wrap
+//!   gpui's oneshot `with_animation`: they request frames until they end,
+//!   then the window goes idle again. A new element id replays them.
+//! - Reversible state changes keep a [`Tween`], which retargets from the
+//!   value on screen: in view state for transitions a view owns (the
+//!   sidebar, the composer), or in element state through [`animated`] and
+//!   [`hover_background`] for render code that owns none.
 //!
-//! Hover plates use a short, reversible color transition. Press feedback
-//! remains immediate; no control scales or changes layout on hover.
+//! Everything settles at its end state under reduced motion. gpui cannot
+//! transform a `div`, so movement is a paint offset ([`Shifted`]) that
+//! leaves layout alone; only SVG icons scale or rotate. Press feedback
+//! stays immediate.
 
 use std::cell::RefCell;
 use std::collections::HashSet;
@@ -21,15 +26,166 @@ use std::time::{Duration, Instant};
 
 use gpui::{
     AnimationElement, AnimationExt, AnyElement, App, Bounds, Element, ElementId, EntityId,
-    GlobalElementId, InspectorElementId, IntoElement, LayoutId, Pixels, Styled, Window,
+    GlobalElementId, InspectorElementId, IntoElement, LayoutId, ParentElement, Pixels, Point,
+    Styled, Window, px,
 };
 
 /// Frames per second a looping effect asks for. Twelve to fifteen steps a
 /// second still read as motion at a fraction of the display rate.
 pub const LOOP_FPS: u32 = 15;
 
-/// Duration of a one-shot reveal.
+/// Pointer hover: background and opacity only, the same both ways.
+pub const HOVER: Duration = Duration::from_millis(120);
+/// Menus, popovers, tooltips, notices, and content that replaces other
+/// content (a Settings section, another task).
 pub const REVEAL: Duration = Duration::from_millis(140);
+/// A control changing state in place: switches, chevrons, icon swaps.
+pub const TOGGLE: Duration = Duration::from_millis(150);
+/// Content arriving: live transcript rows, cards, dialogs.
+pub const ENTER: Duration = Duration::from_millis(180);
+/// Panels changing size: the sidebar and the expanded composer.
+pub const PANEL: Duration = Duration::from_millis(200);
+/// How far arriving content travels before it settles.
+pub const RISE: Pixels = px(6.);
+
+/// Time for a box to grow or shrink by `distance`: about 500 px a second,
+/// so one line of text takes the shortest time and a large jump [`PANEL`].
+pub fn resize_duration(distance: Pixels) -> Duration {
+    let millis = (distance.as_f32().abs() * 2.).clamp(120., PANEL.as_millis() as f32);
+    Duration::from_millis(millis as u64)
+}
+
+/// Entrances and fades: a fast start and a long settle.
+pub fn ease_out_quint(t: f32) -> f32 {
+    1. - (1. - t).powi(5)
+}
+
+/// Movement and size: gentler than [`ease_out_quint`], so a moving edge
+/// stays readable.
+pub fn ease_out_cubic(t: f32) -> f32 {
+    1. - (1. - t).powi(3)
+}
+
+/// Hover, which reverses often: the same curve both ways.
+pub fn smoothstep(t: f32) -> f32 {
+    t * t * (3. - 2. * t)
+}
+
+#[cfg(test)]
+thread_local! {
+    static TEST_NOW: std::cell::Cell<Option<Instant>> = const { std::cell::Cell::new(None) };
+}
+
+/// The clock transitions read. Tests pin it with [`set_test_now`], since
+/// the test executor's clock does not advance `Instant`.
+pub fn now() -> Instant {
+    #[cfg(test)]
+    if let Some(now) = TEST_NOW.with(std::cell::Cell::get) {
+        return now;
+    }
+    Instant::now()
+}
+
+/// Pin [`now`] on this thread; `None` returns it to the real clock.
+#[cfg(test)]
+pub fn set_test_now(now: Option<Instant>) {
+    TEST_NOW.with(|cell| cell.set(now));
+}
+
+/// One reversible value. Retargeting starts from the value on screen, so
+/// a second click never jumps back to an endpoint or restarts.
+#[derive(Clone, Copy, Debug)]
+pub struct Tween {
+    from: f32,
+    to: f32,
+    started: Instant,
+    duration: Duration,
+    easing: fn(f32) -> f32,
+}
+
+impl Tween {
+    /// At rest at `value`.
+    pub fn new(value: f32) -> Self {
+        Self {
+            from: value,
+            to: value,
+            started: epoch(),
+            duration: Duration::ZERO,
+            easing: ease_out_cubic,
+        }
+    }
+
+    /// Where the value is heading.
+    pub fn target(&self) -> f32 {
+        self.to
+    }
+
+    /// The value to draw at `now`.
+    pub fn value(&self, now: Instant) -> f32 {
+        let elapsed = now.saturating_duration_since(self.started);
+        if elapsed >= self.duration {
+            return self.to;
+        }
+        let t = elapsed.as_secs_f32() / self.duration.as_secs_f32();
+        self.from + (self.to - self.from) * (self.easing)(t)
+    }
+
+    /// Whether the value still changes after `now`.
+    pub fn is_moving(&self, now: Instant) -> bool {
+        now.saturating_duration_since(self.started) < self.duration
+    }
+
+    /// Head for `to` over `duration` from wherever the value is now.
+    /// Reduced motion settles at once.
+    pub fn set(
+        &mut self,
+        to: f32,
+        duration: Duration,
+        easing: fn(f32) -> f32,
+        now: Instant,
+        reduced: bool,
+    ) {
+        if reduced || duration.is_zero() {
+            *self = Self::new(to);
+        } else if to != self.to {
+            *self = Self {
+                from: self.value(now),
+                to,
+                started: now,
+                duration,
+                easing,
+            };
+        }
+    }
+
+    /// [`Tween::set`], then the value to draw now and whether another
+    /// frame is needed. Reduced motion also settles a transition already
+    /// under way.
+    pub fn step(
+        &mut self,
+        to: f32,
+        duration: Duration,
+        easing: fn(f32) -> f32,
+        now: Instant,
+        reduced: bool,
+    ) -> (f32, bool) {
+        self.set(to, duration, easing, now, reduced);
+        if reduced {
+            *self = Self::new(self.to);
+        }
+        (self.value(now), self.is_moving(now))
+    }
+}
+
+/// How far an entrance that began at `started` is through `duration`, in
+/// `[0, 1]`. For entrances timed by view state rather than element state,
+/// such as transcript rows that can scroll away and back.
+pub fn progress(started: Instant, duration: Duration, now: Instant, reduced: bool) -> f32 {
+    if reduced || duration.is_zero() {
+        return 1.;
+    }
+    (now.saturating_duration_since(started).as_secs_f32() / duration.as_secs_f32()).min(1.)
+}
 
 /// Phase clock every looping effect reads, so they all stay in step and
 /// their frame timers line up.
@@ -181,25 +337,326 @@ where
 {
     element.with_animation(
         id,
-        gpui::Animation::new(REVEAL).with_easing(gpui::ease_out_quint()),
+        gpui::Animation::new(REVEAL).with_easing(ease_out_quint),
         |element, delta| element.opacity(delta),
     )
 }
 
-/// Fade in and slide up a few pixels, for panels that open above their
-/// anchor. Same one-shot cost profile as [`fade_in`].
-pub fn rise_in<E>(element: E, id: impl Into<ElementId>) -> AnimationElement<E>
+/// Fade in and settle up from [`RISE`] below, for panels that open above
+/// their anchor. Same one-shot cost profile as [`fade_in`].
+pub fn rise_in<E>(element: E, id: impl Into<ElementId>) -> AnimationElement<Shifted<E>>
 where
     E: IntoElement + Styled + 'static,
 {
-    element.with_animation(
+    slide_in(element, id, REVEAL, gpui::point(px(0.), RISE))
+}
+
+/// Fade in over `duration` while moving from `from`, an offset from the
+/// resting position, to rest. Layout and hit testing use the resting
+/// position throughout.
+pub fn slide_in<E>(
+    element: E,
+    id: impl Into<ElementId>,
+    duration: Duration,
+    from: Point<Pixels>,
+) -> AnimationElement<Shifted<E>>
+where
+    E: IntoElement + Styled + 'static,
+{
+    shifted(element).with_animation(
         id,
-        gpui::Animation::new(REVEAL).with_easing(gpui::ease_out_quint()),
-        |element, delta| {
+        gpui::Animation::new(duration).with_easing(ease_out_quint),
+        move |element, delta| {
+            let remaining = 1. - delta;
             element
                 .opacity(delta)
-                .mt(gpui::px(6. * (1. - delta)))
-                .mb(gpui::px(-6. * (1. - delta)))
+                .offset(gpui::point(from.x * remaining, from.y * remaining))
+        },
+    )
+}
+
+/// Draw content `progress` of the way through its entrance (see
+/// [`progress`]): faded and [`RISE`] low at 0, at rest at 1.
+pub fn arrive<E>(element: E, progress: f32) -> Shifted<E>
+where
+    E: IntoElement + Styled + 'static,
+{
+    let eased = ease_out_quint(progress.clamp(0., 1.));
+    shifted(element)
+        .opacity(eased)
+        .offset(gpui::point(px(0.), RISE * (1. - eased)))
+}
+
+/// Paint an element away from where layout put it, hitbox included,
+/// without moving anything else: gpui's stand-in for a CSS translate.
+pub fn shifted<E: IntoElement>(element: E) -> Shifted<E> {
+    Shifted {
+        element: Some(element),
+        offset: Point::default(),
+    }
+}
+
+pub struct Shifted<E> {
+    element: Option<E>,
+    offset: Point<Pixels>,
+}
+
+impl<E> Shifted<E> {
+    /// Rounded to whole pixels, so shifted text stays crisp.
+    pub fn offset(mut self, offset: Point<Pixels>) -> Self {
+        self.offset = gpui::point(offset.x.round(), offset.y.round());
+        self
+    }
+}
+
+impl<E: Styled> Styled for Shifted<E> {
+    fn style(&mut self) -> &mut gpui::StyleRefinement {
+        self.element
+            .as_mut()
+            .expect("a shifted element is styled before layout")
+            .style()
+    }
+}
+
+impl<E: IntoElement + 'static> IntoElement for Shifted<E> {
+    type Element = Self;
+
+    fn into_element(self) -> Self {
+        self
+    }
+}
+
+impl<E: IntoElement + 'static> Element for Shifted<E> {
+    type RequestLayoutState = AnyElement;
+    type PrepaintState = ();
+
+    fn id(&self) -> Option<ElementId> {
+        None
+    }
+
+    fn source_location(&self) -> Option<&'static core::panic::Location<'static>> {
+        None
+    }
+
+    fn request_layout(
+        &mut self,
+        _id: Option<&GlobalElementId>,
+        _inspector_id: Option<&InspectorElementId>,
+        window: &mut Window,
+        cx: &mut App,
+    ) -> (LayoutId, AnyElement) {
+        let mut element = self
+            .element
+            .take()
+            .expect("a shifted element is laid out once")
+            .into_any_element();
+        (element.request_layout(window, cx), element)
+    }
+
+    fn prepaint(
+        &mut self,
+        _id: Option<&GlobalElementId>,
+        _inspector_id: Option<&InspectorElementId>,
+        _bounds: Bounds<Pixels>,
+        element: &mut AnyElement,
+        window: &mut Window,
+        cx: &mut App,
+    ) {
+        window.with_element_offset(self.offset, |window| element.prepaint(window, cx));
+    }
+
+    fn paint(
+        &mut self,
+        _id: Option<&GlobalElementId>,
+        _inspector_id: Option<&InspectorElementId>,
+        _bounds: Bounds<Pixels>,
+        element: &mut AnyElement,
+        _: &mut (),
+        window: &mut Window,
+        cx: &mut App,
+    ) {
+        element.paint(window, cx);
+    }
+}
+
+/// An element rebuilt each frame from a value that eases toward `target`
+/// and retargets from wherever it is. The value lives in element state
+/// under `id`, so render code needs no view state. It starts at `target`,
+/// so nothing animates on mount, unless [`Animated::enter_from`] says
+/// otherwise. `build` runs at layout time; keep it cheap.
+pub fn animated(
+    id: impl Into<ElementId>,
+    target: f32,
+    duration: Duration,
+    easing: fn(f32) -> f32,
+    build: impl Fn(f32) -> AnyElement + 'static,
+) -> Animated {
+    Animated {
+        id: id.into(),
+        target,
+        duration,
+        easing,
+        initial: None,
+        build: Box::new(build),
+    }
+}
+
+pub struct Animated {
+    id: ElementId,
+    target: f32,
+    duration: Duration,
+    easing: fn(f32) -> f32,
+    initial: Option<f32>,
+    build: Box<dyn Fn(f32) -> AnyElement>,
+}
+
+impl Animated {
+    /// Start from `value` the first time this element appears.
+    pub fn enter_from(mut self, value: f32) -> Self {
+        self.initial = Some(value);
+        self
+    }
+}
+
+// Keyed apart from other element state that may share the id.
+struct AnimatedValue(Tween);
+
+impl IntoElement for Animated {
+    type Element = Self;
+
+    fn into_element(self) -> Self {
+        self
+    }
+}
+
+impl Element for Animated {
+    type RequestLayoutState = AnyElement;
+    type PrepaintState = ();
+
+    fn id(&self) -> Option<ElementId> {
+        Some(self.id.clone())
+    }
+
+    fn source_location(&self) -> Option<&'static core::panic::Location<'static>> {
+        None
+    }
+
+    fn request_layout(
+        &mut self,
+        id: Option<&GlobalElementId>,
+        _inspector_id: Option<&InspectorElementId>,
+        window: &mut Window,
+        cx: &mut App,
+    ) -> (LayoutId, AnyElement) {
+        let now = now();
+        let reduced = cx.reduce_motion();
+        let (value, moving) = window.with_element_state(
+            id.expect("animated elements have an id"),
+            |state: Option<AnimatedValue>, _| {
+                let mut state = state.unwrap_or_else(|| {
+                    AnimatedValue(Tween::new(self.initial.unwrap_or(self.target)))
+                });
+                let frame = state
+                    .0
+                    .step(self.target, self.duration, self.easing, now, reduced);
+                (frame, state)
+            },
+        );
+        if moving {
+            window.request_animation_frame();
+        }
+        let mut element = (self.build)(value);
+        (element.request_layout(window, cx), element)
+    }
+
+    fn prepaint(
+        &mut self,
+        _id: Option<&GlobalElementId>,
+        _inspector_id: Option<&InspectorElementId>,
+        _bounds: Bounds<Pixels>,
+        element: &mut AnyElement,
+        window: &mut Window,
+        cx: &mut App,
+    ) {
+        element.prepaint(window, cx);
+    }
+
+    fn paint(
+        &mut self,
+        _id: Option<&GlobalElementId>,
+        _inspector_id: Option<&InspectorElementId>,
+        _bounds: Bounds<Pixels>,
+        element: &mut AnyElement,
+        _: &mut (),
+        window: &mut Window,
+        cx: &mut App,
+    ) {
+        element.paint(window, cx);
+    }
+}
+
+/// Two icons sharing one `size` slot: the one `second` selects scales up
+/// and fades in while the other scales down and out, over [`TOGGLE`].
+/// Use it where an icon names the state its control toggles (expand and
+/// shrink, send and stop).
+pub fn icon_swap(
+    id: impl Into<ElementId>,
+    second: bool,
+    icons: [&'static str; 2],
+    size: Pixels,
+    color: u32,
+) -> gpui::Div {
+    let id = std::sync::Arc::new(id.into());
+    let layer =
+        |index: usize| {
+            let name = icons[index];
+            let shown = (index == 1) == second;
+            animated(
+                ElementId::NamedChild(
+                    id.clone(),
+                    if index == 0 { "first" } else { "second" }.into(),
+                ),
+                if shown { 1. } else { 0. },
+                TOGGLE,
+                ease_out_cubic,
+                move |shown| {
+                    let scale = 0.6 + 0.4 * shown;
+                    gpui::div()
+                        .absolute()
+                        .inset_0()
+                        .flex()
+                        .items_center()
+                        .justify_center()
+                        .opacity(shown)
+                        .child(super::icons::icon(name, size, color).with_transformation(
+                            gpui::Transformation::scale(gpui::size(scale, scale)),
+                        ))
+                        .into_any_element()
+                },
+            )
+        };
+    gpui::div()
+        .relative()
+        .flex_none()
+        .size(size)
+        .child(layer(0))
+        .child(layer(1))
+}
+
+/// A disclosure chevron that points right when closed and turns down when
+/// `open`, over [`TOGGLE`].
+pub fn chevron(id: impl Into<ElementId>, open: bool, size: Pixels, color: u32) -> Animated {
+    animated(
+        id,
+        if open { 1. } else { 0. },
+        TOGGLE,
+        ease_out_cubic,
+        move |turn| {
+            super::icons::icon("chevron-right", size, color)
+                .with_transformation(gpui::Transformation::rotate(gpui::radians(
+                    turn * std::f32::consts::FRAC_PI_2,
+                )))
+                .into_any_element()
         },
     )
 }
@@ -211,74 +668,34 @@ pub fn pulse(phase: f32, shift: f32, low: f32, high: f32) -> f32 {
     low + (high - low) * wave
 }
 
-/// A short, symmetric transition for hover plates and control reveals.
-/// Press and focus styles remain native GPUI refinements.
-pub const HOVER: Duration = Duration::from_millis(120);
+// Background and visibility on one control are separate values with
+// separate targets under the same element id.
+struct HoverPlate(Tween);
+struct Reveal(Tween);
 
-#[derive(Clone, Copy)]
-struct HoverTransition {
-    from: f32,
-    target: f32,
-    started: Instant,
-}
-
-impl HoverTransition {
-    fn new(visible: bool, now: Instant) -> Self {
-        let value = if visible { 1. } else { 0. };
-        Self {
-            from: value,
-            target: value,
-            started: now,
-        }
+/// The color `amount` of the way from `from` to `to`. Premultiplied RGB
+/// avoids a dark flash when fading from transparent.
+pub fn mix(from: gpui::Hsla, to: gpui::Hsla, amount: f32) -> gpui::Hsla {
+    if amount <= 0. {
+        return from;
     }
-
-    fn value(&self, now: Instant) -> f32 {
-        let t = (now.saturating_duration_since(self.started).as_secs_f32() / HOVER.as_secs_f32())
-            .min(1.);
-        let eased = t * t * (3. - 2. * t);
-        self.from + (self.target - self.from) * eased
+    if amount >= 1. {
+        return to;
     }
-
-    fn update(&mut self, hovered: bool, now: Instant, reduced: bool) -> (f32, bool) {
-        let target = if hovered { 1. } else { 0. };
-        if reduced {
-            self.from = target;
-            self.target = target;
-        } else if self.target != target {
-            self.from = self.value(now);
-            self.target = target;
-            self.started = now;
-        }
-        let value = self.value(now);
-        (value, value != self.target)
-    }
-}
-
-// Visibility and background hover can have different targets on one control.
-struct RevealTransition(HoverTransition);
-
-// Premultiplied RGB avoids a dark flash when fading from transparent.
-fn hover_color(rest: gpui::Hsla, hover: gpui::Hsla, amount: f32) -> gpui::Hsla {
-    if amount == 0. {
-        return rest;
-    }
-    if amount == 1. {
-        return hover;
-    }
-    let rest = gpui::Rgba::from(rest);
-    let hover = gpui::Rgba::from(hover);
-    let alpha = rest.a + (hover.a - rest.a) * amount;
+    let from = gpui::Rgba::from(from);
+    let to = gpui::Rgba::from(to);
+    let alpha = from.a + (to.a - from.a) * amount;
     let channel = |a: f32, b: f32| {
         if alpha == 0. {
             0.
         } else {
-            (a * rest.a * (1. - amount) + b * hover.a * amount) / alpha
+            (a * from.a * (1. - amount) + b * to.a * amount) / alpha
         }
     };
     gpui::Rgba {
-        r: channel(rest.r, hover.r),
-        g: channel(rest.g, hover.g),
-        b: channel(rest.b, hover.b),
+        r: channel(from.r, to.r),
+        g: channel(from.g, to.g),
+        b: channel(from.b, to.b),
         a: alpha,
     }
     .into()
@@ -426,26 +843,33 @@ impl Element for HoverBackground {
                 .is_some_and(|hitbox| hitbox.is_hovered(window))
                 && !cx.has_active_drag()
         });
-        let now = Instant::now();
+        let now = now();
         #[cfg(test)]
         let now = self.test_now.unwrap_or(now);
+        let reduced = cx.reduce_motion();
         let (amount, animating) = window.with_element_state(
             id.expect("hover controls have an id"),
-            |state: Option<HoverTransition>, _| {
-                let mut state = state.unwrap_or_else(|| HoverTransition::new(false, now));
-                let frame = state.update(hovered, now, cx.reduce_motion());
+            |state: Option<HoverPlate>, _| {
+                let mut state = state.unwrap_or_else(|| HoverPlate(Tween::new(0.)));
+                let frame = state.0.step(
+                    if hovered { 1. } else { 0. },
+                    HOVER,
+                    smoothstep,
+                    now,
+                    reduced,
+                );
                 (frame, state)
             },
         );
-        self.element.style().background = Some(hover_color(self.rest, self.hover, amount).into());
+        self.element.style().background = Some(mix(self.rest, self.hover, amount).into());
         let reveal_animating = if let Some(visible) = self.revealed {
+            let target = if visible { 1. } else { 0. };
             let (opacity, animating) = window.with_element_state(
                 id.expect("revealed controls have an id"),
-                |state: Option<RevealTransition>, _| {
+                |state: Option<Reveal>, _| {
                     // An initially visible control should not fade in on mount.
-                    let mut state = state
-                        .unwrap_or_else(|| RevealTransition(HoverTransition::new(visible, now)));
-                    let frame = state.0.update(visible, now, cx.reduce_motion());
+                    let mut state = state.unwrap_or_else(|| Reveal(Tween::new(target)));
+                    let frame = state.0.step(target, HOVER, smoothstep, now, reduced);
                     (frame, state)
                 },
             );
@@ -496,44 +920,60 @@ impl Element for HoverBackground {
 #[cfg(test)]
 mod hover_tests {
     use super::*;
+    fn hover(tween: &mut Tween, hovered: bool, now: Instant, reduced: bool) -> (f32, bool) {
+        tween.step(
+            if hovered { 1. } else { 0. },
+            HOVER,
+            smoothstep,
+            now,
+            reduced,
+        )
+    }
+
     #[test]
     fn hover_reverses_from_the_displayed_value_and_settles() {
         let now = Instant::now();
-        let mut transition = HoverTransition::new(false, now);
-        assert_eq!(transition.update(false, now, false), (0., false));
-        assert_eq!(transition.update(true, now, false), (0., true));
+        let mut transition = Tween::new(0.);
+        assert_eq!(hover(&mut transition, false, now, false), (0., false));
+        assert_eq!(hover(&mut transition, true, now, false), (0., true));
         let halfway = now + HOVER / 2;
-        assert_eq!(transition.update(true, halfway, false), (0.5, true));
-        assert_eq!(transition.update(false, halfway, false), (0.5, true));
+        assert_eq!(hover(&mut transition, true, halfway, false), (0.5, true));
+        assert_eq!(hover(&mut transition, false, halfway, false), (0.5, true));
         assert_eq!(
-            transition.update(false, halfway + HOVER, false),
+            hover(&mut transition, false, halfway + HOVER, false),
             (0., false)
         );
         assert_eq!(
-            transition.update(false, halfway + HOVER * 2, false),
+            hover(&mut transition, false, halfway + HOVER * 2, false),
             (0., false)
         );
     }
     #[test]
     fn reduced_motion_settles_an_interrupted_hover_immediately() {
         let now = Instant::now();
-        let mut transition = HoverTransition::new(false, now);
-        transition.update(true, now, false);
-        assert_eq!(transition.update(true, now + HOVER / 4, true), (1., false));
-        assert_eq!(transition.update(false, now + HOVER / 2, true), (0., false));
+        let mut transition = Tween::new(0.);
+        hover(&mut transition, true, now, false);
+        assert_eq!(
+            hover(&mut transition, true, now + HOVER / 4, true),
+            (1., false)
+        );
+        assert_eq!(
+            hover(&mut transition, false, now + HOVER / 2, true),
+            (0., false)
+        );
     }
 
     #[test]
     fn hover_eases_symmetrically_without_darkening_transparent_colors() {
         let now = Instant::now();
-        let mut transition = HoverTransition::new(false, now);
-        transition.update(true, now, false);
+        let mut transition = Tween::new(0.);
+        hover(&mut transition, true, now, false);
         let early = transition.value(now + HOVER / 4);
         let late = transition.value(now + HOVER * 3 / 4);
         assert!(early < 0.25 && late > 0.75);
         assert!((early + late - 1.).abs() <= 2. * f32::EPSILON);
         let white = gpui::hsla(0., 0., 1., 1.);
-        let middle = gpui::Rgba::from(hover_color(gpui::transparent_black(), white, 0.5));
+        let middle = gpui::Rgba::from(mix(gpui::transparent_black(), white, 0.5));
         assert_eq!(middle.r, 1.);
         assert_eq!(middle.g, 1.);
         assert_eq!(middle.b, 1.);
