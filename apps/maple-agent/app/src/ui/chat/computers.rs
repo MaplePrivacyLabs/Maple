@@ -255,16 +255,24 @@ impl ChatScreen {
         this
     }
 
+    /// Leaving for another computer abandons a first send whose folder is
+    /// still being created; the late result lands in no context. Hiding
+    /// the screen for Settings is not a switch and keeps the send.
+    pub(crate) fn cancel_scratch_send(&mut self, cx: &mut Context<Self>) {
+        if self.scratch_creation.is_none() {
+            return;
+        }
+        self.begin_navigation();
+        self.pending_first_send = None;
+        self.notice = Some(UiText::key("chat-scratch-switched-computers"));
+        cx.notify();
+    }
+
     pub(crate) fn set_visible(&mut self, visible: bool, cx: &mut Context<Self>) {
         let changed = self.visible != visible;
         self.visible = visible;
         if !visible {
             self.project_folder_dialog = None;
-            if changed && self.scratch_creation.is_some() {
-                self.begin_navigation();
-                self.pending_first_send = None;
-                self.notice = Some(UiText::key("chat-scratch-switched-computers"));
-            }
         }
         if changed && visible && !self.computers.is_empty() {
             // Only the mounted sidebar projects every computer. Background

@@ -1925,7 +1925,10 @@ impl MapleApp {
                 // Same-computer navigation must not look like leaving the
                 // screen: the target decides whether to admit the request.
                 if other.entity_id() != chat.entity_id() {
-                    other.update(cx, |other, cx| other.set_visible(false, cx));
+                    other.update(cx, |other, cx| {
+                        other.cancel_scratch_send(cx);
+                        other.set_visible(false, cx);
+                    });
                 }
             }
             self.selected_host = request.computer;
