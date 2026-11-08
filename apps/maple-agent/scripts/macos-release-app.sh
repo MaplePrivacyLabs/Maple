@@ -27,6 +27,21 @@ macos_codesign() {
     return 1
 }
 
+# GitHub's macOS runners sometimes refuse a new image with "hdiutil: create
+# failed - Resource busy" (release run 42441283859). Retry only the image step
+# and remove any partial image before trying again.
+macos_create_dmg() {
+    local image="$1" attempt
+    shift
+    for attempt in 1 2 3 4; do
+        macos_native hdiutil create "$@" -ov "$image" >/dev/null && return 0
+        echo "hdiutil create failed (attempt $attempt of 4)" >&2
+        rm -f -- "$image"
+        ((attempt == 4)) || sleep $((attempt * 10))
+    done
+    return 1
+}
+
 macos_embed_dylibs() {
     local component="$1" binary="$2" app="$3"
     python3 "$component/scripts/macos-release-dylibs.py" "$binary" "$app"
@@ -210,8 +225,8 @@ for root,dirs,files in os.walk(sys.argv[1]):
         total+=os.lstat(os.path.join(root,name)).st_size
 print(-(-total//(1024*1024)))' "$image_root")"
     image_mb=$((payload_mb + payload_mb / 5 + 64))
-    if ! macos_native hdiutil create -volname "$app_name" -srcfolder "$image_root" \
-        -fs HFS+ -size "${image_mb}m" -format UDZO -ov "$output_dir/$basename.dmg" >/dev/null; then
+    if ! macos_create_dmg "$output_dir/$basename.dmg" -volname "$app_name" -srcfolder "$image_root" \
+        -fs HFS+ -size "${image_mb}m" -format UDZO; then
         echo "hdiutil could not create a ${image_mb} MB disk image for ${payload_mb} MB of content" >&2
         macos_native /bin/df -h "$output_dir" "${TMPDIR:-/tmp}" >&2 || true
         return 1
