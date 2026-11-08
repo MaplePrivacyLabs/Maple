@@ -62,7 +62,7 @@ pub(crate) use catalog::saved_description;
 /// Emitted when the user leaves settings.
 pub struct SettingsClosed(pub AppSettings);
 
-/// Emitted when the user clicks Sign out in the settings header.
+/// Emitted when the user clicks Sign out in the Account section.
 pub struct SignOutRequested;
 
 /// Emitted after the server confirmed the account is deleted and the
@@ -1701,29 +1701,7 @@ impl Render for SettingsScreen {
             .flex()
             .flex_row()
             .bg(gpui::rgb(theme::bg_app()))
-            .child(
-                // The task sidebar's column, up to the window's top edge:
-                // Settings keeps the task screen's frame, with Back where
-                // that screen's wordmark sits.
-                div()
-                    .id("settings-sidebar")
-                    .flex_none()
-                    .w(super::chat::SIDEBAR_WIDTH)
-                    .h_full()
-                    .flex()
-                    .flex_col()
-                    .bg(gpui::rgb(theme::bg_sidebar()))
-                    .child(crate::ui::titlebar::drag_region(
-                        div()
-                            .id("settings-sidebar-top-row")
-                            .flex_none()
-                            .px_3()
-                            .pt(crate::ui::titlebar::sidebar_row_top())
-                            .pb_2()
-                            .child(self.render_back(cx)),
-                    ))
-                    .child(self.render_nav(cx)),
-            )
+            .child(self.render_sidebar(cx))
             .child(
                 div()
                     .flex_1()
@@ -1732,48 +1710,13 @@ impl Render for SettingsScreen {
                     .flex()
                     .flex_col()
                     .bg(gpui::rgb(theme::bg_sidebar()))
+                    // The task header's row, with nothing to name: the
+                    // screen's title heads the sidebar instead.
                     .child(crate::ui::titlebar::drag_region(
                         div()
                             .id("settings-header")
                             .flex_none()
-                            .h(crate::ui::titlebar::TITLE_BAR_HEIGHT)
-                            .flex()
-                            .items_center()
-                            .gap_3()
-                            // The task title's inset, which the pane's
-                            // content shares.
-                            .pl(window.rem_size())
-                            .pr_3()
-                            .child(
-                                crate::ui::titlebar::title(super::i18n::tr("settings-title"))
-                                    .debug_selector(|| "settings-title".to_string())
-                                    .min_w_0(),
-                            )
-                            .child(div().flex_1())
-                            .child(
-                                div()
-                                    .id("settings-sign-out")
-                                    .px_2()
-                                    .py_1()
-                                    .rounded(theme::RADIUS_SM)
-                                    .text_sm()
-                                    .text_color(gpui::rgb(theme::text_muted()))
-                                    .hover(|style| {
-                                        style
-                                            .text_color(gpui::rgb(theme::status_error()))
-                                            .cursor_pointer()
-                                    })
-                                    .on_mouse_down(
-                                        gpui::MouseButton::Left,
-                                        |_event, _window, cx| {
-                                            cx.stop_propagation();
-                                        },
-                                    )
-                                    .on_click(cx.listener(|_this, _event, _window, cx| {
-                                        cx.emit(SignOutRequested);
-                                    }))
-                                    .child(super::i18n::tr("settings-sign-out")),
-                            ),
+                            .h(crate::ui::titlebar::TITLE_BAR_HEIGHT),
                     ))
                     .child(
                         div()
@@ -1795,40 +1738,82 @@ impl Render for SettingsScreen {
 }
 
 impl SettingsScreen {
-    /// Back to the task screen: the first row of the sidebar column.
-    fn render_back(&self, cx: &mut Context<Self>) -> gpui::Stateful<Div> {
+    /// The task sidebar's column, from the window's top edge. Back sits
+    /// where the task screen's toolbar starts and the screen's title where
+    /// its wordmark sits: beside traffic lights Back joins them in the
+    /// title bar; without them it leads the title's row.
+    fn render_sidebar(&self, cx: &mut Context<Self>) -> gpui::Stateful<Div> {
+        let back_in_title_bar = crate::ui::titlebar::TRANSPARENT_TITLEBAR;
+        let back = self.render_back(cx);
+        let (row_back, bar_back) = if back_in_title_bar {
+            (None, Some(back))
+        } else {
+            (Some(back), None)
+        };
         div()
-            .id("settings-back")
-            .debug_selector(|| "settings-back".to_string())
-            .role(gpui::Role::Button)
-            .aria_label(super::i18n::tr("settings-back"))
-            .h(crate::ui::titlebar::SIDEBAR_ROW_HEIGHT)
-            // The arrow's stroke, not its box, lines up with the labels
-            // of the rows below.
-            .px_2p5()
+            .id("settings-sidebar")
+            .relative()
+            .flex_none()
+            .w(super::chat::SIDEBAR_WIDTH)
+            .h_full()
             .flex()
-            .items_center()
-            .gap_2()
-            .rounded(theme::RADIUS_SM)
-            .text_sm()
-            .font_weight(gpui::FontWeight::MEDIUM)
-            .text_color(gpui::rgb(theme::text_secondary()))
-            .hover(|style| {
-                style
-                    .text_color(gpui::rgb(theme::text_primary()))
-                    .bg(gpui::rgb(theme::bg_elevated()))
-                    .cursor_pointer()
-            })
-            .active(|style| style.bg(gpui::rgb(theme::bg_sidebar_pill())))
-            // Inside a drag region: a press here is a click, not a drag.
-            .on_mouse_down(gpui::MouseButton::Left, |_event, _window, cx| {
-                cx.stop_propagation();
-            })
-            .on_click(cx.listener(|this, _event, _window, cx| {
-                this.close(cx);
+            .flex_col()
+            .bg(gpui::rgb(theme::bg_sidebar()))
+            .child(crate::ui::titlebar::drag_region(
+                div()
+                    .id("settings-sidebar-top-row")
+                    .flex_none()
+                    .px_3()
+                    .pt(crate::ui::titlebar::sidebar_row_top())
+                    .pb_2()
+                    .child(
+                        div()
+                            .h(crate::ui::titlebar::SIDEBAR_ROW_HEIGHT)
+                            .flex()
+                            .items_center()
+                            .gap_1()
+                            .children(row_back)
+                            .child(
+                                crate::ui::titlebar::title(super::i18n::tr("settings-title"))
+                                    .debug_selector(|| "settings-title".to_string())
+                                    // On the section labels' edge.
+                                    .when(back_in_title_bar, |title| title.pl_3())
+                                    .min_w_0(),
+                            ),
+                    ),
+            ))
+            .child(self.render_nav(cx))
+            .children(bar_back.map(|back| {
+                div()
+                    .absolute()
+                    .left(crate::ui::titlebar::TRAFFIC_LIGHT_TOOLBAR_LEFT)
+                    .top(
+                        (crate::ui::titlebar::TITLE_BAR_HEIGHT
+                            - crate::ui::titlebar::SIDEBAR_ROW_HEIGHT)
+                            / 2.,
+                    )
+                    .child(back)
             }))
-            .child(icon("arrow-left", px(14.), theme::text_secondary()))
-            .child(super::i18n::tr("settings-back"))
+    }
+
+    /// Back to the task screen: an arrow like the task screen's toolbar
+    /// buttons, named by its tooltip.
+    fn render_back(&self, cx: &mut Context<Self>) -> gpui::Stateful<Div> {
+        widgets::icon_button(
+            "settings-back",
+            "arrow-left",
+            super::i18n::tr("settings-back"),
+            px(16.),
+            theme::text_secondary(),
+        )
+        .debug_selector(|| "settings-back".to_string())
+        // Inside a drag region: a press here is a click, not a drag.
+        .on_mouse_down(gpui::MouseButton::Left, |_event, _window, cx| {
+            cx.stop_propagation();
+        })
+        .on_click(cx.listener(|this, _event, _window, cx| {
+            this.close(cx);
+        }))
     }
 
     fn render_nav(&self, cx: &mut Context<Self>) -> gpui::Stateful<Div> {
@@ -1895,9 +1880,7 @@ impl SettingsScreen {
             .flex()
             .flex_col()
             .gap_4()
-            // Content starts under the title, at the title's inset.
-            .px(window.rem_size())
-            .py_6()
+            .p_6()
             .track_scroll(&self.pane_scroll)
             .overflow_y_scroll();
         match self.section {

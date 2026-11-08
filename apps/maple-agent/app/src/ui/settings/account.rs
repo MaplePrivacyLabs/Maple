@@ -438,15 +438,19 @@ impl SettingsScreen {
             .gap_4()
             .child(section_title(&tr("settings-account-account")));
         let Some(info) = self.account.info.as_ref() else {
-            return pane.child(
-                div()
-                    .text_sm()
-                    .text_color(gpui::rgb(theme::text_faint()))
-                    .child(match &self.account.load_error {
-                        Some(message) => message.resolve(),
-                        None => tr("settings-account-loading-account"),
-                    }),
-            );
+            // Sign out stays reachable while the account loads or after it
+            // failed to load: Settings has no other way out of the session.
+            return pane
+                .child(
+                    div()
+                        .text_sm()
+                        .text_color(gpui::rgb(theme::text_faint()))
+                        .child(match &self.account.load_error {
+                            Some(message) => message.resolve(),
+                            None => tr("settings-account-loading-account"),
+                        }),
+                )
+                .child(self.render_sign_out(cx));
         };
 
         let is_guest = info.login_method == MapleLoginMethod::Guest;
@@ -479,31 +483,34 @@ impl SettingsScreen {
         if info.login_method.has_password() {
             pane = pane.child(self.render_password_form(cx));
         }
-        pane = pane.child(
-            self.application_target(
-                || SettingsTarget::Account(AccountTarget::SignOut),
-                widgets::card_row()
-                    .flex()
-                    .items_center()
-                    .justify_between()
-                    .gap_4()
-                    .child(super::setting_copy(
-                        tr("settings-account-sign-out"),
-                        tr("settings-account-ends-this-session-on-this-device-your-tasks-stay-in-your-account"),
-                    ))
-                    .child(
-                        widgets::secondary_button("account-sign-out")
-                            .flex_none()
-                            .py_1p5()
-                            .on_click(cx.listener(|_this, _event, _window, cx| {
-                                cx.emit(SignOutRequested);
-                            }))
-                            .child(tr("settings-account-sign-out")),
-                    ),
-            ),
-        );
+        pane = pane.child(self.render_sign_out(cx));
         pane.child(section_title(&tr("settings-account-danger-zone")))
             .child(self.render_delete_account(cx))
+    }
+
+    fn render_sign_out(&self, cx: &mut Context<Self>) -> gpui::AnyElement {
+        self.application_target(
+            || SettingsTarget::Account(AccountTarget::SignOut),
+            widgets::card_row()
+                .flex()
+                .items_center()
+                .justify_between()
+                .gap_4()
+                .child(super::setting_copy(
+                    tr("settings-account-sign-out"),
+                    tr("settings-account-ends-this-session-on-this-device-your-tasks-stay-in-your-account"),
+                ))
+                .child(
+                    widgets::secondary_button("account-sign-out")
+                        .debug_selector(|| "account-sign-out".to_string())
+                        .flex_none()
+                        .py_1p5()
+                        .on_click(cx.listener(|_this, _event, _window, cx| {
+                            cx.emit(SignOutRequested);
+                        }))
+                        .child(tr("settings-account-sign-out")),
+                ),
+        )
     }
 
     fn render_delete_account(&self, cx: &mut Context<Self>) -> Div {

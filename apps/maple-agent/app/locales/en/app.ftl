@@ -62,7 +62,6 @@ settings-section-about = About
 settings-section-advanced = Privacy & Security
 settings-back = Back to app
 settings-title = Settings
-settings-sign-out = Sign out
 settings-sections = Settings sections
 settings-theme-label-system = System
 settings-theme-label-dark = Dark

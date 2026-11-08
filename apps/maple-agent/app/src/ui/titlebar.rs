@@ -23,13 +23,18 @@ pub const TRAFFIC_LIGHT_POSITION: gpui::Point<Pixels> = gpui::point(px(12.), px(
 /// row that sits under them instead of beside them.
 pub const TRAFFIC_LIGHT_ROW: Pixels = px(36.);
 
+/// Where the first toolbar button starts beside the traffic lights: past
+/// their 78 px, after an 8 px gap. The task header's toolbar and Settings'
+/// Back both start here.
+pub const TRAFFIC_LIGHT_TOOLBAR_LEFT: Pixels = px(86.);
+
 /// Height of the title bar row each screen's main pane starts with. The
-/// task header and the Settings header share it, so their titles sit on
-/// one line and moving between the screens never moves the title.
+/// task header and Settings share it, so the card below starts on one
+/// line on both screens.
 pub const TITLE_BAR_HEIGHT: Pixels = px(40.);
 
 /// Height of the first row of a sidebar column: the task sidebar's
-/// wordmark, Settings' Back.
+/// wordmark, Settings' title.
 pub const SIDEBAR_ROW_HEIGHT: Pixels = px(28.);
 
 /// Top of a sidebar column's first row. Under traffic lights it starts
@@ -42,8 +47,8 @@ pub fn sidebar_row_top() -> Pixels {
     }
 }
 
-/// A pane's title in its title bar: the task, or Settings. One style for
-/// every screen, so the title reads the same wherever the pane goes.
+/// A screen's title: the task's in the task header, "Settings" at the top
+/// of its sidebar. One style, so a title reads the same on every screen.
 pub fn title(text: impl Into<SharedString>) -> Div {
     div()
         .truncate()

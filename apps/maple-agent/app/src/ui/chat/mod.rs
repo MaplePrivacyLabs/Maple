@@ -139,13 +139,14 @@ impl SidebarTransition {
 }
 /// Where the header's toolbar starts, from the window's left edge, as the
 /// sidebar goes from collapsed (0) to expanded (1). Beside traffic lights
-/// it stays put: they reach 30 px past the rail, followed by an 8 px gap.
+/// it stays put at `titlebar::TRAFFIC_LIGHT_TOOLBAR_LEFT`, which Settings'
+/// Back shares.
 /// Without them the Maple logo holds the top row's corner, and the
 /// toolbar follows it at its own 4 px button gap: after the rail's mark
 /// button, or after the wordmark with the same padding, on a whole pixel.
 fn header_toolbar_left(sidebar_expansion: f32) -> gpui::Pixels {
     if titlebar::TRANSPARENT_TITLEBAR {
-        return SIDEBAR_RAIL_WIDTH + px(38.);
+        return titlebar::TRAFFIC_LIGHT_TOOLBAR_LEFT;
     }
     let padding = (titlebar::SIDEBAR_ROW_HEIGHT - sidebar::WORDMARK_HEIGHT) / 2.;
     let mark = sidebar::WORDMARK_LEFT - padding + titlebar::SIDEBAR_ROW_HEIGHT;

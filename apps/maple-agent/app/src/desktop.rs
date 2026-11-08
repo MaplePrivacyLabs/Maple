@@ -5355,10 +5355,10 @@ mod tests {
     }
 
     /// Settings opens in the task screen's frame. With the task sidebar
-    /// open, its card takes the task card's place, its title the task
-    /// title's, and Back the wordmark's row, so the frame does not move
-    /// between the two screens. (From the collapsed rail, Settings still
-    /// opens with its full column.)
+    /// open, its card takes the task card's place, its title the wordmark's
+    /// row, and Back the sidebar toggle's place beside the traffic lights
+    /// (without them, Back leads the title's row). (From the collapsed
+    /// rail, Settings still opens with its full column.)
     #[gpui::test]
     fn settings_opens_in_the_task_screens_frame(cx: &mut gpui::TestAppContext) {
         struct AppHost(Entity<MapleApp>);
@@ -5372,7 +5372,9 @@ mod tests {
         cx.simulate_resize(size(px(1100.), px(850.)));
         cx.run_until_parked();
         let task_card = cx.debug_bounds("task-card").expect("task card");
-        let task_title = cx.debug_bounds("header-title").expect("task title");
+        let toggle = cx
+            .debug_bounds("header-sidebar-toggle")
+            .expect("sidebar toggle");
         let wordmark = cx.debug_bounds("sidebar-wordmark").expect("wordmark");
 
         app.update(cx, |app, cx| app.show_settings(Section::General, cx));
@@ -5381,9 +5383,13 @@ mod tests {
         let title = cx.debug_bounds("settings-title").expect("settings title");
         let back = cx.debug_bounds("settings-back").expect("back");
         assert_eq!(card, task_card);
-        assert_eq!(title.left(), task_title.left());
-        assert_eq!(title.center().y, task_title.center().y);
-        assert_eq!(back.center().y, wordmark.center().y);
+        assert_eq!(title.center().y, wordmark.center().y);
+        if crate::ui::titlebar::TRANSPARENT_TITLEBAR {
+            assert_eq!(back, toggle);
+        } else {
+            assert_eq!(back.center().y, title.center().y);
+            assert!(back.right() < title.left());
+        }
     }
 
     #[gpui::test]

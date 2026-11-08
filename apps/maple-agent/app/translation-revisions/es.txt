@@ -1797,7 +1797,6 @@ settings-shortcut-vim-undo 0d8cc236e81cdede
 settings-shortcut-yank-operator 4d5b24686b72e502
 settings-shortcut-yank-selected-lines c1052e3a0fa4e4a1
 settings-shortcut-yank-to-line-end 8ad1c9da3689f9f8
-settings-sign-out 5f9bde06a061154d
 settings-speech-speed 7abfaab28291aba5
 settings-speech-speed-description 108a3287d8633d34
 settings-speech-voice a1bd6f42451aab37
