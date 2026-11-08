@@ -1214,3 +1214,133 @@ mod hover_tests {
         assert!(child_renders.get() > child_count);
     }
 }
+
+#[cfg(test)]
+mod primitive_tests {
+    use super::*;
+    use gpui::{VisualTestContext, div, prelude::*};
+    use std::{cell::Cell, rc::Rc};
+
+    struct Host {
+        open: bool,
+        shift: Pixels,
+        seen: Rc<Cell<f32>>,
+    }
+
+    impl gpui::Render for Host {
+        fn render(&mut self, _: &mut Window, _: &mut gpui::Context<Self>) -> impl IntoElement {
+            let seen = self.seen.clone();
+            div()
+                .size_full()
+                .flex()
+                .flex_col()
+                .child(animated(
+                    "value",
+                    if self.open { 1. } else { 0. },
+                    PANEL,
+                    ease_out_cubic,
+                    move |value| {
+                        seen.set(value);
+                        div().size(px(10.)).into_any_element()
+                    },
+                ))
+                .child(
+                    shifted(
+                        div()
+                            .debug_selector(|| "shifted".into())
+                            .w(px(40.))
+                            .h(px(20.)),
+                    )
+                    .offset(gpui::point(px(0.), self.shift)),
+                )
+                .child(
+                    div()
+                        .debug_selector(|| "below".into())
+                        .w(px(40.))
+                        .h(px(20.)),
+                )
+        }
+    }
+
+    fn host(
+        cx: &mut gpui::TestAppContext,
+    ) -> (gpui::Entity<Host>, &mut VisualTestContext, Rc<Cell<f32>>) {
+        let seen = Rc::new(Cell::new(-1.));
+        cx.update(|cx| cx.set_reduce_motion(false));
+        let (host, cx) = cx.add_window_view(|_, _| Host {
+            open: false,
+            shift: px(0.),
+            seen: seen.clone(),
+        });
+        cx.run_until_parked();
+        (host, cx, seen)
+    }
+
+    #[gpui::test]
+    fn animated_values_start_at_rest_reverse_from_the_screen_and_settle(
+        cx: &mut gpui::TestAppContext,
+    ) {
+        let start = Instant::now();
+        set_test_now(Some(start));
+        let (host, cx, seen) = host(cx);
+        assert_eq!(seen.get(), 0., "nothing animates on mount");
+        assert_eq!(cx.update(|window, cx| window.simulate_next_frame(cx)), 0);
+
+        let draw = |at: Instant, open: bool, cx: &mut VisualTestContext| {
+            set_test_now(Some(at));
+            host.update(cx, |host, cx| {
+                host.open = open;
+                cx.notify();
+            });
+            cx.run_until_parked();
+        };
+        draw(start, true, cx);
+        assert_eq!(seen.get(), 0.);
+        draw(start + PANEL / 2, true, cx);
+        let halfway = seen.get();
+        assert!(halfway > 0.5 && halfway < 1., "eases out: {halfway}");
+        draw(start + PANEL / 2, false, cx);
+        assert_eq!(
+            seen.get(),
+            halfway,
+            "reversing starts from the value on screen"
+        );
+        draw(start + PANEL / 2 + PANEL / 4, false, cx);
+        assert!(seen.get() > 0. && seen.get() < halfway);
+        draw(start + PANEL * 2, false, cx);
+        assert_eq!(seen.get(), 0.);
+        // The frame requested while it moved still runs once.
+        cx.update(|window, cx| {
+            window.simulate_next_frame(cx);
+        });
+        cx.run_until_parked();
+        assert_eq!(seen.get(), 0.);
+        assert_eq!(
+            cx.update(|window, cx| window.simulate_next_frame(cx)),
+            0,
+            "a settled value asks for no frames"
+        );
+
+        cx.update(|_, cx| cx.set_reduce_motion(true));
+        draw(start + PANEL * 2, true, cx);
+        assert_eq!(seen.get(), 1., "reduced motion settles at once");
+        assert_eq!(cx.update(|window, cx| window.simulate_next_frame(cx)), 0);
+        set_test_now(None);
+    }
+
+    #[gpui::test]
+    fn shifted_content_moves_without_moving_its_neighbors(cx: &mut gpui::TestAppContext) {
+        let (host, cx, _) = host(cx);
+        let shifted = cx.debug_bounds("shifted").unwrap();
+        let below = cx.debug_bounds("below").unwrap();
+        host.update(cx, |host, cx| {
+            host.shift = px(5.6);
+            cx.notify();
+        });
+        cx.run_until_parked();
+        let moved = cx.debug_bounds("shifted").unwrap();
+        assert_eq!(moved.origin.y, shifted.origin.y + px(6.), "whole pixels");
+        assert_eq!(moved.size, shifted.size);
+        assert_eq!(cx.debug_bounds("below").unwrap(), below);
+    }
+}
