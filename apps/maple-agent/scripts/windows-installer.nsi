@@ -38,6 +38,7 @@ Var NativeWin32Error
 Var InstallerReport
 Var ReportPath
 Var FailureAdvice
+Var ExitCode
 
 Function .onInit
   SetShellVarContext current
@@ -74,6 +75,8 @@ Section "Install"
   StrCpy $NativeStatus 0
   StrCpy $NativeStatusAvailable 0
   StrCpy $NativeActivationStage 0
+  StrCpy $NativeWin32Error 0
+  StrCpy $InstallerReport ""
   StrCpy $FailureCode 20
   StrCpy $FailureStage "extracting the installer payload"
   ClearErrors
@@ -87,6 +90,8 @@ Section "Install"
   IfErrors refused
   ; The native child owns admission, locks, copying, registration, shortcuts
   ; and activation. NSIS never mutates the installed root between phases.
+  ; A failed transaction is resumed only by a new installer process: the
+  ; child refuses while the recorded owner, this process, is still alive.
   StrCpy $FailureCode 23
   StrCpy $FailureStage "starting the native installer"
   StrCpy $ReportPath "$PLUGINSDIR\install-report.txt"
@@ -107,8 +112,14 @@ Section "Install"
   IntCmp $1 10 0 0 refused
   StrCpy $NativeActivationStage $1
   IntOp $NativeWin32Error $NativeStatus & 0xFFFF
-  StrCpy $FailureCode $NativeStatus
 refused:
+  ; Unattended callers get the full native status for an activation failure
+  ; and the installer stage otherwise. The dialog always shows the stage.
+  StrCpy $ExitCode $FailureCode
+  StrCmp $NativeActivationStage 0 exit_code_chosen
+  StrCpy $ExitCode $NativeStatus
+exit_code_chosen:
+  StrCpy $FailureAdvice ""
   StrCpy $1 "Installation stopped while $FailureStage.$\r$\n$\r$\nInstaller stage: $FailureCode"
   StrCmp $NativeStatusAvailable 1 0 show_error
   IntFmt $2 "0x%08X" $NativeStatus
@@ -121,12 +132,18 @@ describe_error:
   Call DescribeInstallerError
   StrCpy $1 "$1$\r$\n$\r$\n$FailureAdvice"
 show_error:
+  ; The native report replaces the summary above but keeps its advice, which
+  ; is the only part that tells the user what to do.
   StrCmp $InstallerReport "" no_report
   IntFmt $4 "0x%08X" $NativeStatus
-  StrCpy $1 "${DISPLAY_NAME} ${VERSION}, build ${BUILD}.$\r$\nInstallation stopped while $FailureStage.$\r$\nStage: $FailureCode; status: $4$\r$\n$\r$\n$InstallerReport"
+  StrCpy $1 "${DISPLAY_NAME} ${VERSION}, build ${BUILD}.$\r$\nInstallation stopped while $FailureStage.$\r$\n"
+  StrCmp $FailureAdvice "" report_status
+  StrCpy $1 "$1$FailureAdvice$\r$\n"
+report_status:
+  StrCpy $1 "$1$\r$\nStage: $FailureCode; status: $4$\r$\n$\r$\n$InstallerReport"
 no_report:
   MessageBox MB_OK|MB_ICONSTOP "$1$\r$\n$\r$\nPress Ctrl+C to copy this message for Maple support." /SD IDOK
-  SetErrorLevel $FailureCode
+  SetErrorLevel $ExitCode
   Abort
 done:
   SetErrorLevel 0
@@ -201,7 +218,7 @@ access:
   StrCpy $FailureAdvice "Windows denied access to the installation folder. Choose a folder owned by your user account, or contact Maple support."
   Goto done
 locked:
-  StrCpy $FailureAdvice "An installation file is in use. Close ${DISPLAY_NAME} and its background host, then retry."
+  StrCpy $FailureAdvice "An installation file is in use, usually because ${DISPLAY_NAME} is still running. Close ${DISPLAY_NAME}, wait a few seconds for its background host to stop, then run this installer again."
   Goto done
 component:
   StrCpy $FailureAdvice "Windows could not load a required system component. Check Windows Update and contact Maple support with this code."

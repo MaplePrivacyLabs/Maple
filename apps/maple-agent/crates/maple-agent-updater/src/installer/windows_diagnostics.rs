@@ -133,7 +133,7 @@ impl InstallError {
                     .get_ref()
                     .and_then(|e| e.downcast_ref::<WindowsStorageGuard>())
                     .map(ToString::to_string)
-                    .unwrap_or_else(|| format!("io-{:?}", error.kind()).to_ascii_lowercase()),
+                    .unwrap_or_else(|| io_reason(error)),
                 native_error: error
                     .raw_os_error()
                     .filter(|code| *code != 0)
@@ -173,6 +173,19 @@ impl InstallError {
         // Guard future changes against unbounded/non-ASCII support output.
         result.reason.truncate(128);
         result
+    }
+}
+
+/// The report reads every raw OS code as a Windows error. Windows reports a
+/// file that another process holds open, such as a running Maple Work, as a
+/// sharing or lock violation, which std leaves `Uncategorized`. Name it, so the
+/// support code says what the user can fix.
+fn io_reason(error: &io::Error) -> String {
+    const ERROR_SHARING_VIOLATION: i32 = 32;
+    const ERROR_LOCK_VIOLATION: i32 = 33;
+    match error.raw_os_error() {
+        Some(ERROR_SHARING_VIOLATION | ERROR_LOCK_VIOLATION) => "file-in-use".into(),
+        _ => format!("io-{:?}", error.kind()).to_ascii_lowercase(),
     }
 }
 
@@ -602,5 +615,36 @@ mod tests {
         }
         let error = InstallError::Io(io::Error::from_raw_os_error(32));
         assert_eq!(error.windows_installer_diagnostic().native_error, Some(32));
+    }
+
+    #[test]
+    fn installer_report_names_a_file_held_open_by_a_running_app() {
+        // Seen on 0.0.19: upgrading while the old version ran was refused at
+        // the generation guards with Windows error 32, reported as io-uncategorized.
+        for code in [32, 33] {
+            let error = InstallError::WindowsActivation {
+                stage: WindowsActivationStage::GenerationGuards,
+                source: Box::new(InstallError::Io(io::Error::from_raw_os_error(code))),
+            };
+            let detail = error.windows_installer_diagnostic();
+            assert_eq!(detail.reason, "generation-guards/file-in-use");
+            assert_eq!(detail.native_error, Some(code as u32));
+            let report = render_report(
+                "installation",
+                &serde_json::json!({"version":"0.0.19","git_revision":"0713188","profile":"prod"}),
+                Some(&detail),
+                Duration::from_millis(5),
+                "Windows build: fixture",
+            );
+            assert!(report.contains(
+                "support code: MWI/installation/activate-installation/generation-guards/file-in-use"
+            ));
+            assert!(report.contains(&format!("Windows error: 0x{code:08X}")));
+        }
+        // Other native errors keep their std category.
+        let denied =
+            InstallError::Io(io::Error::from_raw_os_error(5)).windows_installer_diagnostic();
+        assert_ne!(denied.reason, "file-in-use");
+        assert!(denied.reason.starts_with("io-"));
     }
 }
