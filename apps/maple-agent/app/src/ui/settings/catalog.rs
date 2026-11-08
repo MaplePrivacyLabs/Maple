@@ -132,14 +132,7 @@ fn matches_search(entry: &McpCatalogEntry, query: &str) -> bool {
 
 /// The apps promoted at the top of Integrations, in display order. Connected
 /// ones drop out; the strip is not backfilled, so it only ever shows these.
-pub(super) const FEATURED_APPS: [&str; 6] = [
-    "stripe",
-    "cloudflare",
-    "vercel",
-    "notion",
-    "dropbox",
-    "linear",
-];
+pub(super) const FEATURED_APPS: [&str; 5] = ["stripe", "cloudflare", "vercel", "notion", "dropbox"];
 
 impl SettingsScreen {
     /// Work out which entries show, when something they depend on changes.

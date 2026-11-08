@@ -926,7 +926,7 @@ mod tests {
                 .collect();
             assert_eq!(
                 featured,
-                ["stripe", "cloudflare", "vercel", "dropbox", "linear"],
+                ["stripe", "cloudflare", "vercel", "dropbox"],
                 "connected apps leave the strip and nothing backfills"
             );
             assert!(
