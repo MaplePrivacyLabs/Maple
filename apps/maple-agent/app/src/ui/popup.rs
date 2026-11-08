@@ -749,7 +749,6 @@ impl<V: 'static, K: Clone + PartialEq + 'static> Popup<V, K> {
                 SharedString::from(format!("opened-{}", self.opened)),
             ),
             panel: Some(panel),
-            instant: self.keyboard,
             placement,
             priority,
         }
@@ -892,17 +891,18 @@ fn first_side(prefer_first: bool, length: Pixels, first: Pixels, second: Pixels)
 /// placed, so it lands on the right side in its first frame, and it opens
 /// from that side: it fades in while settling [`SLIDE`] away from the
 /// trigger. `id` is new for each opening, so the entrance replays when one
-/// menu replaces another. A menu the keyboard opened appears at once.
+/// menu replaces another. A menu opened from the keyboard (the window's
+/// last input was a key) appears at once; a pointer opening, including one
+/// that starts on the current choice, plays the entrance.
 struct Float {
     id: ElementId,
     panel: Option<Div>,
-    instant: bool,
     placement: Placement,
     priority: usize,
 }
 
-/// When the panel under a [`Float`] id first drew, and whether that
-/// opening skips the entrance.
+/// When the panel under a [`Float`] id first drew, and whether the
+/// keyboard opened it, which skips the entrance.
 struct Opened(std::time::Instant, bool);
 
 impl IntoElement for Float {
@@ -957,10 +957,11 @@ impl Element for Float {
         // Opacity does not reach into a deferred draw, so the entrance is
         // drawn here, on the panel itself.
         let now = motion::now();
+        let keyboard = window.last_input_was_keyboard();
         let (started, instant) = window.with_element_state(
             id.expect("a float has an id"),
             |state: Option<Opened>, _| {
-                let opened = state.unwrap_or(Opened(now, self.instant));
+                let opened = state.unwrap_or(Opened(now, keyboard));
                 ((opened.0, opened.1), opened)
             },
         );
@@ -2249,32 +2250,45 @@ mod tests {
         motion::set_test_now(None);
     }
 
-    /// A menu the keyboard opens on its current choice appears at rest on
-    /// its first frame; only pointer openings play the entrance.
+    /// The input that opened a menu decides its entrance. With the pointer
+    /// it slides in, even when its owner starts it on the current choice
+    /// the way Settings dropdowns do (`open_highlighted`); from the
+    /// keyboard it is drawn at rest on its first frame.
     #[gpui::test]
-    fn a_menu_the_keyboard_opens_appears_at_once(cx: &mut TestAppContext) {
+    fn only_pointer_openings_play_the_menu_entrance(cx: &mut TestAppContext) {
         let start = std::time::Instant::now();
         motion::set_test_now(Some(start));
         let (host, cx) = setup(cx);
         cx.update(|_, cx| cx.set_reduce_motion(false));
+        let top = |cx: &mut VisualTestContext| cx.debug_bounds("menu-a").expect("menu").top();
         click(cx, "a-trigger");
         motion::set_test_now(Some(start + motion::REVEAL));
         cx.update(|window, cx| {
             window.simulate_next_frame(cx);
         });
         cx.run_until_parked();
-        let rest = cx.debug_bounds("menu-a").expect("menu").top();
+        let rest = top(cx);
         click(cx, "a-trigger");
 
+        // The pointer was last; a click handler opens on the current row.
+        let away = cx.debug_bounds("b-trigger").expect("trigger").center();
+        cx.simulate_mouse_move(away, None, Modifiers::default());
         host.update(cx, |host, cx| {
             host.popup.open_highlighted(Which::A, "a-one", cx)
         });
         cx.run_until_parked();
-        assert_eq!(
-            cx.debug_bounds("menu-a").expect("menu").top(),
-            rest,
-            "drawn at rest, with no slide, on its first frame"
-        );
+        assert_eq!(rest - top(cx), SLIDE, "a pointer opening slides in");
+        host.update(cx, |host, cx| {
+            host.popup.close(cx);
+        });
+        cx.run_until_parked();
+
+        cx.simulate_keystrokes("escape");
+        host.update(cx, |host, cx| {
+            host.popup.open_highlighted(Which::A, "a-one", cx)
+        });
+        cx.run_until_parked();
+        assert_eq!(top(cx), rest, "a keyboard opening is drawn at rest");
         motion::set_test_now(None);
     }
 
