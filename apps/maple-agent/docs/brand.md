@@ -186,7 +186,7 @@ the dark background.
 | `accent_container`, `permission_fill` | `#ffe8e0` Maple 100 | `#3a2118` / `#2a1a14` | primary container |
 | `accent_ink` | `#e8633d` Maple 700 | `#ff9771` Maple 500 | coral icon on a primary container |
 | `bg_composer_tray` | `#f7f7f9` Pebble 50 | `#222228` | panel docked inside the composer |
-| `bg_inverse`, `on_inverse` | `#171717` / `#f7f7f9` | `#e8e8ed` / `#18181c` | inverted pill for a docked notice's action |
+| `bg_default_button`, `text_on_default_button` | `#171717` / `#f7f7f9` | `#e8e8ed` / `#18181c` | `default_button`: the inverted pill, held to 7:1 at rest, hover and press |
 | `link` | `#9e7469` Bark 500 | `#c29a8d` Bark 300 | tertiary |
 | `status_success` | `#7b8f4a` | `#8fa35a` | success |
 | `status_warning` | `#d4a35a` | same | warning |
@@ -242,9 +242,10 @@ for it.
 
 ### Buttons
 
-`ui::widgets` provides `primary_button` (coral pill, `on_accent` label),
-`secondary_button` (Pebble 100 pill), and `ghost_button` (text only, hover
-overlay). All share 8 px vertical and 20 px horizontal padding
+`ui::widgets` provides `default_button` (inverted neutral pill: Pebble 100
+on dark, Neutral 900 on light), `primary_button` (coral pill, `on_accent`
+label), `secondary_button` (Pebble 100 pill), and `ghost_button` (text only,
+hover overlay). All share 8 px vertical and 20 px horizontal padding
 (`theme::SPACE_MD`, the kit's medium button) and a Manrope Medium label.
 
 The coral fill replaces the kit's translucent "glass" gradient, which is
@@ -255,18 +256,20 @@ reads as a flicker.
 
 ### Status banners
 
-Status colors never fill a surface behind text. `widgets::banner` takes a
-`Tone` (error, warning, info) and draws a neutral `bg_elevated` card with a
-hairline border; the tone shows only as its icon (`circle-alert`,
+A banner never paints a status color behind its text. `widgets::banner`
+takes a `Tone` (error, warning, info) and draws a neutral `bg_elevated` card
+with a hairline border; the tone shows only as its icon (`circle-alert`,
 `triangle-alert`, `info`) on a small tile tinted with the status hue. The
 message keeps `text_primary`, and actions line up at the card's end as
-ordinary secondary or ghost buttons.
+ordinary default, secondary or ghost buttons. (`primary_button` and
+`danger_button` still put an `on_accent` label on coral and on
+`status_error`; that is the buttons' own follow-up.)
 
 A state that blocks the next message sits with the composer instead of
 the transcript: when the latest turn ended out of usage, a panel docked
 inside the composer (`bg_composer_tray`, a coral `accent_container` tile)
-offers Billing through an inverted pill (`bg_inverse`, `on_inverse`) until
-another turn starts. The transcript keeps a one-line marker of that turn.
+offers Billing through `default_button` until another turn starts. The
+transcript keeps a one-line marker of that turn.
 
 ### Spacing
 

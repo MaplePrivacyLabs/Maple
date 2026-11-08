@@ -2116,7 +2116,7 @@ impl SettingsScreen {
                     },
                 )
                 .child(
-                    widgets::secondary_button("shortcuts-reset-all-confirm")
+                    widgets::default_button("shortcuts-reset-all-confirm")
                         .flex_none()
                         .on_click(cx.listener(|this, _event, _window, cx| {
                             this.request_shortcut_change(ShortcutSettingsChange::ResetAll, cx);

@@ -91,6 +91,19 @@ fn pill(id: impl Into<ElementId>) -> Stateful<Div> {
         .focus_visible(focus_ring)
 }
 
+/// Accessible default/primary action button: high-contrast neutral inverted pill.
+pub fn default_button(id: impl Into<ElementId>) -> Stateful<Div> {
+    pill(id)
+        .bg(gpui::rgb(theme::bg_default_button()))
+        .text_color(gpui::rgb(theme::text_on_default_button()))
+        .hover(|style| {
+            style
+                .bg(gpui::rgb(theme::bg_default_button_hover()))
+                .cursor_pointer()
+        })
+        .active(|style| press_depth(style.bg(gpui::rgb(theme::bg_default_button_active()))))
+}
+
 /// Accent-filled action button: coral pill with a light label.
 pub fn primary_button(id: impl Into<ElementId>) -> Stateful<Div> {
     pill(id)
@@ -135,20 +148,6 @@ pub fn danger_button(id: impl Into<ElementId>) -> Stateful<Div> {
         .text_color(gpui::rgb(theme::on_accent()))
         .hover(|style| style.opacity(0.9).cursor_pointer())
         .active(|style| press_depth(style.opacity(0.85)))
-}
-
-/// High-contrast pill for the single action of a notice docked in the
-/// composer: the inverse of the surface, so it leads without coral.
-pub fn inverse_button(id: impl Into<ElementId>) -> Stateful<Div> {
-    pill(id)
-        .bg(gpui::rgb(theme::bg_inverse()))
-        .text_color(gpui::rgb(theme::on_inverse()))
-        .hover(|style| {
-            style
-                .bg(gpui::rgb(theme::bg_inverse_hover()))
-                .cursor_pointer()
-        })
-        .active(press_depth)
 }
 
 /// Square icon-only button with a hover plate, used in list rows and

@@ -12133,6 +12133,12 @@ mod state_tests {
         cx.run_until_parked();
         assert_eq!(opened.get(), 1);
 
+        let offered = |cx: &mut gpui::VisualTestContext| {
+            cx.update(|window, _| window.refresh());
+            cx.run_until_parked();
+            cx.debug_bounds("composer-open-billing").is_some()
+        };
+
         // A message sent since, or a next turn that failed for another
         // reason, takes the offer away; the transcript keeps the history.
         let retried = [user_item("user-2", "try again")];
@@ -12151,10 +12157,27 @@ mod state_tests {
                 chat.replace_timeline(timeline);
                 cx.notify();
             });
-            cx.update(|window, _| window.refresh());
-            cx.run_until_parked();
-            assert!(cx.debug_bounds("composer-open-billing").is_none());
+            assert!(!offered(cx));
         }
+
+        // The refusal usually arrives live, as the run ends.
+        chat.update(cx, |chat, cx| {
+            chat.replace_timeline(vec![user_item("user-1", "test")]);
+            chat.apply_incoming_item(
+                "s1",
+                item("usage-2", "error", Some(USAGE_LIMIT_MESSAGE)),
+                cx,
+            );
+            cx.notify();
+        });
+        assert!(offered(cx));
+
+        // A window paged back from the end cannot tell what came last.
+        chat.update(cx, |chat, cx| {
+            chat.pages.after = true;
+            cx.notify();
+        });
+        assert!(!offered(cx));
     }
 
     #[gpui::test]

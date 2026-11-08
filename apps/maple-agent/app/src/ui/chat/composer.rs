@@ -1247,12 +1247,16 @@ impl ChatScreen {
                     ),
             )
             .child(
-                widgets::inverse_button("composer-open-billing")
+                widgets::default_button("composer-open-billing")
                     .flex_none()
                     .pr_4()
                     .debug_selector(|| "composer-open-billing".to_string())
                     .child(gpui::text!(tr("chat-billing-open")))
-                    .child(icon("arrow-right", px(14.), theme::on_inverse()))
+                    .child(icon(
+                        "arrow-right",
+                        px(14.),
+                        theme::text_on_default_button(),
+                    ))
                     .on_click(cx.listener(|_this, _event, _window, cx| {
                         cx.stop_propagation();
                         cx.emit(OpenSettingsSection(Section::Billing));
