@@ -177,6 +177,16 @@ impl ChatScreen {
         }
     }
 
+    #[cfg(test)]
+    pub(crate) fn seed_sessions_for_test(
+        &mut self,
+        sessions: Vec<maple_agent::agent::AgentSessionSummary>,
+        cx: &mut Context<Self>,
+    ) {
+        self.sessions = sessions;
+        self.sync_sidebar(cx);
+    }
+
     pub(crate) fn finish_project_rename(
         &mut self,
         target: ProjectTarget,

@@ -90,10 +90,15 @@ appear only after 300 ms, so fast loads never flash a spinner.
   that owns no state (chevrons, switches, icon swaps). It never animates on
   mount.
 - `fade_in`, `rise_in` and `slide_in` are one-shot entrances keyed by element
-  id; a new id replays them. `swap_in(element, id, key)` fades content in
-  whenever `key` changes but draws its first appearance at once, for content
-  that replaces other content in one place (the window's screen, a Settings
-  section).
+  id; a new id replays them. `swap_in(element, id, key, cover)` fades content
+  in whenever `key` changes but draws its first appearance at once, for
+  content that replaces other content in one place (the window's screen, a
+  Settings section).
+- Never fade an ancestor of a cached view (`Entity::cached`, the sidebar):
+  gpui replays a cached view's last paint with the opacity it was painted
+  at, so it would stay as faint as its first frame. `swap_in` fades a cover
+  in the background color over the content instead, so the content always
+  paints at full opacity.
 - Menus open from their trigger: the panel's fade and slide are drawn inside
   the deferred draw, because opacity does not reach into `deferred()`.
   A menu the keyboard opens appears at once, and keyboard highlight moves

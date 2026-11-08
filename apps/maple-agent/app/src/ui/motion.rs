@@ -1003,15 +1003,26 @@ impl Element for HoverBackground {
 /// Content that replaces other content in one place, such as the window's
 /// screen or a Settings section: whenever `key` changes, the new content
 /// fades in over [`REVEAL`]. Its first appearance does not fade, so a
-/// first paint is never held back. `id` must be stable across frames; the
-/// fade sets the element's opacity while it runs.
-pub fn swap_in<E>(element: E, id: impl Into<ElementId>, key: impl Into<ElementId>) -> Swap<E>
+/// first paint is never held back. `id` must be stable across frames.
+///
+/// The content itself always paints at full opacity; a `cover` in the
+/// color behind it, laid over it as its last child, fades out instead.
+/// gpui replays a cached view's last paint, opacity included, so fading
+/// an ancestor of one (the sidebar) would leave it stuck at its first,
+/// nearly transparent frame.
+pub fn swap_in<E>(
+    element: E,
+    id: impl Into<ElementId>,
+    key: impl Into<ElementId>,
+    cover: impl Into<gpui::Hsla>,
+) -> Swap<E>
 where
-    E: IntoElement + Styled + 'static,
+    E: IntoElement + ParentElement + 'static,
 {
     Swap {
         id: id.into(),
         key: key.into(),
+        cover: cover.into(),
         element: Some(element),
     }
 }
@@ -1019,6 +1030,7 @@ where
 pub struct Swap<E> {
     id: ElementId,
     key: ElementId,
+    cover: gpui::Hsla,
     element: Option<E>,
 }
 
@@ -1028,7 +1040,7 @@ struct Swapped {
     started: Option<Instant>,
 }
 
-impl<E: IntoElement + Styled + 'static> IntoElement for Swap<E> {
+impl<E: IntoElement + ParentElement + 'static> IntoElement for Swap<E> {
     type Element = Self;
 
     fn into_element(self) -> Self {
@@ -1036,7 +1048,7 @@ impl<E: IntoElement + Styled + 'static> IntoElement for Swap<E> {
     }
 }
 
-impl<E: IntoElement + Styled + 'static> Element for Swap<E> {
+impl<E: IntoElement + ParentElement + 'static> Element for Swap<E> {
     type RequestLayoutState = AnyElement;
     type PrepaintState = ();
 
@@ -1081,7 +1093,15 @@ impl<E: IntoElement + Styled + 'static> Element for Swap<E> {
         let element = self.element.take().expect("a swap is laid out once");
         let mut element = if opacity < 1. {
             window.request_animation_frame();
-            element.opacity(opacity).into_any_element()
+            element
+                .child(
+                    gpui::div()
+                        .absolute()
+                        .inset_0()
+                        .bg(self.cover)
+                        .opacity(1. - opacity),
+                )
+                .into_any_element()
         } else {
             element.into_any_element()
         };

@@ -1768,6 +1768,7 @@ impl Render for SettingsScreen {
                                 self.render_pane(window, cx),
                                 "settings-pane-swap",
                                 self.section.id(),
+                                gpui::rgb(theme::bg_app()),
                             ))
                             .child(crate::ui::scrollbar::scrollbar(
                                 "settings-scrollbar",

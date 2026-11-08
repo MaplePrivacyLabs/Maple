@@ -125,7 +125,9 @@ tokens and rules. Motion never delays input, retargets from the value on
 screen, closes menus and dialogs at once, and settles immediately under
 reduced motion. Streaming text, typing, and keyboard navigation do not
 animate. Rows inside `gpui::list` time their entrance from view state, not
-element state, so they never replay when scrolled back into view.
+element state, so they never replay when scrolled back into view. Never put
+opacity on an ancestor of a cached view: its replayed paint keeps the
+opacity of its first frame. Fade a cover over it instead, as `swap_in` does.
 
 ## Accessibility
 

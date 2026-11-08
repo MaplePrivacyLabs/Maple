@@ -2439,6 +2439,7 @@ impl Render for MapleApp {
                     }),
                 "maple-screen",
                 screen_kind,
+                gpui::rgb(ui::theme::bg_app()),
             ));
         #[cfg(target_os = "linux")]
         let root = root.children(self.restart_confirmation.clone());
@@ -5284,6 +5285,79 @@ mod tests {
         });
         // With the gate up, the user may have just paid on the website.
         assert!(return_to_window(true, cx));
+    }
+
+    /// Settings and back brings the chat's sidebar back with its task rows.
+    /// The screen fade covers the whole window, so a regression there would
+    /// show as a sidebar whose rows never return.
+    #[gpui::test]
+    fn settings_and_back_keeps_the_sidebar_task_rows(cx: &mut gpui::TestAppContext) {
+        struct Host(Entity<MapleApp>);
+        impl Render for Host {
+            fn render(&mut self, _: &mut Window, _: &mut Context<Self>) -> impl IntoElement {
+                div().size_full().child(self.0.clone())
+            }
+        }
+        let settings = crate::settings::SETTINGS_IO_LOCK.lock();
+        let app = project_shell_locked(cx, &settings);
+        let chat = app.read_with(cx, |app, _| app.local_chat.clone().expect("local chat"));
+        chat.update(cx, |chat, cx| {
+            chat.seed_sessions_for_test(
+                vec![maple_agent::agent::AgentSessionSummary {
+                    web_enabled: true,
+                    permission_mode: Default::default(),
+                    state: maple_agent::agent::AgentTaskState::Active,
+                    acp: false,
+                    id: "s1".into(),
+                    title: "First task".into(),
+                    project_root: "/same/project".into(),
+                    created_ms: 0,
+                    updated_ms: 0,
+                    message_count: 1,
+                    model: None,
+                }],
+                cx,
+            )
+        });
+        let (_, cx) = cx.add_window_view(|_, _| Host(app.clone()));
+        cx.simulate_resize(size(px(1100.), px(850.)));
+        cx.run_until_parked();
+        assert!(
+            cx.debug_bounds("session-s1").is_some(),
+            "the task row shows"
+        );
+
+        app.update(cx, |app, cx| app.show_settings(Section::General, cx));
+        cx.run_until_parked();
+        assert!(
+            cx.debug_bounds("session-s1").is_none(),
+            "Settings replaces the chat"
+        );
+        let snapshot = app.read_with(cx, |app, cx| match &app.screen {
+            Screen::Settings(screen) => screen.read(cx).settings_snapshot(),
+            _ => panic!("expected Settings"),
+        });
+        let start = std::time::Instant::now();
+        ui::motion::set_test_now(Some(start));
+        app.update(cx, |app, cx| app.close_settings(snapshot, cx));
+        cx.run_until_parked();
+        // Let the screen fade and anything the sidebar eases settle.
+        for step in 1..=4 {
+            ui::motion::set_test_now(Some(start + ui::motion::PANEL * step));
+            cx.update(|window, cx| {
+                window.simulate_next_frame(cx);
+            });
+            cx.run_until_parked();
+        }
+        // A cached view replays its last paint without recording debug
+        // bounds, so draw every view afresh before looking for the row.
+        cx.update(|_, cx| cx.refresh_windows());
+        cx.run_until_parked();
+        assert!(
+            cx.debug_bounds("session-s1").is_some(),
+            "the task row is back after Settings"
+        );
+        ui::motion::set_test_now(None);
     }
 
     #[gpui::test]
