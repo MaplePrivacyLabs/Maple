@@ -184,6 +184,7 @@ impl ChatScreen {
         let Some(run) = run.filter(|_| is_user_message(item)) else {
             return;
         };
+        let mut handed_off = false;
         for preview in self
             .sending_previews
             .values_mut()
@@ -201,10 +202,17 @@ impl ChatScreen {
             {
                 continue;
             }
+            let showing = preview.body_visible();
             if preview.projected_runs.len() < 8 || preview.acknowledged_run.as_deref() == Some(run)
             {
                 preview.projected_runs.insert(run.to_owned());
             }
+            handed_off |= showing && !preview.body_visible();
+        }
+        // The row takes the place of the message already on screen; it
+        // must not enter a second time.
+        if handed_off {
+            self.row_motion.hand_off(item.id.clone());
         }
         self.sending_previews
             .retain(|_, preview| !preview.settled());
@@ -289,104 +297,108 @@ impl ChatScreen {
             .retain(|_, preview| !preview.settled());
     }
 
-    pub(super) fn render_send_preview(&self) -> Option<gpui::Stateful<Div>> {
+    /// The message being sent, under the transcript. It rises in when the
+    /// send starts; the real row that replaces it does not enter again.
+    pub(super) fn render_send_preview(&self) -> Option<impl IntoElement + use<>> {
         let preview = self.current_send_preview()?;
-        Some(
-            div()
-                .id("pending-send")
-                .debug_selector(|| "pending-send".to_string())
-                .role(gpui::Role::Status)
-                .aria_label(if self.send_pending() {
-                    tr("chat-sending-message")
-                } else {
-                    tr("chat-waiting-response")
-                })
-                .flex_none()
-                .w_full()
-                .max_w(CONTENT_WIDTH)
-                .mx_auto()
-                .px_6()
-                .pb_2()
-                .flex()
-                .flex_col()
-                .items_end()
-                .gap_1()
-                .when(preview.body_visible(), |row| {
-                    row.child(
-                        crate::ui::typography::chat_reading(div())
-                            .id("pending-send-body")
-                            .debug_selector(|| "pending-send-body".to_string())
-                            .max_w(gpui::relative(0.75))
-                            .max_h(px(180.))
-                            .overflow_y_scroll()
-                            // A long message scrolls inside its bubble; the
-                            // pane must not scroll the transcript as well.
-                            .on_scroll_wheel(|_, _, cx| cx.stop_propagation())
-                            .px_4()
-                            .py_2()
-                            .rounded(theme::RADIUS_MD)
-                            .bg(gpui::rgb(theme::bg_user_bubble()))
-                            .border_1()
-                            .border_color(gpui::rgb(theme::user_bubble_border()))
-                            .text_color(gpui::rgb(theme::text_primary()))
-                            .when(!preview.attachments.is_empty(), |body| {
-                                body.child(div().flex().flex_wrap().gap_2().mb_1().children(
-                                    preview.attachments.iter().map(|attachment| {
-                                        match &attachment.image {
-                                            Some(image) => div().child(
-                                                gpui::img(gpui::ImageSource::Image(image.clone()))
-                                                    .size_16()
-                                                    .rounded(theme::RADIUS_SM),
+        let row = div()
+            .id("pending-send")
+            .debug_selector(|| "pending-send".to_string())
+            .role(gpui::Role::Status)
+            .aria_label(if self.send_pending() {
+                tr("chat-sending-message")
+            } else {
+                tr("chat-waiting-response")
+            })
+            .flex_none()
+            .w_full()
+            .max_w(CONTENT_WIDTH)
+            .mx_auto()
+            .px_6()
+            .pb_2()
+            .flex()
+            .flex_col()
+            .items_end()
+            .gap_1()
+            .when(preview.body_visible(), |row| {
+                row.child(
+                    crate::ui::typography::chat_reading(div())
+                        .id("pending-send-body")
+                        .debug_selector(|| "pending-send-body".to_string())
+                        .max_w(gpui::relative(0.75))
+                        .max_h(px(180.))
+                        .overflow_y_scroll()
+                        // A long message scrolls inside its bubble; the
+                        // pane must not scroll the transcript as well.
+                        .on_scroll_wheel(|_, _, cx| cx.stop_propagation())
+                        .px_4()
+                        .py_2()
+                        .rounded(theme::RADIUS_MD)
+                        .bg(gpui::rgb(theme::bg_user_bubble()))
+                        .border_1()
+                        .border_color(gpui::rgb(theme::user_bubble_border()))
+                        .text_color(gpui::rgb(theme::text_primary()))
+                        .when(!preview.attachments.is_empty(), |body| {
+                            body.child(div().flex().flex_wrap().gap_2().mb_1().children(
+                                preview.attachments.iter().map(|attachment| {
+                                    match &attachment.image {
+                                        Some(image) => div().child(
+                                            gpui::img(gpui::ImageSource::Image(image.clone()))
+                                                .size_16()
+                                                .rounded(theme::RADIUS_SM),
+                                        ),
+                                        None => div()
+                                            .flex()
+                                            .flex_col()
+                                            .text_xs()
+                                            .gap_1()
+                                            .child(attachment.name.clone())
+                                            .child(
+                                                div()
+                                                    .text_color(gpui::rgb(theme::text_muted()))
+                                                    .child(attachments::cached_attachment_detail(
+                                                        &attachment.mime,
+                                                        attachment.size,
+                                                        &self.messages,
+                                                    )),
                                             ),
-                                            None => div()
-                                                .flex()
-                                                .flex_col()
-                                                .text_xs()
-                                                .gap_1()
-                                                .child(attachment.name.clone())
-                                                .child(
-                                                    div()
-                                                        .text_color(gpui::rgb(theme::text_muted()))
-                                                        .child(
-                                                            attachments::cached_attachment_detail(
-                                                                &attachment.mime,
-                                                                attachment.size,
-                                                                &self.messages,
-                                                            ),
-                                                        ),
-                                                ),
-                                        }
-                                    }),
-                                ))
-                            })
-                            .child(preview.text.clone()),
-                    )
-                })
-                .child(
-                    div()
-                        .flex()
-                        .items_center()
-                        .gap_1()
-                        .text_xs()
-                        .text_color(gpui::rgb(theme::text_muted()))
-                        .child(spinner(
-                            "pending-send-spinner",
-                            px(12.),
-                            theme::text_muted(),
-                        ))
-                        .child(
-                            self.selected_upload()
-                                .map(|(_, upload)| upload.label.clone())
-                                .unwrap_or_else(|| {
-                                    if self.send_pending() {
-                                        UiText::key("chat-sending")
-                                    } else {
-                                        UiText::key("chat-waiting-response-progress")
                                     }
                                 }),
-                        ),
-                ),
-        )
+                            ))
+                        })
+                        .child(preview.text.clone()),
+                )
+            })
+            .child(
+                div()
+                    .flex()
+                    .items_center()
+                    .gap_1()
+                    .text_xs()
+                    .text_color(gpui::rgb(theme::text_muted()))
+                    .child(spinner(
+                        "pending-send-spinner",
+                        px(12.),
+                        theme::text_muted(),
+                    ))
+                    .child(
+                        self.selected_upload()
+                            .map(|(_, upload)| upload.label.clone())
+                            .unwrap_or_else(|| {
+                                if self.send_pending() {
+                                    UiText::key("chat-sending")
+                                } else {
+                                    UiText::key("chat-waiting-response-progress")
+                                }
+                            }),
+                    ),
+            );
+        Some(motion::slide_in(
+            row,
+            "pending-send-enter",
+            motion::ENTER,
+            gpui::point(px(0.), motion::RISE),
+        ))
     }
 }
 

@@ -218,6 +218,9 @@ struct TranscriptCtx<'a> {
     /// One-based position of the row and the row count, for
     /// assistive technology ("message 4 of 17").
     position: (usize, usize),
+    /// How far the row's just-opened details are through fading in; 1 at
+    /// rest.
+    reveal: f32,
 }
 
 /// Text-to-speech progress for one message.
@@ -725,6 +728,12 @@ pub struct ChatScreen {
     /// True from send until the first agent item of the run arrives; shows
     /// the waiting indicator under the transcript.
     awaiting_first_token: bool,
+    /// Live row entrances and reveals in the transcript, kept here so a
+    /// row scrolled away and back never replays them.
+    row_motion: transcript::RowMotion,
+    /// When the task in `loading_session` started opening, for the header
+    /// spinner's delay.
+    loading_since: Option<std::time::Instant>,
     /// Item ids whose tool card or thinking row was clicked; membership
     /// inverts the `tool_details` default for that item.
     toggled_tools: HashSet<String>,
@@ -832,6 +841,9 @@ struct HostRecovery {
 
 /// How often a stale snapshot is fetched again before it is applied.
 const LOAD_RETRIES: u8 = 2;
+/// How long a task may take to open before the header shows a spinner;
+/// a faster open never flashes one.
+const LOADING_SPINNER_DELAY: std::time::Duration = std::time::Duration::from_millis(300);
 
 /// Finished run ids remembered for a late send acknowledgement.
 const FINISHED_RUNS_KEPT: usize = 64;
@@ -1534,6 +1546,8 @@ impl ChatScreen {
             selection: None,
             transcript_focus: None,
             awaiting_first_token: false,
+            row_motion: transcript::RowMotion::default(),
+            loading_since: None,
             toggled_tools: HashSet::new(),
             question_selected: HashMap::new(),
             question_step: 0,
@@ -3016,6 +3030,8 @@ impl ChatScreen {
         if matches!(mode, LoadMode::Select) && !self.is_selected(session_id) {
             if self.loading_session.as_deref() != Some(session_id) {
                 self.loading_timeline.clear();
+                self.loading_since = Some(motion::now());
+                self.schedule_loading_spinner(cx);
             }
             self.loading_session = Some(session_id.to_string());
             self.loading_generation = self.selection_generation;
@@ -3113,8 +3129,15 @@ impl ChatScreen {
                 let live_has_more = detail.live_has_more;
                 match mode {
                     LoadMode::Select => {
+                        // Another task's transcript fades in when it lands;
+                        // the task restored at launch (`apply_bootstrap`)
+                        // does not.
+                        let switching = !this.is_selected(&detail.session.id);
                         this.upsert_session(detail.session.clone(), cx);
                         this.set_active_session(detail.session, detail.timeline, summaries, cx);
+                        if switching {
+                            this.row_motion.switch_task(motion::now());
+                        }
                         this.set_queue(detail.queue.items);
                     }
                     LoadMode::Reload => {
@@ -3148,6 +3171,31 @@ impl ChatScreen {
         }
     }
 
+    /// Repaint once an open has taken `LOADING_SPINNER_DELAY`, so a slow
+    /// open shows the header spinner.
+    fn schedule_loading_spinner(&self, cx: &mut Context<Self>) {
+        cx.spawn(async move |entity, cx| {
+            cx.background_executor().timer(LOADING_SPINNER_DELAY).await;
+            entity
+                .update(cx, |this, cx| {
+                    if this.loading_session.is_some() {
+                        cx.notify();
+                    }
+                })
+                .ok();
+        })
+        .detach();
+    }
+
+    /// Whether the header shows the spinner of a task being opened: only
+    /// once the open has taken `LOADING_SPINNER_DELAY`.
+    pub(super) fn loading_spinner_due(&self) -> bool {
+        self.loading_session.is_some()
+            && self.loading_since.is_none_or(|since| {
+                motion::now().saturating_duration_since(since) >= LOADING_SPINNER_DELAY
+            })
+    }
+
     /// Install a new timeline and reset every per-item structure that is
     /// keyed by its contents.
     fn replace_timeline(&mut self, timeline: Vec<AgentTimelineItem>) {
@@ -3158,6 +3206,7 @@ impl ChatScreen {
             .application_vim_enabled
             .then(|| self.navigable_timeline_ids());
         self.local_error_text.clear();
+        self.row_motion.clear_rows();
         self.timeline = timeline.into_iter().map(paging::normalize).collect();
         self.pages.weights.clear();
         self.bound_transcript_window(true);
@@ -4255,16 +4304,27 @@ impl ChatScreen {
             !disconnected(notice)
         })?;
         self.schedule_notice_dismiss(notice.clone(), cx);
-        Some(div().child(motion::fade_in(
+        let text = notice.resolve();
+        // Keyed by what it says, so a different notice that replaces this
+        // one enters again.
+        let identity = {
+            use std::hash::{Hash, Hasher};
+            let mut hasher = std::collections::hash_map::DefaultHasher::new();
+            text.hash(&mut hasher);
+            hasher.finish()
+        };
+        Some(div().child(motion::slide_in(
             widgets::notice(
                 "notice-close",
-                notice.resolve(),
+                text,
                 cx.listener(|this, _event, _window, cx| {
                     this.notice = None;
                     cx.notify();
                 }),
             ),
-            "notice-reveal",
+            ("notice-reveal", identity),
+            motion::ENTER,
+            gpui::point(px(0.), motion::RISE),
         )))
     }
 
@@ -4661,6 +4721,8 @@ impl ChatScreen {
         } else {
             self.toggled_tools.insert(item_id.to_string());
         }
+        let open = self.tool_details != self.toggled_tools.contains(item_id);
+        self.row_motion.disclose(item_id, open, motion::now());
         // Resolve the row now: an index baked into the card at render
         // time goes stale once history reloads or items are inserted.
         if let Some(&(index, _)) = self.timeline_index.get(item_id) {
@@ -5931,6 +5993,7 @@ impl ChatScreen {
             self.timeline[index].id = item.id.clone();
             self.timeline_index.insert(item.id.clone(), (index, 0));
             self.rekey_summary(&old, &item.id);
+            self.row_motion.rekey(&old, &item.id);
         }
         if let Some((index, _)) = self.timeline_index.get(&item.id)
             && let (Some(old), Some(new)) = (&self.timeline[*index].persisted, &item.persisted)
@@ -6020,6 +6083,7 @@ impl ChatScreen {
             None => {
                 let index = self.timeline.len();
                 self.timeline_index.insert(item.id.clone(), (index, 0));
+                self.row_motion.arrive(&item.id, motion::now());
                 self.timeline.push(item);
                 self.list_state.splice(index..index, 1);
                 if index == 0 {
@@ -6327,7 +6391,11 @@ impl ChatScreen {
                             }
                         }
                         this.refresh_sessions(cx);
+                        // Pushes that crossed the reconnect rebuild the
+                        // transcript; they do not enter like live rows.
+                        this.row_motion.set_quiet(true);
                         this.handle_service_events(events, cx);
+                        this.row_motion.set_quiet(false);
                         this.host_recovery.unavailable = false;
                         this.runtime_error_reason = None;
                         this.runtime_error = None;
@@ -7091,6 +7159,7 @@ impl Render for ChatScreen {
             .map(|status| self.render_trust_prompt(&status, cx));
         let empty = self.shows_empty_state();
         let sidebar_expansion = self.sidebar_expansion(window, cx);
+        let rise = gpui::point(px(0.), motion::RISE);
         let main = if empty {
             self.render_empty_state(window, cx)
         } else {
@@ -7151,9 +7220,17 @@ impl Render for ChatScreen {
                         // own wheel; the space beside them scrolls the
                         // transcript.
                         .on_scroll_wheel(|_, _, cx| cx.stop_propagation())
-                        .children(self.render_btw_card(cx))
-                        .children(self.render_subagents_card(cx))
-                        .children(self.render_plan_card(cx))
+                        // Cards above the composer rise in when they appear
+                        // and leave at once.
+                        .children(self.render_btw_card(cx).map(|card| {
+                            motion::slide_in(card, "btw-card-enter", motion::ENTER, rise)
+                        }))
+                        .children(self.render_subagents_card(cx).map(|card| {
+                            motion::slide_in(card, "subagents-card-enter", motion::ENTER, rise)
+                        }))
+                        .children(self.render_plan_card(cx).map(|card| {
+                            motion::slide_in(card, "plan-card-enter", motion::ENTER, rise)
+                        }))
                         .child(self.render_composer(window, cx))
                         .children(self.render_slash_palette(cx))
                         .children(self.render_persistence_failure(cx)),

@@ -13370,6 +13370,8 @@ mod state_tests {
 
         #[gpui::test]
         fn pending_first_send_renders_at_the_conversation_position(cx: &mut TestAppContext) {
+            // Asserts the preview's settled place, not its entrance.
+            cx.update(|cx| cx.set_reduce_motion(true));
             let (chat, cx) = chat_window(cx, |this, cx| {
                 this.selected_session = None;
                 this.draft = true;

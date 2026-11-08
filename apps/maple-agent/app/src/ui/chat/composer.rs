@@ -227,8 +227,9 @@ impl ChatScreen {
                 .w(px(14.))
                 .h(px(14.))
                 .debug_selector(|| "navigation-loading-slot".to_string())
+                // A task that opens quickly never flashes the spinner.
                 .when(
-                    self.loading_session.is_some() || self.root_selecting || self.booting,
+                    self.loading_spinner_due() || self.root_selecting || self.booting,
                     |slot| slot.child(spinner("navigation-loading", px(14.), theme::text_muted())),
                 ),
         )
