@@ -5354,6 +5354,33 @@ mod tests {
         assert_eq!(cx.debug_bounds("maple-page"), Some(original));
     }
 
+    /// Settings opens in the task screen's frame: its title takes the task
+    /// title's place and Back takes the wordmark's row, so nothing on the
+    /// window's top line moves between the two screens.
+    #[gpui::test]
+    fn settings_keeps_the_task_screens_title_and_sidebar_row(cx: &mut gpui::TestAppContext) {
+        struct AppHost(Entity<MapleApp>);
+        impl Render for AppHost {
+            fn render(&mut self, _: &mut Window, _: &mut Context<Self>) -> impl IntoElement {
+                div().size_full().child(self.0.clone())
+            }
+        }
+        let app = project_shell(cx);
+        let (_host, cx) = cx.add_window_view(|_, _| AppHost(app.clone()));
+        cx.simulate_resize(size(px(1100.), px(850.)));
+        cx.run_until_parked();
+        let task_title = cx.debug_bounds("header-title").expect("task title");
+        let wordmark = cx.debug_bounds("sidebar-wordmark").expect("wordmark");
+
+        app.update(cx, |app, cx| app.show_settings(Section::General, cx));
+        cx.run_until_parked();
+        let title = cx.debug_bounds("settings-title").expect("settings title");
+        let back = cx.debug_bounds("settings-back").expect("back");
+        assert_eq!(title.left(), task_title.left());
+        assert_eq!(title.center().y, task_title.center().y);
+        assert_eq!(back.center().y, wordmark.center().y);
+    }
+
     #[gpui::test]
     fn unhandled_attention_waits_for_a_live_window_and_uses_a_dialog(
         cx: &mut gpui::TestAppContext,

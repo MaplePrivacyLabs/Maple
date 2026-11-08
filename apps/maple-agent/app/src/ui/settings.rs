@@ -1699,71 +1699,89 @@ impl Render for SettingsScreen {
             .relative()
             .size_full()
             .flex()
-            .flex_col()
+            .flex_row()
             .bg(gpui::rgb(theme::bg_app()))
-            .child(crate::ui::titlebar::drag_region(
+            .child(
+                // The task sidebar's column, up to the window's top edge:
+                // Settings keeps the task screen's frame, with Back where
+                // that screen's wordmark sits.
                 div()
-                    .id("settings-header")
+                    .id("settings-sidebar")
+                    .flex_none()
+                    .w(super::chat::SIDEBAR_WIDTH)
+                    .h_full()
                     .flex()
-                    .items_center()
-                    .gap_3()
-                    .pl(crate::ui::titlebar::top_row_inset(px(16.)))
-                    .pr_4()
-                    .py_3()
-                    .border_b_1()
-                    .border_color(gpui::rgb(theme::border()))
-                    .child(
-                        widgets::ghost_button("settings-back")
-                            .on_mouse_down(gpui::MouseButton::Left, |_event, _window, cx| {
-                                cx.stop_propagation();
-                            })
-                            .on_click(cx.listener(|this, _event, _window, cx| {
-                                this.close(cx);
-                            }))
-                            .child(super::i18n::tr("settings-back")),
-                    )
-                    .child(
+                    .flex_col()
+                    .bg(gpui::rgb(theme::bg_sidebar()))
+                    .child(crate::ui::titlebar::drag_region(
                         div()
-                            .font_weight(gpui::FontWeight::BOLD)
-                            .text_color(gpui::rgb(theme::text_primary()))
-                            .child(super::i18n::tr("settings-title")),
-                    )
-                    .child(div().flex_1())
-                    .child(
-                        div()
-                            .id("settings-sign-out")
-                            .px_2()
-                            .py_1()
-                            .rounded(theme::RADIUS_SM)
-                            .text_sm()
-                            .text_color(gpui::rgb(theme::text_muted()))
-                            .hover(|style| {
-                                style
-                                    .text_color(gpui::rgb(theme::status_error()))
-                                    .cursor_pointer()
-                            })
-                            .on_mouse_down(gpui::MouseButton::Left, |_event, _window, cx| {
-                                cx.stop_propagation();
-                            })
-                            .on_click(cx.listener(|_this, _event, _window, cx| {
-                                cx.emit(SignOutRequested);
-                            }))
-                            .child(super::i18n::tr("settings-sign-out")),
-                    ),
-            ))
+                            .id("settings-sidebar-top-row")
+                            .flex_none()
+                            .px_3()
+                            .pt(crate::ui::titlebar::sidebar_row_top())
+                            .pb_2()
+                            .child(self.render_back(cx)),
+                    ))
+                    .child(self.render_nav(cx)),
+            )
             .child(
                 div()
                     .flex_1()
-                    .min_h_0()
+                    .min_w_0()
+                    .h_full()
                     .flex()
-                    .flex_row()
-                    .child(self.render_nav(cx))
+                    .flex_col()
+                    .bg(gpui::rgb(theme::bg_sidebar()))
+                    .child(crate::ui::titlebar::drag_region(
+                        div()
+                            .id("settings-header")
+                            .flex_none()
+                            .h(crate::ui::titlebar::TITLE_BAR_HEIGHT)
+                            .flex()
+                            .items_center()
+                            .gap_3()
+                            // The task title's inset, which the pane's
+                            // content shares.
+                            .pl(window.rem_size())
+                            .pr_3()
+                            .child(
+                                crate::ui::titlebar::title(super::i18n::tr("settings-title"))
+                                    .debug_selector(|| "settings-title".to_string())
+                                    .min_w_0(),
+                            )
+                            .child(div().flex_1())
+                            .child(
+                                div()
+                                    .id("settings-sign-out")
+                                    .px_2()
+                                    .py_1()
+                                    .rounded(theme::RADIUS_SM)
+                                    .text_sm()
+                                    .text_color(gpui::rgb(theme::text_muted()))
+                                    .hover(|style| {
+                                        style
+                                            .text_color(gpui::rgb(theme::status_error()))
+                                            .cursor_pointer()
+                                    })
+                                    .on_mouse_down(
+                                        gpui::MouseButton::Left,
+                                        |_event, _window, cx| {
+                                            cx.stop_propagation();
+                                        },
+                                    )
+                                    .on_click(cx.listener(|_this, _event, _window, cx| {
+                                        cx.emit(SignOutRequested);
+                                    }))
+                                    .child(super::i18n::tr("settings-sign-out")),
+                            ),
+                    ))
                     .child(
                         div()
                             .relative()
                             .flex_1()
-                            .min_w_0()
-                            .h_full()
+                            .min_h_0()
+                            .rounded_tl(theme::RADIUS_LG)
+                            .bg(gpui::rgb(theme::bg_app()))
                             .child(self.render_pane(window, cx))
                             .child(crate::ui::scrollbar::scrollbar(
                                 "settings-scrollbar",
@@ -1776,20 +1794,54 @@ impl Render for SettingsScreen {
 }
 
 impl SettingsScreen {
+    /// Back to the task screen: the first row of the sidebar column.
+    fn render_back(&self, cx: &mut Context<Self>) -> gpui::Stateful<Div> {
+        div()
+            .id("settings-back")
+            .debug_selector(|| "settings-back".to_string())
+            .role(gpui::Role::Button)
+            .aria_label(super::i18n::tr("settings-back"))
+            .h(crate::ui::titlebar::SIDEBAR_ROW_HEIGHT)
+            // The arrow's stroke, not its box, lines up with the labels
+            // of the rows below.
+            .px_2p5()
+            .flex()
+            .items_center()
+            .gap_2()
+            .rounded(theme::RADIUS_SM)
+            .text_sm()
+            .font_weight(gpui::FontWeight::MEDIUM)
+            .text_color(gpui::rgb(theme::text_secondary()))
+            .focus_visible(widgets::focus_ring)
+            .hover(|style| {
+                style
+                    .text_color(gpui::rgb(theme::text_primary()))
+                    .bg(gpui::rgb(theme::bg_elevated()))
+                    .cursor_pointer()
+            })
+            // Inside a drag region: a press here is a click, not a drag.
+            .on_mouse_down(gpui::MouseButton::Left, |_event, _window, cx| {
+                cx.stop_propagation();
+            })
+            .on_click(cx.listener(|this, _event, _window, cx| {
+                this.close(cx);
+            }))
+            .child(icon("arrow-left", px(14.), theme::text_secondary()))
+            .child(super::i18n::tr("settings-back"))
+    }
+
     fn render_nav(&self, cx: &mut Context<Self>) -> gpui::Stateful<Div> {
         div()
             .id("settings-nav")
             .role(gpui::Role::TabList)
             .aria_label(super::i18n::tr("settings-sections"))
             .aria_orientation(gpui::Orientation::Vertical)
-            .w(gpui::px(220.))
-            .h_full()
+            .flex_1()
+            .min_h_0()
             .flex()
             .flex_col()
             .gap_1()
             .p_3()
-            .border_r_1()
-            .border_color(gpui::rgb(theme::border()))
             .bg(gpui::rgb(theme::bg_sidebar()))
             .children(self.visible_sections().iter().map(|section| {
                 let selected = self.section == *section;
@@ -1842,7 +1894,9 @@ impl SettingsScreen {
             .flex()
             .flex_col()
             .gap_4()
-            .p_6()
+            // Content starts under the title, at the title's inset.
+            .px(window.rem_size())
+            .py_6()
             .track_scroll(&self.pane_scroll)
             .overflow_y_scroll();
         match self.section {

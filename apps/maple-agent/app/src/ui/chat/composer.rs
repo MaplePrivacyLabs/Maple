@@ -120,7 +120,7 @@ impl ChatScreen {
                 .items_center()
                 .justify_between()
                 .gap_3()
-                .h(super::CHAT_HEADER_HEIGHT)
+                .h(titlebar::TITLE_BAR_HEIGHT)
                 .flex_none()
                 .pl(inset)
                 .pr_3()
@@ -130,7 +130,7 @@ impl ChatScreen {
             div()
                 .absolute()
                 .left(toolbar_left)
-                .top((super::CHAT_HEADER_HEIGHT - super::sidebar::TOP_ROW_HEIGHT) / 2.)
+                .top((titlebar::TITLE_BAR_HEIGHT - titlebar::SIDEBAR_ROW_HEIGHT) / 2.)
                 .flex()
                 .items_center()
                 .gap_1()
@@ -198,7 +198,7 @@ impl ChatScreen {
                 div()
                     .absolute()
                     .left(toolbar_left + toolbar_width + header_gap)
-                    .top((super::CHAT_HEADER_HEIGHT - window.rem_size()) / 2.)
+                    .top((titlebar::TITLE_BAR_HEIGHT - window.rem_size()) / 2.)
                     .w(px(1.))
                     .h_4()
                     .opacity(collapsed_progress)
@@ -206,20 +206,14 @@ impl ChatScreen {
             )
         })
         .child(
-            div()
+            titlebar::title(title)
                 .debug_selector(|| "header-title".to_string())
                 // Sized by its text, like the chips: nowrap gives it a
                 // real intrinsic width (a clamped, shrinkable title
                 // measured as 0 px and vanished). The cap keeps a long
                 // title from pushing the chips out of the pane.
                 .flex_none()
-                .max_w(gpui::relative(0.6))
-                .truncate()
-                .text_lg()
-                .line_height(px(24.))
-                .font_weight(gpui::FontWeight::SEMIBOLD)
-                .text_color(gpui::rgb(theme::text_primary()))
-                .child(title),
+                .max_w(gpui::relative(0.6)),
         )
         .child(
             div()

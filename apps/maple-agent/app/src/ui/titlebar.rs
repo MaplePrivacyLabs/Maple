@@ -3,7 +3,7 @@
 //! leaves every window undecorated: a drag region with a centered title
 //! plus round minimize, maximize, and close controls.
 
-use gpui::{Context, Pixels, SharedString, Window, div, prelude::*, px};
+use gpui::{Context, Div, Pixels, SharedString, Window, div, prelude::*, px};
 
 use super::decorations::system_draws_titlebar;
 use super::theme;
@@ -19,21 +19,39 @@ pub const TRANSPARENT_TITLEBAR: bool = cfg!(target_os = "macos");
 /// Where the traffic lights sit when the bar is transparent.
 pub const TRAFFIC_LIGHT_POSITION: gpui::Point<Pixels> = gpui::point(px(12.), px(12.));
 
-/// Horizontal room the traffic lights need at the left of the top row.
-pub const TRAFFIC_LIGHT_INSET: Pixels = px(78.);
-
 /// Vertical room the traffic lights take at the top of a column, for a
 /// row that sits under them instead of beside them.
 pub const TRAFFIC_LIGHT_ROW: Pixels = px(36.);
 
-/// Left padding for a top row: clears the traffic lights when the bar is
-/// transparent, otherwise the ordinary gutter.
-pub fn top_row_inset(gutter: Pixels) -> Pixels {
+/// Height of the title bar row each screen's main pane starts with. The
+/// task header and the Settings header share it, so their titles sit on
+/// one line and moving between the screens never moves the title.
+pub const TITLE_BAR_HEIGHT: Pixels = px(40.);
+
+/// Height of the first row of a sidebar column: the task sidebar's
+/// wordmark, Settings' Back.
+pub const SIDEBAR_ROW_HEIGHT: Pixels = px(28.);
+
+/// Top of a sidebar column's first row. Under traffic lights it starts
+/// below them; without them it is centered on the title bar's line.
+pub fn sidebar_row_top() -> Pixels {
     if TRANSPARENT_TITLEBAR {
-        TRAFFIC_LIGHT_INSET
+        TRAFFIC_LIGHT_ROW
     } else {
-        gutter
+        (TITLE_BAR_HEIGHT - SIDEBAR_ROW_HEIGHT) / 2.
     }
+}
+
+/// A pane's title in its title bar: the task, or Settings. One style for
+/// every screen, so the title reads the same wherever the pane goes.
+pub fn title(text: impl Into<SharedString>) -> Div {
+    div()
+        .truncate()
+        .text_lg()
+        .line_height(px(24.))
+        .font_weight(gpui::FontWeight::SEMIBOLD)
+        .text_color(gpui::rgb(theme::text_primary()))
+        .child(text.into())
 }
 
 /// Make an element behave like the title bar it is standing in for: a

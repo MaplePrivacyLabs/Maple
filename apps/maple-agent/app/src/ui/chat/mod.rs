@@ -113,8 +113,9 @@ struct QueueEdit {
     draft: String,
 }
 
-/// Width of the task sidebar.
-const SIDEBAR_WIDTH: gpui::Pixels = px(300.);
+/// Width of the task sidebar. Settings' navigation takes the same column,
+/// so the pane and its title stay put when Settings opens.
+pub(crate) const SIDEBAR_WIDTH: gpui::Pixels = px(300.);
 /// Width of the rail that stands in for the sidebar while it is collapsed.
 const SIDEBAR_RAIL_WIDTH: gpui::Pixels = px(48.);
 const SIDEBAR_TRANSITION_DURATION: std::time::Duration = std::time::Duration::from_millis(200);
@@ -136,8 +137,6 @@ impl SidebarTransition {
         self.from + (self.to - self.from) * eased
     }
 }
-/// Height of the task header and the clear strip above the collapsed rail.
-const CHAT_HEADER_HEIGHT: gpui::Pixels = px(40.);
 /// Where the header's toolbar starts, from the window's left edge, as the
 /// sidebar goes from collapsed (0) to expanded (1). Beside traffic lights
 /// it stays put: they reach 30 px past the rail, followed by an 8 px gap.
@@ -148,8 +147,8 @@ fn header_toolbar_left(sidebar_expansion: f32) -> gpui::Pixels {
     if titlebar::TRANSPARENT_TITLEBAR {
         return SIDEBAR_RAIL_WIDTH + px(38.);
     }
-    let padding = (sidebar::TOP_ROW_HEIGHT - sidebar::WORDMARK_HEIGHT) / 2.;
-    let mark = sidebar::WORDMARK_LEFT - padding + sidebar::TOP_ROW_HEIGHT;
+    let padding = (titlebar::SIDEBAR_ROW_HEIGHT - sidebar::WORDMARK_HEIGHT) / 2.;
+    let mark = sidebar::WORDMARK_LEFT - padding + titlebar::SIDEBAR_ROW_HEIGHT;
     let wordmark = sidebar::WORDMARK_LEFT
         + crate::ui::icons::wordmark_width(sidebar::WORDMARK_HEIGHT)
         + padding;
@@ -7700,7 +7699,7 @@ impl ChatScreen {
     /// The collapsed sidebar: a slim rail in the sidebar's color whose
     /// Maple mark shows the sidebar again.
     fn render_sidebar_rail(&self, cx: &mut Context<Self>) -> gpui::Stateful<Div> {
-        let mark_padding = (sidebar::TOP_ROW_HEIGHT - sidebar::WORDMARK_HEIGHT) / 2.;
+        let mark_padding = (titlebar::SIDEBAR_ROW_HEIGHT - sidebar::WORDMARK_HEIGHT) / 2.;
         let rail = titlebar::drag_region(
             div()
                 .id("sidebar-rail")
@@ -7718,14 +7717,14 @@ impl ChatScreen {
                 .debug_selector(|| "show-sidebar".to_string())
                 .absolute()
                 .left(sidebar::WORDMARK_LEFT - mark_padding)
-                .top(sidebar::wordmark_row_top() - CHAT_HEADER_HEIGHT)
+                .top(titlebar::sidebar_row_top() - titlebar::TITLE_BAR_HEIGHT)
                 .role(gpui::Role::Button)
                 .aria_label(tr("chat-show-sidebar"))
                 // The search field's place in the tab order, which the rail
                 // holds while the sidebar is collapsed.
                 .tab_index(2)
                 .flex_none()
-                .size(sidebar::TOP_ROW_HEIGHT)
+                .size(titlebar::SIDEBAR_ROW_HEIGHT)
                 .overflow_hidden()
                 .flex()
                 .items_center()
@@ -7767,7 +7766,7 @@ impl ChatScreen {
             .child(titlebar::drag_region(
                 div()
                     .id("sidebar-rail-titlebar")
-                    .h(CHAT_HEADER_HEIGHT)
+                    .h(titlebar::TITLE_BAR_HEIGHT)
                     .flex_none()
                     .bg(gpui::rgb(theme::bg_sidebar())),
             ))
