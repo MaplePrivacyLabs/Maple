@@ -132,7 +132,7 @@ impl Section {
     fn icon(self) -> &'static str {
         match self {
             Self::General => "settings",
-            Self::Appearance => "palette",
+            Self::Appearance => "paintbrush",
             Self::Shortcuts => "keyboard",
             Self::Integrations => "plug",
             Self::Apps => "layout-grid",

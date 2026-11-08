@@ -84,7 +84,7 @@ assets!(
     // OpenAI mark (simple-icons, CC0) for the Codex integration card.
     "icons/openai-mark.svg",
     "icons/paperclip.svg",
-    "icons/palette.svg",
+    "icons/paintbrush.svg",
     "icons/pin.svg",
     "icons/plus.svg",
     "icons/puzzle.svg",
