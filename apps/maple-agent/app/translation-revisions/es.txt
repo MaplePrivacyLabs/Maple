@@ -1059,11 +1059,10 @@ settings-api-credits-enter-an-amount 0d0a7930f78168fc
 settings-api-credits-extra-credit-balance c52f3552172fbb60
 settings-api-credits-loading-balance 2e0beb7e537a9dfb
 settings-api-credits-opened-bitcoin-checkout-in-your-browser-credits-arrive-once-the-p 9a4730963b542113
-settings-api-credits-opened-checkout-in-your-browser-refresh-after-paying-to-see-the-n 02429d8325951bc7
+settings-api-credits-opened-checkout-in-your-browser-refresh-after-paying-to-see-the-n 3e8ce82b25cf95b2
 settings-api-credits-opening-checkout f2097f08d8fb7421
 settings-api-credits-pay-with-bitcoin f6f52b86218888da
 settings-api-credits-pay-with-card 272729ed07bf4920
-settings-api-credits-refresh 46411b24d9946ad6
 settings-api-delete-key 7c0dd0975f308058
 settings-api-delete-key-name 1dfac96b82cc1f6d
 settings-api-intro a9f91ce787748539
@@ -1105,14 +1104,13 @@ settings-billing-loading-plan 576cde67b03a5b8b
 settings-billing-loading-plans 8756f998bf968c13
 settings-billing-month 357a68e3fbfedb7e
 settings-billing-no-plans-are-on-sale-right-now 17f7937f16f5ca2a
-settings-billing-opened-checkout-in-your-browser-refresh-after-paying-to-see-the-n b72d72e3cc199476
+settings-billing-opened-checkout-in-your-browser-refresh-after-paying-to-see-the-n 1565dd2ee822aa06
 settings-billing-opened-the-pricing-page-in-your-browser e41fe4b61fe06f24
-settings-billing-opened-the-subscription-portal-in-your-browser-refresh-after-maki c6e1de1b78adefdb
+settings-billing-opened-the-subscription-portal-in-your-browser-refresh-after-maki 97b5b6c044e12b9f
 settings-billing-paid-with-bitcoin-to-change-plans-contact-support-trymaple-ai 94d80589aa20884d
 settings-billing-payment-due 6d11cd16c949396d
 settings-billing-plan 80fd7c698c7f5f16
 settings-billing-price-period 6a6d7fda8407746d
-settings-billing-refresh f35575422c1a279a
 settings-billing-renews d7781c8de40ea63a
 settings-billing-see-on-the-web 8ade850491fa25b1
 settings-billing-subtitle 0da2f2c4823dd377
@@ -1249,7 +1247,6 @@ settings-local-api-port f7a2398259aed995
 settings-local-api-port-1-65535 393be726ad32fe41
 settings-local-api-port-address a5b3150f5669fb80
 settings-local-api-ready-help d328d10583b253e6
-settings-local-api-refresh-status 1342a988fdf3f4b6
 settings-local-api-requests 8a7e2f052fca94ac
 settings-local-api-resume 17bd0cf0e6e26b95
 settings-local-api-resume-help 9983430d4811b742
@@ -1374,6 +1371,7 @@ settings-preview-text 8ec15da22521d1a1
 settings-preview-you a39e470f89344533
 settings-reduce-motion 1ca0cf2411e033a1
 settings-reduce-motion-description 8d0478700eb90332
+settings-refresh b677ed0e217c8a34
 settings-remote-an-update-request-is-already-in-progress-there cac1f98b478dfd7e
 settings-remote-blocked-busy eeda2b38d4c36949
 settings-remote-blocked-coordinator-unavailable d6c196f0c0c4bc48

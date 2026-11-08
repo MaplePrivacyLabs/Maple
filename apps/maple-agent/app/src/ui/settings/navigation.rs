@@ -65,6 +65,9 @@ pub(super) enum SettingsTarget {
     #[cfg(feature = "acp")]
     Acp(AcpTarget),
     Shortcut(String),
+    /// The one refresh control on pages that fetch remote state: the icon in
+    /// the page header.
+    PageRefresh,
     PromptEditor,
     PromptSave,
     PromptClear,
@@ -193,7 +196,7 @@ impl SettingsScreen {
             .collect(),
             Section::Account => self.account_targets(),
             Section::Usage => vec![
-                SettingsTarget::Billing(BillingTarget::Refresh),
+                SettingsTarget::PageRefresh,
                 SettingsTarget::Billing(BillingTarget::ManagePlan),
             ],
             Section::Billing => self.billing_targets(),
@@ -201,6 +204,7 @@ impl SettingsScreen {
                 #[cfg(feature = "acp")]
                 {
                     let mut targets = vec![
+                        SettingsTarget::PageRefresh,
                         SettingsTarget::DeveloperTab(DeveloperTab::Api),
                         SettingsTarget::DeveloperTab(DeveloperTab::Acp),
                     ];
@@ -212,7 +216,9 @@ impl SettingsScreen {
                 }
                 #[cfg(not(feature = "acp"))]
                 {
-                    self.api_targets()
+                    let mut targets = vec![SettingsTarget::PageRefresh];
+                    targets.extend(self.api_targets());
+                    targets
                 }
             }
             Section::Shortcuts => self
@@ -225,8 +231,6 @@ impl SettingsScreen {
             Section::Integrations => {
                 // Display order: the Popular apps strip, built-ins, connected
                 // servers, then the add row. The directory is the Apps page.
-                // Display order: built-ins, connected servers, the add row,
-                // then every catalog app.
                 let mut targets: Vec<SettingsTarget> = Vec::new();
                 if !self.catalog_featured.is_empty() {
                     targets.push(SettingsTarget::McpCatalogSeeAll);
@@ -494,6 +498,7 @@ impl SettingsScreen {
                 self.connect_catalog_entry(&id, cx)
             }
             Some(SettingsTarget::McpCatalogSeeAll) => self.open_apps_directory(cx),
+            Some(SettingsTarget::PageRefresh) => self.refresh_page(cx),
             None => {}
         }
     }

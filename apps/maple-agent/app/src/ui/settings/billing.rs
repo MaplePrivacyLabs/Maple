@@ -15,7 +15,6 @@ use crate::ui::widgets;
 /// Controls in the Billing pane that Application Vim can land on.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub(super) enum BillingTarget {
-    Refresh,
     /// Change plans in the Stripe portal.
     ManageSubscription,
     /// The web pricing page, for subscriptions this app cannot change.
@@ -34,6 +33,8 @@ pub(super) struct BillingState {
     /// True while a portal or checkout link is being minted.
     pub(super) busy: bool,
     pub(super) notice: Option<UiText>,
+    /// A portal or checkout tab is open; refetch when the window comes back.
+    pub(super) awaiting_browser: bool,
     pub(super) credits: super::api_credits::CreditsState,
 }
 
@@ -49,6 +50,7 @@ impl BillingState {
             products: None,
             busy: false,
             notice: None,
+            awaiting_browser: false,
             credits: super::api_credits::CreditsState::new(
                 application_vim_enabled,
                 application_focus,
@@ -150,7 +152,7 @@ impl SettingsScreen {
     }
 
     pub(super) fn billing_targets(&self) -> Vec<SettingsTarget> {
-        let mut targets = vec![SettingsTarget::Billing(BillingTarget::Refresh)];
+        let mut targets = vec![SettingsTarget::PageRefresh];
         if let Some(status) = self.billing.status.as_ref() {
             match plan_action(status) {
                 Some(PlanAction::Portal) => {
@@ -185,7 +187,6 @@ impl SettingsScreen {
         cx: &mut Context<Self>,
     ) {
         match target {
-            BillingTarget::Refresh => self.refresh_billing(cx),
             BillingTarget::ManageSubscription => self.open_billing_portal(cx),
             BillingTarget::ViewPlans => self.open_pricing_page(cx),
             BillingTarget::ManagePlan => self.select_section(Section::Billing, cx),
@@ -207,17 +208,7 @@ impl SettingsScreen {
                     &tr("settings-section-usage"),
                     &tr("settings-usage-subtitle"),
                 ))
-                .child(
-                    self.application_target(
-                        || SettingsTarget::Billing(BillingTarget::Refresh),
-                        widgets::ghost_button("usage-refresh")
-                            .py_1p5()
-                            .on_click(cx.listener(|this, _event, _window, cx| {
-                                this.refresh_billing(cx);
-                            }))
-                            .child(tr("settings-billing-refresh")),
-                    ),
-                ),
+                .child(self.page_refresh_button("usage-refresh", cx)),
         );
         pane = pane.child(subsection_title(&tr("settings-billing-plan")));
         pane = pane.child(match &self.plan {
@@ -285,6 +276,7 @@ impl SettingsScreen {
             cx,
             |this, result, cx| {
                 this.billing.busy = false;
+                this.billing.awaiting_browser = result.is_ok();
                 this.billing.notice = Some(match result {
                     Ok(()) => UiText::key("settings-billing-opened-the-subscription-portal-in-your-browser-refresh-after-maki"),
                     Err(message) => message.into(),
@@ -335,6 +327,7 @@ impl SettingsScreen {
                     cx,
                     |this, result, cx| {
                         this.billing.busy = false;
+                        this.billing.awaiting_browser = result.is_ok();
                         this.billing.notice = Some(match result {
                             Ok(()) => UiText::key("settings-billing-opened-checkout-in-your-browser-refresh-after-paying-to-see-the-n"),
                             Err(message) => message.into(),
@@ -358,17 +351,7 @@ impl SettingsScreen {
                     &tr("settings-section-billing"),
                     &tr("settings-billing-subtitle"),
                 ))
-                .child(
-                    self.application_target(
-                        || SettingsTarget::Billing(BillingTarget::Refresh),
-                        widgets::ghost_button("billing-refresh")
-                            .py_1p5()
-                            .on_click(cx.listener(|this, _event, _window, cx| {
-                                this.refresh_billing(cx);
-                            }))
-                            .child(tr("settings-billing-refresh")),
-                    ),
-                ),
+                .child(self.page_refresh_button("billing-refresh", cx)),
         );
         let Some(status) = self.billing.status.as_ref() else {
             return pane.child(

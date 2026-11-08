@@ -29,7 +29,6 @@ pub(super) mod tab_order {
     pub const PLAN: isize = 16;
     pub const LOCAL_RETRY: isize = 17;
     pub const LOCAL_ENABLED: isize = 18;
-    pub const LOCAL_REFRESH: isize = 19;
     pub const LOCAL_COPY_URL: isize = 20;
     pub const LOCAL_SAVE_PORT: isize = 21;
     pub const LOCAL_PORT: isize = 22;
@@ -314,7 +313,15 @@ impl SettingsScreen {
         let unlocked = self.api_access() != Some(false);
         let pane = div().flex().flex_col().gap_4();
         #[cfg(not(feature = "acp"))]
-        let pane = pane.child(super::section_title(&tr("settings-section-api")));
+        let pane = pane.child(
+            div()
+                .flex()
+                .items_start()
+                .justify_between()
+                .gap_4()
+                .child(super::section_title(&tr("settings-section-api")))
+                .child(self.page_refresh_button("developer-refresh", cx)),
+        );
         let pane = pane.child(self.render_api_intro(cx)).child(if unlocked {
             self.render_credits_strip(cx)
         } else {

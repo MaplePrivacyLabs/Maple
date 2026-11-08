@@ -21,7 +21,6 @@ use maple_agent::maple_api::MapleLoginMethod;
 /// Credit controls that Application Vim can land on.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub(super) enum CreditsTarget {
-    Refresh,
     /// A preset purchase, in whole dollars.
     Package(u64),
     Custom,
@@ -213,7 +212,7 @@ impl SettingsScreen {
 
     pub(super) fn credits_targets(&self) -> Vec<SettingsTarget> {
         let target = |target| SettingsTarget::Billing(BillingTarget::Credits(target));
-        let mut targets = vec![target(CreditsTarget::Refresh)];
+        let mut targets = Vec::new();
         targets.extend(
             CREDIT_PACKAGES_DOLLARS
                 .iter()
@@ -237,7 +236,6 @@ impl SettingsScreen {
         cx: &mut Context<Self>,
     ) {
         match target {
-            CreditsTarget::Refresh => self.refresh_credit_balance(cx),
             CreditsTarget::Package(dollars) => {
                 self.choose_credits(CreditChoice::Package(dollars), cx)
             }
@@ -248,12 +246,6 @@ impl SettingsScreen {
             }
             CreditsTarget::Pay(method) => self.purchase_credits(method, cx),
         }
-    }
-
-    fn refresh_credit_balance(&mut self, cx: &mut Context<Self>) {
-        self.billing.credits.notice = None;
-        self.load_credit_balance(cx);
-        cx.notify();
     }
 
     fn choose_credits(&mut self, choice: CreditChoice, cx: &mut Context<Self>) {
@@ -294,6 +286,7 @@ impl SettingsScreen {
             cx,
             move |this, result, cx| {
                 this.billing.credits.purchasing = None;
+                this.billing.awaiting_browser = result.is_ok();
                 this.billing.credits.notice = Some(match result {
                     Ok(()) => match method {
                         PaymentMethod::Stripe => UiText::key("settings-api-credits-opened-checkout-in-your-browser-refresh-after-paying-to-see-the-n"),
@@ -309,24 +302,11 @@ impl SettingsScreen {
     pub(super) fn render_credits(&self, cx: &mut Context<Self>) -> Div {
         let credits = &self.billing.credits;
         let target = |target| move || SettingsTarget::Billing(BillingTarget::Credits(target));
-        let mut section = div().flex().flex_col().gap_3().child(
-            div()
-                .flex()
-                .items_center()
-                .justify_between()
-                .child(subsection_title(&tr("settings-api-credits-api-credits")))
-                .child(
-                    self.application_target(
-                        target(CreditsTarget::Refresh),
-                        widgets::ghost_button("credits-refresh")
-                            .py_1p5()
-                            .on_click(cx.listener(|this, _event, _window, cx| {
-                                this.refresh_credit_balance(cx);
-                            }))
-                            .child(tr("settings-api-credits-refresh")),
-                    ),
-                ),
-        );
+        let mut section = div()
+            .flex()
+            .flex_col()
+            .gap_3()
+            .child(subsection_title(&tr("settings-api-credits-api-credits")));
 
         // A failed load keeps the last balance, if any, and says so below it.
         let balance = match (credits.balance, &credits.balance_error) {

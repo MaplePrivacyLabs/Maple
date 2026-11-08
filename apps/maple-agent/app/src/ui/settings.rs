@@ -327,6 +327,9 @@ pub struct SettingsScreen {
     shortcut_notice: Option<UiText>,
     shortcut_recorder: Option<ShortcutRecorder>,
     shortcut_interceptor: Option<Subscription>,
+    /// Refetches billing when the window comes back from a portal or checkout
+    /// tab; attached on first render because it needs the window.
+    activation_subscription: Option<Subscription>,
     shortcut_reset_confirmation: bool,
     application_vim: SettingsApplicationVimState,
     application_focus: gpui::FocusHandle,
@@ -680,6 +683,7 @@ impl SettingsScreen {
             shortcut_notice: None,
             shortcut_recorder: None,
             shortcut_interceptor: None,
+            activation_subscription: None,
             shortcut_reset_confirmation: false,
             application_vim,
             application_focus,
@@ -1767,6 +1771,16 @@ fn merge_shortcut_overrides(settings: &mut AppSettings, shortcut_overrides: Shor
 
 impl Render for SettingsScreen {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        if self.activation_subscription.is_none() {
+            self.activation_subscription =
+                Some(cx.observe_window_activation(window, |this, window, cx| {
+                    if window.is_window_active()
+                        && std::mem::take(&mut this.billing.awaiting_browser)
+                    {
+                        this.refresh_billing(cx);
+                    }
+                }));
+        }
         let locale = super::i18n::current_locale();
         if self.locale != locale {
             self.locale = locale;
@@ -2139,6 +2153,7 @@ impl SettingsScreen {
         }
         #[cfg(feature = "acp")]
         {
+            let refresh = self.page_refresh_button("developer-refresh", cx);
             let tab_button = |tab: DeveloperTab, id: &'static str, label: gpui::SharedString| {
                 self.application_target(
                     move || SettingsTarget::DeveloperTab(tab),
@@ -2156,10 +2171,18 @@ impl SettingsScreen {
                 .flex()
                 .flex_col()
                 .gap_4()
-                .child(page_header(
-                    &tr("settings-section-developer"),
-                    &tr("settings-developer-subtitle"),
-                ))
+                .child(
+                    div()
+                        .flex()
+                        .items_start()
+                        .justify_between()
+                        .gap_4()
+                        .child(page_header(
+                            &tr("settings-section-developer"),
+                            &tr("settings-developer-subtitle"),
+                        ))
+                        .child(refresh),
+                )
                 .child(
                     div()
                         .id("developer-tabs")
@@ -3661,6 +3684,47 @@ fn pane_tab(
             }
         }))
         .child(label)
+}
+
+impl SettingsScreen {
+    /// The one refresh control on a page that fetches remote state, drawn at
+    /// the right of the page header.
+    pub(super) fn page_refresh_button(
+        &self,
+        id: &'static str,
+        cx: &mut Context<Self>,
+    ) -> gpui::AnyElement {
+        self.application_target(
+            || SettingsTarget::PageRefresh,
+            widgets::icon_button(
+                id,
+                "rotate-cw",
+                tr("settings-refresh"),
+                widgets::ROW_ICON,
+                theme::text_secondary(),
+            )
+            .debug_selector(move || id.to_string())
+            .flex_none()
+            .mt_1()
+            .on_click(cx.listener(|this, _event, _window, cx| this.refresh_page(cx))),
+        )
+    }
+
+    /// Refetch whatever the current page shows from remote state.
+    pub(super) fn refresh_page(&mut self, cx: &mut Context<Self>) {
+        match self.section {
+            Section::Billing | Section::Usage => self.refresh_billing(cx),
+            Section::Api => {
+                self.load_api_keys(cx);
+                #[cfg(feature = "proxy")]
+                if self.local_api.can_refresh() {
+                    self.refresh_local_api_status(cx);
+                }
+                cx.notify();
+            }
+            _ => {}
+        }
+    }
 }
 
 fn page_header(title: &str, subtitle: &str) -> Div {
