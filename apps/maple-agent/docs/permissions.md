@@ -18,7 +18,9 @@ Modes work the same on a [paired computer](remote-access.md). The computer that
 runs the task judges its calls with its own account, and the computer you are
 using shows the chip and the requests. Changing a remote task's mode needs that
 computer to run a version that offers it; an older one keeps the task's mode
-and asks to be updated. Every window showing the task follows a change.
+and asks to be updated. A new task started there opens in the mode that
+computer gave it, with your message kept in the composer, so nothing runs in a
+mode you did not see. Every window showing the task follows a change.
 
 ## How a call is judged
 

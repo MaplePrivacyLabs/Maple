@@ -3840,7 +3840,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn a_remote_mode_change_reaches_the_setter_with_its_typed_mode() {
+    async fn a_remote_mode_command_decodes_into_the_task_setter() {
         let root = tempfile::tempdir().unwrap();
         let backend = LocalBackend::isolated_for_test(root.path());
         assert!(backend.persisted_auth.claim_and_persist(&auth_snapshot(

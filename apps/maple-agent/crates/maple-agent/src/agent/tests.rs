@@ -617,6 +617,14 @@ async fn the_web_tools_follow_the_tasks_web_switch() {
             .set_session_web_enabled(switch(enabled))
             .await
             .unwrap();
+        assert!(
+            harness.recorder.events().iter().any(|event| matches!(
+                event,
+                AgentServiceEvent::SessionUpdated { session_id, session, .. }
+                    if session_id == &task && session.web_enabled == enabled
+            )),
+            "every window showing the task hears of the change"
+        );
         harness.faux.push_text(reply);
         let mut run = harness.send(&task, "Look it up").await;
         assert_eq!(finished(&mut run).await, AgentRunTerminal::Completed);

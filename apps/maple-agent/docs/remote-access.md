@@ -235,13 +235,6 @@ Project-change events carry only changed metadata; snapshots and project pages
 provide authoritative names, revisions, and default-workspace flags.
 Version 6 and earlier peers receive an explicit version refusal. Bounded frames
 and an explicit task-operation allowlist apply.
-
-Task features are remote-first: what a user can do with a task on this computer,
-including its settings, questions and approvals, should work the same from a
-paired computer. Desktop-only settings such as the account, appearance and
-language stay local. Because the allowlist is explicit, each new task operation
-is added to it in the same change, behind a capability when older hosts cannot
-serve it.
 The viewing desktop applies sidebar grouping and manual ordering to summaries
 received through the existing navigation and project APIs. These preferences
 stay on that desktop; no ordering parameters, commands, or capabilities are
@@ -345,6 +338,37 @@ while the view remains attached. Known revocation and incompatible/unknown wire
 messages terminate recovery. Recent validated address hints can be reused during
 a discovery outage, but a daemon restart or new relay admission can still require
 OpenSecret. No offline history replica or migration of workspaces is provided.
+
+## Adding task features
+
+Chat and agent features are remote-first. What a user does with a task, such as
+sending, stopping, choosing its model, web access, integrations or permission
+mode, and answering its questions and approvals, works the same from a paired
+computer, in the same change. Three kinds of operation stay off the remote
+protocol on purpose:
+
+- Preferences of the viewing desktop: account, appearance, language, store
+  password, local API, pins and sidebar order.
+- Anything that opens a browser, starts a sign-in or credential flow, or asks
+  for operating-system permissions on the execution computer: MCP and app
+  sign-in, and integration permission setup. Those happen at that computer.
+- Account operations and whole-host administration, as
+  [remote security](remote-security.md) describes.
+
+A new backend operation is not remotely callable until it is added to `Method`
+in `app/src/remote/wire.rs`. A released host fails to decode a request whose
+method it does not know and drops that stream, so every new method also gets a
+capability in `app/src/remote/update.rs` that the controller checks before
+sending. Give an older host a coded refusal that the viewer translates, as
+permission modes do, rather than a raw string. Prefer a capability to a wire
+version bump, which makes both computers update before they can pair. A setter
+whose result other windows show emits `SessionUpdated`. Test the controller
+against a host with the capability, one without it, a failed probe, and
+authority that changes after discovery, as `remote/streams/folder_tests.rs` and
+`remote/streams/permission_tests.rs` do. Test the host's remote dispatch too,
+and check the change live with two isolated profiles where possible (see
+[configuration](#configuration-and-release-boundary)). Leaving a task feature
+local-only needs the owner's explicit agreement, stated in the PR.
 
 ## Configuration and release boundary
 

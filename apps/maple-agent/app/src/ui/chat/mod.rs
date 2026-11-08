@@ -4039,24 +4039,36 @@ impl ChatScreen {
             },
             cx,
             move |this, result, cx| {
-                match result {
-                    Ok(session) => {
-                        this.upsert_session(session, cx);
-                    }
-                    Err(message) => {
-                        if this.selected_session.as_deref() == Some(session_id.as_str()) {
-                            this.permission_mode = previous;
-                        }
-                        this.notice = Some(UiText::context(
-                            "chat-mode-failed",
-                            "message",
-                            message.into(),
-                        ));
-                    }
-                }
-                cx.notify();
+                this.finish_permission_mode_change(&session_id, previous, result, cx);
             },
         );
+    }
+
+    /// A refused change, such as one an older paired computer cannot make,
+    /// puts the chip back and says why.
+    fn finish_permission_mode_change(
+        &mut self,
+        session_id: &str,
+        previous: AgentPermissionMode,
+        result: Result<AgentSessionSummary, UiFailure>,
+        cx: &mut Context<Self>,
+    ) {
+        match result {
+            Ok(session) => {
+                self.upsert_session(session, cx);
+            }
+            Err(message) => {
+                if self.selected_session.as_deref() == Some(session_id) {
+                    self.permission_mode = previous;
+                }
+                self.notice = Some(UiText::context(
+                    "chat-mode-failed",
+                    "message",
+                    message.into(),
+                ));
+            }
+        }
+        cx.notify();
     }
 
     fn toggle_composer_expanded(&mut self, cx: &mut Context<Self>) {

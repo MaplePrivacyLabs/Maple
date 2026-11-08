@@ -200,3 +200,57 @@ async fn a_failed_probe_refuses_as_unconfirmed_and_the_next_change_asks_again() 
     a.close().await;
     b.close().await;
 }
+
+#[tokio::test]
+async fn known_support_never_replaces_the_current_account_and_grant() {
+    let (a, b, connection, server) = endpoints().await;
+    let client = Client::new(connection);
+    let authority = AtomicUsize::new(0);
+    let peer = async {
+        let (probe, mut tx) = request(&server).await;
+        assert_eq!(probe.method, Method::PeerInfo);
+        // Sign-out or revocation lands while discovery is in flight.
+        authority.store(1, Ordering::SeqCst);
+        response(
+            &mut tx,
+            probe.id,
+            serde_json::to_value(information(true)).unwrap(),
+        )
+        .await;
+        // The next call to arrive is the marker: no mode change got through,
+        // either after the probe or from the support it cached.
+        let (next, mut tx) = request(&server).await;
+        assert_eq!(next.method, Method::ListTasks);
+        response(&mut tx, next.id, json!("marker")).await;
+    };
+    let viewer = async {
+        for (id, reason) in [(1, "account changed"), (2, "grant revoked")] {
+            let authorization = async {
+                assert_eq!(authority.load(Ordering::SeqCst), 1);
+                Err(reason.into())
+            };
+            assert_eq!(
+                client
+                    .call(set_mode(id), authorization)
+                    .await
+                    .err()
+                    .expect("the change must be refused"),
+                reason
+            );
+            assert_eq!(client.permission_modes.get(), Some(&true));
+        }
+        client
+            .call(super::tests::command(3, Method::ListTasks), async {
+                Ok(())
+            })
+            .await
+            .unwrap();
+    };
+    tokio::time::timeout(Duration::from_secs(10), async {
+        tokio::join!(peer, viewer);
+    })
+    .await
+    .unwrap();
+    a.close().await;
+    b.close().await;
+}

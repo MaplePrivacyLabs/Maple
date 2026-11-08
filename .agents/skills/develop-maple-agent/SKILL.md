@@ -95,10 +95,10 @@ request. Keep fixture launch and environment setup shared with the Codex tests.
 
 ## Remote parity
 
-Chat and agent features are remote-first. Before calling task work done,
-follow **Remote computers** in `apps/maple-agent/AGENTS.md`: expose the
-operation on the remote wire, gate it on a capability for older hosts with a
-translated refusal, and test both sides. Desktop-only settings stay local.
+Chat and agent features are remote-first. Before calling task work done, follow
+[adding task features](../../../apps/maple-agent/docs/remote-access.md#adding-task-features):
+the remote method, its capability, a translated refusal for older hosts, and
+tests of both sides.
 
 ## Security and publication
 
