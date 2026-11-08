@@ -1945,6 +1945,7 @@ impl SettingsScreen {
                 "settings-nav-{}",
                 section.id()
             )))
+            .debug_selector(move || format!("settings-nav-{}", section.id()))
             .role(gpui::Role::Tab)
             .aria_label(section.label())
             .aria_selected(selected)
