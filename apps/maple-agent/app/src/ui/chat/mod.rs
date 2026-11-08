@@ -158,8 +158,6 @@ fn header_toolbar_left(sidebar_expansion: f32) -> gpui::Pixels {
 /// Reading width shared by the transcript and the composer; they must
 /// stay in one column.
 const CONTENT_WIDTH: gpui::Pixels = px(900.);
-/// Header title when no task is selected.
-const DEFAULT_TASK_TITLE: &str = "chat-new-task-title";
 
 fn notification_body(
     details_enabled: bool,
@@ -256,7 +254,7 @@ pub(super) struct QuestionSelection {
 /// The chat's popup menus. One is open at a time.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub(super) enum ChatPopup {
-    /// The header chip's project menu.
+    /// A new task's project menu, from the chip above the composer.
     Project,
     Model,
     Thinking,
@@ -715,8 +713,6 @@ pub struct ChatScreen {
     /// Item id to `(index in timeline, revision)`; the revision counts
     /// applied updates so caches can tell a changed item from a stable one.
     timeline_index: HashMap<String, (usize, u64)>,
-    /// Title of the selected task, shown in the header.
-    selected_title: SharedString,
     /// Guards against a slow session load overwriting a newer selection.
     selection_generation: u64,
     /// Same guard for mid-run history reloads. Separate from the selection
@@ -1045,7 +1041,6 @@ impl ChatScreen {
             sidebar.set_activity(activity, cx);
             sidebar.set_recent_roots(roots, cx);
         });
-        self.refresh_selected_title();
         cx.emit(NavigationChanged);
     }
 
@@ -1093,7 +1088,6 @@ impl ChatScreen {
         let selected = self.sidebar_selection();
         self.sidebar
             .update(cx, |sidebar, cx| sidebar.set_selected(selected, cx));
-        self.refresh_selected_title();
     }
 
     pub(super) fn set_sidebar_collapsed(&mut self, collapsed: bool, cx: &mut Context<Self>) {
@@ -1527,7 +1521,6 @@ impl ChatScreen {
             derived: DerivedCache::default(),
             markdown_warmup: None,
             timeline_index: HashMap::new(),
-            selected_title: tr(DEFAULT_TASK_TITLE),
             project_folder_dialog: None,
             root_picker_open: false,
             root_selecting: false,
@@ -2319,8 +2312,16 @@ impl ChatScreen {
         );
     }
 
-    /// Open or close the project menu from the header chip.
+    /// Open or close a new task's project menu from its chip.
     pub fn toggle_root_menu(&mut self, cx: &mut Context<Self>) {
+        // A saved task's folder is fixed and its top bar has no picker:
+        // choosing a project starts a new task, where the picker sits.
+        if self.selected_session.is_some() {
+            self.new_session(cx);
+            if self.selected_session.is_some() {
+                return;
+            }
+        }
         self.popup.toggle(ChatPopup::Project, cx);
     }
 
@@ -2482,7 +2483,6 @@ impl ChatScreen {
         self.web_enabled = self.default_web_enabled;
         self.permission_mode = self.new_task_permission_mode;
         self.refresh_draft_mcp(cx);
-        self.refresh_selected_title();
         cx.notify();
     }
 
@@ -3158,7 +3158,6 @@ impl ChatScreen {
     fn finish_loading(&mut self, session_id: &str) {
         if self.loading_session.as_deref() == Some(session_id) {
             self.loading_session = None;
-            self.refresh_selected_title();
         }
     }
 
@@ -3196,7 +3195,6 @@ impl ChatScreen {
             .find_map(plan_entries)
             .unwrap_or_default();
         self.set_plan(plan);
-        self.refresh_selected_title();
     }
 
     /// Apply settings changes when returning from the settings screen:
@@ -3552,7 +3550,6 @@ impl ChatScreen {
             // archived task under a removed project restores that project.
             self.persist_project_root(project_root, cx);
         }
-        self.refresh_selected_title();
         self.set_queue(Vec::new());
         self.web_enabled = session.web_enabled;
         self.permission_mode = session.permission_mode;
@@ -6036,10 +6033,6 @@ impl ChatScreen {
                 self.timeline_index.insert(item.id.clone(), (index, 0));
                 self.timeline.push(item);
                 self.list_state.splice(index..index, 1);
-                if index == 0 {
-                    // The pane leaves the empty state; the header follows.
-                    self.refresh_selected_title();
-                }
                 index
             }
         };
@@ -7020,7 +7013,6 @@ impl ChatScreen {
             return;
         }
         self.locale = locale;
-        self.refresh_selected_title();
         self.refresh_project_caption(cx);
         self.derived.clear();
         if let Some(composer) = &self.composer {
@@ -7893,26 +7885,6 @@ impl ChatScreen {
     fn set_session_mcp(&mut self, servers: Vec<AgentSessionMcpServer>) {
         self.mcp_enabled_count = servers.iter().filter(|server| server.enabled).count();
         self.session_mcp = servers;
-    }
-
-    /// Cache the header title for the selected task. The header names what
-    /// the pane shows: with no transcript on screen it is a new task,
-    /// whatever the list has selected.
-    fn refresh_selected_title(&mut self) {
-        if self.timeline.is_empty() && self.loading_session.is_none() {
-            self.selected_title = tr(DEFAULT_TASK_TITLE);
-            return;
-        }
-        self.selected_title = self
-            .selected_session
-            .as_deref()
-            .and_then(|selected| {
-                self.sessions
-                    .iter()
-                    .position(|session| session.id == selected)
-            })
-            .map(|index| SharedString::from(self.sessions[index].title.clone()))
-            .unwrap_or_else(|| tr(DEFAULT_TASK_TITLE));
     }
 
     /// Raise a desktop notification when enabled and the window is not
