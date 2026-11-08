@@ -1862,7 +1862,9 @@ impl Render for SettingsScreen {
         self.focus_mcp_address(window, cx);
         self.focus_mcp_editor(window, cx);
         self.focus_delete_dialog(window, cx);
+        self.focus_erase_dialog(window, cx);
         let delete_dialog = self.render_delete_dialog(window, cx);
+        let erase_dialog = self.render_erase_dialog(window, cx);
         let mcp_editor = self.render_mcp_editor_dialog(window, cx);
         let mcp_address = self.render_mcp_address(window, cx);
         div()
@@ -1958,6 +1960,7 @@ impl Render for SettingsScreen {
                     ),
             )
             .children(delete_dialog)
+            .children(erase_dialog)
             .children(mcp_editor)
             .children(mcp_address)
     }

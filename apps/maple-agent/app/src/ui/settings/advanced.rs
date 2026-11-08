@@ -2,7 +2,9 @@
 //! remote task selection never redirects these settings to another computer.
 
 use crate::ui::i18n::{MessageCache, UiText, tr, tr_args};
-use gpui::{App, Context, Div, Entity, EventEmitter, div, prelude::*};
+use gpui::{App, Context, Div, Entity, EventEmitter, Focusable, div, prelude::*, px};
+
+use crate::ui::icons::icon;
 use maple_agent::store::{
     StoreState,
     lifecycle::{StoreMode, StoreModeNotice},
@@ -20,6 +22,8 @@ pub(super) struct AdvancedState {
     pub form: Option<Entity<PasswordForm>>,
     pub confirmation: Entity<TextInput>,
     pub erase: bool,
+    /// Focus the erase dialog's field the next time it draws.
+    pub erase_focus_pending: bool,
     pub busy: bool,
     pub notice: Option<UiText>,
     success: Option<&'static str>,
@@ -35,6 +39,7 @@ impl AdvancedState {
             form: None,
             confirmation: cx.new(|cx| TextInput::localized("settings-advanced-type-erase", cx)),
             erase: false,
+            erase_focus_pending: false,
             busy: false,
             notice: None,
             success: None,
@@ -202,6 +207,159 @@ impl SettingsScreen {
         self.advanced.notice = None;
         self.advanced.success = None;
         cx.notify();
+    }
+
+    pub(super) fn open_erase_dialog(&mut self, cx: &mut Context<Self>) {
+        self.advanced.erase = true;
+        self.advanced.erase_focus_pending = true;
+        self.advanced.notice = None;
+        self.advanced.success = None;
+        cx.notify();
+    }
+
+    /// Cancel, Escape, or the backdrop. Nothing is lost by closing: the
+    /// typed word is the only state.
+    pub(super) fn close_erase_dialog(&mut self, cx: &mut Context<Self>) {
+        if self.advanced.busy {
+            return;
+        }
+        self.advanced.erase = false;
+        self.advanced.notice = None;
+        self.advanced
+            .confirmation
+            .update(cx, |input, cx| input.clear(cx));
+        cx.notify();
+    }
+
+    pub(super) fn focus_erase_dialog(&mut self, window: &mut gpui::Window, cx: &mut Context<Self>) {
+        if self.advanced.erase && std::mem::take(&mut self.advanced.erase_focus_pending) {
+            window.focus(&self.advanced.confirmation.read(cx).focus_handle(cx), cx);
+        }
+    }
+
+    /// Erasing this version's local data, as a dialog: the consequences,
+    /// the typed word, Cancel, and a destructive button inert until the
+    /// word is right.
+    pub(super) fn render_erase_dialog(
+        &self,
+        window: &gpui::Window,
+        cx: &mut Context<Self>,
+    ) -> Option<impl IntoElement + use<>> {
+        if !self.advanced.erase {
+            return None;
+        }
+        let busy = self.advanced.busy;
+        let ready = self.advanced.confirmation.read(cx).text() == "ERASE";
+        let title = tr("settings-advanced-erase-dialog-title");
+        let width = (window.viewport_size().width - px(48.)).clamp(px(0.), px(520.));
+        Some(
+            div()
+                .id("advanced-erase-backdrop")
+                .absolute()
+                .inset_0()
+                .size_full()
+                .occlude()
+                .bg(theme::scrim())
+                .flex()
+                .items_center()
+                .justify_center()
+                .on_mouse_down(
+                    gpui::MouseButton::Left,
+                    cx.listener(|this, _event, _window, cx| this.close_erase_dialog(cx)),
+                )
+                .child(
+                    div()
+                        .id("advanced-erase-dialog")
+                        .debug_selector(|| "advanced-erase-dialog".to_string())
+                        .role(gpui::Role::Dialog)
+                        .aria_label(title.clone())
+                        .key_context("Dialog")
+                        .w(width)
+                        .p_5()
+                        .rounded(theme::RADIUS_XL)
+                        .shadow_lg()
+                        .bg(gpui::rgb(theme::bg_elevated()))
+                        .border_1()
+                        .border_color(gpui::rgb(theme::border()))
+                        .flex()
+                        .flex_col()
+                        .gap_4()
+                        .text_color(gpui::rgb(theme::text_primary()))
+                        .on_mouse_down(gpui::MouseButton::Left, |_event, _window, cx| {
+                            cx.stop_propagation();
+                        })
+                        .on_key_down(cx.listener(
+                            |this, event: &gpui::KeyDownEvent, _window, cx| {
+                                if event.keystroke.key == "escape"
+                                    && !event.keystroke.modifiers.modified()
+                                {
+                                    cx.stop_propagation();
+                                    this.close_erase_dialog(cx);
+                                }
+                            },
+                        ))
+                        .child(
+                            div()
+                                .flex()
+                                .items_center()
+                                .gap_2()
+                                .child(icon("circle-alert", px(18.), theme::status_error()))
+                                .child(
+                                    div()
+                                        .text_lg()
+                                        .font_weight(gpui::FontWeight::SEMIBOLD)
+                                        .child(title),
+                                ),
+                        )
+                        .child(
+                            div()
+                                .text_sm()
+                                .text_color(gpui::rgb(theme::text_secondary()))
+                                .child(gpui::text!(tr(ERASE_COPY))),
+                        )
+                        .child(
+                            widgets::input_frame()
+                                .text_sm()
+                                .child(self.advanced.confirmation.clone()),
+                        )
+                        .when_some(self.advanced.notice.clone(), |dialog, notice| {
+                            dialog.child(
+                                div()
+                                    .text_sm()
+                                    .text_color(gpui::rgb(theme::status_error()))
+                                    .child(notice),
+                            )
+                        })
+                        .child(
+                            div()
+                                .flex()
+                                .items_center()
+                                .justify_end()
+                                .gap_2()
+                                .child(
+                                    widgets::ghost_button("advanced-erase-cancel")
+                                        .py_1p5()
+                                        .on_click(cx.listener(|this, _event, _window, cx| {
+                                            this.close_erase_dialog(cx);
+                                        }))
+                                        .child(tr("settings-advanced-cancel")),
+                                )
+                                .child(
+                                    widgets::danger_button("advanced-erase-confirm")
+                                        .py_1p5()
+                                        .when(busy || !ready, |el| el.opacity(0.5))
+                                        .when(!busy && ready, |el| {
+                                            el.on_click(cx.listener(|this, _event, _window, cx| {
+                                                this.erase_local_store(cx)
+                                            }))
+                                        })
+                                        .child(tr(
+                                            "settings-advanced-erase-this-version-s-local-data",
+                                        )),
+                                ),
+                        ),
+                ),
+        )
     }
 
     fn erase_local_store(&mut self, cx: &mut Context<Self>) {
@@ -455,32 +613,7 @@ impl SettingsScreen {
                     tr("settings-advanced-your-conversation-text-settings-and-sign-in-are-stored-on-this-co")
                 }),
         );
-        if self.advanced.erase {
-            card = card
-                .child(div().text_sm().child(tr(ERASE_COPY)))
-                .child(self.advanced.confirmation.clone())
-                .child(
-                    div()
-                        .flex()
-                        .gap_2()
-                        .child(
-                            widgets::default_button("advanced-erase-confirm")
-                                .when(self.advanced.busy, |button| button.opacity(0.5))
-                                .on_click(cx.listener(|this, _event, _window, cx| {
-                                    this.erase_local_store(cx)
-                                }))
-                                .child(tr("settings-advanced-erase-this-version-s-local-data")),
-                        )
-                        .child(
-                            widgets::ghost_button("advanced-erase-cancel")
-                                .on_click(cx.listener(|this, _event, _window, cx| {
-                                    this.advanced.erase = false;
-                                    cx.notify();
-                                }))
-                                .child(tr("settings-advanced-cancel")),
-                        ),
-                );
-        } else {
+        {
             card = card.child(
                 div()
                     .flex()
@@ -515,13 +648,16 @@ impl SettingsScreen {
                         )
                     })
                     .child(
-                        widgets::ghost_button("advanced-erase")
+                        widgets::danger_outline_button("advanced-erase")
+                            .debug_selector(|| "advanced-erase".to_string())
                             .on_click(cx.listener(|this, _event, _window, cx| {
-                                this.advanced.erase = true;
-                                this.advanced.notice = None;
-                                this.advanced.success = None;
-                                cx.notify();
+                                this.open_erase_dialog(cx);
                             }))
+                            .child(icon(
+                                "circle-alert",
+                                widgets::ROW_ICON,
+                                theme::status_error(),
+                            ))
                             .child(tr("settings-advanced-erase-local-data")),
                     ),
             );

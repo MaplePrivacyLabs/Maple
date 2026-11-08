@@ -1032,6 +1032,7 @@ settings-advanced-encryption-enabled-on-this-computer 4125b816bafd7b89
 settings-advanced-encryption-is-off 66eb9a24ffbf667d
 settings-advanced-encryption-is-on a059240ec1eb8e5b
 settings-advanced-encryption-on-this-computer ed001935f3f74f30
+settings-advanced-erase-dialog-title 4d7fc781ade3c3e1
 settings-advanced-erase-local-data ce043c06437af1d5
 settings-advanced-erase-this-version-s-local-data 2f669e49d1ee58bb
 settings-advanced-local-data 7e275d4d0d001bf8

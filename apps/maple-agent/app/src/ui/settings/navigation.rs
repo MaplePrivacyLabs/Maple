@@ -567,6 +567,10 @@ impl SettingsScreen {
             self.dismiss_delete_dialog(cx);
             return;
         }
+        if self.advanced.erase {
+            self.close_erase_dialog(cx);
+            return;
+        }
         if self.application_text_input_focused(window, cx) {
             window.focus(&self.application_focus, cx);
             cx.notify();
