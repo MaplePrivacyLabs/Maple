@@ -1571,7 +1571,6 @@ settings-settings-name-value-pairs-separated-by-semicolons 6ecd067b947152a4
 settings-settings-needs-setup 8069a0b0b9de8445
 settings-settings-new-environment-values 97c2338b318aa52a
 settings-settings-new-headers de375b33017140b1
-settings-settings-new-server ed05183700fb1615
 settings-settings-no-shortcuts-match-this-search 9b0aab32f754d34e
 settings-settings-no-supported-integrations-detected-on-this-device 51c3f773c67ab10c
 settings-settings-not-detected 816148ab10c06231

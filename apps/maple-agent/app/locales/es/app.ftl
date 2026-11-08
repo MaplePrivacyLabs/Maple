@@ -188,7 +188,6 @@ settings-settings-cua-team = equipo de Cua
 settings-settings-set-up = Configurar
 settings-settings-enable = Activar
 settings-settings-edit-server = Editar servidor
-settings-settings-new-server = Nuevo servidor
 settings-settings-name = Nombre
 settings-settings-description = Descripción
 settings-settings-transport = Transporte

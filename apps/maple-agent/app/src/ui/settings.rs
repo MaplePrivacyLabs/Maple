@@ -404,7 +404,13 @@ struct McpEditor {
     headers: Entity<TextInput>,
     saved_environment: Vec<McpSecretField>,
     saved_headers: Vec<McpSecretField>,
+    /// Focus the name field the first time the dialog draws.
+    focus_pending: bool,
 }
+
+/// Tab indexes for the server dialog's fields: a range of their own so Tab
+/// walks the form in order instead of colliding with the page's stops.
+const MCP_EDITOR_TAB_BASE: isize = 1000;
 
 /// What the target field of the server form asks for.
 fn mcp_target_placeholder(http: bool) -> &'static str {
@@ -981,7 +987,7 @@ impl SettingsScreen {
                 input: field(
                     &tr("settings-settings-enter-a-new-value"),
                     "",
-                    10 + index as isize,
+                    MCP_EDITOR_TAB_BASE + 10 + index as isize,
                     true,
                 ),
             })
@@ -999,7 +1005,7 @@ impl SettingsScreen {
                 input: field(
                     &tr("settings-settings-enter-a-new-value"),
                     "",
-                    200 + index as isize,
+                    MCP_EDITOR_TAB_BASE + 200 + index as isize,
                     true,
                 ),
             })
@@ -1013,7 +1019,7 @@ impl SettingsScreen {
             name: field(
                 &tr("settings-settings-my-server"),
                 existing.as_ref().map(|s| s.name.as_str()).unwrap_or(""),
-                1,
+                MCP_EDITOR_TAB_BASE + 1,
                 false,
             ),
             description: field(
@@ -1022,14 +1028,25 @@ impl SettingsScreen {
                     .as_ref()
                     .map(|s| s.description.as_str())
                     .unwrap_or(""),
-                2,
+                MCP_EDITOR_TAB_BASE + 2,
                 false,
             ),
-            target: field(mcp_target_placeholder(http), &target, 3, false),
-            environment: field("KEY=value; OTHER=value", "", 4, false),
-            headers: field("Authorization=Bearer …; X-Api-Key=…", "", 5, false),
+            target: field(
+                mcp_target_placeholder(http),
+                &target,
+                MCP_EDITOR_TAB_BASE + 3,
+                false,
+            ),
+            environment: field("KEY=value; OTHER=value", "", MCP_EDITOR_TAB_BASE + 4, false),
+            headers: field(
+                "Authorization=Bearer …; X-Api-Key=…",
+                "",
+                MCP_EDITOR_TAB_BASE + 5,
+                false,
+            ),
             saved_environment,
             saved_headers,
+            focus_pending: true,
         });
         self.mcp_notice = None;
         cx.notify();
@@ -1814,6 +1831,8 @@ impl Render for SettingsScreen {
             self.api_keys.card_anchor.scroll_to(window, cx);
         }
         self.focus_mcp_address(window, cx);
+        self.focus_mcp_editor(window, cx);
+        let mcp_editor = self.render_mcp_editor_dialog(window, cx);
         let mcp_address = self.render_mcp_address(window, cx);
         div()
             .key_context(self.application_vim_context())
@@ -1907,6 +1926,7 @@ impl Render for SettingsScreen {
                             )),
                     ),
             )
+            .children(mcp_editor)
             .children(mcp_address)
     }
 }
@@ -2797,11 +2817,8 @@ impl SettingsScreen {
             ));
         }
 
-        if let Some(notice) = &self.mcp_notice {
+        if let (Some(notice), None) = (&self.mcp_notice, &self.mcp_editor) {
             pane = pane.child(widgets::banner(theme::status_warning()).child(notice.clone()));
-        }
-        if let Some(editor) = &self.mcp_editor {
-            pane = pane.child(self.render_mcp_editor(editor, cx));
         }
 
         if let Some(featured) = self.render_featured_apps(cx) {
@@ -3223,22 +3240,6 @@ impl SettingsScreen {
             .flex()
             .flex_col()
             .gap_3()
-            .p_4()
-            .rounded(theme::RADIUS_MD)
-            .bg(gpui::rgb(theme::bg_elevated()))
-            .border_1()
-            .border_color(gpui::rgb(theme::border()))
-            .child(
-                div()
-                    .text_sm()
-                    .font_weight(gpui::FontWeight::MEDIUM)
-                    .text_color(gpui::rgb(theme::text_primary()))
-                    .child(if editor.original_name.is_some() {
-                        tr("settings-settings-edit-server")
-                    } else {
-                        tr("settings-settings-new-server")
-                    }),
-            )
             .child(field(&tr("settings-settings-name"), "", editor.name.clone()))
             .child(field(&tr("settings-settings-description"), "", editor.description.clone()))
             .child(
@@ -3260,7 +3261,6 @@ impl SettingsScreen {
                             .p_1()
                             .rounded(theme::RADIUS_SM)
                             .bg(gpui::rgb(theme::bg_sidebar_chrome()))
-                            .w(px(320.))
                             .child(
                                 transport_segment(
                                     "mcp-transport-stdio",
@@ -3330,19 +3330,34 @@ impl SettingsScreen {
                     editor.headers.clone(),
                 ))
             })
+            .when_some(sign_in_error, |form, message| {
+                form.child(
+                    div()
+                        .text_xs()
+                        .text_color(gpui::rgb(theme::status_error()))
+                        .child(message),
+                )
+            })
+            .when_some(self.mcp_notice.clone(), |form, notice| {
+                form.child(
+                    widgets::banner(theme::status_warning())
+                        .text_sm()
+                        .child(notice),
+                )
+            })
             .child(
                 div()
                     .flex()
                     .items_center()
+                    .justify_end()
                     .gap_2()
-                    .pt_1()
+                    .pt_2()
                     .child(
-                        widgets::default_button("mcp-save")
-                            .when(self.mcp_saving, |el| el.opacity(0.5))
+                        widgets::ghost_button("mcp-cancel")
                             .on_click(cx.listener(|this, _event, _window, cx| {
-                                this.submit_mcp_editor(cx);
+                                this.close_mcp_editor(cx);
                             }))
-                            .child(tr("settings-settings-save")),
+                            .child(tr("settings-settings-cancel")),
                     )
                     .when(
                         editor.http && editor.original.is_none(),
@@ -3369,26 +3384,156 @@ impl SettingsScreen {
                         },
                     )
                     .child(
-                        widgets::ghost_button("mcp-cancel")
+                        widgets::default_button("mcp-save")
+                            .when(self.mcp_saving, |el| el.opacity(0.5))
                             .on_click(cx.listener(|this, _event, _window, cx| {
-                                if this.mcp_editor_signing_in(cx) {
-                                    this.cancel_mcp_sign_in(cx);
-                                }
-                                this.mcp_editor = None;
-                                this.mcp_notice = None;
-                                cx.notify();
+                                this.submit_mcp_editor(cx);
                             }))
-                            .child(tr("settings-settings-cancel")),
+                            .child(tr("settings-settings-save")),
                     ),
             )
-            .when_some(sign_in_error, |form, message| {
-                form.child(
-                    div()
-                        .text_xs()
-                        .text_color(gpui::rgb(theme::status_error()))
-                        .child(message),
+    }
+
+    /// Close the server dialog, abandoning any browser sign-in it started.
+    pub(super) fn close_mcp_editor(&mut self, cx: &mut Context<Self>) {
+        if self.mcp_editor_signing_in(cx) {
+            self.cancel_mcp_sign_in(cx);
+        }
+        self.mcp_editor = None;
+        self.mcp_notice = None;
+        cx.notify();
+    }
+
+    /// Focus the dialog's name field the first time it draws.
+    fn focus_mcp_editor(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        if let Some(editor) = self.mcp_editor.as_mut()
+            && std::mem::take(&mut editor.focus_pending)
+        {
+            window.focus(&gpui::Focusable::focus_handle(editor.name.read(cx), cx), cx);
+        }
+    }
+
+    /// The add/edit server form as a dialog over the page, so opening it
+    /// never moves the page underneath.
+    fn render_mcp_editor_dialog(
+        &self,
+        window: &Window,
+        cx: &mut Context<Self>,
+    ) -> Option<impl IntoElement + use<>> {
+        let editor = self.mcp_editor.as_ref()?;
+        let editing = editor.original_name.is_some();
+        let title = if editing {
+            tr("settings-settings-edit-server")
+        } else {
+            tr("settings-catalog-add-custom")
+        };
+        let width = (window.viewport_size().width - px(48.)).clamp(px(0.), px(560.));
+        let max_height = (window.viewport_size().height - px(96.)).max(px(240.));
+        Some(
+            div()
+                .id("mcp-editor-backdrop")
+                .absolute()
+                .inset_0()
+                .size_full()
+                .occlude()
+                .bg(theme::scrim())
+                .flex()
+                .items_center()
+                .justify_center()
+                .on_mouse_down(
+                    gpui::MouseButton::Left,
+                    cx.listener(|this, _event, _window, cx| {
+                        this.close_mcp_editor(cx);
+                    }),
                 )
-            })
+                .child(
+                    div()
+                        .id("mcp-editor")
+                        .debug_selector(|| "mcp-editor".to_string())
+                        .role(gpui::Role::Dialog)
+                        .aria_label(title.clone())
+                        .key_context("Dialog")
+                        .w(width)
+                        .max_h(max_height)
+                        .rounded(theme::RADIUS_XL)
+                        .shadow_lg()
+                        .bg(gpui::rgb(theme::bg_elevated()))
+                        .border_1()
+                        .border_color(gpui::rgb(theme::border()))
+                        .flex()
+                        .flex_col()
+                        .text_color(gpui::rgb(theme::text_primary()))
+                        // A press inside is the dialog's, not the backdrop's.
+                        .on_mouse_down(gpui::MouseButton::Left, |_event, _window, cx| {
+                            cx.stop_propagation();
+                        })
+                        .on_key_down(cx.listener(
+                            |this, event: &gpui::KeyDownEvent, _window, cx| {
+                                if event.keystroke.key == "escape"
+                                    && !event.keystroke.modifiers.modified()
+                                {
+                                    cx.stop_propagation();
+                                    this.close_mcp_editor(cx);
+                                }
+                            },
+                        ))
+                        .child(
+                            div()
+                                .flex()
+                                .items_start()
+                                .justify_between()
+                                .gap_4()
+                                .px_5()
+                                .pt_5()
+                                .pb_3()
+                                .child(
+                                    div()
+                                        .flex()
+                                        .flex_col()
+                                        .gap_1()
+                                        .child(
+                                            div()
+                                                .text_lg()
+                                                .font_weight(gpui::FontWeight::SEMIBOLD)
+                                                .child(title),
+                                        )
+                                        .child(
+                                            div()
+                                                .text_sm()
+                                                .text_color(gpui::rgb(theme::text_secondary()))
+                                                .child(gpui::text!(tr(
+                                                    "settings-catalog-custom-description"
+                                                ))),
+                                        ),
+                                )
+                                .child(
+                                    widgets::icon_button(
+                                        "mcp-editor-close",
+                                        "x",
+                                        tr("settings-settings-cancel"),
+                                        widgets::ROW_ICON,
+                                        theme::text_muted(),
+                                    )
+                                    .flex_none()
+                                    .on_click(cx.listener(
+                                        |this, _event, _window, cx| {
+                                            this.close_mcp_editor(cx);
+                                        },
+                                    )),
+                                ),
+                        )
+                        .child(
+                            div()
+                                .id("mcp-editor-body")
+                                .flex_1()
+                                .min_h_0()
+                                .overflow_y_scroll()
+                                .px_5()
+                                .pb_5()
+                                .child(self.render_mcp_editor(editor, cx)),
+                        ),
+                ),
+        )
     }
 }
 

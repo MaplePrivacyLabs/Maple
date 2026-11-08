@@ -162,6 +162,11 @@ impl SettingsScreen {
     }
 
     pub(super) fn visible_application_targets(&self) -> Vec<SettingsTarget> {
+        // The server dialog covers the page; its fields take the keyboard
+        // themselves, so nothing underneath is a target while it is open.
+        if self.mcp_editor.is_some() {
+            return Vec::new();
+        }
         match self.section {
             Section::General => [
                 GeneralTarget::Web,
@@ -549,6 +554,10 @@ impl SettingsScreen {
         // on its own Escape binding; this covers one that has not taken
         // focus yet.
         if self.popup.close(cx) {
+            return;
+        }
+        if self.mcp_editor.is_some() {
+            self.close_mcp_editor(cx);
             return;
         }
         if self.application_text_input_focused(window, cx) {
@@ -1809,6 +1818,18 @@ mod tests {
         cx.simulate_click(add.center(), gpui::Modifiers::default());
         cx.run_until_parked();
         settings.update(cx, |this, _| assert!(this.mcp_editor.is_some()));
+        // The form is a dialog over the page: the page does not move, and
+        // Escape closes it.
+        assert!(cx.debug_bounds("mcp-editor").is_some(), "dialog renders");
+        assert_eq!(
+            cx.debug_bounds("mcp-add").unwrap().origin,
+            add.origin,
+            "opening the dialog does not scroll the page"
+        );
+        cx.simulate_keystrokes("escape");
+        cx.run_until_parked();
+        settings.update(cx, |this, _| assert!(this.mcp_editor.is_none()));
+        assert!(cx.debug_bounds("mcp-editor").is_none());
 
         // The Apps page renders the directory with its search.
         settings.update(cx, |this, cx| {
