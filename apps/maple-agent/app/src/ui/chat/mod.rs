@@ -8028,7 +8028,7 @@ impl ChatScreen {
                     )
                     .when(
                         self.awaiting_first_token && self.is_run_active(),
-                        |column| column.child(render_waiting_indicator().mt_6()),
+                        |column| column.child(div().mt_6().child(render_waiting_indicator())),
                     )
                     .children(privacy)
                     .when_some(self.runtime_error.clone(), |column, error| {

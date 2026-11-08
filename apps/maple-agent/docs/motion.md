@@ -81,10 +81,16 @@ appear only after 300 ms, so fast loads never flash a spinner.
   the composer) keep a `Tween` in their state, sample it in `render`, and call
   `window.request_animation_frame()` only while it moves.
 - `animated(id, target, ...)` keeps a `Tween` in element state for render code
-  that owns no state (chevrons, switches, icon swaps). It does not animate on
-  mount unless asked with `enter_from`.
-- `fade_in` and `rise_in` are one-shot entrances keyed by element id. A new
-  id replays them; use that for content swaps (a Settings section, a task).
+  that owns no state (chevrons, switches, icon swaps). It never animates on
+  mount.
+- `fade_in`, `rise_in` and `slide_in` are one-shot entrances keyed by element
+  id; a new id replays them. `swap_in(element, id, key)` fades content in
+  whenever `key` changes but draws its first appearance at once, for content
+  that replaces other content in one place (the window's screen, a Settings
+  section).
+- Menus open from their trigger: the panel's fade and slide are drawn inside
+  the deferred draw, because opacity does not reach into `deferred()`.
+  Keyboard highlight moves inside a menu settle at once; pointer hover eases.
 - Transcript rows sit in a `gpui::list`, whose items lose element state when
   they scroll away. Their entrance is driven by the arrival time kept in view
   state, so a row animates once and never replays.

@@ -482,8 +482,8 @@ impl<E: IntoElement + 'static> Element for Shifted<E> {
 /// An element rebuilt each frame from a value that eases toward `target`
 /// and retargets from wherever it is. The value lives in element state
 /// under `id`, so render code needs no view state. It starts at `target`,
-/// so nothing animates on mount, unless [`Animated::enter_from`] says
-/// otherwise. `build` runs at layout time; keep it cheap.
+/// so nothing animates on mount. `build` runs at layout time; keep it
+/// cheap.
 pub fn animated(
     id: impl Into<ElementId>,
     target: f32,
@@ -496,7 +496,6 @@ pub fn animated(
         target,
         duration,
         easing,
-        initial: None,
         build: Box::new(build),
     }
 }
@@ -506,16 +505,7 @@ pub struct Animated {
     target: f32,
     duration: Duration,
     easing: fn(f32) -> f32,
-    initial: Option<f32>,
     build: Box<dyn Fn(f32) -> AnyElement>,
-}
-
-impl Animated {
-    /// Start from `value` the first time this element appears.
-    pub fn enter_from(mut self, value: f32) -> Self {
-        self.initial = Some(value);
-        self
-    }
 }
 
 // Keyed apart from other element state that may share the id.
@@ -553,9 +543,7 @@ impl Element for Animated {
         let (value, moving) = window.with_element_state(
             id.expect("animated elements have an id"),
             |state: Option<AnimatedValue>, _| {
-                let mut state = state.unwrap_or_else(|| {
-                    AnimatedValue(Tween::new(self.initial.unwrap_or(self.target)))
-                });
+                let mut state = state.unwrap_or_else(|| AnimatedValue(Tween::new(self.target)));
                 let frame = state
                     .0
                     .step(self.target, self.duration, self.easing, now, reduced);
