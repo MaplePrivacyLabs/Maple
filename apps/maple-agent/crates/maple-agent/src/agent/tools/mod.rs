@@ -10,7 +10,8 @@
 //! answers (`request_user_input`), and every task gets `web_search` and
 //! `open_url` while its web switch is on. For an image, `read` sends a model
 //! that cannot see images to `read_image`, which describes it. A build that
-//! bundles CPython also gives every task `python`, a persistent scratchpad.
+//! bundles CPython also registers `python`, a persistent scratchpad,
+//! switched off by default.
 
 mod desktop;
 mod python;

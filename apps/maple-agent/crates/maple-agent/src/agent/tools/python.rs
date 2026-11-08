@@ -353,7 +353,9 @@ pub(crate) fn python_tool(task: Arc<TaskPython>) -> RegisteredTool {
                 "Use python for calculations, data processing and multi-step scripts that benefit from keeping state between calls; use the shell for project commands, tests and long-running processes.".to_string(),
             ],
         },
-        active: true,
+        // Registered switched off: nothing declares it to the model until
+        // the tool is turned on.
+        active: false,
         extension: None,
     }
 }

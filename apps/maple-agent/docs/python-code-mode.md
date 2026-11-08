@@ -1,8 +1,8 @@
 # Python scratchpad
 
 Maple's built-in `python` tool runs bundled CPython 3.14 in the task's project
-directory. Every task gets it in a build that bundles the runtime; the tool
-is absent otherwise. Its calls pass the task's [permission mode](permissions.md)
+directory. A build that bundles the runtime registers it switched off, so
+the model is not offered it until it is turned on; the tool is absent otherwise. Its calls pass the task's [permission mode](permissions.md)
 like any other tool call: the classifier judges the code. It is a scratchpad
 for the model, not a user-facing feature: the transcript shows its calls as
 ordinary tool rows titled "Python: <first line>".
