@@ -571,6 +571,10 @@ impl SettingsScreen {
             self.close_erase_dialog(cx);
             return;
         }
+        if self.advanced.form.is_some() {
+            self.dismiss_password_form(cx);
+            return;
+        }
         if self.application_text_input_focused(window, cx) {
             window.focus(&self.application_focus, cx);
             cx.notify();

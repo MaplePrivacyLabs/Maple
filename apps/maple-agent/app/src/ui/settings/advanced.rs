@@ -209,6 +209,70 @@ impl SettingsScreen {
         cx.notify();
     }
 
+    /// Escape or the backdrop on the password dialog. A running operation
+    /// keeps the dialog: its own Cancel knows whether it can stop.
+    pub(super) fn dismiss_password_form(&mut self, cx: &mut Context<Self>) {
+        if self.password_operation_busy(cx) {
+            return;
+        }
+        self.advanced.form = None;
+        self.advanced_subscriptions.clear();
+        cx.notify();
+    }
+
+    /// Set / change / remove the unlock password, as a dialog. The form is
+    /// its own card; this adds the scrim and keeps the encryption context
+    /// lines under it.
+    pub(super) fn render_password_dialog(
+        &self,
+        window: &gpui::Window,
+        cx: &mut Context<Self>,
+    ) -> Option<impl IntoElement + use<>> {
+        let form = self.advanced.form.clone()?;
+        let width = (window.viewport_size().width - px(48.)).clamp(px(0.), px(560.));
+        let body =
+            self.encryption_context(div().flex().flex_col().gap_3().w(width).child(form), true);
+        Some(
+            div()
+                .id("advanced-password-backdrop")
+                .absolute()
+                .inset_0()
+                .size_full()
+                .occlude()
+                .bg(theme::scrim())
+                .flex()
+                .items_center()
+                .justify_center()
+                .on_mouse_down(
+                    gpui::MouseButton::Left,
+                    cx.listener(|this, _event, _window, cx| this.dismiss_password_form(cx)),
+                )
+                .child(
+                    div()
+                        .id("advanced-password-dialog")
+                        .debug_selector(|| "advanced-password-dialog".to_string())
+                        .role(gpui::Role::Dialog)
+                        .key_context("Dialog")
+                        .rounded(theme::RADIUS_XL)
+                        .shadow_lg()
+                        .on_mouse_down(gpui::MouseButton::Left, |_event, _window, cx| {
+                            cx.stop_propagation();
+                        })
+                        .on_key_down(cx.listener(
+                            |this, event: &gpui::KeyDownEvent, _window, cx| {
+                                if event.keystroke.key == "escape"
+                                    && !event.keystroke.modifiers.modified()
+                                {
+                                    cx.stop_propagation();
+                                    this.dismiss_password_form(cx);
+                                }
+                            },
+                        ))
+                        .child(body),
+                ),
+        )
+    }
+
     pub(super) fn open_erase_dialog(&mut self, cx: &mut Context<Self>) {
         self.advanced.erase = true;
         self.advanced.erase_focus_pending = true;
@@ -570,10 +634,6 @@ impl SettingsScreen {
             "settings-advanced-encryption-on-this-computer",
         )));
         let mut card = widgets::card_row().flex().flex_col().gap_3();
-        if let Some(form) = &self.advanced.form {
-            let inner = self.encryption_context(card.child(form.clone()), true);
-            return self.render_local_store_notices(pane.child(inner), cx);
-        }
         if let Some(success) = self.advanced.success {
             card = card.child(
                 div()
