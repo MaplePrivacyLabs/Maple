@@ -733,6 +733,135 @@ pub fn chevron(id: impl Into<ElementId>, open: bool, size: Pixels, color: u32) -
     )
 }
 
+/// Content that opens in place under what sits above it, such as the field
+/// a choice reveals: its box eases between nothing and the content's height
+/// over [`PANEL`] while the content fades with it, so what sits below
+/// glides instead of jumping. It folds away the same way, turns back from
+/// the height on screen, and settles at once under reduced motion. Nothing
+/// animates on mount. Keep passing the content while it folds; once folded
+/// it draws nothing. `id` must be stable across frames.
+pub fn unfold(id: impl Into<ElementId>, open: bool, content: impl IntoElement) -> Unfold {
+    Unfold {
+        id: id.into(),
+        open,
+        content: Some(content.into_any_element()),
+    }
+}
+
+pub struct Unfold {
+    id: ElementId,
+    open: bool,
+    content: Option<AnyElement>,
+}
+
+// How far open the content is, and its height when last laid out.
+struct Unfolded {
+    open: Tween,
+    natural: std::rc::Rc<std::cell::Cell<Option<Pixels>>>,
+}
+
+impl IntoElement for Unfold {
+    type Element = Self;
+
+    fn into_element(self) -> Self {
+        self
+    }
+}
+
+impl Element for Unfold {
+    type RequestLayoutState = AnyElement;
+    type PrepaintState = ();
+
+    fn id(&self) -> Option<ElementId> {
+        Some(self.id.clone())
+    }
+
+    fn source_location(&self) -> Option<&'static core::panic::Location<'static>> {
+        None
+    }
+
+    fn request_layout(
+        &mut self,
+        id: Option<&GlobalElementId>,
+        _inspector_id: Option<&InspectorElementId>,
+        window: &mut Window,
+        cx: &mut App,
+    ) -> (LayoutId, AnyElement) {
+        let now = now();
+        let reduced = cx.reduce_motion();
+        let target = if self.open { 1. } else { 0. };
+        let (shown, moving, natural) = window.with_element_state(
+            id.expect("unfolding content has an id"),
+            |state: Option<Unfolded>, _| {
+                let mut state = state.unwrap_or_else(|| Unfolded {
+                    open: Tween::new(target),
+                    natural: Default::default(),
+                });
+                let (shown, moving) = state.open.step(target, PANEL, ease_out_cubic, now, reduced);
+                ((shown, moving, state.natural.clone()), state)
+            },
+        );
+        if moving {
+            window.request_animation_frame();
+        }
+        let content = self
+            .content
+            .take()
+            .expect("unfolding content is laid out once");
+        let mut element = if shown <= 0. && !moving {
+            // Folded: nothing to draw or measure.
+            gpui::div().into_any_element()
+        } else {
+            let measured = natural.clone();
+            let frame = gpui::div()
+                .relative()
+                .on_children_prepainted(move |bounds, _, _| {
+                    if let Some(body) = bounds.first() {
+                        measured.set(Some(body.size.height));
+                    }
+                });
+            let body = gpui::div().child(content);
+            if moving {
+                // Laid out at its full height above a box that clips it, so
+                // its height is known from the first frame it shows.
+                frame
+                    .h(natural.get().unwrap_or_default() * shown)
+                    .overflow_hidden()
+                    .child(body.absolute().top_0().left_0().right_0().opacity(shown))
+                    .into_any_element()
+            } else {
+                frame.child(body).into_any_element()
+            }
+        };
+        (element.request_layout(window, cx), element)
+    }
+
+    fn prepaint(
+        &mut self,
+        _id: Option<&GlobalElementId>,
+        _inspector_id: Option<&InspectorElementId>,
+        _bounds: Bounds<Pixels>,
+        element: &mut AnyElement,
+        window: &mut Window,
+        cx: &mut App,
+    ) {
+        element.prepaint(window, cx);
+    }
+
+    fn paint(
+        &mut self,
+        _id: Option<&GlobalElementId>,
+        _inspector_id: Option<&InspectorElementId>,
+        _bounds: Bounds<Pixels>,
+        element: &mut AnyElement,
+        _: &mut (),
+        window: &mut Window,
+        cx: &mut App,
+    ) {
+        element.paint(window, cx);
+    }
+}
+
 /// A sine pulse in `[low, high]` offset by `shift` cycles, for dots that
 /// breathe out of step with each other.
 pub fn pulse(phase: f32, shift: f32, low: f32, high: f32) -> f32 {
@@ -1558,5 +1687,82 @@ mod primitive_tests {
         assert_eq!(moved.origin.y, shifted.origin.y + px(6.), "whole pixels");
         assert_eq!(moved.size, shifted.size);
         assert_eq!(cx.debug_bounds("below").unwrap(), below);
+    }
+
+    struct UnfoldHost {
+        open: bool,
+    }
+
+    impl gpui::Render for UnfoldHost {
+        fn render(&mut self, _: &mut Window, _: &mut gpui::Context<Self>) -> impl IntoElement {
+            div()
+                .size_full()
+                .flex()
+                .flex_col()
+                .child(unfold(
+                    "unfold",
+                    self.open,
+                    div().debug_selector(|| "unfolded".into()).h(px(60.)),
+                ))
+                .child(div().debug_selector(|| "after".into()).h(px(20.)))
+        }
+    }
+
+    #[gpui::test]
+    fn unfolding_content_pushes_what_follows_and_folds_back_from_the_screen(
+        cx: &mut gpui::TestAppContext,
+    ) {
+        let start = Instant::now();
+        set_test_now(Some(start));
+        cx.update(|cx| cx.set_reduce_motion(false));
+        let (host, cx) = cx.add_window_view(|_, _| UnfoldHost { open: false });
+        cx.run_until_parked();
+        let top = |cx: &mut VisualTestContext| cx.debug_bounds("after").unwrap().origin.y;
+        let rest = top(cx);
+        assert!(
+            cx.debug_bounds("unfolded").is_none(),
+            "folded, it draws nothing"
+        );
+
+        let draw = |at: Instant, open: bool, cx: &mut VisualTestContext| {
+            set_test_now(Some(at));
+            host.update(cx, |host, cx| {
+                host.open = open;
+                cx.notify();
+            });
+            cx.run_until_parked();
+        };
+        draw(start, true, cx);
+        assert_eq!(top(cx), rest, "it opens from nothing");
+        draw(start + PANEL / 2, true, cx);
+        let halfway = top(cx) - rest;
+        assert!(
+            halfway > px(30.) && halfway < px(60.),
+            "eases out: {halfway:?}"
+        );
+        draw(start + PANEL / 2, false, cx);
+        assert_eq!(
+            top(cx) - rest,
+            halfway,
+            "folding starts from the height on screen"
+        );
+        draw(start + PANEL * 2, false, cx);
+        assert_eq!(top(cx), rest);
+        assert!(cx.debug_bounds("unfolded").is_none());
+        // The frame requested while it moved still runs once.
+        cx.update(|window, cx| {
+            window.simulate_next_frame(cx);
+        });
+        cx.run_until_parked();
+        assert_eq!(
+            cx.update(|window, cx| window.simulate_next_frame(cx)),
+            0,
+            "folded content asks for no frames"
+        );
+
+        cx.update(|_, cx| cx.set_reduce_motion(true));
+        draw(start + PANEL * 2, true, cx);
+        assert_eq!(top(cx) - rest, px(60.), "reduced motion opens at once");
+        set_test_now(None);
     }
 }

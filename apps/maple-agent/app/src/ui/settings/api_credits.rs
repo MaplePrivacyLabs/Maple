@@ -415,6 +415,42 @@ impl SettingsScreen {
                 cx,
             ),
         ));
+        let custom = credits.choice == CreditChoice::Custom;
+        let hint = match &credits.custom_credits {
+            None => None,
+            Some(Ok(amount)) => Some((
+                self.messages
+                    .get(
+                        "settings-credits-cost",
+                        [
+                            ("credits", (format_count(*amount as i64)).to_string().into()),
+                            ("dollars", (amount / CREDITS_PER_DOLLAR).to_string().into()),
+                        ],
+                    )
+                    .to_string(),
+                theme::text_secondary(),
+            )),
+            Some(Err(error)) => Some((
+                credit_error(*error).resolve().to_string(),
+                theme::status_error(),
+            )),
+        };
+        // The custom amount's field unfolds under the packages when it is
+        // chosen and folds away when another package is, so the buttons
+        // below glide rather than jump. Its top padding stands in for the
+        // card's gap, which would otherwise jump on its own.
+        let custom_field = div()
+            .pt_3()
+            .flex()
+            .flex_col()
+            .gap_1()
+            .child(self.application_target(
+                target(CreditsTarget::CustomAmount),
+                widgets::input_frame().child(credits.custom.clone()),
+            ))
+            .when_some(hint, |column, (hint, color)| {
+                column.child(div().text_xs().text_color(gpui::rgb(color)).child(hint))
+            });
         let mut purchase = widgets::card_row()
             .flex()
             .flex_col()
@@ -426,41 +462,17 @@ impl SettingsScreen {
                     .text_color(gpui::rgb(theme::text_primary()))
                     .child(tr("settings-api-credits-buy-credits")),
             )
-            .child(packages);
-        if credits.choice == CreditChoice::Custom {
-            let hint = match &credits.custom_credits {
-                None => None,
-                Some(Ok(amount)) => Some((
-                    self.messages
-                        .get(
-                            "settings-credits-cost",
-                            [
-                                ("credits", (format_count(*amount as i64)).to_string().into()),
-                                ("dollars", (amount / CREDITS_PER_DOLLAR).to_string().into()),
-                            ],
-                        )
-                        .to_string(),
-                    theme::text_secondary(),
-                )),
-                Some(Err(error)) => Some((
-                    credit_error(*error).resolve().to_string(),
-                    theme::status_error(),
-                )),
-            };
-            purchase = purchase.child(
+            .child(
                 div()
                     .flex()
                     .flex_col()
-                    .gap_1()
-                    .child(self.application_target(
-                        target(CreditsTarget::CustomAmount),
-                        widgets::input_frame().child(credits.custom.clone()),
-                    ))
-                    .when_some(hint, |column, (hint, color)| {
-                        column.child(div().text_xs().text_color(gpui::rgb(color)).child(hint))
-                    }),
+                    .child(packages)
+                    .child(crate::ui::motion::unfold(
+                        "credits-custom-amount",
+                        custom,
+                        custom_field,
+                    )),
             );
-        }
 
         let ready = credits.purchasing.is_none() && credits.selected_credits().is_ok();
         let guest = self.guest_account();

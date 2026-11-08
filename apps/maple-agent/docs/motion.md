@@ -72,6 +72,7 @@ shared 15 fps `ticker` clock and pause in background windows.
 | Files attached to the draft | fade and 6 px rise, `ENTER` | immediate |
 | Composer and multi-line fields | height eases to the new line count, `resize_duration` | same |
 | Composer expand / shrink | height eases, `PANEL`; maximize and minimize icons cross-fade and scale, `TOGGLE` | same, reversed |
+| A field a choice reveals (Buy credits → Custom amount) | box unfolds to the field's height and the field fades in, `PANEL` | folds the same way, reversed |
 | Send ↔ Stop | icons cross-fade and scale, `TOGGLE` | same |
 | Switches and checkboxes | knob slides, fill cross-fades, `TOGGLE` | same, reversed |
 | Disclosure chevrons | rotate 90°, `TOGGLE` | same, reversed |
@@ -90,6 +91,10 @@ appear only after 300 ms, so fast loads never flash a spinner.
 - `animated(id, target, ...)` keeps a `Tween` in element state for render code
   that owns no state (chevrons, switches, icon swaps). It never animates on
   mount.
+- `unfold(id, open, content)` opens content in place: its box eases between
+  nothing and the content's height while the content fades, so what follows
+  glides, and it folds away the same way. Use it for in-flow content a
+  choice shows or hides, not for menus or dialogs, which close at once.
 - `fade_in`, `rise_in` and `slide_in` are one-shot entrances keyed by element
   id; a new id replays them. `swap_in(element, id, key, cover)` fades content
   in whenever `key` changes but draws its first appearance at once, for
