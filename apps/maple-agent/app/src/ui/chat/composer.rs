@@ -94,7 +94,6 @@ impl ChatScreen {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) -> gpui::Stateful<Div> {
-        let title = self.selected_title.clone();
         let collapsed_progress = 1. - sidebar_expansion;
         let sidebar_width = super::SIDEBAR_RAIL_WIDTH
             + (super::SIDEBAR_WIDTH - super::SIDEBAR_RAIL_WIDTH) * sidebar_expansion;
@@ -191,33 +190,6 @@ impl ChatScreen {
                     }),
                 ),
         )
-        .when(
-            collapsed_progress > 0. && self.selected_session.is_some(),
-            |row| {
-                row.child(
-                    div()
-                        .absolute()
-                        .left(toolbar_left + toolbar_width + header_gap)
-                        .top((titlebar::TITLE_BAR_HEIGHT - window.rem_size()) / 2.)
-                        .w(px(1.))
-                        .h_4()
-                        .opacity(collapsed_progress)
-                        .bg(gpui::rgb(theme::border())),
-                )
-            },
-        )
-        .when(self.selected_session.is_some(), |row| {
-            row.child(
-                titlebar::title(title)
-                    .debug_selector(|| "header-title".to_string())
-                    // Sized by its text, like the chips: nowrap gives it a
-                    // real intrinsic width (a clamped, shrinkable title
-                    // measured as 0 px and vanished). The cap keeps a long
-                    // title from pushing the chips out of the pane.
-                    .flex_none()
-                    .max_w(gpui::relative(0.6)),
-            )
-        })
         .child(
             div()
                 .flex_none()
@@ -229,9 +201,6 @@ impl ChatScreen {
                     |slot| slot.child(spinner("navigation-loading", px(14.), theme::text_muted())),
                 ),
         )
-        .when(self.selected_session.is_some(), |row| {
-            row.child(self.render_project_context(Placement::BelowStart, window, cx))
-        })
         .child(div().flex_1())
         .when_some(self.host_reconnect_status(), |row, status| {
             row.child(
@@ -252,12 +221,9 @@ impl ChatScreen {
         })
     }
 
-    fn render_project_context(
-        &self,
-        placement: Placement,
-        window: &mut Window,
-        cx: &mut Context<Self>,
-    ) -> Div {
+    /// A new task's folder and branch, above the composer. A saved task's
+    /// folder is in the sidebar, so the top bar carries neither.
+    fn render_project_context(&self, window: &mut Window, cx: &mut Context<Self>) -> Div {
         div()
             .flex()
             .items_center()
@@ -279,16 +245,8 @@ impl ChatScreen {
                         self.popup.is_open(&ChatPopup::Project),
                     )
                     // Outside the composer box, so the standalone radius.
-                    .rounded(theme::RADIUS_SM)
-                    // The header is a window drag region; a press here is the
-                    // chip's.
-                    .on_mouse_down(
-                        gpui::MouseButton::Left,
-                        |_event, _window, cx| {
-                            cx.stop_propagation();
-                        },
-                    ),
-                    placement,
+                    .rounded(theme::RADIUS_SM),
+                    Placement::AboveStart,
                     window,
                     cx,
                     Self::project_menu,
@@ -1551,10 +1509,7 @@ impl ChatScreen {
             .flex_col()
             .gap_2()
             .when(expanded, |container| container.flex_1().min_h_0())
-            .child(
-                self.render_project_context(Placement::AboveStart, window, cx)
-                    .flex_none(),
-            )
+            .child(self.render_project_context(window, cx).flex_none())
             .child(composer_box)
     }
 }
