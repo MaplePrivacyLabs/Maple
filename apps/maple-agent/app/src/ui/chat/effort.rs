@@ -233,6 +233,7 @@ impl ChatScreen {
                     cx.stop_propagation();
                     this.reset_effort(cx);
                 }))
+                .into_any_element()
             } else {
                 // Already at the recommended level: the reset rests, dimmed.
                 div()
@@ -244,6 +245,7 @@ impl ChatScreen {
                     .items_center()
                     .justify_center()
                     .child(icon("rotate-ccw", px(16.), theme::text_faint()))
+                    .into_any_element()
             });
 
         let body = match levels {
