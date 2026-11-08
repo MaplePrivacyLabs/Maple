@@ -570,7 +570,7 @@ impl SettingsScreen {
             cx.notify();
             return;
         }
-        self.close(cx);
+        self.go_back(cx);
     }
 
     fn application_text_input_focused(&self, window: &Window, cx: &gpui::App) -> bool {

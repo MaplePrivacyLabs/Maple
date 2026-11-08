@@ -45,6 +45,7 @@ assets!(
     "icons/archive.svg",
     "icons/arrow-down.svg",
     "icons/arrow-left.svg",
+    "icons/arrow-right.svg",
     "icons/arrow-up.svg",
     "icons/brain.svg",
     "icons/check.svg",

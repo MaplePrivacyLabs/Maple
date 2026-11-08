@@ -171,7 +171,7 @@ impl SettingsScreen {
         match target {
             ApiKeysTarget::LearnMore => crate::ui::rich_text::open_link(PROXY_DOCS_URL),
             ApiKeysTarget::SeePlans | ApiKeysTarget::BuyMore => {
-                self.select_section(Section::Billing, cx)
+                self.navigate_to(Section::Billing, cx)
             }
             ApiKeysTarget::Name => {
                 let handle = self.api_keys.name.read(cx).focus_handle(cx);
@@ -357,14 +357,18 @@ impl SettingsScreen {
                             |_, _| crate::ui::rich_text::open_link(PROXY_DOCS_URL),
                             cx,
                         ))
-                        .child(tr("settings-local-api-learn-more")),
+                        .flex()
+                        .items_center()
+                        .gap_0p5()
+                        .child(tr("settings-local-api-learn-more"))
+                        .child(widgets::external_mark(theme::link())),
                 ),
             )
     }
 
     fn render_api_upgrade(&self, cx: &mut Context<Self>) -> Div {
         let see_plans = |this: &mut Self, cx: &mut Context<Self>| {
-            this.select_section(Section::Billing, cx);
+            this.navigate_to(Section::Billing, cx);
         };
         widgets::card_row()
             .flex()
@@ -390,7 +394,7 @@ impl SettingsScreen {
 
     fn render_credits_strip(&self, cx: &mut Context<Self>) -> Div {
         let buy_more = |this: &mut Self, cx: &mut Context<Self>| {
-            this.select_section(Section::Billing, cx);
+            this.navigate_to(Section::Billing, cx);
         };
         widgets::card_row()
             .flex()

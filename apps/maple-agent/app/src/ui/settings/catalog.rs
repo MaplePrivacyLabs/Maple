@@ -512,7 +512,11 @@ impl SettingsScreen {
                                         .on_click(move |_, _, _| {
                                             crate::ui::rich_text::open_link(&get_url)
                                         })
-                                        .child(get_app),
+                                        .flex()
+                                        .items_center()
+                                        .gap_0p5()
+                                        .child(get_app)
+                                        .child(widgets::external_mark(theme::link())),
                                 )
                                 .child(
                                     div()
@@ -847,7 +851,10 @@ impl SettingsScreen {
                                     theme::text_muted(),
                                 ))
                             })
-                            .child(div().truncate().child(detail)),
+                            .child(div().truncate().child(detail))
+                            .when(missing.is_some(), |row| {
+                                row.child(widgets::external_mark(detail_color))
+                            }),
                     ),
             );
         self.application_target(move || SettingsTarget::McpFeatured(entry.id.clone()), tile)
