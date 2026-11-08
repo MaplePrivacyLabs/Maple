@@ -8770,6 +8770,7 @@ mod state_tests {
                 plan_label: "Pro".into(),
                 percent_used: 42,
                 resets_label: "tomorrow".into(),
+                credit_balance: None,
             }),
         ] {
             let available = plan.is_some();
@@ -12890,6 +12891,91 @@ mod state_tests {
             cx.notify();
         });
         assert!(!offered(cx));
+    }
+
+    #[gpui::test]
+    fn extra_credits_show_in_the_menu_and_composer_and_stand_in_for_the_usage_offer(
+        cx: &mut TestAppContext,
+    ) {
+        use std::cell::Cell;
+        use std::rc::Rc;
+
+        use maple_agent::agent::USAGE_LIMIT_MESSAGE;
+
+        let (chat, cx) = chat_window(cx, |chat, _cx| {
+            chat.replace_timeline(vec![
+                user_item("user-1", "test"),
+                item("usage-1", "error", Some(USAGE_LIMIT_MESSAGE)),
+            ])
+        });
+        let usage_opened = Rc::new(Cell::new(0));
+        let observed = usage_opened.clone();
+        let _subscription = cx.update(|_, app| {
+            app.subscribe(&chat, move |_, request: &OpenSettingsSection, _| {
+                if matches!(request.0, Section::Usage) {
+                    observed.set(observed.get() + 1);
+                }
+            })
+        });
+        let plan = |percent_used, credit_balance| crate::billing::PlanUsage {
+            product_name: Some("Max".into()),
+            reset_at: None,
+            plan_label: "Max Plan".into(),
+            percent_used,
+            resets_label: "Monthly".into(),
+            credit_balance,
+        };
+        // (plan, Billing offered, credits chip, credits row in the menu)
+        let cases = [
+            // Unknown usage: the stop stands as the runtime reported it.
+            (None, true, false, false),
+            // Allowance used up, no credits: still out of usage.
+            (Some(plan(100, Some(0))), true, false, false),
+            // Used up with credits: tasks run on them, and the chip says so.
+            (Some(plan(100, Some(984_534))), false, true, true),
+            // Allowance left with credits waiting: no chip, but the menu
+            // shows them, and the stale stop no longer offers Billing.
+            (Some(plan(40, Some(984_534))), false, false, true),
+        ];
+        for (plan, billing, chip, credits_row) in cases {
+            chat.update(cx, |chat, cx| {
+                chat.sidebar_plan = plan.clone();
+                cx.notify();
+            });
+            cx.update(|window, _| window.refresh());
+            cx.run_until_parked();
+            assert_eq!(
+                cx.debug_bounds("composer-open-billing").is_some(),
+                billing,
+                "{plan:?}"
+            );
+            assert_eq!(
+                cx.debug_bounds("composer-credits").is_some(),
+                chip,
+                "{plan:?}"
+            );
+            press(cx, "open-settings");
+            assert_eq!(
+                cx.debug_bounds("settings-usage-credits").is_some(),
+                credits_row,
+                "{plan:?}"
+            );
+            press(cx, "settings-menu-usage");
+            assert!(cx.debug_bounds("settings-menu").is_none());
+        }
+
+        // The chip opens Usage settings; the transcript keeps the stop.
+        chat.update(cx, |chat, cx| {
+            chat.sidebar_plan = Some(plan(100, Some(984_534)));
+            cx.notify();
+        });
+        cx.update(|window, _| window.refresh());
+        cx.run_until_parked();
+        let before = usage_opened.get();
+        press(cx, "composer-credits");
+        cx.run_until_parked();
+        assert_eq!(usage_opened.get(), before + 1);
+        assert!(cx.debug_bounds("timeline-row-usage-1").is_some());
     }
 
     #[gpui::test]

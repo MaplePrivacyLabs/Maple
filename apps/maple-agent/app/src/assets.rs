@@ -54,6 +54,7 @@ assets!(
     "icons/circle-alert.svg",
     // Claude mark (simple-icons, CC0) for the Claude Code integration card.
     "icons/claude-mark.svg",
+    "icons/coins.svg",
     "icons/copy.svg",
     "icons/credit-card.svg",
     // Contrast-safe partner marks published at https://cua.ai/branding.

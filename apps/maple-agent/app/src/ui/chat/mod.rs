@@ -206,6 +206,10 @@ const NOTICE_TTL: std::time::Duration = std::time::Duration::from_secs(8);
 /// How long the plan card stays after its last item is checked off live,
 /// so the final check is seen before the card goes.
 const PLAN_DONE_HOLD: std::time::Duration = std::time::Duration::from_millis(1500);
+/// The plan and its extra credits are read again when the person comes
+/// back to the chat (from Settings, or from the browser after buying
+/// credits), unless the last reading is newer than this.
+const PLAN_RETURN_REFRESH: std::time::Duration = std::time::Duration::from_secs(30);
 
 const COMPOSER_PLACEHOLDER: &str = "chat-composer-placeholder";
 const SIDE_THREAD_PLACEHOLDER: &str = "chat-side-thread-placeholder";
@@ -625,6 +629,8 @@ pub struct ChatScreen {
     /// on activation changes because they force a redraw.
     window_active: bool,
     sidebar_plan: Option<crate::billing::PlanUsage>,
+    /// When the plan was last asked for; `None` until the first request.
+    plan_requested_at: Option<std::time::Instant>,
     runtime_error: Option<UiText>,
     runtime_error_reason: Option<String>,
     persistence_status: maple_agent::store::PersistenceStatus,
@@ -1551,6 +1557,7 @@ impl ChatScreen {
             notify_details: settings.notification_details_enabled(),
             window_active: true,
             sidebar_plan: None,
+            plan_requested_at: None,
             runtime_error: None,
             runtime_error_reason: None,
             persistence_status: maple_agent::store::PersistenceStatus::default(),
@@ -7637,24 +7644,33 @@ impl ChatScreen {
             let usage_label = self.sidebar_plan.as_ref().map_or_else(
                 || tr("chat-usage-unavailable-label"),
                 |plan| {
-                    self.messages.get(
-                        "chat-usage-label",
-                        [
-                            ("percent", plan.percent_used.into()),
-                            (
-                                "plan",
-                                crate::ui::settings::presentation::plan_name(plan, &self.messages)
-                                    .to_string()
-                                    .into(),
-                            ),
-                            (
-                                "reset",
-                                crate::ui::settings::presentation::reset_date(plan, &self.messages)
-                                    .to_string()
-                                    .into(),
-                            ),
-                        ],
-                    )
+                    let percent = ("percent", plan.percent_used.into());
+                    let plan_name = (
+                        "plan",
+                        crate::ui::settings::presentation::plan_name(plan, &self.messages)
+                            .to_string()
+                            .into(),
+                    );
+                    let reset = (
+                        "reset",
+                        crate::ui::settings::presentation::reset_date(plan, &self.messages)
+                            .to_string()
+                            .into(),
+                    );
+                    match plan.extra_credits() {
+                        Some(credits) => self.messages.get(
+                            "chat-usage-label-credits",
+                            [
+                                percent,
+                                plan_name,
+                                reset,
+                                ("credits", crate::billing::format_count(credits).into()),
+                            ],
+                        ),
+                        None => self
+                            .messages
+                            .get("chat-usage-label", [percent, plan_name, reset]),
+                    }
                 },
             );
             let usage = div()
@@ -7702,7 +7718,13 @@ impl ChatScreen {
                                             (f32::from(plan.percent_used) / 100.).clamp(0., 1.),
                                         ))
                                         .rounded_full()
-                                        .bg(gpui::rgb(theme::accent())),
+                                        // Nothing is wrong once credits cover the
+                                        // used-up plan, so the bar goes quiet.
+                                        .bg(gpui::rgb(if plan.on_extra_credits() {
+                                            theme::text_faint()
+                                        } else {
+                                            theme::accent()
+                                        })),
                                 ),
                         )
                         .child(
@@ -7730,6 +7752,10 @@ impl ChatScreen {
                                         )],
                                     ),
                                 ),
+                        )
+                        .children(
+                            plan.extra_credits()
+                                .map(|credits| self.render_plan_credits(plan, credits)),
                         )
                 })
                 .when(self.sidebar_plan.is_none(), |usage| {
@@ -8102,6 +8128,7 @@ impl ChatScreen {
     /// Load the usage preview from the Maple billing API. Failures keep
     /// the previous value; without one, the menu shows usage as unavailable.
     fn refresh_sidebar_plan(&mut self, cx: &mut Context<Self>) {
+        self.plan_requested_at = Some(std::time::Instant::now());
         let backend = self.backend.clone();
         let user_id = self.user_id.clone();
         self.call(
@@ -8115,6 +8142,77 @@ impl ChatScreen {
                 Err(error) => log::warn!("plan usage unavailable: {error}"),
             },
         );
+    }
+
+    /// Coming back to the chat is when credits bought in the browser or a
+    /// plan changed in Settings would show up. Asks again once the first
+    /// reading is in and the last one is older than [`PLAN_RETURN_REFRESH`].
+    pub(crate) fn refresh_plan_on_return(&mut self, cx: &mut Context<Self>) {
+        if self
+            .plan_requested_at
+            .is_some_and(|at| at.elapsed() >= PLAN_RETURN_REFRESH)
+        {
+            self.refresh_sidebar_plan(cx);
+        }
+    }
+
+    /// The extra credits under the plan in the Settings menu: the balance,
+    /// and whether tasks spend it now or once the allowance runs out.
+    fn render_plan_credits(&self, plan: &crate::billing::PlanUsage, credits: i64) -> Div {
+        let when = if plan.on_extra_credits() {
+            tr("chat-usage-credits-in-use")
+        } else {
+            tr("chat-usage-credits-next")
+        };
+        div()
+            .debug_selector(|| "settings-usage-credits".to_string())
+            .mt_0p5()
+            .pt_2p5()
+            .border_t_1()
+            .border_color(gpui::rgb(theme::border_subtle()))
+            .flex()
+            .flex_col()
+            .gap_1()
+            .child(
+                div()
+                    .flex()
+                    .items_center()
+                    .gap_2()
+                    .text_xs()
+                    .child(
+                        div()
+                            .flex_none()
+                            .size_5()
+                            .flex()
+                            .items_center()
+                            .justify_center()
+                            .rounded(px(6.))
+                            .bg(gpui::rgb(theme::accent_container()))
+                            .child(icon("coins", px(13.), theme::accent_ink())),
+                    )
+                    .child(
+                        div()
+                            .flex_1()
+                            .font_weight(gpui::FontWeight::MEDIUM)
+                            .text_color(gpui::rgb(theme::text_primary()))
+                            .child(tr("chat-usage-extra-credits")),
+                    )
+                    .child(
+                        div()
+                            .font_weight(gpui::FontWeight::SEMIBOLD)
+                            .text_color(gpui::rgb(theme::text_heading()))
+                            .child(self.messages.get(
+                                "chat-usage-credits-left",
+                                [("credits", crate::billing::format_count(credits).into())],
+                            )),
+                    ),
+            )
+            .child(
+                div()
+                    .text_xs()
+                    .text_color(gpui::rgb(theme::text_muted()))
+                    .child(when),
+            )
     }
 }
 

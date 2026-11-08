@@ -1232,15 +1232,77 @@ impl ChatScreen {
     /// The selected task's latest turn ended out of usage and nothing has
     /// gone out since. A window that does not hold the tail (paged back
     /// into history, or with live rows past its budget) cannot tell.
+    /// Extra credits on the account, bought since or not yet read when the
+    /// turn ran, pay for the next one, so the offer stands down for them.
     fn usage_limit_reached(&self) -> bool {
         !self.pages.after
             && !self.pages.live_has_more
             && !self.is_run_active()
             && !self.has_send_feedback()
             && self
+                .sidebar_plan
+                .as_ref()
+                .and_then(crate::billing::PlanUsage::extra_credits)
+                .is_none()
+            && self
                 .timeline
                 .last()
                 .is_some_and(super::transcript::is_usage_limit)
+    }
+
+    /// While the plan's allowance is used up and tasks run on extra
+    /// credits: the balance by the send button, with the detail on hover.
+    /// It opens Usage settings.
+    fn render_credits_chip(&self, cx: &mut Context<Self>) -> Option<gpui::Stateful<Div>> {
+        let plan = self
+            .sidebar_plan
+            .as_ref()
+            .filter(|plan| plan.on_extra_credits())?;
+        let credits = plan.extra_credits()?;
+        let exact: SharedString = crate::billing::format_count(credits).into();
+        let detail = self.messages.get(
+            "chat-credits-detail",
+            [
+                (
+                    "reset",
+                    crate::ui::settings::presentation::reset_date(plan, &self.messages)
+                        .to_string()
+                        .into(),
+                ),
+                ("credits", exact.to_string().into()),
+            ],
+        );
+        Some(
+            div()
+                .id("composer-credits")
+                .debug_selector(|| "composer-credits".to_string())
+                .role(gpui::Role::Button)
+                .aria_label(self.messages.get(
+                    "chat-credits-label",
+                    [("credits", exact.to_string().into())],
+                ))
+                .flex_none()
+                .flex()
+                .items_center()
+                .gap_1()
+                .mr_1()
+                .pl_1p5()
+                .pr_2()
+                .py_0p5()
+                .rounded_full()
+                .bg(gpui::rgb(theme::accent_container()))
+                .text_xs()
+                .font_weight(gpui::FontWeight::SEMIBOLD)
+                .text_color(gpui::rgb(theme::accent_ink()))
+                .hover(|style| style.cursor_pointer())
+                .child(icon("coins", px(13.), theme::accent_ink()))
+                .child(crate::billing::format_count_compact(credits))
+                .tooltip(widgets::tooltip_detail(tr("chat-credits-title"), detail))
+                .on_click(cx.listener(|_this, _event, _window, cx| {
+                    cx.stop_propagation();
+                    cx.emit(OpenSettingsSection(Section::Usage));
+                })),
+        )
     }
 
     /// The out-of-usage notice, docked on top of the composer where the
@@ -1606,6 +1668,7 @@ impl ChatScreen {
                         )
                     })
                     .child(div().flex_1())
+                    .children(self.render_credits_chip(cx))
                     .child(
                         div()
                             .id("context-indicator")

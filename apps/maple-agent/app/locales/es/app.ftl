@@ -1625,6 +1625,14 @@ chat-usage-unavailable-label = Uso no disponible. Abrir la configuración de uso
 chat-usage-label = Uso: { $percent } por ciento utilizado. { $plan }, se restablece { $reset }. Abrir la configuración de uso
 chat-usage-percent = { $percent }% utilizado
 chat-usage-reset = Se restablece { $reset }
+chat-usage-label-credits = Uso: { $percent } por ciento utilizado. { $plan }, se restablece { $reset }. Quedan { $credits } créditos adicionales. Abrir la configuración de uso
+chat-usage-extra-credits = Créditos adicionales
+chat-usage-credits-left = { $credits } restantes
+chat-usage-credits-in-use = En uso hasta que tu plan se restablezca.
+chat-usage-credits-next = Se usan cuando se agote tu plan.
+chat-credits-title = Usando créditos adicionales
+chat-credits-detail = Tu plan se restablece { $reset }. Hasta entonces, las tareas usan tus { $credits }{ "\u00A0" }créditos.
+chat-credits-label = { $credits } créditos adicionales. Abrir la configuración de uso
 
 # Shared with native desktop computer presentation.
 

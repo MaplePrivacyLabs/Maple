@@ -1460,6 +1460,7 @@ impl MapleApp {
 
     /// Returning to the window is when a plan most likely changed: after
     /// paying on the website, or after a subscription ended elsewhere.
+    /// Extra credits bought there show up in the chat from here too.
     fn recheck_plan_on_activation(&mut self, cx: &mut Context<Self>) {
         let stale = self
             .plan_check
@@ -1468,6 +1469,17 @@ impl MapleApp {
         if matches!(self.screen, Screen::PlanGate(_)) || stale {
             self.check_plan(false, cx);
         }
+        let mut chats: Vec<_> = self.local_chat.iter().cloned().collect();
+        if let Screen::Chat(chat) = &self.screen {
+            chats.push(chat.clone());
+        }
+        chats.dedup_by_key(|chat| chat.entity_id());
+        // This runs from render; read the plans after it.
+        cx.defer(move |cx| {
+            for chat in chats {
+                chat.update(cx, |chat, cx| chat.refresh_plan_on_return(cx));
+            }
+        });
     }
 
     /// Nicknames and remote pins belong to this desktop's signed-in account,

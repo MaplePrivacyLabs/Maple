@@ -201,6 +201,23 @@ pub fn format_count(value: i64) -> String {
     out
 }
 
+/// "984.5K" or "1.2M": a balance short enough for a chip. Rounds down, so
+/// it never shows more than the account has.
+pub fn format_count_compact(value: i64) -> String {
+    let magnitude = value.unsigned_abs();
+    let (unit, suffix) = match magnitude {
+        0..1_000 => return format_count(value),
+        1_000..1_000_000 => (1_000, "K"),
+        _ => (1_000_000, "M"),
+    };
+    let tenths = magnitude / (unit / 10);
+    let sign = if value < 0 { "-" } else { "" };
+    match tenths % 10 {
+        0 => format!("{sign}{}{suffix}", tenths / 10),
+        tenth => format!("{sign}{}.{tenth}{suffix}", tenths / 10),
+    }
+}
+
 /// "$20/month" from a product's default price; None when it has no price.
 pub fn price_label(product: &Product) -> Option<String> {
     let price = product.default_price.as_ref()?;
@@ -239,7 +256,8 @@ pub fn configured_billing_api_url() -> String {
 }
 
 /// Plan quota shown in the sidebar footer: plan name, percent of the
-/// quota used in the current period, and the date the period resets.
+/// quota used in the current period, the date the period resets, and the
+/// extra credits that take over once the quota runs out.
 #[derive(Debug, Clone, PartialEq, serde::Serialize, serde::Deserialize)]
 pub struct PlanUsage {
     /// Semantic presentation inputs; optional for older hosts.
@@ -250,6 +268,10 @@ pub struct PlanUsage {
     pub plan_label: String,
     pub percent_used: u8,
     pub resets_label: String,
+    /// Extra credit balance; `None` from older hosts and when the billing
+    /// API leaves it out.
+    #[serde(default)]
+    pub credit_balance: Option<i64>,
 }
 
 impl PlanUsage {
@@ -268,7 +290,18 @@ impl PlanUsage {
             plan_label: plan_name_label(status.product_name.as_deref()),
             percent_used: percent.round() as u8,
             resets_label: reset_label(status.usage_reset_date.as_deref(), now),
+            credit_balance: status.api_credit_balance,
         })
+    }
+
+    /// Extra credits left to spend, when there are any.
+    pub fn extra_credits(&self) -> Option<i64> {
+        self.credit_balance.filter(|credits| *credits > 0)
+    }
+
+    /// The plan's allowance is used up and tasks draw on extra credits.
+    pub fn on_extra_credits(&self) -> bool {
+        self.percent_used >= 100 && self.extra_credits().is_some()
     }
 }
 
@@ -555,6 +588,7 @@ mod tests {
         assert_eq!(plan.percent_used, 25);
         assert!(plan.product_name.is_none());
         assert!(plan.reset_at.is_none());
+        assert!(plan.credit_balance.is_none());
         let status = BillingStatus {
             product_name: Some("Max".into()),
             total_tokens: Some(100),
@@ -565,5 +599,45 @@ mod tests {
         let plan = PlanUsage::from_status(&status, chrono::Local::now()).unwrap();
         assert_eq!(plan.product_name, status.product_name);
         assert_eq!(plan.reset_at, status.usage_reset_date);
+    }
+
+    #[test]
+    fn extra_credits_take_over_once_the_allowance_is_used_up() {
+        let reset = "2026-09-06T00:00:00Z";
+        let with = |used, credits| {
+            let mut status = status("Max", used, 100, reset);
+            status.api_credit_balance = credits;
+            PlanUsage::from_status(&status, now()).unwrap()
+        };
+        // Allowance left: credits wait their turn.
+        let fresh = with(40, Some(984_534));
+        assert_eq!(fresh.extra_credits(), Some(984_534));
+        assert!(!fresh.on_extra_credits());
+        // Used up with credits: tasks keep going on them.
+        let covered = with(100, Some(984_534));
+        assert!(covered.on_extra_credits());
+        // Used up with none, an empty balance, or none reported: no credits.
+        for credits in [None, Some(0), Some(-5)] {
+            let stopped = with(100, credits);
+            assert_eq!(stopped.extra_credits(), None);
+            assert!(!stopped.on_extra_credits());
+        }
+    }
+
+    #[test]
+    fn compact_counts_round_down() {
+        for (value, label) in [
+            (0, "0"),
+            (999, "999"),
+            (1_000, "1K"),
+            (12_500, "12.5K"),
+            (984_534, "984.5K"),
+            (999_999, "999.9K"),
+            (1_000_000, "1M"),
+            (1_250_000, "1.2M"),
+            (-1_500, "-1.5K"),
+        ] {
+            assert_eq!(format_count_compact(value), label, "{value}");
+        }
     }
 }
