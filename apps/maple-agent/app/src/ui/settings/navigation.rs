@@ -1766,36 +1766,32 @@ mod tests {
         let (settings, cx) = dropdown_window(cx, false);
         cx.run_until_parked();
 
-        // No handoff: nothing is fetched (the dead test backend would record
-        // an error).
+        // No handoff: nothing is fetched.
         settings.update(cx, |this, cx| {
-            this.billing.status_error = None;
+            let before = this.billing.loads;
             this.billing.awaiting_browser = None;
             this.on_window_activated(cx);
+            assert_eq!(this.billing.loads, before);
         });
-        cx.run_until_parked();
-        settings.update(cx, |this, _| assert!(this.billing.status_error.is_none()));
 
         // A stale handoff is dropped without a fetch.
         settings.update(cx, |this, cx| {
             this.billing.awaiting_browser =
                 Some(std::time::Instant::now() - SettingsScreen::BROWSER_HANDOFF_WINDOW * 2);
+            let before = this.billing.loads;
             this.on_window_activated(cx);
             assert!(this.billing.awaiting_browser.is_none());
+            assert_eq!(this.billing.loads, before);
         });
-        cx.run_until_parked();
-        settings.update(cx, |this, _| assert!(this.billing.status_error.is_none()));
 
         // A recent handoff fetches, keeps the notice, and stays armed for the
         // next return.
         settings.update(cx, |this, cx| {
             this.billing.awaiting_browser = Some(std::time::Instant::now());
             this.billing.notice = Some(crate::ui::i18n::UiText::from("opened"));
+            let before = this.billing.loads;
             this.on_window_activated(cx);
-        });
-        cx.run_until_parked();
-        settings.update(cx, |this, _| {
-            assert!(this.billing.status_error.is_some(), "a billing fetch ran");
+            assert_eq!(this.billing.loads, before + 1, "a billing fetch ran");
             assert!(this.billing.notice.is_some(), "the handoff notice stays");
             assert!(this.billing.awaiting_browser.is_some());
         });

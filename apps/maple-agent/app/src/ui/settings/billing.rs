@@ -36,6 +36,9 @@ pub(super) struct BillingState {
     /// When a portal or checkout tab was opened. While recent, every return
     /// to the window refetches, since payment and webhooks take their time.
     pub(super) awaiting_browser: Option<std::time::Instant>,
+    /// How many status loads have been issued; lets tests observe a fetch
+    /// without depending on when the backend answers.
+    pub(super) loads: u32,
     pub(super) credits: super::api_credits::CreditsState,
 }
 
@@ -52,6 +55,7 @@ impl BillingState {
             busy: false,
             notice: None,
             awaiting_browser: None,
+            loads: 0,
             credits: super::api_credits::CreditsState::new(
                 application_vim_enabled,
                 application_focus,
@@ -104,7 +108,8 @@ pub(super) fn product_action(status: &BillingStatus, product: &Product) -> Produ
 }
 
 impl SettingsScreen {
-    pub(super) fn load_billing(&self, cx: &mut Context<Self>) {
+    pub(super) fn load_billing(&mut self, cx: &mut Context<Self>) {
+        self.billing.loads = self.billing.loads.wrapping_add(1);
         self.load_credit_balance(cx);
         let backend = self.backend.clone();
         let user_id = self.user_id.clone();

@@ -212,12 +212,11 @@ impl SettingsScreen {
     /// Escape or the backdrop on the password dialog. A running operation
     /// keeps the dialog: its own Cancel knows whether it can stop.
     pub(super) fn dismiss_password_form(&mut self, cx: &mut Context<Self>) {
-        if self.password_operation_busy(cx) {
-            return;
+        // The form's own close: a no-op while busy, otherwise it emits the
+        // cancelled finish that the subscription turns into `form = None`.
+        if let Some(form) = self.advanced.form.clone() {
+            form.update(cx, |form, cx| form.close(cx));
         }
-        self.advanced.form = None;
-        self.advanced_subscriptions.clear();
-        cx.notify();
     }
 
     /// Set / change / remove the unlock password, as a dialog. The form is

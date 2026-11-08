@@ -1156,7 +1156,10 @@ impl PasswordForm {
         }
     }
 
-    fn close(&mut self, cx: &mut Context<Self>) {
+    /// Leave the form without doing anything; a no-op while an operation
+    /// runs. The Cancel button, and the Settings dialog's Escape and
+    /// backdrop, all go through here.
+    pub(crate) fn close(&mut self, cx: &mut Context<Self>) {
         if self.busy {
             return;
         }
