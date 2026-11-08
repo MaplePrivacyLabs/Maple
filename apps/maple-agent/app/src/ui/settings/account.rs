@@ -268,6 +268,7 @@ impl SettingsScreen {
         self.account
             .delete_code
             .update(cx, |input, cx| input.clear(cx));
+        self.application_focus_pending = true;
         self.reconcile_application_vim_target();
         cx.notify();
     }
@@ -609,43 +610,42 @@ impl SettingsScreen {
         cx: &mut Context<Self>,
     ) -> Option<impl IntoElement + use<>> {
         let busy = self.account.delete_busy;
-        let (title, body, input, target, input_target, action_label, action_target, ready) =
-            match &self.account.delete {
-                DeleteFlow::Idle => return None,
-                DeleteFlow::Acknowledging => (
-                    tr("settings-account-delete-dialog-title"),
-                    tr(
-                        "settings-account-this-permanently-deletes-your-account-tasks-and-encrypted-data-ty",
-                    ),
-                    self.account.delete_ack.clone(),
-                    "account-delete-ack",
-                    AccountTarget::DeleteAcknowledge,
-                    if busy {
-                        tr("settings-account-sending")
-                    } else {
-                        tr("settings-account-send-confirmation-code")
-                    },
-                    AccountTarget::DeleteRequestCode,
-                    self.account.delete_ack.read(cx).text().trim() == DELETE_ACKNOWLEDGEMENT,
+        let (title, body, input, input_target, action_label, action_target, ready) = match &self
+            .account
+            .delete
+        {
+            DeleteFlow::Idle => return None,
+            DeleteFlow::Acknowledging => (
+                tr("settings-account-delete-dialog-title"),
+                tr(
+                    "settings-account-this-permanently-deletes-your-account-tasks-and-encrypted-data-ty",
                 ),
-                DeleteFlow::CodeSent { .. } => (
-                    tr("settings-account-confirm-deletion"),
-                    tr(
-                        "settings-account-we-emailed-you-a-confirmation-code-enter-it-to-delete-the-account",
-                    ),
-                    self.account.delete_code.clone(),
-                    "account-delete-code",
-                    AccountTarget::DeleteCode,
-                    if busy {
-                        tr("settings-account-deleting")
-                    } else {
-                        tr("settings-account-delete-my-account")
-                    },
-                    AccountTarget::DeleteConfirm,
-                    !self.account.delete_code.read(cx).text().trim().is_empty(),
+                self.account.delete_ack.clone(),
+                AccountTarget::DeleteAcknowledge,
+                if busy {
+                    tr("settings-account-sending")
+                } else {
+                    tr("settings-account-send-confirmation-code")
+                },
+                AccountTarget::DeleteRequestCode,
+                self.account.delete_ack.read(cx).text().trim() == DELETE_ACKNOWLEDGEMENT,
+            ),
+            DeleteFlow::CodeSent { .. } => (
+                tr("settings-account-confirm-deletion"),
+                tr(
+                    "settings-account-we-emailed-you-a-confirmation-code-enter-it-to-delete-the-account",
                 ),
-            };
-        let _ = target;
+                self.account.delete_code.clone(),
+                AccountTarget::DeleteCode,
+                if busy {
+                    tr("settings-account-deleting")
+                } else {
+                    tr("settings-account-delete-my-account")
+                },
+                AccountTarget::DeleteConfirm,
+                !self.account.delete_code.read(cx).text().trim().is_empty(),
+            ),
+        };
         let width = (window.viewport_size().width - px(48.)).clamp(px(0.), px(480.));
         Some(
             div()

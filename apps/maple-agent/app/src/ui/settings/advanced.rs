@@ -33,11 +33,29 @@ pub(super) struct AdvancedState {
 }
 
 impl AdvancedState {
-    pub fn new(cx: &mut Context<SettingsScreen>) -> Self {
+    pub fn new(
+        application_vim_enabled: bool,
+        application_focus: gpui::FocusHandle,
+        cx: &mut Context<SettingsScreen>,
+    ) -> Self {
         Self {
             status: None,
             form: None,
-            confirmation: cx.new(|cx| TextInput::localized("settings-advanced-type-erase", cx)),
+            confirmation: {
+                let screen = cx.entity().downgrade();
+                cx.new(move |cx| {
+                    TextInput::localized("settings-advanced-type-erase", cx)
+                        .application_vim(application_vim_enabled)
+                        .on_application_escape(move |window, cx| {
+                            window.focus(&application_focus, cx)
+                        })
+                        // Enter submits once the word is right; a wrong word
+                        // shows the notice, as the button does.
+                        .on_enter(move |_text, _window, cx| {
+                            let _ = screen.update(cx, |screen, cx| screen.erase_local_store(cx));
+                        })
+                })
+            },
             erase: false,
             erase_focus_pending: false,
             busy: false,
@@ -163,7 +181,7 @@ impl SettingsScreen {
         );
     }
 
-    fn open_password_form(&mut self, action: PasswordAction, cx: &mut Context<Self>) {
+    pub(super) fn open_password_form(&mut self, action: PasswordAction, cx: &mut Context<Self>) {
         if !self.advanced.available()
             || self.advanced.busy
             || !self
@@ -190,6 +208,8 @@ impl SettingsScreen {
             &form,
             move |this, _form, event: &PasswordFormFinished, cx| {
                 this.advanced.form = None;
+                this.application_focus_pending = true;
+                this.reconcile_application_vim_target();
                 if event.cancelled {
                     cx.notify();
                     return;
@@ -228,9 +248,31 @@ impl SettingsScreen {
         cx: &mut Context<Self>,
     ) -> Option<impl IntoElement + use<>> {
         let form = self.advanced.form.clone()?;
+        let title = form.read(cx).title();
         let width = (window.viewport_size().width - px(48.)).clamp(px(0.), px(560.));
-        let body =
-            self.encryption_context(div().flex().flex_col().gap_3().w(width).child(form), true);
+        let max_height = (window.viewport_size().height - px(96.)).max(px(240.));
+        // The notes sit on their own surface: the scrim is no background for
+        // body text in either theme.
+        let notes = self.encryption_notes(true);
+        let body = div()
+            .id("advanced-password-body")
+            .flex()
+            .flex_col()
+            .gap_3()
+            .w(width)
+            .max_h(max_height)
+            .overflow_y_scroll()
+            .child(form)
+            .when(!notes.is_empty(), |body| {
+                body.child(
+                    widgets::card_row()
+                        .flex()
+                        .flex_col()
+                        .gap_2()
+                        .text_color(gpui::rgb(theme::text_secondary()))
+                        .children(notes),
+                )
+            });
         Some(
             div()
                 .id("advanced-password-backdrop")
@@ -251,6 +293,7 @@ impl SettingsScreen {
                         .id("advanced-password-dialog")
                         .debug_selector(|| "advanced-password-dialog".to_string())
                         .role(gpui::Role::Dialog)
+                        .aria_label(title)
                         .key_context("Dialog")
                         .rounded(theme::RADIUS_XL)
                         .shadow_lg()
@@ -291,6 +334,8 @@ impl SettingsScreen {
         self.advanced
             .confirmation
             .update(cx, |input, cx| input.clear(cx));
+        self.application_focus_pending = true;
+        self.reconcile_application_vim_target();
         cx.notify();
     }
 
@@ -425,7 +470,7 @@ impl SettingsScreen {
         )
     }
 
-    fn erase_local_store(&mut self, cx: &mut Context<Self>) {
+    pub(super) fn erase_local_store(&mut self, cx: &mut Context<Self>) {
         if self.advanced.busy || !self.advanced.available() {
             return;
         }
@@ -725,9 +770,16 @@ impl SettingsScreen {
         self.render_local_store_notices(pane.child(card), cx)
     }
 
-    fn encryption_context(&self, mut pane: Div, password: bool) -> Div {
+    fn encryption_context(&self, pane: Div, password: bool) -> Div {
+        pane.children(self.encryption_notes(password))
+    }
+
+    /// The warnings that belong next to any encryption control: remote
+    /// access while locked, and the coding agents that keep their own copy.
+    fn encryption_notes(&self, password: bool) -> Vec<Div> {
+        let mut notes = Vec::new();
         if self.advanced.remote_enabled {
-            pane=pane.child(div().text_sm().child(tr("settings-advanced-while-maple-is-locked-your-other-computers-can-t-reach-this-one-a")));
+            notes.push(div().text_sm().child(tr("settings-advanced-while-maple-is-locked-your-other-computers-can-t-reach-this-one-a")));
         }
         if password {
             for integration in self
@@ -747,11 +799,11 @@ impl SettingsScreen {
                     _ => None,
                 };
                 if let Some(copy) = copy {
-                    pane = pane.child(div().text_sm().child(copy));
+                    notes.push(div().text_sm().child(copy));
                 }
             }
         }
-        pane
+        notes
     }
 }
 

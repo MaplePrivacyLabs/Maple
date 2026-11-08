@@ -637,6 +637,8 @@ impl SettingsScreen {
         let application_anchor = ScrollAnchor::for_handle(pane_scroll.clone());
         let application_vim = SettingsApplicationVimState::new(section);
         let application_focus_pending = settings.application_vim_enabled;
+        let advanced_state =
+            advanced::AdvancedState::new(application_vim_enabled, application_focus.clone(), cx);
         let mut this = Self {
             locale: super::i18n::current_locale(),
             messages: Default::default(),
@@ -702,7 +704,7 @@ impl SettingsScreen {
             application_reveal_pending: false,
             pane_scroll,
             application_anchor,
-            advanced: advanced::AdvancedState::new(cx),
+            advanced: advanced_state,
             advanced_subscriptions: Vec::new(),
         };
         this.load_account(cx);
@@ -1812,8 +1814,14 @@ impl SettingsScreen {
             return;
         }
         let from = self.section;
+        let mut history = std::mem::take(&mut self.section_history);
         self.select_section(section, cx);
-        self.section_history.push(from);
+        // A refused navigation (an operation is running) must not record a
+        // hop back to where we already are.
+        if self.section == section {
+            history.push(from);
+        }
+        self.section_history = history;
     }
 }
 
@@ -3444,6 +3452,8 @@ impl SettingsScreen {
         }
         self.mcp_editor = None;
         self.mcp_notice = None;
+        self.application_focus_pending = true;
+        self.reconcile_application_vim_target();
         cx.notify();
     }
 
@@ -3483,12 +3493,8 @@ impl SettingsScreen {
                 .flex()
                 .items_center()
                 .justify_center()
-                .on_mouse_down(
-                    gpui::MouseButton::Left,
-                    cx.listener(|this, _event, _window, cx| {
-                        this.close_mcp_editor(cx);
-                    }),
-                )
+                // No backdrop dismissal: the form can hold typed secrets, so
+                // only Escape, the close button, and Cancel leave it.
                 .child(
                     div()
                         .id("mcp-editor")
@@ -3834,9 +3840,10 @@ fn activates(event: &gpui::KeyDownEvent) -> bool {
 /// (0); each tab takes the next slot in display order.
 const PANE_TAB_INDEX: isize = 1;
 
-/// One tab of a pane's horizontal tab bar (Developer & API, Integrations):
+/// One tab of a pane's horizontal tab bar (Developer & API):
 /// a pill that is a pointer target, a Tab stop pressed by Enter or Space,
 /// and a `Tab` role for screen readers.
+#[cfg(feature = "acp")]
 fn pane_tab(
     id: &'static str,
     label: gpui::SharedString,
@@ -3909,6 +3916,7 @@ impl SettingsScreen {
             Section::Billing | Section::Usage => self.refresh_billing(cx),
             Section::Api => {
                 self.load_api_keys(cx);
+                self.load_credit_balance(cx);
                 #[cfg(feature = "proxy")]
                 if self.local_api.can_refresh() {
                     self.refresh_local_api_status(cx);

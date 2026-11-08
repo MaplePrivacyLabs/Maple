@@ -361,12 +361,14 @@ impl SettingsScreen {
         };
         self.mcp_sign_in_error = None;
         let application_vim = self.settings.application_vim_enabled;
+        let application_focus = self.application_focus.clone();
         let screen = cx.entity().downgrade();
         let submit = screen.clone();
         let input = cx.new(move |cx| {
             let mut input = TextInput::localized("settings-catalog-address", cx)
                 .with_tab_index(1)
                 .application_vim(application_vim)
+                .on_application_escape(move |window, cx| window.focus(&application_focus, cx))
                 .on_key(move |event, _text, _window, cx| {
                     let cancelled = event.keystroke.key == "escape";
                     if cancelled {
@@ -389,7 +391,7 @@ impl SettingsScreen {
         cx.notify();
     }
 
-    fn close_mcp_address(&mut self, cx: &mut Context<Self>) {
+    pub(super) fn close_mcp_address(&mut self, cx: &mut Context<Self>) {
         self.mcp_address = None;
         self.application_focus_pending = true;
         cx.notify();
@@ -448,6 +450,10 @@ impl SettingsScreen {
                 .flex()
                 .items_center()
                 .justify_center()
+                .on_mouse_down(
+                    gpui::MouseButton::Left,
+                    cx.listener(|this, _event, _window, cx| this.close_mcp_address(cx)),
+                )
                 .child(
                     div()
                         .id("mcp-address")
@@ -466,6 +472,9 @@ impl SettingsScreen {
                         .flex_col()
                         .gap_4()
                         .text_color(gpui::rgb(theme::text_primary()))
+                        .on_mouse_down(gpui::MouseButton::Left, |_event, _window, cx| {
+                            cx.stop_propagation();
+                        })
                         .child(div().text_lg().child(title))
                         .child(
                             div()
@@ -705,7 +714,11 @@ impl SettingsScreen {
         if self.catalog_featured.is_empty() {
             return None;
         }
-        let total = mcp_catalog().len();
+        let servers = self.mcp_servers.as_deref().unwrap_or_default();
+        let total = mcp_catalog()
+            .iter()
+            .filter(|entry| !is_connected(entry, servers))
+            .count();
         let header = div()
             .flex()
             .items_center()
@@ -775,6 +788,8 @@ impl SettingsScreen {
                 entry.id
             )))
             .debug_selector(move || format!("catalog-featured-{}", entry.id))
+            .role(gpui::Role::Button)
+            .aria_label(entry.name.clone())
             .flex_1()
             .min_w(px(150.))
             .flex()

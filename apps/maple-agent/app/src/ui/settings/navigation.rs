@@ -119,6 +119,7 @@ impl SettingsScreen {
             self.catalog_search.clone(),
         ];
         inputs.extend(self.account.inputs());
+        inputs.push(self.advanced.confirmation.clone());
         inputs.push(self.api_keys.name.clone());
         inputs.push(self.billing.credits.custom.clone());
         #[cfg(feature = "proxy")]
@@ -164,7 +165,11 @@ impl SettingsScreen {
     pub(super) fn visible_application_targets(&self) -> Vec<SettingsTarget> {
         // The server dialog covers the page; its fields take the keyboard
         // themselves, so nothing underneath is a target while it is open.
-        if self.mcp_editor.is_some() {
+        if self.mcp_editor.is_some()
+            || self.mcp_address.is_some()
+            || self.advanced.erase
+            || self.advanced.form.is_some()
+        {
             return Vec::new();
         }
         if self.account.delete != super::account::DeleteFlow::Idle {
@@ -185,8 +190,8 @@ impl SettingsScreen {
             .map(SettingsTarget::General)
             .chain([
                 SettingsTarget::PromptEditor,
-                SettingsTarget::PromptSave,
                 SettingsTarget::PromptClear,
+                SettingsTarget::PromptSave,
             ])
             .collect(),
             Section::Appearance => [
@@ -474,7 +479,15 @@ impl SettingsScreen {
             self.application_reveal_pending = true;
             return;
         }
-        match self.application_vim.target.clone() {
+        let target = self.application_vim.target.clone();
+        if target
+            .as_ref()
+            .is_some_and(|target| !self.visible_application_targets().contains(target))
+        {
+            // A dialog or a reload hid the target since it was selected.
+            return;
+        }
+        match target {
             Some(SettingsTarget::General(target)) => self.activate_general_target(target, cx),
             Some(SettingsTarget::Appearance(target)) => self.activate_appearance_target(target, cx),
             #[cfg(feature = "acp")]
@@ -563,6 +576,10 @@ impl SettingsScreen {
             self.close_mcp_editor(cx);
             return;
         }
+        if self.mcp_address.is_some() {
+            self.close_mcp_address(cx);
+            return;
+        }
         if self.account.delete != super::account::DeleteFlow::Idle {
             self.dismiss_delete_dialog(cx);
             return;
@@ -611,6 +628,9 @@ impl SettingsScreen {
         }
         if let Some(prompt) = &self.mcp_address {
             inputs.push(&prompt.input);
+        }
+        if self.advanced.erase {
+            inputs.push(&self.advanced.confirmation);
         }
         inputs
             .into_iter()
@@ -1640,6 +1660,110 @@ mod tests {
         });
     }
 
+    /// Erasing local data confirms in a dialog: the field is focused, the
+    /// destructive button is inert until ERASE is typed, Escape and the
+    /// backdrop close it and clear the field, and a busy erase ignores close.
+    #[gpui::test]
+    fn erase_dialog_focuses_gates_and_closes(cx: &mut TestAppContext) {
+        let (settings, cx) = dropdown_window(cx, true);
+        settings.update(cx, |this, cx| {
+            this.select_section(Section::Account, cx);
+            this.advanced.status = Some(
+                serde_json::from_value(serde_json::json!({
+                    "state": {"state": "open"},
+                    "mode": "plain",
+                    "store_id": "current",
+                    "password_settings_available": true
+                }))
+                .expect("store status"),
+            );
+            assert!(this.advanced.available());
+            this.open_erase_dialog(cx);
+            assert!(this.advanced.erase);
+        });
+        cx.run_until_parked();
+        assert!(cx.debug_bounds("advanced-erase-dialog").is_some());
+        assert!(
+            cx.debug_bounds("advanced-erase").is_some(),
+            "the row's button renders"
+        );
+        cx.update(|window, app| {
+            settings.update(app, |this, cx| {
+                let field = this.advanced.confirmation.read(cx).focus_handle(cx);
+                assert!(field.is_focused(window), "the ERASE field is focused");
+                this.advanced
+                    .confirmation
+                    .update(cx, |input, cx| input.set_text("ERAS", cx));
+            });
+        });
+        cx.run_until_parked();
+        // A wrong word keeps the erase inert: nothing is sent.
+        settings.update(cx, |this, cx| {
+            let before = this.advanced.busy;
+            this.erase_local_store(cx);
+            assert_eq!(
+                this.advanced.busy, before,
+                "no erase starts on a wrong word"
+            );
+            assert!(
+                this.advanced.notice.is_some(),
+                "and the dialog explains why"
+            );
+        });
+        // With Application Vim on the first Escape leaves the field, the
+        // second reaches the dialog. Nothing underneath is a Vim target.
+        settings.update(cx, |this, _| {
+            assert!(this.visible_application_targets().is_empty())
+        });
+        cx.simulate_keystrokes("escape escape");
+        cx.run_until_parked();
+        settings.update(cx, |this, cx| {
+            assert!(!this.advanced.erase, "Escape closes the dialog");
+            assert!(this.advanced.confirmation.read(cx).text().is_empty());
+            // Busy erases ignore close.
+            this.open_erase_dialog(cx);
+            this.advanced.busy = true;
+            this.close_erase_dialog(cx);
+            assert!(this.advanced.erase);
+            this.advanced.busy = false;
+            this.close_erase_dialog(cx);
+            assert!(!this.advanced.erase);
+        });
+        cx.run_until_parked();
+        assert!(cx.debug_bounds("advanced-erase-dialog").is_none());
+    }
+
+    /// The unlock-password form opens as a dialog and dismisses through the
+    /// form's own close, which is a no-op while an operation runs.
+    #[gpui::test]
+    fn password_form_opens_as_a_dialog_and_dismisses_through_the_form(cx: &mut TestAppContext) {
+        let (settings, cx) = dropdown_window(cx, false);
+        settings.update(cx, |this, cx| {
+            this.select_section(Section::Account, cx);
+            this.advanced.status = Some(
+                serde_json::from_value(serde_json::json!({
+                    "state": {"state": "open"},
+                    "mode": "plain",
+                    "store_id": "current",
+                    "password_settings_available": true
+                }))
+                .expect("store status"),
+            );
+            this.open_password_form(crate::ui::store_gate::PasswordAction::Set, cx);
+            assert!(this.advanced.form.is_some(), "the form opened");
+        });
+        cx.run_until_parked();
+        assert!(cx.debug_bounds("advanced-password-dialog").is_some());
+        settings.update(cx, |this, cx| {
+            this.dismiss_password_form(cx);
+        });
+        cx.run_until_parked();
+        settings.update(cx, |this, _| {
+            assert!(this.advanced.form.is_none(), "an idle form dismisses");
+        });
+        assert!(cx.debug_bounds("advanced-password-dialog").is_none());
+    }
+
     /// Account deletion runs in a dialog: it focuses the acknowledgement
     /// field, Escape and the backdrop cancel it before a code is emailed but
     /// not after, and while it is open Vim sees only its controls.
@@ -1748,6 +1872,15 @@ mod tests {
                 vec![Section::Integrations],
                 "no duplicate entry"
             );
+            this.navigate_to(Section::Apps, cx);
+            assert_eq!(
+                this.section_history,
+                vec![Section::Integrations, Section::Billing],
+                "a second hop keeps the first"
+            );
+            this.go_back(cx);
+            this.go_back(cx);
+            assert_eq!(this.section, Section::Integrations);
             this.select_section(Section::General, cx);
             assert!(
                 this.section_history.is_empty(),

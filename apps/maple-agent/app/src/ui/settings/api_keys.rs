@@ -387,7 +387,8 @@ impl SettingsScreen {
                         .tab_index(tab_order::PLAN)
                         .on_click(cx.listener(move |this, _, _, cx| see_plans(this, cx)))
                         .on_key_down(Self::on_press_key(see_plans, cx))
-                        .child(tr("settings-api-keys-see-plans")),
+                        .child(tr("settings-api-keys-see-plans"))
+                        .child(widgets::navigate_mark(theme::text_on_default_button())),
                 ),
             )
     }
@@ -413,7 +414,8 @@ impl SettingsScreen {
                         .tab_index(tab_order::PLAN)
                         .on_click(cx.listener(move |this, _, _, cx| buy_more(this, cx)))
                         .on_key_down(Self::on_press_key(buy_more, cx))
-                        .child(tr("settings-api-keys-buy-more")),
+                        .child(tr("settings-api-keys-buy-more"))
+                        .child(widgets::navigate_mark(theme::text_primary())),
                 ),
             )
     }

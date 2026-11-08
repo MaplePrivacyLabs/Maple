@@ -225,12 +225,17 @@ impl SettingsScreen {
                 .child(tr("settings-settings-plan-usage-unavailable"))
                 .into_any_element(),
         });
-        let rows = vec![
-            info_row_content(
-                &tr("settings-usage-extra-credits"),
-                self.billing.credits.balance_label(),
-            )
-            .into_any_element(),
+        let mut rows: Vec<gpui::AnyElement> = Vec::new();
+        if self.api_access() != Some(false) {
+            rows.push(
+                info_row_content(
+                    &tr("settings-usage-extra-credits"),
+                    self.billing.credits.balance_label(),
+                )
+                .into_any_element(),
+            );
+        }
+        rows.extend([
             div()
                 .text_xs()
                 .text_color(gpui::rgb(theme::text_muted()))
@@ -258,7 +263,7 @@ impl SettingsScreen {
                             .child(widgets::navigate_mark(theme::text_primary())),
                     ),
             ),
-        ];
+        ]);
         pane.child(widgets::card_stack(rows))
     }
 
@@ -303,7 +308,9 @@ impl SettingsScreen {
             cx,
             |this, result, cx| {
                 this.billing.busy = false;
-                this.billing.awaiting_browser = result.is_ok().then(std::time::Instant::now);
+                if result.is_ok() {
+                    this.billing.awaiting_browser = Some(std::time::Instant::now());
+                }
                 this.billing.notice = Some(match result {
                     Ok(()) => UiText::key("settings-billing-opened-the-subscription-portal-in-your-browser-refresh-after-maki"),
                     Err(message) => message.into(),
@@ -314,7 +321,13 @@ impl SettingsScreen {
     }
 
     pub(super) fn open_pricing_page(&mut self, cx: &mut Context<Self>) {
-        self.billing.notice = Some(match crate::backend::open_pricing_page_presented() {
+        let opened = crate::backend::open_pricing_page_presented();
+        // Plans can change on the pricing page too (Team seats, non-Stripe
+        // subscriptions), so the return to the window refetches.
+        if opened.is_ok() {
+            self.billing.awaiting_browser = Some(std::time::Instant::now());
+        }
+        self.billing.notice = Some(match opened {
             Ok(()) => UiText::key("settings-billing-opened-the-pricing-page-in-your-browser"),
             Err(message) => crate::ui::host_errors::failure_text(&message),
         });
@@ -354,7 +367,9 @@ impl SettingsScreen {
                     cx,
                     |this, result, cx| {
                         this.billing.busy = false;
-                        this.billing.awaiting_browser = result.is_ok().then(std::time::Instant::now);
+                        if result.is_ok() {
+                            this.billing.awaiting_browser = Some(std::time::Instant::now());
+                        }
                         this.billing.notice = Some(match result {
                             Ok(()) => UiText::key("settings-billing-opened-checkout-in-your-browser-refresh-after-paying-to-see-the-n"),
                             Err(message) => message.into(),

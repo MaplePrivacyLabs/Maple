@@ -286,7 +286,9 @@ impl SettingsScreen {
             cx,
             move |this, result, cx| {
                 this.billing.credits.purchasing = None;
-                this.billing.awaiting_browser = result.is_ok().then(std::time::Instant::now);
+                if result.is_ok() {
+                    this.billing.awaiting_browser = Some(std::time::Instant::now());
+                }
                 this.billing.credits.notice = Some(match result {
                     Ok(()) => match method {
                         PaymentMethod::Stripe => UiText::key("settings-api-credits-opened-checkout-in-your-browser-refresh-after-paying-to-see-the-n"),
@@ -515,7 +517,7 @@ impl SettingsScreen {
                         .text_xs()
                         .text_color(gpui::rgb(theme::text_muted()))
                         .child(tr(
-                            "settings-api-credits-checkout-opens-in-your-browser-anonymous-accounts-pay-with-bitcoi",
+                            "settings-api-credits-anonymous-accounts-pay-with-bitcoin",
                         )),
                 )
             }),
