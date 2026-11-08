@@ -241,6 +241,7 @@ settings-account-danger-zone = Danger zone
 settings-account-delete-account = Delete account
 settings-account-permanently-deletes-your-account-tasks-and-encrypted-data-this-ca = Permanently deletes your account, tasks, and encrypted data. This cannot be undone.
 settings-account-delete-account-more = Delete account…
+settings-account-delete-dialog-title = Delete account?
 settings-account-this-permanently-deletes-your-account-tasks-and-encrypted-data-ty = This permanently deletes your account, tasks, and encrypted data. Type DELETE, then we email you a confirmation code.
 settings-account-cancel = Cancel
 settings-account-sending = Sending…

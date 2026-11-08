@@ -241,6 +241,7 @@ settings-account-danger-zone = Zona de peligro
 settings-account-delete-account = Eliminar cuenta
 settings-account-permanently-deletes-your-account-tasks-and-encrypted-data-this-ca = Elimina permanentemente tu cuenta, tus tareas y tus datos cifrados. Esta acción no se puede deshacer.
 settings-account-delete-account-more = Eliminar cuenta…
+settings-account-delete-dialog-title = ¿Eliminar la cuenta?
 settings-account-this-permanently-deletes-your-account-tasks-and-encrypted-data-ty = Esto elimina permanentemente tu cuenta, tus tareas y tus datos cifrados. Escribe DELETE y te enviaremos un código de confirmación por correo.
 settings-account-cancel = Cancelar
 settings-account-sending = Enviando…

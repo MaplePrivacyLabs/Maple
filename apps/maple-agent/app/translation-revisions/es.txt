@@ -965,6 +965,7 @@ settings-account-current-password 74a9b46f6ab85d83
 settings-account-danger-zone 5b64fa8c9106d4f7
 settings-account-delete-account 73884676924055d5
 settings-account-delete-account-more 3a12f1b8a4e47295
+settings-account-delete-dialog-title 43607d6bd34a96f6
 settings-account-delete-my-account dba71d9ba9ed6fe0
 settings-account-deleting 3467318efa28200c
 settings-account-email cf5f15d66a280e3e

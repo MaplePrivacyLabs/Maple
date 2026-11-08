@@ -560,6 +560,10 @@ impl SettingsScreen {
             self.close_mcp_editor(cx);
             return;
         }
+        if self.account.delete != super::account::DeleteFlow::Idle {
+            self.cancel_account_deletion(cx);
+            return;
+        }
         if self.application_text_input_focused(window, cx) {
             window.focus(&self.application_focus, cx);
             cx.notify();

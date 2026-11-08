@@ -163,6 +163,19 @@ pub fn danger_button(id: impl Into<ElementId>) -> Stateful<Div> {
         .active(|style| press_depth(style.opacity(0.85)))
 }
 
+/// A destructive action at rest: outlined in the error color, filled only
+/// on hover. For the row that *starts* a destructive flow; the filled
+/// [`danger_button`] is for the step that commits it.
+pub fn danger_outline_button(id: impl Into<ElementId>) -> Stateful<Div> {
+    let error = theme::status_error();
+    pill(id)
+        .border_1()
+        .border_color(gpui::rgb(error))
+        .text_color(gpui::rgb(error))
+        .hover(move |style| style.bg(gpui::rgba((error << 8) | 0x1f)).cursor_pointer())
+        .active(move |style| press_depth(style.bg(gpui::rgba((error << 8) | 0x33))))
+}
+
 /// Square icon-only button with a hover plate, used in list rows and
 /// toolbars. `label` is what the icon means: it names the control for
 /// screen readers and shows as a quick tooltip, since the icon is the
