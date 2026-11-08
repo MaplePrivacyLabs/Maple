@@ -56,6 +56,7 @@ settings-section-billing = Billing
 settings-section-shortcuts = Keyboard Shortcuts
 settings-section-prompt = Additional instructions
 settings-section-integrations = Integrations
+settings-section-tools = Tools
 settings-section-remote = Remote computers
 settings-section-usage = Usage
 settings-section-about = About
@@ -2133,3 +2134,31 @@ settings-integration-install-codex = Install the Codex CLI and make sure `codex`
 
 # Keep the command and PATH unchanged.
 settings-integration-install-claude = Install Claude Code and make sure `claude` is on PATH, then reopen this page.
+
+# Settings → Tools: a label and a one-line description for each tool the model can be offered.
+settings-tools-intro = Choose which tools the model can use in tasks on this computer. Changes apply to open tasks from their next request.
+settings-tools-intro-remote = Choose which tools the model can use in tasks on the selected computer. Changes apply to its open tasks from their next request.
+settings-tools-loading = Loading tools…
+settings-tools-elsewhere = Web access has its own switch on each task. External agents, MCP servers and computer use are in Integrations.
+settings-tools-read = Read files
+settings-tools-read-description = Read text files and images.
+settings-tools-shell = Terminal
+settings-tools-shell-description = Run commands in the task's folder.
+settings-tools-edit = Edit files
+settings-tools-edit-description = Change parts of existing files.
+settings-tools-write = Write files
+settings-tools-write-description = Create files, or replace what they contain.
+settings-tools-grep = Search file contents
+settings-tools-grep-description = Search inside files for text, without running commands.
+settings-tools-find = Find files
+settings-tools-find-description = Find files by name, without running commands.
+settings-tools-ls = List files
+settings-tools-ls-description = List what a folder contains, without running commands.
+settings-tools-read-image = Look at images
+settings-tools-read-image-description = View images from attachments, files and links.
+settings-tools-todo-write = Task plan
+settings-tools-todo-write-description = Keep the task's steps above the message box while it works.
+settings-tools-request-user-input = Questions for you
+settings-tools-request-user-input-description = Stop to ask you short questions and wait for your answers.
+settings-tools-python = Python
+settings-tools-python-description = Run Python in a scratchpad that keeps its variables between calls.

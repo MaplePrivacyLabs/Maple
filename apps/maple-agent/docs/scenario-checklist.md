@@ -52,6 +52,7 @@ stdio MCP server configured in Settings > Integrations.
 | L3 | `todo_write` | Ask for a multi-step plan | The plan pins above the composer and updates; once every item is checked it leaves the composer and stays in the transcript as a foldable Plan row |
 | L4 | `web_search` and `open_url` | Ask for a page title | Web results and the title come back |
 | L5 | `request_user_input` | Ask the model to ask you a question | The card shows; the answer reaches the model; Escape skips |
+| L6 | Settings → Tools | With a task open, turn `grep` on and `read_image` off, then message the task; open the page in builds with and without bundled CPython | The next request offers `grep` and not `read_image`, as does a new task; the Python row shows only where CPython is bundled (**automated** on the host: `a_change_reaches_loaded_tasks_from_their_next_request`) |
 
 ## Permission modes
 

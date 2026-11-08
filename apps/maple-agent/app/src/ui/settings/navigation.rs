@@ -1,7 +1,8 @@
 //! Stable-ID application Vim navigation for Settings.
 //!
 //! The settings screen owns this projection because its visible controls are
-//! dynamic (shortcut filtering, integrations, MCP servers, and ACP examples).
+//! dynamic (shortcut filtering, integrations, tools, MCP servers, and ACP
+//! examples).
 //! Selecting a row is side-effect free; Enter delegates to the same existing
 //! method as its pointer control.
 
@@ -61,6 +62,7 @@ pub(super) enum SettingsTarget {
     PromptClear,
     Integration(String),
     IntegrationSetup(String),
+    Tool(String),
     McpAdd,
     McpServer(String),
     McpCatalog(String),
@@ -211,6 +213,7 @@ impl SettingsScreen {
                         .map(|entry| SettingsTarget::McpCatalog(entry.id.clone())),
                 )
                 .collect(),
+            Section::Tools => self.tool_targets(),
             Section::Remote | Section::Usage | Section::About | Section::Advanced => Vec::new(),
         }
     }
@@ -400,6 +403,7 @@ impl SettingsScreen {
             Some(SettingsTarget::PromptClear) => self.clear_prompt(cx),
             Some(SettingsTarget::Integration(id)) => self.toggle_integration(&id, cx),
             Some(SettingsTarget::IntegrationSetup(id)) => self.setup_integration(&id, cx),
+            Some(SettingsTarget::Tool(id)) => self.toggle_tool(&id, cx),
             Some(SettingsTarget::McpAdd) => self.open_mcp_editor(None, cx),
             Some(SettingsTarget::McpServer(name)) => self.edit_mcp_server(&name, cx),
             Some(SettingsTarget::McpCatalog(id)) => self.connect_catalog_entry(&id, cx),
@@ -796,6 +800,43 @@ mod tests {
                 )
                 .collect::<Vec<_>>()
             );
+        });
+    }
+
+    #[gpui::test]
+    fn tool_rows_are_targets_and_enter_switches_one(cx: &mut TestAppContext) {
+        let (settings, cx) = dropdown_window(cx, true);
+        let switch =
+            |id: &str, enabled: bool, available: bool| maple_agent::agent::AgentToolSwitch {
+                id: id.to_string(),
+                enabled,
+                enabled_by_default: enabled,
+                available,
+            };
+        cx.update(|window, app| {
+            settings.update(app, |this, cx| {
+                this.select_section(Section::Tools, cx);
+                this.tools.switches = Some(vec![
+                    switch("read", true, true),
+                    // A tool this computer cannot offer has no row.
+                    switch("python", false, false),
+                    switch("grep", false, true),
+                ]);
+                assert_eq!(
+                    this.visible_application_targets(),
+                    [
+                        SettingsTarget::Tool("read".to_string()),
+                        SettingsTarget::Tool("grep".to_string()),
+                    ]
+                );
+                this.application_vim.region = SettingsRegion::Pane;
+                this.application_vim.target = Some(SettingsTarget::Tool("grep".to_string()));
+                this.execute_application_vim(SettingsApplicationCommand::Activate, window, cx);
+                assert!(
+                    this.tools.saving.contains("grep"),
+                    "Enter switches the row, as a click does"
+                );
+            })
         });
     }
 

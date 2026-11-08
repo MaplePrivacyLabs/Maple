@@ -79,20 +79,30 @@ pub(crate) struct PythonWorkers {
     tasks: Mutex<HashMap<String, Weak<TaskPython>>>,
 }
 
+/// The CPython bundled beside this executable.
+fn bundled_python() -> Result<PackagedPython, Error> {
+    std::env::current_exe()
+        .map_err(|error| Error::Unavailable(error.to_string()))
+        .and_then(PackagedPython::for_application_executable)
+}
+
 impl PythonWorkers {
     /// The CPython bundled beside this executable, or `None` in a build
     /// without one, which then offers no `python` tool.
     pub(crate) fn bundled() -> Option<Arc<Self>> {
-        let python = std::env::current_exe()
-            .map_err(|error| Error::Unavailable(error.to_string()))
-            .and_then(PackagedPython::for_application_executable);
-        match python {
+        match bundled_python() {
             Ok(python) => Some(Self::new(python)),
             Err(error) => {
                 log::info!("The python tool is unavailable: {error}");
                 None
             }
         }
+    }
+
+    /// Whether this executable has the bundled CPython the `python` tool
+    /// needs. Starts nothing.
+    pub(crate) fn is_bundled() -> bool {
+        bundled_python().is_ok()
     }
 
     pub(crate) fn new(python: PackagedPython) -> Arc<Self> {
@@ -363,8 +373,10 @@ impl TaskPython {
     }
 }
 
-/// The tool. Its calls run one at a time because they share one interpreter.
-pub(crate) fn python_tool(task: Arc<TaskPython>) -> RegisteredTool {
+/// The tool, declared to the model while `active`: its switch in Settings →
+/// Tools, off by default. Its calls run one at a time because they share one
+/// interpreter.
+pub(crate) fn python_tool(task: Arc<TaskPython>, active: bool) -> RegisteredTool {
     RegisteredTool {
         tool: Arc::new(PythonTool {
             declaration: declaration(&task.workers.python.version),
@@ -376,9 +388,7 @@ pub(crate) fn python_tool(task: Arc<TaskPython>) -> RegisteredTool {
                 "Use python for calculations, data processing and multi-step scripts that benefit from keeping state between calls; use the shell for project commands, tests and long-running processes.".to_string(),
             ],
         },
-        // Registered switched off: nothing declares it to the model until
-        // the tool is turned on.
-        active: false,
+        active,
         extension: None,
     }
 }

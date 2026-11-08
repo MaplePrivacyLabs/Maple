@@ -40,6 +40,7 @@ mod switch_compaction;
 mod tasks;
 mod thinking;
 pub(crate) mod timeline;
+mod tool_settings;
 mod tools;
 mod types;
 

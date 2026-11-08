@@ -16,9 +16,9 @@ use maple_agent::agent::{
     AgentIntegrationPermissionKind, AgentIntegrationPermissions, AgentProjectTrustStatus,
     AgentQueueControlRequest, AgentRenameSessionRequest, AgentRuntimeStatus,
     AgentSendMessageRequest, AgentServiceEvent, AgentSessionDetail, AgentSessionSummary,
-    AgentSetIntegrationEnabledRequest, AgentSetupIntegrationRequest, AgentSlashCommand,
-    AgentStartRequest, AgentSubagent, AgentTaskState, MapleAgentHostResources, MapleAgentService,
-    RecentProjectRoot,
+    AgentSetIntegrationEnabledRequest, AgentSetToolEnabledRequest, AgentSetupIntegrationRequest,
+    AgentSlashCommand, AgentStartRequest, AgentSubagent, AgentTaskState, AgentToolSwitch,
+    MapleAgentHostResources, MapleAgentService, RecentProjectRoot,
 };
 use maple_agent::maple_api::{
     MapleApiAuthEventSink, MapleApiAuthRequest, MapleApiAuthSnapshot, MapleApiAuthState,
@@ -3113,6 +3113,30 @@ impl LocalBackend {
             .handle_for_user(user_id)
             .await?
             .setup_integration(AgentSetupIntegrationRequest { id: id.to_string() })
+            .await
+    }
+
+    pub async fn list_tools(&self, user_id: &str) -> Result<Vec<AgentToolSwitch>, String> {
+        self.service
+            .handle_for_user(user_id)
+            .await?
+            .list_tools()
+            .await
+    }
+
+    pub async fn set_tool_enabled(
+        &self,
+        user_id: &str,
+        id: &str,
+        enabled: bool,
+    ) -> Result<Vec<AgentToolSwitch>, String> {
+        self.service
+            .handle_for_user(user_id)
+            .await?
+            .set_tool_enabled(AgentSetToolEnabledRequest {
+                id: id.to_string(),
+                enabled,
+            })
             .await
     }
 

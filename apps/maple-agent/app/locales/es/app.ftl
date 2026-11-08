@@ -56,6 +56,7 @@ settings-section-billing = Facturación
 settings-section-shortcuts = Atajos de teclado
 settings-section-prompt = Instrucciones adicionales
 settings-section-integrations = Integraciones
+settings-section-tools = Herramientas
 settings-section-remote = Computadoras remotas
 settings-section-usage = Uso
 settings-section-about = Acerca de
@@ -2002,3 +2003,31 @@ settings-integration-install-codex = Instala la CLI de Codex y asegúrate de que
 
 # Keep the command and PATH unchanged.
 settings-integration-install-claude = Instala Claude Code y asegúrate de que `claude` esté en PATH. Después, vuelve a abrir esta página.
+
+# Settings → Tools: a label and a one-line description for each tool the model can be offered.
+settings-tools-intro = Elige qué herramientas puede usar el modelo en las tareas de esta computadora. Los cambios se aplican a las tareas abiertas desde su siguiente solicitud.
+settings-tools-intro-remote = Elige qué herramientas puede usar el modelo en las tareas de la computadora seleccionada. Los cambios se aplican a sus tareas abiertas desde su siguiente solicitud.
+settings-tools-loading = Cargando herramientas…
+settings-tools-elsewhere = El acceso a la web tiene su propio interruptor en cada tarea. Los agentes externos, los servidores MCP y el uso de la computadora están en Integraciones.
+settings-tools-read = Leer archivos
+settings-tools-read-description = Lee archivos de texto e imágenes.
+settings-tools-shell = Terminal
+settings-tools-shell-description = Ejecuta comandos en la carpeta de la tarea.
+settings-tools-edit = Editar archivos
+settings-tools-edit-description = Cambia partes de archivos existentes.
+settings-tools-write = Escribir archivos
+settings-tools-write-description = Crea archivos o reemplaza su contenido.
+settings-tools-grep = Buscar en archivos
+settings-tools-grep-description = Busca texto dentro de los archivos, sin ejecutar comandos.
+settings-tools-find = Buscar archivos
+settings-tools-find-description = Busca archivos por nombre, sin ejecutar comandos.
+settings-tools-ls = Listar archivos
+settings-tools-ls-description = Muestra el contenido de una carpeta, sin ejecutar comandos.
+settings-tools-read-image = Ver imágenes
+settings-tools-read-image-description = Mira imágenes de archivos adjuntos, archivos y enlaces.
+settings-tools-todo-write = Plan de la tarea
+settings-tools-todo-write-description = Muestra los pasos de la tarea arriba del cuadro de mensaje mientras trabaja.
+settings-tools-request-user-input = Preguntas para ti
+settings-tools-request-user-input-description = Se detiene para hacerte preguntas breves y espera tus respuestas.
+settings-tools-python = Python
+settings-tools-python-description = Ejecuta Python en un espacio que conserva sus variables entre llamadas.

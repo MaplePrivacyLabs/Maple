@@ -2121,6 +2121,37 @@ async fn a_model_without_vision_looks_at_images_through_read_image() {
     assert!(!prompt(&requests[2]).contains(guideline));
 }
 
+/// With read_image switched off in Settings → Tools, `read` keeps Pi's own
+/// note for a model that cannot see the image.
+#[tokio::test]
+async fn read_keeps_its_own_note_while_read_image_is_off() {
+    use base64::Engine as _;
+
+    let harness = Harness::new().await;
+    harness
+        .handle
+        .set_tool_enabled(AgentSetToolEnabledRequest {
+            id: "read_image".to_string(),
+            enabled: false,
+        })
+        .await
+        .unwrap();
+    let png = base64::engine::general_purpose::STANDARD
+        .decode(PNG_1X1)
+        .unwrap();
+    std::fs::write(harness.project.path().join("shot.png"), png).unwrap();
+    harness
+        .faux
+        .push_message(vec![faux_tool_call("read", json!({"path": "shot.png"}))]);
+    harness.faux.push_text("Not seen.");
+    let task = harness.create_task().await;
+    let mut run = harness.send(&task, "What is in shot.png?").await;
+    assert_eq!(finished(&mut run).await, AgentRunTerminal::Completed);
+    let text = pi_ai::content_text(&first_tool_result(&harness.faux.requests()[1]).content);
+    assert!(!text.contains("read_image"), "{text}");
+    assert!(text.contains("does not support images"), "{text}");
+}
+
 #[tokio::test]
 async fn read_image_describes_exactly_while_the_runs_model_cannot_see() {
     let harness = Harness::new().await;
