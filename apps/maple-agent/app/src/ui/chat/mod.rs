@@ -655,6 +655,12 @@ pub struct ChatScreen {
     composer_resize: Option<motion::Tween>,
     /// Heights that transition eases between, measured last frame.
     composer_frame: std::rc::Rc<std::cell::Cell<self::composer::ComposerFrame>>,
+    /// Whether the last frame drew the empty state; `None` before the
+    /// first frame, which never glides.
+    composer_was_empty: Option<bool>,
+    /// The window y the composer region glides from, and since when, after
+    /// the empty state gives way to a conversation or back.
+    composer_glide: Option<(gpui::Pixels, std::time::Instant)>,
     /// Send (0) or Stop (1) on the composer's main control.
     send_stop: motion::Tween,
     /// The send fill, disabled (0) or ready (1).
@@ -1527,6 +1533,8 @@ impl ChatScreen {
             composer_expanded: false,
             composer_resize: None,
             composer_frame: std::rc::Rc::default(),
+            composer_was_empty: None,
+            composer_glide: None,
             send_stop: motion::Tween::new(0.),
             send_ready: motion::Tween::new(0.),
             web_enabled: true,
@@ -7243,13 +7251,14 @@ impl Render for ChatScreen {
             .clone()
             .map(|status| self.render_trust_prompt(&status, cx));
         let empty = self.shows_empty_state();
+        let composer_glide = self.composer_glide_frame(empty, window, cx);
         let sidebar_expansion = self.sidebar_expansion(window, cx);
         let rise = gpui::point(px(0.), motion::RISE);
         let composer_resize = self.composer_resize_frame(window, cx);
         let main = if empty {
             // No slot under a transcript here; rows opening from it start at 0.
             self.row_motion.slot_on_screen = false;
-            self.render_empty_state(composer_resize, window, cx)
+            self.render_empty_state(composer_resize, composer_glide, window, cx)
         } else {
             div()
                 .flex()
@@ -7279,7 +7288,7 @@ impl Render for ChatScreen {
                         cx,
                     ))
                 })
-                .child(
+                .child(composer::glide(
                     div()
                         .relative()
                         .w_full()
@@ -7322,9 +7331,11 @@ impl Render for ChatScreen {
                             &self.composer_frame,
                             |frame, bounds, _| {
                                 frame.region = Some(bounds.size.height);
+                                frame.top = Some(bounds.origin.y);
                             },
                         )),
-                )
+                    composer_glide,
+                ))
                 // Expanded, the composer region takes 70% of this column.
                 .child(composer::measure(
                     &self.composer_frame,
@@ -7950,10 +7961,12 @@ impl ChatScreen {
     /// and privacy note centered in the pane (mirrors EmptyAgentState).
     /// Expanded, the composer fills the pane; while it eases there and
     /// back (`composer_resize`), the heading and the note fold away and
-    /// fade with it so the column never jumps.
+    /// fade with it so the column never jumps. `composer_glide` carries
+    /// the composer up from the foot of a conversation.
     fn render_empty_state(
         &mut self,
         composer_resize: Option<(f32, gpui::Pixels)>,
+        composer_glide: Option<(gpui::Pixels, f32)>,
         window: &mut Window,
         cx: &mut Context<Self>,
     ) -> Div {
@@ -8042,7 +8055,7 @@ impl ChatScreen {
                     .items_center()
                     .when(fills, |column| column.h_full().min_h_0().justify_center())
                     .children(title)
-                    .child(
+                    .child(composer::glide(
                         div()
                             .relative()
                             .w_full()
@@ -8061,9 +8074,11 @@ impl ChatScreen {
                                 &self.composer_frame,
                                 |frame, bounds, _| {
                                     frame.region = Some(bounds.size.height);
+                                    frame.top = Some(bounds.origin.y);
                                 },
                             )),
-                    )
+                        composer_glide,
+                    ))
                     .when(
                         self.awaiting_first_token && self.is_run_active(),
                         |column| column.child(div().mt_6().child(render_waiting_indicator())),

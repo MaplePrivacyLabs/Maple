@@ -95,6 +95,9 @@ fn mode_note(mode: AgentPermissionMode) -> &'static str {
 pub(super) struct ComposerFrame {
     /// The composer region: cards, composer box, palette, padding.
     pub(super) region: Option<gpui::Pixels>,
+    /// The region's top in the window, so the composer can glide from
+    /// there when the empty state gives way to a conversation, or back.
+    pub(super) top: Option<gpui::Pixels>,
     /// The height the region takes when expanded.
     pub(super) room: Option<gpui::Pixels>,
     /// The empty state's title and privacy line at rest, which fold away
@@ -123,6 +126,18 @@ pub(super) fn measure(
     )
     .absolute()
     .inset_0()
+}
+
+/// The composer region, painted gliding from window y `from` toward its
+/// place while `glide` runs (see [`ChatScreen::composer_glide_frame`]).
+pub(super) fn glide(
+    region: impl IntoElement,
+    glide: Option<(gpui::Pixels, f32)>,
+) -> gpui::AnyElement {
+    match glide {
+        Some((from, progress)) => motion::glide_from(region, from, progress).into_any_element(),
+        None => region.into_any_element(),
+    }
 }
 
 impl ChatScreen {
@@ -1294,6 +1309,40 @@ impl ChatScreen {
         None
     }
 
+    /// When the empty state gives way to a conversation (the first message,
+    /// or opening a task) or back (New Task), the composer glides from where
+    /// it was last drawn to its new place over [`motion::PANEL`]. Returns
+    /// the window y it starts from and how far along it is; `None` at rest,
+    /// on the first frame, and under reduced motion.
+    pub(super) fn composer_glide_frame(
+        &mut self,
+        empty: bool,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> Option<(gpui::Pixels, f32)> {
+        let now = motion::now();
+        let reduced = cx.reduce_motion();
+        if self.composer_was_empty.is_some_and(|was| was != empty) {
+            self.composer_glide = self
+                .composer_frame
+                .get()
+                .top
+                .filter(|_| !reduced)
+                .map(|from| (from, now));
+        }
+        self.composer_was_empty = Some(empty);
+        let glide = self.composer_glide.and_then(|(from, started)| {
+            let progress = motion::progress(started, motion::PANEL, now, reduced);
+            (progress < 1.).then_some((from, progress))
+        });
+        if glide.is_some() {
+            window.request_animation_frame();
+        } else {
+            self.composer_glide = None;
+        }
+        glide
+    }
+
     /// The composer box lays out expanded: at rest there, or on the way.
     pub(super) fn composer_fills(&self) -> bool {
         self.composer_expanded || self.composer_resize.is_some()
@@ -2026,6 +2075,73 @@ mod resize_tests {
             "{landing:?} {rest:?}"
         );
         assert_eq!(cx.debug_bounds("composer-box"), Some(rest));
+        motion::set_test_now(None);
+    }
+
+    /// The first message carries the composer from the empty state down to
+    /// the foot of the conversation: it starts where it was drawn, moves
+    /// only down, lands exactly at rest, and then asks for no frames. New
+    /// Task under reduced motion puts it straight back.
+    #[gpui::test]
+    fn leaving_the_empty_state_glides_the_composer_down(cx: &mut TestAppContext) {
+        let start = Instant::now();
+        motion::set_test_now(Some(start));
+        cx.update(|cx| cx.set_reduce_motion(false));
+        let (chat, cx) = chat_window(cx, 0);
+        let hero = cx.debug_bounds("composer-box").expect("composer");
+
+        let message = |chat: &mut ChatScreen| {
+            chat.replace_timeline(vec![AgentTimelineItem {
+                label: None,
+                persisted: None,
+                live: None,
+                truncated: None,
+                revision: 0,
+                id: "m0".to_string(),
+                item_type: "message".to_string(),
+                role: None,
+                title: None,
+                text: Some("Hello".to_string()),
+                status: None,
+                input: None,
+                output: None,
+                created_ms: 0,
+                merge: "replace".to_string(),
+            }]);
+        };
+        chat.update(cx, |chat, cx| {
+            message(chat);
+            cx.notify();
+        });
+        cx.run_until_parked();
+        let first = cx.debug_bounds("composer-box").expect("composer");
+        assert!(
+            (first.top() - hero.top()).abs() < px(1.),
+            "starts where it was drawn: {hero:?} {first:?}"
+        );
+        let mut last = first.top();
+        for step in 1..=12 {
+            frame_at(start + motion::PANEL * step / 12, cx);
+            let top = cx.debug_bounds("composer-box").expect("composer").top();
+            assert!(top >= last, "only moves down: {last:?} then {top:?}");
+            last = top;
+        }
+        frame_at(start + motion::PANEL * 2, cx);
+        let rest = cx.debug_bounds("composer-box").expect("composer");
+        assert!(rest.top() > hero.top() + px(100.), "{hero:?} {rest:?}");
+        assert_eq!(cx.update(|window, app| window.simulate_next_frame(app)), 0);
+
+        cx.update(|_, cx| cx.set_reduce_motion(true));
+        chat.update(cx, |chat, cx| {
+            chat.replace_timeline(Vec::new());
+            cx.notify();
+        });
+        cx.run_until_parked();
+        let back = cx.debug_bounds("composer-box").expect("composer");
+        assert!(
+            (back.top() - hero.top()).abs() < px(1.),
+            "reduced motion lands at once: {hero:?} {back:?}"
+        );
         motion::set_test_now(None);
     }
 }

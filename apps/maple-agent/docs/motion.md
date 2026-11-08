@@ -55,10 +55,11 @@ shared 15 fps `ticker` clock and pause in background windows.
 | Surface | In | Out |
 |---|---|---|
 | Hover on buttons, rows, menu items | background eases in, `HOVER` | eases back, `HOVER` |
-| Menus, dropdowns, popovers | fade and 4 px slide away from the trigger, `REVEAL` | immediate |
+| Menus, dropdowns, popovers | pointer: fade and 4 px slide away from the trigger, `REVEAL`; keyboard: at once | immediate |
 | Tooltips | fade, `REVEAL`, after the existing delay | immediate |
 | Dialogs and confirmations | scrim fades, card fades and rises, `ENTER` | immediate |
 | Screen change (Chat ↔ Settings) and Settings sections | new content fades in, `REVEAL` | immediate |
+| Empty state ↔ conversation (first message, opening a task, New Task) | the composer glides from where it was drawn to its new place, `PANEL` | same, reversed |
 | Switching tasks | transcript fades in when its snapshot lands, `REVEAL` | immediate |
 | Live transcript rows at the end of the thread (sent message, reply, thinking, tool card, error, stop notice) | height grows from 0 and the row fades in, `ENTER`, so older rows glide up; scrolled up, a fade and 6 px rise | — |
 | Sent message | the bubble rises in; the real row takes its exact place, and "Sending…" and the waiting dots share one slot under it | — |
@@ -95,7 +96,8 @@ appear only after 300 ms, so fast loads never flash a spinner.
   section).
 - Menus open from their trigger: the panel's fade and slide are drawn inside
   the deferred draw, because opacity does not reach into `deferred()`.
-  Keyboard highlight moves inside a menu settle at once; pointer hover eases.
+  A menu the keyboard opens appears at once, and keyboard highlight moves
+  inside a menu settle at once; pointer openings and hover ease.
 - Transcript rows sit in a `gpui::list`, whose items lose element state when
   they scroll away. Their entrance is driven by the arrival time kept in view
   state, so a row animates once and never replays.

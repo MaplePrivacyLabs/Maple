@@ -613,12 +613,7 @@ fn grow_in(
     });
     let content = div().absolute().top_0().left_0().right_0().child(row);
     let content = match grow.glide_from {
-        Some(from_y) => GlideFrom {
-            element: Some(content.into_any_element()),
-            from_y,
-            progress,
-        }
-        .into_any_element(),
+        Some(from_y) => motion::glide_from(content, from_y, progress).into_any_element(),
         None => content
             .opacity(motion::ease_out_quint(progress))
             .into_any_element(),
@@ -634,80 +629,6 @@ fn grow_in(
             }
         })
         .into_any_element()
-}
-
-/// Paints its child starting at window y `from_y` and easing to where
-/// layout put it. The offset is worked out from its own bounds as it
-/// prepaints, so the first frame is already in the right place.
-struct GlideFrom {
-    element: Option<gpui::AnyElement>,
-    from_y: Pixels,
-    progress: f32,
-}
-
-impl IntoElement for GlideFrom {
-    type Element = Self;
-
-    fn into_element(self) -> Self {
-        self
-    }
-}
-
-impl gpui::Element for GlideFrom {
-    type RequestLayoutState = gpui::AnyElement;
-    type PrepaintState = ();
-
-    fn id(&self) -> Option<gpui::ElementId> {
-        None
-    }
-
-    fn source_location(&self) -> Option<&'static core::panic::Location<'static>> {
-        None
-    }
-
-    fn request_layout(
-        &mut self,
-        _id: Option<&gpui::GlobalElementId>,
-        _inspector_id: Option<&gpui::InspectorElementId>,
-        window: &mut Window,
-        cx: &mut gpui::App,
-    ) -> (gpui::LayoutId, gpui::AnyElement) {
-        let mut element = self
-            .element
-            .take()
-            .expect("a gliding element is laid out once");
-        (element.request_layout(window, cx), element)
-    }
-
-    fn prepaint(
-        &mut self,
-        _id: Option<&gpui::GlobalElementId>,
-        _inspector_id: Option<&gpui::InspectorElementId>,
-        bounds: Bounds<Pixels>,
-        element: &mut gpui::AnyElement,
-        window: &mut Window,
-        cx: &mut gpui::App,
-    ) {
-        let remaining = 1. - motion::ease_out_cubic(self.progress);
-        let offset = gpui::point(
-            px(0.),
-            ((self.from_y - bounds.origin.y) * remaining).round(),
-        );
-        window.with_element_offset(offset, |window| element.prepaint(window, cx));
-    }
-
-    fn paint(
-        &mut self,
-        _id: Option<&gpui::GlobalElementId>,
-        _inspector_id: Option<&gpui::InspectorElementId>,
-        _bounds: Bounds<Pixels>,
-        element: &mut gpui::AnyElement,
-        _: &mut (),
-        window: &mut Window,
-        cx: &mut gpui::App,
-    ) {
-        element.paint(window, cx);
-    }
 }
 
 pub(super) fn render_timeline_item(

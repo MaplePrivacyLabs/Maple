@@ -749,6 +749,7 @@ impl<V: 'static, K: Clone + PartialEq + 'static> Popup<V, K> {
                 SharedString::from(format!("opened-{}", self.opened)),
             ),
             panel: Some(panel),
+            instant: self.keyboard,
             placement,
             priority,
         }
@@ -891,16 +892,18 @@ fn first_side(prefer_first: bool, length: Pixels, first: Pixels, second: Pixels)
 /// placed, so it lands on the right side in its first frame, and it opens
 /// from that side: it fades in while settling [`SLIDE`] away from the
 /// trigger. `id` is new for each opening, so the entrance replays when one
-/// menu replaces another.
+/// menu replaces another. A menu the keyboard opened appears at once.
 struct Float {
     id: ElementId,
     panel: Option<Div>,
+    instant: bool,
     placement: Placement,
     priority: usize,
 }
 
-/// When the panel under a [`Float`] id first drew.
-struct Opened(std::time::Instant);
+/// When the panel under a [`Float`] id first drew, and whether that
+/// opening skips the entrance.
+struct Opened(std::time::Instant, bool);
 
 impl IntoElement for Float {
     type Element = Self;
@@ -954,18 +957,18 @@ impl Element for Float {
         // Opacity does not reach into a deferred draw, so the entrance is
         // drawn here, on the panel itself.
         let now = motion::now();
-        let started = window.with_element_state(
+        let (started, instant) = window.with_element_state(
             id.expect("a float has an id"),
             |state: Option<Opened>, _| {
-                let started = state.map_or(now, |state| state.0);
-                (started, Opened(started))
+                let opened = state.unwrap_or(Opened(now, self.instant));
+                ((opened.0, opened.1), opened)
             },
         );
         let shown = motion::ease_out_quint(motion::progress(
             started,
             motion::REVEAL,
             now,
-            cx.reduce_motion(),
+            cx.reduce_motion() || instant,
         ));
         let mut panel = if shown < 1. {
             window.request_animation_frame();
@@ -2243,6 +2246,35 @@ mod tests {
         cx.simulate_mouse_move(row.center(), None, Modifiers::default());
         assert_eq!(highlighted(&host, cx), Some("a-three".into()));
         assert!(frames(cx) > 0, "the pointer's highlight eases");
+        motion::set_test_now(None);
+    }
+
+    /// A menu the keyboard opens on its current choice appears at rest on
+    /// its first frame; only pointer openings play the entrance.
+    #[gpui::test]
+    fn a_menu_the_keyboard_opens_appears_at_once(cx: &mut TestAppContext) {
+        let start = std::time::Instant::now();
+        motion::set_test_now(Some(start));
+        let (host, cx) = setup(cx);
+        cx.update(|_, cx| cx.set_reduce_motion(false));
+        click(cx, "a-trigger");
+        motion::set_test_now(Some(start + motion::REVEAL));
+        cx.update(|window, cx| {
+            window.simulate_next_frame(cx);
+        });
+        cx.run_until_parked();
+        let rest = cx.debug_bounds("menu-a").expect("menu").top();
+        click(cx, "a-trigger");
+
+        host.update(cx, |host, cx| {
+            host.popup.open_highlighted(Which::A, "a-one", cx)
+        });
+        cx.run_until_parked();
+        assert_eq!(
+            cx.debug_bounds("menu-a").expect("menu").top(),
+            rest,
+            "drawn at rest, with no slide, on its first frame"
+        );
         motion::set_test_now(None);
     }
 

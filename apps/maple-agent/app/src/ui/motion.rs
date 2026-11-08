@@ -479,6 +479,90 @@ impl<E: IntoElement + 'static> Element for Shifted<E> {
     }
 }
 
+/// Paint an element starting at window y `from_y` and easing (ease-out
+/// cubic, by `progress`) to where layout put it: a layout-free move from
+/// where something was drawn last frame to its new place. The offset is
+/// worked out from the element's own bounds as it prepaints, so the first
+/// frame is already in the right place.
+pub fn glide_from(element: impl IntoElement, from_y: Pixels, progress: f32) -> GlideFrom {
+    GlideFrom {
+        element: Some(element.into_any_element()),
+        from_y,
+        progress,
+    }
+}
+
+pub struct GlideFrom {
+    element: Option<AnyElement>,
+    from_y: Pixels,
+    progress: f32,
+}
+
+impl IntoElement for GlideFrom {
+    type Element = Self;
+
+    fn into_element(self) -> Self {
+        self
+    }
+}
+
+impl Element for GlideFrom {
+    type RequestLayoutState = AnyElement;
+    type PrepaintState = ();
+
+    fn id(&self) -> Option<ElementId> {
+        None
+    }
+
+    fn source_location(&self) -> Option<&'static core::panic::Location<'static>> {
+        None
+    }
+
+    fn request_layout(
+        &mut self,
+        _id: Option<&GlobalElementId>,
+        _inspector_id: Option<&InspectorElementId>,
+        window: &mut Window,
+        cx: &mut App,
+    ) -> (LayoutId, AnyElement) {
+        let mut element = self
+            .element
+            .take()
+            .expect("a gliding element is laid out once");
+        (element.request_layout(window, cx), element)
+    }
+
+    fn prepaint(
+        &mut self,
+        _id: Option<&GlobalElementId>,
+        _inspector_id: Option<&InspectorElementId>,
+        bounds: Bounds<Pixels>,
+        element: &mut AnyElement,
+        window: &mut Window,
+        cx: &mut App,
+    ) {
+        let remaining = 1. - ease_out_cubic(self.progress.clamp(0., 1.));
+        let offset = gpui::point(
+            px(0.),
+            ((self.from_y - bounds.origin.y) * remaining).round(),
+        );
+        window.with_element_offset(offset, |window| element.prepaint(window, cx));
+    }
+
+    fn paint(
+        &mut self,
+        _id: Option<&GlobalElementId>,
+        _inspector_id: Option<&InspectorElementId>,
+        _bounds: Bounds<Pixels>,
+        element: &mut AnyElement,
+        _: &mut (),
+        window: &mut Window,
+        cx: &mut App,
+    ) {
+        element.paint(window, cx);
+    }
+}
+
 /// An element rebuilt each frame from a value that eases toward `target`
 /// and retargets from wherever it is. The value lives in element state
 /// under `id`, so render code needs no view state. It starts at `target`,
