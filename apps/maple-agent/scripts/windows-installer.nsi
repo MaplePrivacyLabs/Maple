@@ -38,9 +38,7 @@ Var NativeWin32Error
 Var InstallerReport
 Var ReportPath
 Var FailureAdvice
-Var FailureRetryable
 Var ExitCode
-Var Attempt
 
 Function .onInit
   SetShellVarContext current
@@ -74,7 +72,6 @@ supported:
 FunctionEnd
 
 Section "Install"
-  StrCpy $Attempt 0
   StrCpy $NativeStatus 0
   StrCpy $NativeStatusAvailable 0
   StrCpy $NativeActivationStage 0
@@ -91,20 +88,13 @@ Section "Install"
   File "${PAYLOAD}\bundle-info.json"
   WriteUninstaller "$PLUGINSDIR\payload\uninstall.exe"
   IfErrors refused
-run_native:
   ; The native child owns admission, locks, copying, registration, shortcuts
   ; and activation. NSIS never mutates the installed root between phases.
-  ; Retry reruns it from the same extracted payload. The child creates its
-  ; report file exclusively, so every attempt gets a new path.
-  IntOp $Attempt $Attempt + 1
-  StrCpy $NativeStatus 0
-  StrCpy $NativeStatusAvailable 0
-  StrCpy $NativeActivationStage 0
-  StrCpy $NativeWin32Error 0
-  StrCpy $InstallerReport ""
+  ; A failed transaction is resumed only by a new installer process: the
+  ; child refuses while the recorded owner, this process, is still alive.
   StrCpy $FailureCode 23
   StrCpy $FailureStage "starting the native installer"
-  StrCpy $ReportPath "$PLUGINSDIR\install-report-$Attempt.txt"
+  StrCpy $ReportPath "$PLUGINSDIR\install-report.txt"
   ClearErrors
   ExecWait '"$PLUGINSDIR\payload\maple-agent.exe" --internal-windows-installer-install "$INSTDIR" ${GENERATION} --internal-windows-installer-report "$ReportPath"' $NativeStatus
   IfErrors refused
@@ -130,7 +120,6 @@ refused:
   StrCpy $ExitCode $NativeStatus
 exit_code_chosen:
   StrCpy $FailureAdvice ""
-  StrCpy $FailureRetryable 0
   StrCpy $1 "Installation stopped while $FailureStage.$\r$\n$\r$\nInstaller stage: $FailureCode"
   StrCmp $NativeStatusAvailable 1 0 show_error
   IntFmt $2 "0x%08X" $NativeStatus
@@ -145,22 +134,15 @@ describe_error:
 show_error:
   ; The native report replaces the summary above but keeps its advice, which
   ; is the only part that tells the user what to do.
-  StrCmp $InstallerReport "" ask_user
+  StrCmp $InstallerReport "" no_report
   IntFmt $4 "0x%08X" $NativeStatus
   StrCpy $1 "${DISPLAY_NAME} ${VERSION}, build ${BUILD}.$\r$\nInstallation stopped while $FailureStage.$\r$\n"
   StrCmp $FailureAdvice "" report_status
   StrCpy $1 "$1$FailureAdvice$\r$\n"
 report_status:
   StrCpy $1 "$1$\r$\nStage: $FailureCode; status: $4$\r$\n$\r$\n$InstallerReport"
-ask_user:
-  StrCmp $FailureRetryable 1 0 show_stop
-  ; A held file or a concurrent install clears once the user closes the app
-  ; or the other install finishes. Silent installs still stop here.
-  MessageBox MB_RETRYCANCEL|MB_ICONEXCLAMATION "$1$\r$\n$\r$\nChoose Retry to try again. Press Ctrl+C to copy this message for Maple support." /SD IDCANCEL IDRETRY run_native
-  Goto stop_install
-show_stop:
+no_report:
   MessageBox MB_OK|MB_ICONSTOP "$1$\r$\n$\r$\nPress Ctrl+C to copy this message for Maple support." /SD IDOK
-stop_install:
   SetErrorLevel $ExitCode
   Abort
 done:
@@ -222,7 +204,6 @@ signature:
   Goto done
 busy:
   StrCpy $FailureAdvice "Another Maple installation or update is active. Let it finish before retrying."
-  StrCpy $FailureRetryable 1
   Goto done
 validation:
   StrCpy $FailureAdvice "The installation folder or application files did not pass validation. For a first installation, choose a new empty folder. Otherwise contact Maple support."
@@ -237,8 +218,7 @@ access:
   StrCpy $FailureAdvice "Windows denied access to the installation folder. Choose a folder owned by your user account, or contact Maple support."
   Goto done
 locked:
-  StrCpy $FailureAdvice "An installation file is in use, usually because ${DISPLAY_NAME} is still running. Close ${DISPLAY_NAME}, wait a few seconds for its background host to stop, then retry."
-  StrCpy $FailureRetryable 1
+  StrCpy $FailureAdvice "An installation file is in use, usually because ${DISPLAY_NAME} is still running. Close ${DISPLAY_NAME}, wait a few seconds for its background host to stop, then run this installer again."
   Goto done
 component:
   StrCpy $FailureAdvice "Windows could not load a required system component. Check Windows Update and contact Maple support with this code."
