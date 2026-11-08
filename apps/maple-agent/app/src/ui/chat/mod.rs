@@ -7319,7 +7319,12 @@ impl Render for ChatScreen {
                         .children(self.render_plan_card(cx).map(|card| {
                             motion::slide_in(card, "plan-card-enter", motion::ENTER, rise)
                         }))
-                        .child(self.render_composer(window, cx))
+                        .child(
+                            self.render_composer(window, cx)
+                                .when(self.composer_fills(), |composer| {
+                                    composer.flex_1().min_h_0()
+                                }),
+                        )
                         .children(self.render_slash_palette(cx))
                         .children(self.render_persistence_failure(cx))
                         .child(composer::measure(
@@ -8081,7 +8086,14 @@ impl ChatScreen {
                                 None if expanded => wrap.flex_1().min_h_0().flex().flex_col(),
                                 None => wrap,
                             })
-                            .child(self.render_composer(window, cx))
+                            // Whatever comes with the composer (a folder
+                            // picker by the prompt, say) fills the region
+                            // with it while it fills: expanded, and on the
+                            // way there and back, not only once expanded.
+                            .child(
+                                self.render_composer(window, cx)
+                                    .when(fills, |composer| composer.flex_1().min_h_0()),
+                            )
                             .children(self.render_slash_palette(cx))
                             .child(composer::measure(
                                 &self.composer_frame,

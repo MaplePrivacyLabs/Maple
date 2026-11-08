@@ -2091,6 +2091,59 @@ mod resize_tests {
         motion::set_test_now(None);
     }
 
+    /// A new task has no session yet. Shrinking its expanded composer starts
+    /// from the expanded box and eases down to rest, so nothing around it
+    /// jumps, whatever the composer brings along for a new task.
+    #[gpui::test]
+    fn a_new_task_shrinks_its_composer_from_where_it_was(cx: &mut TestAppContext) {
+        let start = Instant::now();
+        motion::set_test_now(Some(start));
+        cx.update(|cx| cx.set_reduce_motion(false));
+        let (chat, cx) = chat_window(cx, 0);
+        chat.update(cx, |chat, cx| {
+            chat.selected_session = None;
+            cx.notify();
+        });
+        cx.run_until_parked();
+        let rest = cx.debug_bounds("composer-box").expect("composer");
+        toggle(&chat, cx);
+        frame_at(start + motion::PANEL * 2, cx);
+        let expanded = cx.debug_bounds("composer-box").expect("composer");
+        assert!(
+            expanded.size.height > rest.size.height,
+            "{rest:?} {expanded:?}"
+        );
+
+        let shrink = start + motion::PANEL * 3;
+        motion::set_test_now(Some(shrink));
+        toggle(&chat, cx);
+        assert_eq!(
+            cx.debug_bounds("composer-box"),
+            Some(expanded),
+            "shrinking starts from the expanded box"
+        );
+        let mut heights = vec![expanded.size.height];
+        for step in 1..8 {
+            frame_at(shrink + motion::PANEL * step / 8, cx);
+            heights.push(composer_height(cx));
+        }
+        assert!(
+            heights.windows(2).all(|pair| pair[1] <= pair[0]),
+            "it only shrinks: {heights:?}"
+        );
+        assert!(
+            heights[1] > rest.size.height,
+            "it eases rather than snapping to rest: {heights:?}"
+        );
+        frame_at(shrink + motion::PANEL * 2, cx);
+        assert_eq!(
+            cx.debug_bounds("composer-box"),
+            Some(rest),
+            "it lands at rest"
+        );
+        motion::set_test_now(None);
+    }
+
     /// The first message carries the composer from the empty state down to
     /// the foot of the conversation: it starts where it was drawn, moves
     /// only down, lands exactly at rest, and then asks for no frames. New
