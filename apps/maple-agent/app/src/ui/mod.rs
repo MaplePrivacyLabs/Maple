@@ -4,6 +4,7 @@ pub(crate) mod application_vim;
 pub mod chat;
 pub mod context_ring;
 pub mod decorations;
+pub mod effort_slider;
 pub(crate) mod i18n;
 pub mod icons;
 pub mod login;

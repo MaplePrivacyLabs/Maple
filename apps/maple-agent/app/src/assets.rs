@@ -80,6 +80,7 @@ assets!(
     "icons/pin.svg",
     "icons/plus.svg",
     "icons/puzzle.svg",
+    "icons/rotate-ccw.svg",
     "icons/rotate-cw.svg",
     "icons/search.svg",
     "icons/panel-left.svg",

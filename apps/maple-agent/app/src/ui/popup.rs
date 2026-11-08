@@ -533,6 +533,8 @@ impl<V: 'static, K: Clone + PartialEq + 'static> Popup<V, K> {
             entries,
             priority,
             application_vim,
+            adjust,
+            confirm,
         } = menu;
 
         // What the keyboard needs about each item: its id, its action,
@@ -661,6 +663,7 @@ impl<V: 'static, K: Clone + PartialEq + 'static> Popup<V, K> {
             .on_action({
                 let picks = picks.clone();
                 let focus = self.focus.clone();
+                let adjust = adjust.clone();
                 cx.listener(move |view, _: &OpenSubmenu, window, cx| {
                     if !focus.is_focused(window) {
                         cx.propagate();
@@ -668,6 +671,8 @@ impl<V: 'static, K: Clone + PartialEq + 'static> Popup<V, K> {
                         && picks[row].submenu
                     {
                         pick(view, get, &picks, row, window, cx);
+                    } else if let Some(adjust) = &adjust {
+                        adjust(view, 1, window, cx);
                     }
                 })
             })
@@ -676,6 +681,10 @@ impl<V: 'static, K: Clone + PartialEq + 'static> Popup<V, K> {
                 cx.listener(move |view, _: &CloseSubmenu, window, cx| {
                     if focus.is_focused(window) && get(view).parent.is_some() {
                         close_menu(view, get, Exit::Return, window, cx);
+                    } else if focus.is_focused(window)
+                        && let Some(adjust) = &adjust
+                    {
+                        adjust(view, -1, window, cx);
                     } else {
                         cx.propagate();
                     }
@@ -691,6 +700,9 @@ impl<V: 'static, K: Clone + PartialEq + 'static> Popup<V, K> {
                         return;
                     }
                     let Some(row) = get(view).highlighted_row(&picks) else {
+                        if let Some(confirm) = &confirm {
+                            confirm(view, window, cx);
+                        }
                         return;
                     };
                     pick(view, get, &picks, row, window, cx);
@@ -949,6 +961,8 @@ impl Element for Float {
 type OnSelect<V> = Rc<dyn Fn(&mut V, &mut Window, &mut Context<V>)>;
 type OnParent<V> = Rc<dyn Fn(&mut V, Exit, &mut Window, &mut Context<V>)>;
 type OpenChild<V> = Rc<dyn Fn(&mut V, OnParent<V>, &mut Context<V>)>;
+/// A step of a menu's own control, -1 for Left and 1 for Right.
+type OnAdjust<V> = Rc<dyn Fn(&mut V, i32, &mut Window, &mut Context<V>)>;
 
 enum Exit {
     Return,
@@ -988,6 +1002,8 @@ pub(crate) struct Menu<V: 'static> {
     entries: Vec<Entry<V>>,
     priority: usize,
     application_vim: bool,
+    adjust: Option<OnAdjust<V>>,
+    confirm: Option<OnSelect<V>>,
 }
 
 enum Entry<V: 'static> {
@@ -1007,7 +1023,29 @@ impl<V: 'static> Menu<V> {
             entries: Vec::new(),
             priority: 1,
             application_vim: false,
+            adjust: None,
+            confirm: None,
         }
+    }
+
+    /// Left and Right step a control of the menu's own, such as a slider,
+    /// where they would otherwise leave or enter a submenu.
+    pub(crate) fn on_adjust(
+        mut self,
+        adjust: impl Fn(&mut V, i32, &mut Window, &mut Context<V>) + 'static,
+    ) -> Self {
+        self.adjust = Some(Rc::new(adjust));
+        self
+    }
+
+    /// What Enter or Space does while no row is highlighted, in a menu
+    /// whose content is not rows.
+    pub(crate) fn on_confirm(
+        mut self,
+        confirm: impl Fn(&mut V, &mut Window, &mut Context<V>) + 'static,
+    ) -> Self {
+        self.confirm = Some(Rc::new(confirm));
+        self
     }
 
     /// Take Application Vim's `j`/`k`/`g g`/`G` while it is on.

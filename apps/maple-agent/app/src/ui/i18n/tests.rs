@@ -475,6 +475,8 @@ fn converted_modules_do_not_reintroduce_inline_labels() {
     visitor.visit_file(&syn::parse_file(include_str!("../chat/dialogs.rs")).unwrap());
     visitor.visit_file(&syn::parse_file(include_str!("../chat/feedback.rs")).unwrap());
     visitor.visit_file(&syn::parse_file(include_str!("../chat/thinking.rs")).unwrap());
+    visitor.visit_file(&syn::parse_file(include_str!("../chat/effort.rs")).unwrap());
+    visitor.visit_file(&syn::parse_file(include_str!("../effort_slider.rs")).unwrap());
     visitor.visit_file(&syn::parse_file(include_str!("../chat/project_folder.rs")).unwrap());
     visitor.visit_file(&syn::parse_file(include_str!("../chat/composer.rs")).unwrap());
     visitor.visit_file(&syn::parse_file(include_str!("../chat/sidebar.rs")).unwrap());

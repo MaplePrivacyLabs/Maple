@@ -6,8 +6,8 @@ use crate::ui::i18n::tr;
 /// A model's available levels can be reused, but its selected level belongs to
 /// a particular task (or to the new-task default). Screens themselves belong
 /// to one account and one computer, so no cache is shared across either boundary.
-#[derive(Clone, PartialEq, Eq)]
-struct ThinkingKey {
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(super) struct ThinkingKey {
     session: Option<String>,
     model: String,
 }
@@ -88,7 +88,7 @@ impl ThinkingCache {
     }
 }
 
-fn thinking_label(level: ThinkingLevel) -> SharedString {
+pub(super) fn thinking_label(level: ThinkingLevel) -> SharedString {
     tr(match level {
         ThinkingLevel::Off => "chat-thinking-off",
         ThinkingLevel::Minimal => "chat-thinking-minimal",
@@ -101,47 +101,11 @@ fn thinking_label(level: ThinkingLevel) -> SharedString {
 }
 
 impl ChatScreen {
-    pub(super) fn thinking_menu(&self) -> Menu<Self> {
-        let mut menu = Menu::new("thinking-menu", px(220.))
-            .label(tr("chat-thinking-title"))
-            .application_vim(self.application_vim_enabled);
-        if let Some(state) = &self.thinking {
-            if state.levels == [ThinkingLevel::Off] {
-                return menu.header(tr("chat-thinking-unsupported"));
-            }
-            menu = menu.items(state.levels.iter().copied().map(|level| {
-                MenuItem::new(
-                    SharedString::from(format!("thinking-{}", level.as_str())),
-                    thinking_label(level),
-                    move |this: &mut Self, _: &mut Window, cx: &mut Context<Self>| {
-                        this.pick_thinking(level, cx);
-                    },
-                )
-                .current(state.current == level)
-                .enabled(!self.thinking_saving)
-            }));
-        } else {
-            menu = menu.header(if self.thinking_loading {
-                tr("chat-thinking-loading")
-            } else if self.thinking_saving {
-                tr("chat-thinking-saving")
-            } else if self.selected_model.is_some() {
-                tr("chat-thinking-unavailable")
-            } else {
-                tr("chat-thinking-choose-model")
-            });
-            if self.selected_model.is_some() && !self.thinking_loading && !self.thinking_saving {
-                menu = menu.item(MenuItem::new(
-                    "retry-thinking",
-                    tr("chat-thinking-retry"),
-                    |this: &mut Self, _, cx| {
-                        this.refresh_thinking(cx);
-                        cx.notify();
-                    },
-                ));
-            }
-        }
-        menu
+    /// The level a pick is still waiting to send for the selected task and
+    /// model, while an earlier pick saves.
+    pub(super) fn queued_thinking(&self) -> Option<ThinkingLevel> {
+        let (key, level) = self.thinking_queued.as_ref()?;
+        (Some(key) == self.thinking_key().as_ref()).then_some(*level)
     }
 
     fn thinking_key(&self) -> Option<ThinkingKey> {
@@ -214,19 +178,34 @@ impl ChatScreen {
         }
     }
 
-    fn pick_thinking(&mut self, level: ThinkingLevel, cx: &mut Context<Self>) {
-        self.popup.close(cx);
-        if self.thinking_saving
-            || !self
-                .thinking
-                .as_ref()
-                .is_some_and(|state| state.levels.contains(&level))
+    /// Save `level` for the selected task, or as the new-task default. A
+    /// pick made while another saves waits for it, and only the latest
+    /// waiting pick goes out, so a slider swept across its stops saves once
+    /// more at most.
+    pub(super) fn pick_thinking(&mut self, level: ThinkingLevel, cx: &mut Context<Self>) {
+        if !self
+            .thinking
+            .as_ref()
+            .is_some_and(|state| state.levels.contains(&level))
         {
             return;
         }
         let Some(key) = self.thinking_key() else {
             return;
         };
+        if self.thinking_saving {
+            self.thinking_queued = Some((key, level));
+            cx.notify();
+            return;
+        }
+        self.thinking_queued = None;
+        if self
+            .thinking
+            .as_ref()
+            .is_some_and(|state| state.current == level)
+        {
+            return;
+        }
         self.thinking_generation += 1;
         self.thinking_loading = false;
         self.thinking_saving = true;
@@ -270,6 +249,10 @@ impl ChatScreen {
                     }
                 }
                 this.refresh_thinking(cx);
+                if let Some(level) = this.queued_thinking() {
+                    this.pick_thinking(level, cx);
+                }
+                this.thinking_queued = None;
                 cx.notify();
             },
         );

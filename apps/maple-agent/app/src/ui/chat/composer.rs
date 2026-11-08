@@ -11,10 +11,11 @@ use maple_agent::agent::{AgentPermissionMode, AgentSlashCommand, SideQuestionTur
 
 use super::cache::MarkdownKind;
 use super::commands::ChatCommand;
+use super::thinking::thinking_label;
 use super::transcript::{render_plan_row, render_subagent_row};
 use super::{
     COMPOSER_PLACEHOLDER, ChatPopup, ChatScreen, DraftAttachment, OpenSettingsSection,
-    SIDE_THREAD_PLACEHOLDER, Section,
+    SIDE_THREAD_PLACEHOLDER, Section, ThinkingLevel,
 };
 use crate::ui::i18n::{UiText, tr};
 use crate::ui::icons::{icon, spinner};
@@ -32,7 +33,6 @@ use crate::ui::widgets;
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(super) enum ComposerControl {
     Model,
-    Thinking,
     Integrations,
     Mode,
     Web,
@@ -41,9 +41,8 @@ pub(super) enum ComposerControl {
 }
 
 impl ComposerControl {
-    const ALL: [Self; 7] = [
+    const ALL: [Self; 6] = [
         Self::Model,
-        Self::Thinking,
         Self::Integrations,
         Self::Mode,
         Self::Web,
@@ -243,6 +242,7 @@ impl ChatScreen {
                         "folder-open"
                     }),
                     self.project_label.clone(),
+                    None,
                     true,
                     self.popup.is_open(&ChatPopup::Project),
                     false,
@@ -345,21 +345,10 @@ impl ChatScreen {
         cx: &mut Context<Self>,
     ) {
         match control {
-            ComposerControl::Model => match self.selected_model.clone() {
-                Some(model) => {
-                    self.popup
-                        .open_highlighted(ChatPopup::Model, format!("model-{model}"), cx)
-                }
-                None => self.popup.open(ChatPopup::Model, cx),
-            },
-            ComposerControl::Thinking => match self.thinking.as_ref().map(|state| state.current) {
-                Some(level) => self.popup.open_highlighted(
-                    ChatPopup::Thinking,
-                    format!("thinking-{}", level.as_str()),
-                    cx,
-                ),
-                None => self.popup.open(ChatPopup::Thinking, cx),
-            },
+            ComposerControl::Model => {
+                self.popup.open(ChatPopup::Effort, cx);
+                self.reset_effort_input();
+            }
             ComposerControl::Integrations => {
                 self.popup.open(ChatPopup::Integrations, cx);
                 self.refresh_session_mcp(cx);
@@ -394,42 +383,59 @@ impl ChatScreen {
                     .map(|model| self.model_label(model))
                     .map(str::to_string)
                     .unwrap_or_else(|| tr("chat-model").to_string());
-                self.with_menu(
-                    ChatPopup::Model,
-                    chip(
-                        "model-picker",
-                        None,
-                        label,
-                        true,
-                        self.popup.is_open(&ChatPopup::Model),
-                        false,
-                    ),
-                    Placement::AboveStart,
-                    window,
-                    cx,
-                    |this, _| this.model_menu(),
-                )
+                let chip_name = label.clone();
+                // The level rides on the chip once the model's levels are
+                // known, for a model that thinks.
+                let level = self
+                    .thinking
+                    .as_ref()
+                    .filter(|state| state.levels != [ThinkingLevel::Off])
+                    .map(|state| thinking_label(state.current));
+                // One chip, two panels: the effort popover it opens, and the
+                // model list the popover (or `/model`) swaps in for it.
+                let list = self.popup.is_open(&ChatPopup::Model);
+                let open = list || self.popup.is_open(&ChatPopup::Effort);
+                let panel = if list {
+                    Some(self.model_menu())
+                } else if open {
+                    Some(self.effort_menu(cx))
+                } else {
+                    None
+                }
+                .map(|menu| self.popup.render(menu, Placement::AboveStart, window, cx));
+                let mut button = chip(
+                    "model-picker",
+                    None,
+                    label,
+                    level.clone(),
+                    true,
+                    open,
+                    false,
+                );
+                if let Some(level) = level {
+                    button = button.aria_label(self.messages.get(
+                        "chat-model-effort-chip",
+                        [
+                            ("model", chip_name.into()),
+                            ("effort", level.to_string().into()),
+                        ],
+                    ));
+                }
+                div()
+                    .relative()
+                    .min_w_0()
+                    .child(self.popup.trigger(
+                        if list {
+                            ChatPopup::Model
+                        } else {
+                            ChatPopup::Effort
+                        },
+                        button,
+                        cx,
+                        |this, window, cx| this.press_chip(ChatPopup::Effort, window, cx),
+                    ))
+                    .children(panel)
             }
-            ComposerControl::Thinking => self.with_menu(
-                ChatPopup::Thinking,
-                widgets::icon_button(
-                    "thinking-picker",
-                    "brain",
-                    tr("chat-thinking-title"),
-                    px(16.),
-                    theme::text_secondary(),
-                )
-                .size_8()
-                .rounded(theme::RADIUS_LG)
-                .debug_selector(|| "thinking-picker".to_string())
-                .when(self.popup.is_open(&ChatPopup::Thinking), |button| {
-                    button.bg(gpui::rgb(theme::bg_sidebar_pill()))
-                }),
-                Placement::AboveStart,
-                window,
-                cx,
-                |this, _| this.thinking_menu(),
-            ),
             ComposerControl::Integrations => self.with_menu(
                 ChatPopup::Integrations,
                 chip(
@@ -443,6 +449,7 @@ impl ChatScreen {
                             [("count", self.mcp_enabled_count.into())],
                         )
                     },
+                    None,
                     false,
                     self.popup.is_open(&ChatPopup::Integrations),
                     false,
@@ -458,6 +465,7 @@ impl ChatScreen {
                     "permission-mode-menu",
                     Some(mode_icon(self.permission_mode)),
                     tr(mode_label(self.permission_mode)).to_string(),
+                    None,
                     true,
                     self.popup.is_open(&ChatPopup::Mode),
                     false,
@@ -478,6 +486,7 @@ impl ChatScreen {
                         tr("chat-web-off")
                     }
                     .to_string(),
+                    None,
                     false,
                     false,
                     self.web_enabled,
@@ -616,6 +625,8 @@ impl ChatScreen {
     fn model_menu(&self) -> Menu<Self> {
         let selected = self.selected_model.as_deref();
         // A task offers every model; a pick applies from its next message.
+        // Opened from the effort popover, a pick goes back to it, now on the
+        // new model's levels.
         Menu::new("model-menu", px(320.))
             .label(tr("chat-model"))
             .max_height(px(320.))
@@ -627,6 +638,10 @@ impl ChatScreen {
                     self.model_label(model).to_string(),
                     move |this: &mut Self, _: &mut Window, cx: &mut Context<Self>| {
                         this.pick_model(pick.clone(), cx);
+                        if std::mem::take(&mut this.effort_return) {
+                            this.popup.open(ChatPopup::Effort, cx);
+                            this.reset_effort_input();
+                        }
                     },
                 )
                 .current(selected == Some(model.as_str()))
@@ -1164,7 +1179,13 @@ impl ChatScreen {
         &mut self,
         controls: Vec<gpui::AnyElement>,
     ) -> (gpui::AnyElement, bool) {
-        let row = div().flex().items_center().gap_1().children(controls);
+        // The row may narrow: the model chip's name gives way before Send.
+        let row = div()
+            .flex()
+            .items_center()
+            .gap_1()
+            .min_w_0()
+            .children(controls);
         if self.selected_model.is_none() && (self.booting || self.models_loading) {
             self.controls_held = true;
             return (row.invisible().into_any_element(), true);
@@ -1480,6 +1501,7 @@ impl ChatScreen {
                     .child(
                         div()
                             .id("context-indicator")
+                            .flex_none()
                             .flex()
                             .items_center()
                             .mr_1()
@@ -1505,6 +1527,7 @@ impl ChatScreen {
                             .debug_selector(move || button_id.to_string())
                             .role(gpui::Role::Button)
                             .aria_label(button_label.clone())
+                            .flex_none()
                             .size_8()
                             .flex()
                             .items_center()
@@ -1603,13 +1626,16 @@ pub(super) fn slash_entries_for(token: &str, skills: &[AgentSlashCommand]) -> Ve
     .collect()
 }
 
-/// One control in the composer chip row. `active` means its menu is
-/// open; `highlight` means the feature it toggles is on, shown in the
-/// accent so the two states never look alike.
+/// One control in the composer chip row. `detail` is a second, quieter
+/// value after the label (the model's effort); with one, the label gives
+/// way first when the row runs out of room, so the detail stays readable.
+/// `active` means its menu is open; `highlight` means the feature it
+/// toggles is on, shown in the accent so the two states never look alike.
 fn chip(
     id: &'static str,
     leading: Option<&'static str>,
     label: impl Into<SharedString>,
+    detail: Option<SharedString>,
     chevron: bool,
     active: bool,
     highlight: bool,
@@ -1622,6 +1648,7 @@ fn chip(
         theme::text_secondary()
     };
     let label = label.into();
+    let shrinks = detail.is_some();
     div()
         .id(id)
         .debug_selector(|| id.to_string())
@@ -1632,6 +1659,7 @@ fn chip(
         .items_center()
         .gap_1()
         .px_2()
+        .when(shrinks, |el| el.min_w_0())
         // Concentric with the composer box: 24px radius minus the 8px inset.
         .rounded(theme::RADIUS_LG)
         .text_xs()
@@ -1645,6 +1673,20 @@ fn chip(
         })
         .active(|style| style.bg(gpui::rgb(theme::bg_sidebar_row_selected())))
         .children(leading.map(|name| icon(name, px(16.), color)))
-        .child(div().whitespace_nowrap().child(label))
-        .when(chevron, |el| el.child(icon("chevron-down", px(14.), color)))
+        .child(
+            div()
+                .whitespace_nowrap()
+                .when(shrinks, |label| label.min_w_0().truncate())
+                .child(label),
+        )
+        .children(detail.map(|detail| {
+            div()
+                .flex_none()
+                .whitespace_nowrap()
+                .text_color(gpui::rgb(theme::text_muted()))
+                .child(detail)
+        }))
+        .when(chevron, |el| {
+            el.child(icon("chevron-down", px(14.), color).flex_none())
+        })
 }

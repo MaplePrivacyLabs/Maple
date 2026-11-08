@@ -39,6 +39,7 @@ pub(crate) mod computers;
 use computers::{Computer, Destination, Navigate, NavigationChanged};
 mod attachments;
 mod dialogs;
+mod effort;
 mod feedback;
 mod navigation;
 mod paging;
@@ -258,8 +259,10 @@ pub(super) struct QuestionSelection {
 pub(super) enum ChatPopup {
     /// The header chip's project menu.
     Project,
+    /// The model chip's popover: the effort slider for the selected model.
+    Effort,
+    /// The model list, opened from the popover or `/model`.
     Model,
-    Thinking,
     Integrations,
     /// The composer chip's permission modes.
     Mode,
@@ -557,6 +560,16 @@ pub struct ChatScreen {
     thinking_loading: bool,
     thinking_generation: u64,
     thinking_saving: bool,
+    /// A level picked while another pick was saving; it goes out next.
+    thinking_queued: Option<(thinking::ThinkingKey, ThinkingLevel)>,
+    /// The level under the effort slider's thumb while it is dragged.
+    effort_preview: Option<ThinkingLevel>,
+    /// The model list was opened from the effort popover, which a pick
+    /// reopens on the new model's levels.
+    effort_return: bool,
+    /// The effort slider's motion, kept while its popover is closed so a
+    /// model with other levels glides into place when it reopens.
+    effort_slider: std::rc::Rc<std::cell::RefCell<crate::ui::effort_slider::EffortSliderState>>,
     /// Desktop notifications enabled (settings).
     notify_enabled: bool,
     /// Local-store policy, independent of the selected execution computer.
@@ -1473,6 +1486,10 @@ impl ChatScreen {
             thinking_loading: false,
             thinking_generation: 0,
             thinking_saving: false,
+            thinking_queued: None,
+            effort_preview: None,
+            effort_return: false,
+            effort_slider: Default::default(),
             notify_enabled: settings.desktop_notifications,
             notify_details: settings.notification_details_enabled(),
             window_active: true,
@@ -2325,10 +2342,15 @@ impl ChatScreen {
     }
 
     /// Open or close one of the composer chips' menus. Opening the
-    /// integrations menu refreshes the task's servers.
+    /// integrations menu refreshes the task's servers; opening the effort
+    /// popover starts from the saved level.
     pub(super) fn toggle_popup(&mut self, popup: ChatPopup, cx: &mut Context<Self>) {
-        if self.popup.toggle(popup, cx) && popup == ChatPopup::Integrations {
-            self.refresh_session_mcp(cx);
+        if self.popup.toggle(popup, cx) {
+            match popup {
+                ChatPopup::Integrations => self.refresh_session_mcp(cx),
+                ChatPopup::Effort => self.reset_effort_input(),
+                _ => {}
+            }
         }
     }
 
@@ -4969,6 +4991,7 @@ impl ChatScreen {
             }
             "model" => {
                 if args.is_empty() {
+                    self.effort_return = false;
                     self.popup.open(ChatPopup::Model, cx);
                 } else {
                     let query = args.to_string();
