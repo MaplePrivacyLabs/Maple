@@ -213,8 +213,8 @@ tokens! {
     /// Soft coral container (maple-100 / a dark coral tint).
     accent_container: 0x3a2118, 0xffe8e0;
     /// Coral for an icon on a coral container: maple-500 on dark,
-    /// maple-700 on light, where maple-500 washes out.
-    accent_ink: 0xff9771, 0xe8633d;
+    /// maple-800 on light, where lighter steps wash out (3:1 or better).
+    accent_ink: 0xff9771, 0xd04926;
 
     status_running: 0xbabccb, 0xa3a3a3;
     status_success: 0x8fa35a, 0x7b8f4a;
@@ -398,6 +398,12 @@ mod contrast_tests {
                 ("status_warning", palette.status_warning),
                 ("link", palette.link),
             ];
+            let ratio = contrast(palette.accent_ink, palette.accent_container);
+            if ratio < 3. {
+                failures.push(format!(
+                    "{name}: accent_ink on accent_container is {ratio:.2}:1"
+                ));
+            }
             for (surface, fill) in surfaces {
                 for (role, color) in body {
                     let ratio = contrast(color, fill);

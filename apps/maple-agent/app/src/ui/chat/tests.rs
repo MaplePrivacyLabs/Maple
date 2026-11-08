@@ -12132,6 +12132,8 @@ mod state_tests {
         press(cx, "composer-open-billing");
         cx.run_until_parked();
         assert_eq!(opened.get(), 1);
+        // The transcript keeps the turn as its one-line marker row.
+        assert!(cx.debug_bounds("timeline-row-usage-1").is_some());
 
         let offered = |cx: &mut gpui::VisualTestContext| {
             cx.update(|window, _| window.refresh());
@@ -12160,20 +12162,52 @@ mod state_tests {
             assert!(!offered(cx));
         }
 
-        // The refusal usually arrives live, as the run ends.
+        // The refusal usually arrives live as the run ends, labelled by the
+        // runtime rather than matched by its text.
+        let labelled: AgentTimelineItem = serde_json::from_value(serde_json::json!({
+            "id": "usage-2", "itemType": "error", "createdMs": 1, "merge": "replace",
+            "text": "opaque retained diagnostic", "label": {"kind": "error-usage"}
+        }))
+        .unwrap();
         chat.update(cx, |chat, cx| {
             chat.replace_timeline(vec![user_item("user-1", "test")]);
-            chat.apply_incoming_item(
-                "s1",
-                item("usage-2", "error", Some(USAGE_LIMIT_MESSAGE)),
-                cx,
-            );
+            chat.apply_incoming_item("s1", labelled, cx);
             cx.notify();
         });
         assert!(offered(cx));
 
-        // A window paged back from the end cannot tell what came last.
+        // Nor while a run is active, or while the next message is on its way.
         chat.update(cx, |chat, cx| {
+            chat.selected_session = Some("s1".into());
+            chat.active_runs.insert("s1".into(), "r1".into());
+            cx.notify();
+        });
+        assert!(!offered(cx));
+        chat.update(cx, |chat, cx| {
+            chat.active_runs.clear();
+            chat.sending_previews.insert(
+                "send-1".into(),
+                sending::SendPreview::new(Some("s1".into()), "try again", &[])
+                    .capture_timeline(&chat.timeline),
+            );
+            cx.notify();
+        });
+        assert!(!offered(cx));
+        chat.update(cx, |chat, cx| {
+            chat.sending_previews.clear();
+            cx.notify();
+        });
+        assert!(offered(cx));
+
+        // A window that does not hold the tail cannot tell what came last:
+        // live rows past its budget, or a page back into history.
+        chat.update(cx, |chat, cx| {
+            chat.pages.live_has_more = true;
+            cx.notify();
+        });
+        assert!(!offered(cx));
+        chat.update(cx, |chat, cx| {
+            chat.pages.live_has_more = false;
             chat.pages.after = true;
             cx.notify();
         });

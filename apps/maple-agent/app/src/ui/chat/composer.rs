@@ -1186,9 +1186,11 @@ impl ChatScreen {
     }
 
     /// The selected task's latest turn ended out of usage and nothing has
-    /// gone out since. A window paged back into history cannot tell.
+    /// gone out since. A window that does not hold the tail (paged back
+    /// into history, or with live rows past its budget) cannot tell.
     fn usage_limit_reached(&self) -> bool {
         !self.pages.after
+            && !self.pages.live_has_more
             && !self.is_run_active()
             && !self.has_send_feedback()
             && self

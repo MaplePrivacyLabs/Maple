@@ -381,7 +381,7 @@ pub enum Tone {
     Error,
     /// Something needs attention before it fails.
     Warning,
-    /// Status the user asked for, such as a page that opened.
+    /// Feedback without a severity of its own, such as a page that opened.
     Info,
 }
 

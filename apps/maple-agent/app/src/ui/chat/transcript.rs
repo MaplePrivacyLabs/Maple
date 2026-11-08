@@ -1654,7 +1654,7 @@ fn render_usage_marker() -> Div {
         .font_weight(gpui::FontWeight::MEDIUM)
         .text_color(gpui::rgb(theme::text_muted()))
         .child(icon("gauge", px(15.), theme::status_error()))
-        .child(gpui::text!(tr("chat-usage-limit-title")))
+        .child(gpui::text!(tr("runtime-timeline-error-usage")))
         .child(
             div()
                 .flex_1()

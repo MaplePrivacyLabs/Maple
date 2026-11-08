@@ -227,7 +227,7 @@ pub struct SettingsScreen {
     shortcut_search: Entity<TextInput>,
     shortcut_query: String,
     shortcut_list_cache: ShortcutListCache,
-    shortcut_notice: Option<UiText>,
+    shortcut_notice: Option<(widgets::Tone, UiText)>,
     shortcut_recorder: Option<ShortcutRecorder>,
     shortcut_interceptor: Option<Subscription>,
     shortcut_reset_confirmation: bool,
@@ -1454,10 +1454,16 @@ impl SettingsScreen {
             self.reconcile_application_vim_target();
         }
         self.shortcut_notice = Some(match result {
-            Ok(()) => UiText::key("settings-settings-shortcut-settings-applied"),
-            Err(message) => UiText::message(
-                "settings-shortcut-change-failed",
-                [("message", (message).to_string().into())],
+            Ok(()) => (
+                widgets::Tone::Info,
+                UiText::key("settings-settings-shortcut-settings-applied"),
+            ),
+            Err(message) => (
+                widgets::Tone::Error,
+                UiText::message(
+                    "settings-shortcut-change-failed",
+                    [("message", (message).to_string().into())],
+                ),
             ),
         });
         cx.notify();
@@ -1503,8 +1509,9 @@ impl SettingsScreen {
         match (plain, keystroke.key.as_str()) {
             (true, "escape") => {
                 self.stop_shortcut_recording();
-                self.shortcut_notice = Some(UiText::key(
-                    "settings-settings-shortcut-recording-cancelled",
+                self.shortcut_notice = Some((
+                    widgets::Tone::Info,
+                    UiText::key("settings-settings-shortcut-recording-cancelled"),
                 ));
             }
             (true, "backspace") => {
@@ -1520,8 +1527,11 @@ impl SettingsScreen {
                 if recorder.strokes.len() < 4 {
                     recorder.strokes.push(portable_keystroke_token(keystroke));
                 } else {
-                    self.shortcut_notice = Some(UiText::key(
-                        "settings-settings-a-shortcut-can-contain-at-most-four-strokes",
+                    self.shortcut_notice = Some((
+                        widgets::Tone::Warning,
+                        UiText::key(
+                            "settings-settings-a-shortcut-can-contain-at-most-four-strokes",
+                        ),
                     ));
                 }
             }
@@ -1534,8 +1544,9 @@ impl SettingsScreen {
             return;
         };
         if recorder.strokes.is_empty() {
-            self.shortcut_notice = Some(UiText::key(
-                "settings-settings-press-at-least-one-shortcut-key",
+            self.shortcut_notice = Some((
+                widgets::Tone::Warning,
+                UiText::key("settings-settings-press-at-least-one-shortcut-key"),
             ));
             return;
         }
@@ -1563,9 +1574,12 @@ impl SettingsScreen {
                 }
             }
             Err(message) => {
-                self.shortcut_notice = Some(UiText::message(
-                    "settings-shortcut-invalid",
-                    [("message", (message).to_string().into())],
+                self.shortcut_notice = Some((
+                    widgets::Tone::Error,
+                    UiText::message(
+                        "settings-shortcut-invalid",
+                        [("message", (message).to_string().into())],
+                    ),
                 ));
             }
         }
@@ -2096,8 +2110,8 @@ impl SettingsScreen {
         if let Some(warning) = &self.shortcut_snapshot.compatibility_warning {
             pane = pane.child(widgets::banner(widgets::Tone::Warning, warning.clone()));
         }
-        if let Some(notice) = &self.shortcut_notice {
-            pane = pane.child(widgets::banner(widgets::Tone::Warning, notice.clone()));
+        if let Some((tone, notice)) = &self.shortcut_notice {
+            pane = pane.child(widgets::banner(*tone, notice.clone()));
         }
         if self.shortcut_reset_confirmation {
             pane = pane.child(
@@ -2121,7 +2135,7 @@ impl SettingsScreen {
                         .on_click(cx.listener(|this, _event, _window, cx| {
                             this.request_shortcut_change(ShortcutSettingsChange::ResetAll, cx);
                         }))
-                        .child(tr("settings-settings-reset")),
+                        .child(gpui::text!(tr("settings-settings-reset"))),
                 )
                 .child(
                     widgets::ghost_button("shortcuts-reset-all-cancel")
@@ -2130,7 +2144,7 @@ impl SettingsScreen {
                             this.shortcut_reset_confirmation = false;
                             cx.notify();
                         }))
-                        .child(tr("settings-settings-cancel")),
+                        .child(gpui::text!(tr("settings-settings-cancel"))),
                 ),
             );
         }

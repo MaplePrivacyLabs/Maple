@@ -7658,12 +7658,14 @@ impl ChatScreen {
                             .flex()
                             .flex_col()
                             .gap_0p5()
-                            .child(crate::ui::host_errors::persistence_text(failure).resolve())
+                            .child(gpui::text!(
+                                crate::ui::host_errors::persistence_text(failure).resolve()
+                            ))
                             .when(remote, |message| {
                                 message.child(
                                     div()
                                         .text_color(gpui::rgb(theme::text_muted()))
-                                        .child(tr("chat-retry-save-remote")),
+                                        .child(gpui::text!(tr("chat-retry-save-remote"))),
                                 )
                             }),
                     )

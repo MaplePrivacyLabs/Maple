@@ -356,7 +356,10 @@ impl SettingsScreen {
                 self.application_vim.section = self.section;
             }
             _ => {
-                self.shortcut_notice = Some(UiText::key("settings-navigation-no-region"));
+                self.shortcut_notice = Some((
+                    crate::ui::widgets::Tone::Warning,
+                    UiText::key("settings-navigation-no-region"),
+                ));
                 cx.notify();
                 return false;
             }
@@ -537,7 +540,10 @@ impl SettingsScreen {
             }
             SettingsApplicationCommand::Unavailable => {
                 self.application_vim.count.clear();
-                self.shortcut_notice = Some(UiText::key("settings-navigation-unavailable"));
+                self.shortcut_notice = Some((
+                    crate::ui::widgets::Tone::Warning,
+                    UiText::key("settings-navigation-unavailable"),
+                ));
                 cx.notify();
             }
         }
@@ -553,7 +559,10 @@ impl SettingsScreen {
             self.application_vim.count.push(action.digit),
             CountOutcome::Capped(_)
         ) {
-            self.shortcut_notice = Some(UiText::key("settings-navigation-count-limit"));
+            self.shortcut_notice = Some((
+                crate::ui::widgets::Tone::Warning,
+                UiText::key("settings-navigation-count-limit"),
+            ));
         }
         cx.notify();
     }
