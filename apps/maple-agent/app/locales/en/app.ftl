@@ -1639,6 +1639,8 @@ runtime-error-host-updated = Maple has been updated. Quit and reopen Maple to co
 runtime-error-local-desktop = Store lifecycle commands require the local desktop
 runtime-error-remote-permissions-unsupported = Update Maple on the remote computer first.
 runtime-error-remote-permissions-unconfirmed = Could not check the remote computer. Try again, or update Maple there.
+runtime-error-remote-tools-unsupported = Update Maple on the remote computer to choose its tools from here.
+runtime-error-remote-tools-unconfirmed = Could not check the remote computer's tools. Try again, or update Maple there.
 
 # $name is a model name, not translated.
 runtime-timeline-model-switched = Switched to { $name }

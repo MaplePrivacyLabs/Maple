@@ -3916,6 +3916,106 @@ mod tests {
         );
     }
 
+    /// The calls a paired viewer sends for Settings → Tools reach the host's
+    /// switches, with the authority that integrations need: listing tools
+    /// as listing integrations, switching one as switching an integration.
+    #[tokio::test]
+    async fn remote_tool_commands_reach_the_switches_with_the_integrations_authority() {
+        use serde_json::{Value, json};
+        /// Dispatch a command as it travels on the wire.
+        async fn dispatch(
+            backend: &LocalBackend,
+            method: &str,
+            params: Value,
+        ) -> Result<Value, HostFailure> {
+            let command: crate::remote::wire::Command = serde_json::from_value(json!({
+                "id": 1,
+                "method": method,
+                "send_id": null,
+                "params": params
+            }))
+            .unwrap();
+            super::super::dispatch_remote_inner_presented(
+                backend,
+                crate::host::protocol::Request {
+                    id: command.id,
+                    method: command.method.name(),
+                    params: command.params,
+                    send_id: None,
+                },
+            )
+            .await
+        }
+        /// Each tool call is refused for `user` as its integrations
+        /// counterpart is.
+        async fn refused_alike(backend: &LocalBackend, user: &str) {
+            for ((tools, tools_params), (integrations, integrations_params)) in [
+                (
+                    ("list_tools", json!([user])),
+                    ("list_integrations", json!([user])),
+                ),
+                (
+                    ("set_tool_enabled", json!([user, "grep", false])),
+                    ("set_integration_enabled", json!([user, "codex", false])),
+                ),
+            ] {
+                let refused = dispatch(backend, tools, tools_params).await.unwrap_err();
+                assert_eq!(refused.code, "deletion-account-changed", "{tools}");
+                assert_eq!(
+                    dispatch(backend, integrations, integrations_params)
+                        .await
+                        .unwrap_err(),
+                    refused,
+                    "{tools} and {integrations}"
+                );
+            }
+        }
+        fn grep(switches: &Value) -> bool {
+            serde_json::from_value::<Vec<AgentToolSwitch>>(switches.clone())
+                .unwrap()
+                .into_iter()
+                .find(|switch| switch.id == "grep")
+                .unwrap()
+                .enabled
+        }
+
+        let root = tempfile::tempdir().unwrap();
+        let backend = LocalBackend::isolated_for_test(root.path());
+        assert!(backend.persisted_auth.claim_and_persist(&auth_snapshot(
+            "fixture-user",
+            "fixture-session",
+            1,
+            "fixture-token"
+        )));
+        let list = || dispatch(&backend, "list_tools", json!(["fixture-user"]));
+        assert!(!grep(&list().await.unwrap()));
+        let changed = dispatch(
+            &backend,
+            "set_tool_enabled",
+            json!(["fixture-user", "grep", true]),
+        )
+        .await
+        .unwrap();
+        assert!(grep(&changed));
+        assert_eq!(list().await.unwrap(), changed);
+
+        // The host's own account reaches each setter, which judges the id.
+        for (method, refusal) in [
+            ("set_tool_enabled", "Unknown tool 'telepathy'"),
+            ("set_integration_enabled", "Unknown integration 'telepathy'"),
+        ] {
+            let params = json!(["fixture-user", "telepathy", true]);
+            let failure = dispatch(&backend, method, params).await.unwrap_err();
+            assert_eq!(failure.message, refusal);
+        }
+        // Another account is refused alike and changes nothing; so is the
+        // host's own account once it has signed out.
+        refused_alike(&backend, "other-user").await;
+        assert_eq!(list().await.unwrap(), changed);
+        backend.persisted_auth.forget_owner();
+        refused_alike(&backend, "fixture-user").await;
+    }
+
     #[tokio::test]
     async fn project_mcp_operations_use_the_host_account_and_shared_settings_lock() {
         let root = tempfile::tempdir().unwrap();

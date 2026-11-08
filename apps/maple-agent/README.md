@@ -174,7 +174,8 @@ agent runtime; its desktop Agent page points users to Maple Work.
   notifications, tool call summaries, composer Vim, application Vim, and the
   speech voice and speed), Keyboard Shortcuts, Additional instructions, Integrations
   (detected built-ins and custom MCP servers), Tools (which of Maple's tools
-  tasks offer the model; a change reaches open tasks from their next request),
+  tasks offer the model; a change reaches open tasks from their next request,
+  and the page asks for a paired computer running an older Maple to be updated),
   Usage (the plan meter from the billing API), and About.
 - Dark and light themes; the default follows the system.
   On Linux, the protected GUI starts a portal-only child of the same executable

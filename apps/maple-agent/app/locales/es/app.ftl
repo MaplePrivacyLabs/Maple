@@ -1532,6 +1532,8 @@ runtime-error-host-updated = Maple se actualizó. Sal de Maple y vuelve a abrirl
 runtime-error-local-desktop = Los comandos para administrar los datos locales requieren la aplicación de escritorio local
 runtime-error-remote-permissions-unsupported = Primero actualiza Maple en la computadora remota.
 runtime-error-remote-permissions-unconfirmed = No se pudo comprobar la computadora remota. Inténtalo de nuevo o actualiza Maple ahí.
+runtime-error-remote-tools-unsupported = Actualiza Maple en la computadora remota para elegir sus herramientas desde aquí.
+runtime-error-remote-tools-unconfirmed = No se pudieron comprobar las herramientas de la computadora remota. Inténtalo de nuevo o actualiza Maple ahí.
 
 # Model catalog names remain unchanged.
 runtime-timeline-model-switched = Se cambió a { $name }

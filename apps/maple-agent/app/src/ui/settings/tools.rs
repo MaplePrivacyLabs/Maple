@@ -2,6 +2,8 @@
 //! can offer the model. The host saves them for the account; a change
 //! applies to new tasks and reaches open ones from their next request. The
 //! host names each switch by id; its label and description are the UI's.
+//! A paired computer too old for the page refuses with a code, which the
+//! notice words in the interface's language.
 
 use std::collections::HashSet;
 
@@ -10,6 +12,7 @@ use maple_agent::agent::AgentToolSwitch;
 
 use super::{SettingsScreen, SettingsTarget, section_title, setting_copy};
 use crate::ui::i18n::{UiText, tr};
+use crate::ui::task::Failure;
 use crate::ui::{theme, widgets};
 
 /// Every switch: they tab in the order they are drawn.
@@ -77,26 +80,33 @@ impl SettingsScreen {
     pub(super) fn load_tools(&self, cx: &mut Context<Self>) {
         let backend = self.integrations_backend.clone();
         let user_id = self.user_id.clone();
-        self.call(
-            async move { backend.list_tools(&user_id).await },
+        self.call_presented(
+            async move { backend.call_presented("list_tools", (&user_id,)).await },
             cx,
-            |this, result, cx| {
-                match result {
-                    Ok(switches) => {
-                        this.tools.switches = Some(switches);
-                        this.tools.notice = None;
-                    }
-                    Err(message) => {
-                        this.tools.switches = Some(Vec::new());
-                        this.tools.notice = Some(message.into());
-                    }
-                }
-                if this.settings.application_vim_enabled {
-                    this.reconcile_application_vim_target();
-                }
-                cx.notify();
-            },
+            |this, result, cx| this.finish_loading_tools(result, cx),
         );
+    }
+
+    /// Show the host's switches, or, in place of them, why there are none.
+    fn finish_loading_tools(
+        &mut self,
+        result: Result<Vec<AgentToolSwitch>, Failure>,
+        cx: &mut Context<Self>,
+    ) {
+        match result {
+            Ok(switches) => {
+                self.tools.switches = Some(switches);
+                self.tools.notice = None;
+            }
+            Err(failure) => {
+                self.tools.switches = Some(Vec::new());
+                self.tools.notice = Some(failure.into());
+            }
+        }
+        if self.settings.application_vim_enabled {
+            self.reconcile_application_vim_target();
+        }
+        cx.notify();
     }
 
     /// The switches the page shows: a tool this computer cannot offer, such
@@ -134,25 +144,34 @@ impl SettingsScreen {
         let backend = self.integrations_backend.clone();
         let user_id = self.user_id.clone();
         let request_id = id.clone();
-        self.call(
+        self.call_presented(
             async move {
                 backend
-                    .set_tool_enabled(&user_id, &request_id, enabled)
+                    .call_presented("set_tool_enabled", (&user_id, &request_id, enabled))
                     .await
             },
             cx,
-            move |this, result, cx| {
-                this.tools.saving.remove(&id);
-                match result {
-                    Ok(switches) => this.tools.switches = Some(switches),
-                    Err(message) => this.tools.notice = Some(message.into()),
-                }
-                if this.settings.application_vim_enabled {
-                    this.reconcile_application_vim_target();
-                }
-                cx.notify();
-            },
+            move |this, result, cx| this.finish_tool_change(&id, result, cx),
         );
+    }
+
+    /// Show the host's switches after a change. A refused change leaves the
+    /// switch as it was and says why.
+    fn finish_tool_change(
+        &mut self,
+        id: &str,
+        result: Result<Vec<AgentToolSwitch>, Failure>,
+        cx: &mut Context<Self>,
+    ) {
+        self.tools.saving.remove(id);
+        match result {
+            Ok(switches) => self.tools.switches = Some(switches),
+            Err(failure) => self.tools.notice = Some(failure.into()),
+        }
+        if self.settings.application_vim_enabled {
+            self.reconcile_application_vim_target();
+        }
+        cx.notify();
     }
 
     fn render_tool_row(
@@ -348,6 +367,71 @@ mod tests {
         screen.update(cx, |screen, cx| {
             screen.toggle_tool("python", cx);
             assert!(screen.tools.saving.is_empty());
+        });
+    }
+
+    /// A paired computer released before this page refuses its calls with a
+    /// code. The notice reads in the interface's language: in place of the
+    /// switches when they cannot be listed, and with the switch left as it
+    /// was when a change is refused.
+    #[gpui::test]
+    fn an_older_paired_computer_asks_to_be_updated_in_the_interface_language(
+        cx: &mut TestAppContext,
+    ) {
+        let _locale = crate::ui::i18n::TestLocalizationGuard::enable();
+        let screen = screen(cx);
+        settle(cx, &screen, |screen| screen.tools.switches.is_some());
+        let refusal = |code: &str| {
+            Failure::Host(crate::backend::HostFailure::new(
+                code,
+                "English diagnostic from the bridge",
+            ))
+        };
+        let unsupported = [
+            (
+                "en",
+                "Update Maple on the remote computer to choose its tools from here.",
+            ),
+            (
+                "es",
+                "Actualiza Maple en la computadora remota para elegir sus herramientas desde aquí.",
+            ),
+        ];
+        let unconfirmed = [
+            (
+                "en",
+                "Could not check the remote computer's tools. Try again, or update Maple there.",
+            ),
+            (
+                "es",
+                "No se pudieron comprobar las herramientas de la computadora remota. Inténtalo de nuevo o actualiza Maple ahí.",
+            ),
+        ];
+        let reads = |screen: &SettingsScreen, expected: [(&str, &str); 2]| {
+            let reads = expected.into_iter().all(|(locale, text)| {
+                crate::ui::i18n::apply_preference(Some(locale));
+                screen.tools.notice.as_ref().map(UiText::resolve).as_deref() == Some(text)
+            });
+            crate::ui::i18n::apply_preference(Some("en"));
+            reads
+        };
+
+        screen.update(cx, |screen, cx| {
+            screen.tools.saving.insert("grep".into());
+            screen.finish_tool_change("grep", Err(refusal("remote-tools-unsupported")), cx);
+            assert!(screen.tools.saving.is_empty());
+            assert!(!enabled(screen).contains(&"grep"), "the switch stays off");
+            assert!(reads(screen, unsupported));
+
+            for (code, expected) in [
+                ("remote-tools-unsupported", unsupported),
+                ("remote-tools-unconfirmed", unconfirmed),
+            ] {
+                screen.finish_loading_tools(Err(refusal(code)), cx);
+                assert!(screen.tools.switches.as_ref().is_some_and(Vec::is_empty));
+                assert!(screen.tool_targets().is_empty(), "no rows, only the notice");
+                assert!(reads(screen, expected), "{code}");
+            }
         });
     }
 }

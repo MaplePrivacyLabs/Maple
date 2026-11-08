@@ -160,7 +160,9 @@ pub enum Method {
     SetProjectMcpServerEnabled,
     ListIntegrations,
     SetIntegrationEnabled,
+    /// Only sent to a host advertising `tool_switches_v1`.
     ListTools,
+    /// Only sent to a host advertising `tool_switches_v1`.
     SetToolEnabled,
     SaveMcpServers,
     SetSessionWebEnabled,
