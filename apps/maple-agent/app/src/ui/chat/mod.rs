@@ -7973,27 +7973,43 @@ impl ChatScreen {
             None => 1.,
         };
         let measured = self.composer_frame.get();
-        // At rest a block records its height; on the way it is drawn at
-        // `hero` of that height and opacity. Each block carries the
-        // spacing beside it as its content's margin (padding would not
-        // fold), so nothing is left behind.
-        let fold = |block: Div, rest: Option<gpui::Pixels>, record: composer::Record| {
-            if composer_resize.is_some() {
-                block
-                    .flex_none()
-                    .h(rest.unwrap_or_default() * hero)
-                    .overflow_hidden()
-                    .opacity(hero)
-            } else {
-                block
+        // At rest a block records its height. On the way it is drawn at
+        // `hero` of that height while its content keeps its full size, held
+        // against the composer (the heading at the block's foot, the note at
+        // its head) and fading, never clipped: text rides with the composer
+        // instead of being cut by the folding box. The content keeps
+        // recording its height, so a block first drawn mid-fold folds from
+        // the next frame. Each block carries the spacing beside it as its
+        // content's margin (padding would not fold), so nothing is left
+        // behind.
+        let fold =
+            |content: Div, rest: Option<gpui::Pixels>, foot: bool, record: composer::Record| {
+                let content = content
                     .relative()
-                    .child(composer::measure(&self.composer_frame, record))
-            }
-        };
+                    .child(composer::measure(&self.composer_frame, record));
+                if composer_resize.is_some() {
+                    // Squared, so text that has slid past the pane's edge is
+                    // already faint.
+                    let content = content.absolute().left_0().right_0().opacity(hero * hero);
+                    div()
+                        .relative()
+                        .w_full()
+                        .flex_none()
+                        .h(rest.unwrap_or_default() * hero)
+                        .child(if foot {
+                            content.bottom_0()
+                        } else {
+                            content.top_0()
+                        })
+                } else {
+                    content
+                }
+            };
         let title = (hero > 0.).then(|| {
             fold(
                 div().w_full().flex().flex_col().items_center().child(
                     div()
+                        .debug_selector(|| "empty-title".to_string())
                         // Its own space and the gap to the composer.
                         .mb_12()
                         .font_family(crate::assets::FONT_DISPLAY)
@@ -8003,6 +8019,7 @@ impl ChatScreen {
                         .child(tr("chat-empty-title")),
                 ),
                 measured.title,
+                true,
                 |frame, bounds, _| frame.title = Some(bounds.size.height),
             )
         });
@@ -8020,6 +8037,7 @@ impl ChatScreen {
                         .child(tr("chat-empty-private")),
                 ),
                 measured.privacy,
+                false,
                 |frame, bounds, _| frame.privacy = Some(bounds.size.height),
             )
         });

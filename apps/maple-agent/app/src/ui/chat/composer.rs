@@ -2067,6 +2067,19 @@ mod resize_tests {
         motion::set_test_now(Some(shrink));
         toggle(&chat, cx);
         assert_eq!(cx.debug_bounds("composer-box"), Some(expanded));
+        // On the way back the heading rides above the composer at its full
+        // size: the folding box never cuts it against the composer's edge.
+        for step in 1..8 {
+            frame_at(shrink + motion::PANEL * step / 8, cx);
+            let composer = cx.debug_bounds("composer-box").expect("composer");
+            let title = cx
+                .debug_bounds("empty-title")
+                .expect("the heading draws on the way back");
+            assert!(
+                title.bottom() <= composer.top(),
+                "the heading stays clear of the composer: {title:?} {composer:?}"
+            );
+        }
         frame_at(shrink + motion::PANEL - Duration::from_millis(1), cx);
         let landing = cx.debug_bounds("composer-box").expect("composer");
         frame_at(shrink + motion::PANEL, cx);
