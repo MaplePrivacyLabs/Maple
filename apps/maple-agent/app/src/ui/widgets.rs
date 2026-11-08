@@ -767,7 +767,7 @@ pub fn copy_button(
             super::motion::hover_background(
                 button,
                 gpui::transparent_black(),
-                gpui::rgb(theme::bg_sidebar_row_hover()),
+                theme::overlay_hover(),
             )
         })
 }

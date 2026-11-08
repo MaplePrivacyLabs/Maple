@@ -6261,6 +6261,15 @@ impl ChatScreen {
             self.refresh_context_usage(cx);
         }
     }
+
+    /// Pushes that crossed a reconnect rebuild the transcript; they do not
+    /// enter like live rows.
+    fn replay_after_reconnect(&mut self, events: Vec<AgentServiceEvent>, cx: &mut Context<Self>) {
+        self.row_motion.set_quiet(true);
+        self.handle_service_events(events, cx);
+        self.row_motion.set_quiet(false);
+    }
+
     pub fn handle_service_events(
         &mut self,
         events: Vec<AgentServiceEvent>,
@@ -6458,11 +6467,7 @@ impl ChatScreen {
                             }
                         }
                         this.refresh_sessions(cx);
-                        // Pushes that crossed the reconnect rebuild the
-                        // transcript; they do not enter like live rows.
-                        this.row_motion.set_quiet(true);
-                        this.handle_service_events(events, cx);
-                        this.row_motion.set_quiet(false);
+                        this.replay_after_reconnect(events, cx);
                         this.host_recovery.unavailable = false;
                         this.runtime_error_reason = None;
                         this.runtime_error = None;
@@ -7230,8 +7235,9 @@ impl Render for ChatScreen {
         let rise = gpui::point(px(0.), motion::RISE);
         let composer_resize = self.composer_resize_frame(window, cx);
         let main = if empty {
-            // No slot under a transcript here; rows opening from it start at 0.
-            self.row_motion.slot_on_screen = false;
+            // No slot under a transcript here; rows opening from it start at
+            // 0, and the next slot to appear comes with a send.
+            self.row_motion.show_empty_state();
             self.render_empty_state(composer_resize, composer_glide, window, cx)
         } else {
             div()

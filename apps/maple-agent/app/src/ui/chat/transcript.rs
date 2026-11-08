@@ -669,6 +669,13 @@ impl RowMotion {
         self.slot_snap = true;
     }
 
+    /// The empty state shows: nothing sits under a transcript, and the next
+    /// slot to appear comes with a send, so it opens.
+    pub(super) fn show_empty_state(&mut self) {
+        self.slot_on_screen = false;
+        self.slot_snap = false;
+    }
+
     /// The row's entrance, or `None` for a row that did not arrive live or
     /// has settled.
     pub(super) fn entrance(&self, id: &str, now: Instant, reduced: bool) -> Option<Entrance> {
@@ -2912,6 +2919,46 @@ mod motion_tests {
     }
 
     #[gpui::test]
+    fn the_first_send_in_an_empty_task_opens_its_slot(cx: &mut TestAppContext) {
+        // The whole screen, so the empty state draws in place of the
+        // transcript until the first send.
+        struct ScreenHost {
+            chat: Entity<ChatScreen>,
+        }
+        impl Render for ScreenHost {
+            fn render(&mut self, _: &mut Window, _: &mut Context<Self>) -> impl IntoElement {
+                div().size_full().flex().flex_col().child(self.chat.clone())
+            }
+        }
+        let clock = Clock::start();
+        let chat = screen(cx);
+        // A new task: a blank transcript replaced the last one.
+        chat.update(cx, |chat, _| chat.replace_timeline(Vec::new()));
+        let (_host, cx) = cx.add_window_view(|_, _| ScreenHost { chat: chat.clone() });
+        cx.simulate_resize(gpui::size(px(1200.), px(800.)));
+        cx.run_until_parked();
+        assert!(chat.read_with(cx, |chat, _| chat.shows_empty_state()));
+        chat.update(cx, |chat, _| {
+            let preview = sending::SendPreview::new(Some("s1".into()), "hello", &[])
+                .capture_timeline(&chat.timeline);
+            chat.sending_previews.insert("send-1".into(), preview);
+        });
+        redraw(&chat, cx);
+        let shown = |chat: &Entity<ChatScreen>, cx: &mut gpui::VisualTestContext| {
+            chat.read_with(cx, |chat, _| chat.row_motion.slot_shown.get())
+        };
+        let sent = shown(&chat, cx);
+        clock.at(motion::ENTER * 2);
+        redraw(&chat, cx);
+        let open = shown(&chat, cx);
+        assert!(open > px(0.), "the slot shows its status");
+        assert!(
+            sent < open,
+            "the send opens the slot rather than showing it at full height: {sent:?} then {open:?}"
+        );
+    }
+
+    #[gpui::test]
     fn the_real_row_takes_over_from_the_bubble_without_a_jump(cx: &mut TestAppContext) {
         let clock = Clock::start();
         let (chat, cx) = pane(cx, 30);
@@ -3013,9 +3060,18 @@ mod motion_tests {
             assert_eq!(chat.row_motion.arrival("paged", now, false), 1.);
             chat.pages.after = false;
             // Pushes replayed after a reconnect rebuild the transcript.
-            chat.row_motion.set_quiet(true);
-            chat.apply_incoming_item("s2", item("replayed", "message", Some("x")), cx);
-            chat.row_motion.set_quiet(false);
+            chat.replay_after_reconnect(
+                vec![AgentServiceEvent::TimelineItem {
+                    session_id: "s2".into(),
+                    run_id: None,
+                    item: item("replayed", "message", Some("x")),
+                }],
+                cx,
+            );
+            assert!(
+                chat.timeline.iter().any(|row| row.id == "replayed"),
+                "the replayed push landed"
+            );
             assert_eq!(chat.row_motion.arrival("replayed", now, false), 1.);
             assert!(!chat.row_motion.settle(now, false));
             // Reduced motion: a live row is at rest at once.

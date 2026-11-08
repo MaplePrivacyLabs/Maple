@@ -19,8 +19,9 @@ between the user and the next action. This page records the shared decisions;
   close at once: dismissal is the user's decision and the next action must
   not wait for it. Reversible state changes run the same curve both ways.
 - **Opacity first, small distances.** gpui cannot scale or transform a `div`,
-  so content enters with opacity and at most a 6 px rise, drawn as a
-  paint offset that does not change layout. Only SVG icons scale or rotate.
+  so content enters with opacity and a short rise (6 px; 8 px for dialog
+  cards), drawn as a paint offset: layout stays put, and the hitbox moves
+  with the paint. Only SVG icons scale or rotate.
   Height animates only where a box truly changes size: text fields, the
   expanded composer, the sidebar, and a row arriving at the end of the
   thread, which opens so older rows glide up rather than jump.
@@ -40,9 +41,9 @@ between the user and the next action. This page records the shared decisions;
 | Token | Duration | Curve | Used for |
 |---|---|---|---|
 | `HOVER` | 120 ms | smoothstep | hover plates, controls that appear on hover |
-| `REVEAL` | 140 ms | ease-out quint | menus, popovers, tooltips, notices, page and pane changes |
+| `REVEAL` | 140 ms | ease-out quint | menus, popovers, tooltips, page and pane changes |
 | `TOGGLE` | 150 ms | ease-out cubic | switches, checkboxes, chevrons, icon swaps, status changes |
-| `ENTER` | 180 ms | ease-out quint | live transcript rows, cards above the composer, dialogs |
+| `ENTER` | 180 ms | ease-out quint | live transcript rows, notices and cards above the composer, dialogs |
 | `PANEL` | 200 ms | ease-out cubic | sidebar, composer expand and shrink |
 | `resize_duration` | 120–200 ms | ease-out cubic | text fields growing and shrinking with their text, by distance |
 

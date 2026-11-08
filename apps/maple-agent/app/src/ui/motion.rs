@@ -352,8 +352,8 @@ where
 }
 
 /// Fade in over `duration` while moving from `from`, an offset from the
-/// resting position, to rest. Layout and hit testing use the resting
-/// position throughout.
+/// resting position, to rest. Layout uses the resting position throughout;
+/// the hitbox moves with the paint (see [`shifted`]).
 pub fn slide_in<E>(
     element: E,
     id: impl Into<ElementId>,
