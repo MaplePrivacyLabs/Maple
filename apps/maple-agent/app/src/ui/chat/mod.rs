@@ -7427,13 +7427,21 @@ impl ChatScreen {
                         )
                     })
                     .child(div().flex_1())
-                    .child(
-                        icon("chevron-down", px(12.), theme::text_muted()).when(!open, |icon| {
-                            icon.with_transformation(gpui::Transformation::rotate(gpui::radians(
-                                std::f32::consts::PI,
-                            )))
-                        }),
-                    )
+                    .child(motion::animated(
+                        "settings-menu-chevron",
+                        if open { 1. } else { 0. },
+                        motion::TOGGLE,
+                        motion::ease_out_cubic,
+                        |open| {
+                            // Points up at the menu above while closed, and
+                            // turns down once it is open.
+                            icon("chevron-down", px(12.), theme::text_muted())
+                                .with_transformation(gpui::Transformation::rotate(gpui::radians(
+                                    std::f32::consts::PI * (1. - open),
+                                )))
+                                .into_any_element()
+                        },
+                    ))
             });
         let button = self
             .popup

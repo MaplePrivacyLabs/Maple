@@ -3612,12 +3612,9 @@ impl Sidebar {
             .size(px(14.))
             .flex()
             .items_center()
-            .child(icon(
-                if expanded {
-                    "chevron-down"
-                } else {
-                    "chevron-right"
-                },
+            .child(motion::chevron(
+                "chevron",
+                expanded,
                 px(14.),
                 theme::text_secondary(),
             ));
@@ -3997,8 +3994,10 @@ impl Sidebar {
                     }),
                 )
             })
-            .child(icon(
-                if expanded { "folder-open" } else { "folder" },
+            .child(motion::icon_swap(
+                "folder-icon",
+                expanded,
+                ["folder", "folder-open"],
                 FOLDER_ICON_SIZE,
                 theme::text_secondary(),
             ))
@@ -4590,29 +4589,57 @@ const RUNNING_BREATH: Duration = Duration::from_millis(1600);
 /// any number of running rows cost one repaint per interval; `spinner_id`
 /// is prebuilt so render allocates nothing. Every state sits centered in
 /// one box the size of the largest, so the center stays put as states
-/// change.
+/// change, and one state cross-fades into the next over
+/// [`motion::TOGGLE`]. The box is keyed by `spinner_id`, which names the
+/// task, so an indicator that first appears (a list that loads, a row that
+/// scrolls in) shows its state at once.
 fn activity_indicator(spinner_id: &SharedString, activity: SessionActivity) -> AnyElement {
-    let dot = |color: u32| {
-        div()
-            .size(px(8.))
-            .rounded_full()
-            .bg(gpui::rgb(color))
-            .into_any_element()
+    let layer = |name: &'static str, state: SessionActivity| {
+        let spinner_id = spinner_id.clone();
+        motion::animated(
+            name,
+            if activity == state { 1. } else { 0. },
+            motion::TOGGLE,
+            motion::ease_out_cubic,
+            move |shown| {
+                if shown <= 0. {
+                    return div().into_any_element();
+                }
+                let dot = |color: u32| {
+                    div()
+                        .size(px(8.))
+                        .rounded_full()
+                        .bg(gpui::rgb(color))
+                        .into_any_element()
+                };
+                div()
+                    .absolute()
+                    .inset_0()
+                    .flex()
+                    .items_center()
+                    .justify_center()
+                    .opacity(shown)
+                    .child(match state {
+                        SessionActivity::NeedsYou => dot(theme::accent()),
+                        SessionActivity::Running => running_ring(spinner_id.clone()),
+                        SessionActivity::Failed => {
+                            icon("circle-alert", px(13.), theme::status_error()).into_any_element()
+                        }
+                        SessionActivity::CompletedUnread => dot(theme::status_success()),
+                    })
+                    .into_any_element()
+            },
+        )
     };
     div()
+        .id(spinner_id.clone())
+        .relative()
         .size(px(13.))
         .flex_none()
-        .flex()
-        .items_center()
-        .justify_center()
-        .child(match activity {
-            SessionActivity::NeedsYou => dot(theme::accent()),
-            SessionActivity::Running => running_ring(spinner_id.clone()),
-            SessionActivity::Failed => {
-                icon("circle-alert", px(13.), theme::status_error()).into_any_element()
-            }
-            SessionActivity::CompletedUnread => dot(theme::status_success()),
-        })
+        .child(layer("needs-you", SessionActivity::NeedsYou))
+        .child(layer("running", SessionActivity::Running))
+        .child(layer("failed", SessionActivity::Failed))
+        .child(layer("completed", SessionActivity::CompletedUnread))
         .into_any_element()
 }
 
@@ -4925,6 +4952,88 @@ mod tests {
         assert!(sidebar.update(cx, |sidebar, _| sidebar.popup.is_open(&SidebarPopup::View)));
         assert!(cx.debug_bounds("sidebar-group").is_some());
         assert_eq!(cx.debug_bounds("view-options"), Some(view));
+    }
+
+    /// A task's status cross-fades inside the cached sidebar: the change
+    /// asks for frames until it settles, then the sidebar goes idle. A
+    /// status already there when the list first draws does not animate.
+    #[gpui::test]
+    fn task_status_cross_fades_in_the_cached_sidebar_and_settles(cx: &mut gpui::TestAppContext) {
+        use super::*;
+        let _settings = crate::settings::SETTINGS_IO_LOCK.lock();
+        cx.executor().allow_parking();
+        let start = std::time::Instant::now();
+        motion::set_test_now(Some(start));
+        cx.update(|cx| cx.set_reduce_motion(false));
+        let backend =
+            Arc::new(AgentBackend::for_test("http://127.0.0.1:9".into(), String::new()).unwrap());
+        let chat = cx.new(|cx| ChatScreen::new_without_start(backend, "user".into(), cx));
+        let sidebar = chat.update(cx, |chat, _| chat.sidebar.clone());
+        let activity = |waiting: bool| {
+            let ids = HashSet::from(["s1".to_string()]);
+            if waiting {
+                TaskActivity {
+                    waiting: ids,
+                    ..TaskActivity::default()
+                }
+            } else {
+                TaskActivity {
+                    unread: ids,
+                    ..TaskActivity::default()
+                }
+            }
+        };
+        sidebar.update(cx, |sidebar, cx| {
+            sidebar.reset_persisted_for_test();
+            sidebar.view.group = SidebarGroup::List;
+            sidebar.set_sessions(
+                (1..=3)
+                    .map(|ix| AgentSessionSummary {
+                        id: format!("s{ix}"),
+                        title: format!("Task {ix}"),
+                        project_root: "/tmp/proj".into(),
+                        created_ms: 0,
+                        updated_ms: 100 - ix,
+                        message_count: 1,
+                        model: None,
+                        web_enabled: true,
+                        permission_mode: Default::default(),
+                        state: AgentTaskState::Active,
+                        acp: false,
+                    })
+                    .collect(),
+                cx,
+            );
+            sidebar.set_activity(activity(true), cx);
+        });
+        struct Host(Entity<Sidebar>);
+        impl Render for Host {
+            fn render(&mut self, _: &mut Window, _: &mut Context<Self>) -> impl IntoElement {
+                div().size_full().child(
+                    self.0
+                        .clone()
+                        .cached(gpui::StyleRefinement::default().w(px(300.)).h(px(400.))),
+                )
+            }
+        }
+        let (_host, cx) = cx.add_window_view(|_, _| Host(sidebar.clone()));
+        cx.simulate_resize(gpui::size(px(600.), px(400.)));
+        cx.run_until_parked();
+        let frames = |cx: &mut gpui::VisualTestContext| {
+            cx.update(|window, cx| window.simulate_next_frame(cx))
+        };
+        assert!(cx.debug_bounds("session-s1").is_some());
+        assert_eq!(frames(cx), 0, "a status at first draw does not animate");
+
+        sidebar.update(cx, |sidebar, cx| sidebar.set_activity(activity(false), cx));
+        cx.run_until_parked();
+        assert!(frames(cx) > 0, "the new status fades in");
+        cx.run_until_parked();
+        motion::set_test_now(Some(start + motion::TOGGLE));
+        frames(cx);
+        cx.run_until_parked();
+        assert_eq!(frames(cx), 0, "settled, the cached sidebar goes idle");
+        motion::set_test_now(None);
     }
 
     #[gpui::test]
