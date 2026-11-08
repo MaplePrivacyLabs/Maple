@@ -582,7 +582,7 @@ impl SettingsScreen {
             widgets::ghost_button(button_id)
                 .on_click(cx.listener(|this, _event, _window, cx| this.cancel_mcp_sign_in(cx)))
                 .child(spinner(
-                    &entry.id,
+                    &format!("{prefix}-spinner-{}", entry.id),
                     widgets::ROW_ICON,
                     theme::text_secondary(),
                 ))
@@ -839,7 +839,11 @@ impl SettingsScreen {
                             .text_xs()
                             .text_color(gpui::rgb(detail_color))
                             .when(waiting, |row| {
-                                row.child(spinner(&entry.id, px(10.), theme::text_muted()))
+                                row.child(spinner(
+                                    &format!("catalog-tile-spinner-{}", entry.id),
+                                    px(10.),
+                                    theme::text_muted(),
+                                ))
                             })
                             .child(div().truncate().child(detail)),
                     ),
