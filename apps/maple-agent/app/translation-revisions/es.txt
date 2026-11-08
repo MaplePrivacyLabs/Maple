@@ -270,7 +270,6 @@ chat-retry-save e40b6ebed81a2007
 chat-retry-save-remote 793858d46fd53ac4
 chat-runtime-start-failed 9947accdbc6dd68b
 chat-runtime-starting c2c0812013b25505
-chat-scratch-note db9f25c5d11b34a5
 chat-scratch-switch-computer 45ef7455b0162fa2
 chat-scratch-switched-computers dbc287b83f851b24
 chat-search 634b3c02b1fae3fb

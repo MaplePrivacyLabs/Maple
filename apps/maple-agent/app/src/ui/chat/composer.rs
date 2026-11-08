@@ -575,7 +575,7 @@ impl ChatScreen {
         id: impl Into<gpui::ElementId>,
         active: bool,
     ) -> MenuItem<Self> {
-        MenuItem::new(
+        let item = MenuItem::new(
             id,
             tr("chat-start-from-scratch"),
             |this: &mut Self, _, cx| {
@@ -584,12 +584,13 @@ impl ChatScreen {
         )
         .icon("plus")
         .current(active && self.scratch_project)
-        .enabled(active)
-        .note(if active {
-            tr("chat-scratch-note")
+        .enabled(active);
+        // Only a disabled entry needs a line saying why.
+        if active {
+            item
         } else {
-            tr("chat-scratch-switch-computer")
-        })
+            item.note(tr("chat-scratch-switch-computer"))
+        }
     }
 
     fn model_menu(&self) -> Menu<Self> {
