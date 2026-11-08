@@ -777,7 +777,9 @@ impl AgentRuntimeHandle {
         ))
     }
 
-    /// Turn the web tools on or off for one task, from its next turn.
+    /// Save a task's legacy web flag, which a controller on an older build
+    /// still sets. It changes no tools: every task follows the web switch of
+    /// Settings → Tools.
     pub async fn set_session_web_enabled(
         &self,
         request: AgentSetSessionWebRequest,

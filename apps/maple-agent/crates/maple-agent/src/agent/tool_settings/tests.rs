@@ -53,6 +53,7 @@ fn the_defaults_leave_python_and_the_search_tools_off() {
             "read_image",
             "todo_write",
             "request_user_input",
+            "web",
             "python"
         ]
     );
@@ -65,7 +66,8 @@ fn the_defaults_leave_python_and_the_search_tools_off() {
             "write",
             "read_image",
             "todo_write",
-            "request_user_input"
+            "request_user_input",
+            "web"
         ]
     );
     assert!(
@@ -92,12 +94,16 @@ fn only_changes_from_the_defaults_are_saved_and_read_back() {
     switches.set(ToolSwitch::Python, true);
     switches.set(ToolSwitch::Grep, true);
     switches.set(ToolSwitch::Shell, false);
+    switches.set(ToolSwitch::Web, false);
     // Already the default.
     switches.set(ToolSwitch::Read, true);
     save_stored_tools(&paths, "user", &switches).unwrap();
     assert_eq!(
         saved(&paths),
-        Some(json!({"version": 1, "tools": {"grep": true, "python": true, "shell": false}}))
+        Some(json!({
+            "version": 1,
+            "tools": {"grep": true, "python": true, "shell": false, "web": false}
+        }))
     );
     let read = tool_switches(&paths, "user");
     assert_eq!(read, switches);
@@ -118,6 +124,7 @@ fn only_changes_from_the_defaults_are_saved_and_read_back() {
     // A switch set back to its default leaves the saved value.
     switches.set(ToolSwitch::Python, false);
     switches.set(ToolSwitch::Shell, true);
+    switches.set(ToolSwitch::Web, true);
     save_stored_tools(&paths, "user", &switches).unwrap();
     assert_eq!(
         saved(&paths),
@@ -225,6 +232,47 @@ fn has(tools: &[String], name: &str) -> bool {
     tools.iter().any(|tool| tool == name)
 }
 
+/// The question `task` waits on, once it asks.
+fn question(harness: &Harness, task: &str) -> Option<String> {
+    harness
+        .recorder
+        .events()
+        .into_iter()
+        .find_map(|event| match event {
+            AgentServiceEvent::Question {
+                session_id,
+                request_id,
+                ..
+            } if session_id == task => Some(request_id),
+            _ => None,
+        })
+}
+
+/// Have the model ask a question, wait until `task` asks it, run `meanwhile`,
+/// then answer, and let the run finish.
+async fn change_while_asking(
+    harness: &Harness,
+    task: &str,
+    meanwhile: impl std::future::Future<Output = ()>,
+) {
+    harness.faux.push_message(vec![faux_tool_call(
+        "request_user_input",
+        json!({"question": "Go on?", "options": [{"label": "Yes"}]}),
+    )]);
+    harness.faux.push_text("Done.");
+    let mut run = harness.send(task, "Ask me first").await;
+    eventually(|| question(harness, task).is_some()).await;
+    meanwhile.await;
+    let answer = r#"{"answers":{"question_0":{"answers":["Yes"]}}}"#;
+    assert!(
+        harness
+            .service
+            .answer_question(&question(harness, task).unwrap(), answer.to_string())
+            .await
+    );
+    assert_eq!(finished(&mut run).await, AgentRunTerminal::Completed);
+}
+
 #[tokio::test]
 async fn new_and_reopened_tasks_are_built_with_the_switches() {
     let harness = Harness::new().await;
@@ -303,43 +351,17 @@ async fn a_change_reaches_loaded_tasks_from_their_next_request() {
         .collect();
     assert_eq!(after, expected);
     // A tool the session never registered is left out.
-    tools::set_tool_active(&session, "telepathy", true);
+    tools::set_tools_active(&session, &["telepathy"], true);
     assert_eq!(session.active_tools(), after);
 
     // During a run, the request after the change declares it.
-    harness.faux.push_message(vec![faux_tool_call(
-        "request_user_input",
-        json!({"question": "Go on?", "options": [{"label": "Yes"}]}),
-    )]);
-    harness.faux.push_text("Done.");
-    let mut run = harness.send(&task, "Ask me first").await;
-    let question = || {
-        harness
-            .recorder
-            .events()
-            .into_iter()
-            .find_map(|event| match event {
-                AgentServiceEvent::Question {
-                    session_id,
-                    request_id,
-                    ..
-                } if session_id == task => Some(request_id),
-                _ => None,
-            })
-    };
-    eventually(|| question().is_some()).await;
-    handle
-        .set_tool_enabled(request("find", true))
-        .await
-        .unwrap();
-    let answer = r#"{"answers":{"question_0":{"answers":["Yes"]}}}"#;
-    assert!(
-        harness
-            .service
-            .answer_question(&question().unwrap(), answer.to_string())
+    change_while_asking(&harness, &task, async {
+        handle
+            .set_tool_enabled(request("find", true))
             .await
-    );
-    assert_eq!(finished(&mut run).await, AgentRunTerminal::Completed);
+            .unwrap();
+    })
+    .await;
     let requests = harness.faux.requests();
     let asked = declared(&requests[requests.len() - 2]);
     let answered = declared(&requests[requests.len() - 1]);
@@ -349,4 +371,37 @@ async fn a_change_reaches_loaded_tasks_from_their_next_request() {
     );
     assert!(!has(&asked, "find"), "{asked:?}");
     assert!(has(&answered, "find"), "{answered:?}");
+}
+
+/// The web switch moves `web_search` and `open_url` together. In a loaded
+/// task, the request after the change declares neither, even during a run,
+/// and the next request after it is back on declares both.
+#[tokio::test]
+async fn the_web_switch_moves_both_web_tools_from_the_next_request() {
+    let harness = Harness::new().await;
+    let handle = &harness.handle;
+    let task = harness.create_task().await;
+    change_while_asking(&harness, &task, async {
+        handle
+            .set_tool_enabled(request("web", false))
+            .await
+            .unwrap();
+    })
+    .await;
+    let requests = harness.faux.requests();
+    let asked = declared(&requests[requests.len() - 2]);
+    let answered = declared(&requests[requests.len() - 1]);
+    for name in WEB_TOOL_NAMES {
+        assert!(has(&asked, name), "{asked:?}");
+        assert!(!has(&answered, name), "{answered:?}");
+    }
+
+    handle.set_tool_enabled(request("web", true)).await.unwrap();
+    harness.faux.push_text("Found it.");
+    let mut run = harness.send(&task, "Look it up").await;
+    assert_eq!(finished(&mut run).await, AgentRunTerminal::Completed);
+    let again = declared(harness.faux.requests().last().unwrap());
+    for name in WEB_TOOL_NAMES {
+        assert!(has(&again, name), "{again:?}");
+    }
 }

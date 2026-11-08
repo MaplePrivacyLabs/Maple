@@ -33,7 +33,7 @@ chat-clear-search 3cddadc352e9880e
 chat-close 13d547f7505df8cd
 chat-command-exit a3d9bacf6a917945
 chat-commands a2c75578d665185b
-chat-commands-help 0c9433788eb00b9f
+chat-commands-help 61cc67a7cd170e6c
 chat-compacted 331bf978d751e22a
 chat-compacting d07b6fdb7bc0a7f3
 chat-compaction-failed c70f178b6726ae77
@@ -323,7 +323,6 @@ chat-slash-help c89658bc3004f75f
 chat-slash-model 41c47cf571d788a8
 chat-slash-new c5729256b6e699b3
 chat-slash-pin 82ce5365cdcf6c1d
-chat-slash-web e35a413a703abea4
 chat-sort-by 7c4f4afbdc18316a
 chat-sort-manual 192f30e56c42cf14
 chat-sort-updated 7d1cdc3aaec54b48
@@ -441,10 +440,6 @@ chat-wait-project 080c1b4090063966
 chat-wait-upload 813b8d574ce74756
 chat-waiting-response 28aad7e819dbe273
 chat-waiting-response-progress fb45dda5b74cdca3
-chat-web e1bb42443dd26325
-chat-web-change-error 5da285adba8c556b
-chat-web-failed 189775d21ded39be
-chat-web-off 31b5e469cb23eb46
 chat-you 4fbc5041ab48743d
 common-copied 2debccd90271eaae
 common-copy d94e835beea03810
@@ -1816,7 +1811,7 @@ settings-tool-summaries 4947d910bc451d51
 settings-tool-summaries-description 3a755bab2d9b90b1
 settings-tools-edit e8e2d30dffb96a2d
 settings-tools-edit-description 523da135e4641fa8
-settings-tools-elsewhere 4c9176276420ea2b
+settings-tools-elsewhere 0b55ff94bbad3d16
 settings-tools-find 948863a5164cec2b
 settings-tools-find-description 60da49953d1d003d
 settings-tools-grep 2f5b6f6e85af65e0
@@ -1838,6 +1833,8 @@ settings-tools-shell 74a0843a2b2f8ff0
 settings-tools-shell-description 24e3f06e54e9fb4b
 settings-tools-todo-write cb5126cccc713622
 settings-tools-todo-write-description c09c5e6711a1901b
+settings-tools-web 1074c44ebce422b2
+settings-tools-web-description 8a9c93ba9d6053c6
 settings-tools-write c42ce0025da9c79b
 settings-tools-write-description a7c8ff800d7fb242
 settings-update-available 446dbf57b981f55b
@@ -1876,8 +1873,6 @@ settings-voice-nl-female a0a9d0ee11a901ee
 settings-voice-nl-male 1a76ac24fb4d9e3e
 settings-voice-pt-female 75fbf17eb11d84cd
 settings-voice-pt-male 7a0be4bc8188bac7
-settings-web 595708bcc3d1c8b6
-settings-web-description 4a2f8652dc28415e
 update-confirmation-detail d4822f0f7bc49ce7
 update-confirmation-later fcd8444c158bd73a
 update-confirmation-restart 5481a04b50d65ecc

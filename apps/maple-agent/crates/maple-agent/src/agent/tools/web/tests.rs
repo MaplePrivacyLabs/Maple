@@ -270,7 +270,7 @@ fn errors_fit_their_tools_output_limits() {
 
 #[tokio::test]
 async fn the_tools_answer_the_model_with_results_and_errors() {
-    let tools = web_tools(Arc::new(mock_transport()), true);
+    let tools = web_tools(Arc::new(mock_transport()));
     let invoke = |index: usize, args: Value| {
         let tool = tools[index].tool.clone();
         async move {
@@ -297,10 +297,6 @@ async fn the_tools_answer_the_model_with_results_and_errors() {
         pi_ai::content_text(&refused.content),
         "URL must include a public host"
     );
+    // Registered on; the account's web switch decides in each task.
     assert!(tools.iter().all(|tool| tool.active));
-    assert!(
-        web_tools(Arc::new(mock_transport()), false)
-            .iter()
-            .all(|tool| !tool.active)
-    );
 }

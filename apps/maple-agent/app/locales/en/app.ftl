@@ -16,8 +16,6 @@ settings-defaults = Defaults
 settings-chat-appearance = Chat appearance
 settings-editing = Editing
 settings-voice = Voice
-settings-web = New tasks can use the web
-settings-web-description = Offers web_search and open_url to the model. Each task can switch web access on or off from its composer.
 settings-appearance = Appearance
 settings-appearance-description = Follow the system theme, or force dark or light.
 settings-chat-font = Chat font
@@ -1202,8 +1200,6 @@ chat-toggle-sidebar = Toggle sidebar
 chat-search = Search
 chat-new-task = New task
 chat-integrations = Integrations
-chat-web = Web
-chat-web-off = Web off
 chat-mode = Permissions
 chat-mode-read-only = Read only
 chat-mode-read-only-note = Reads and builds run. Maple asks before anything else.
@@ -1371,7 +1367,6 @@ chat-slash-btw = Ask a side question; the task does not see it
 chat-slash-compact = Summarize the conversation to free context
 chat-slash-new = Start a new task
 chat-slash-pin = Pin or unpin this project
-chat-slash-web = Toggle web tools for this task
 chat-slash-model = Pick the model; add a name to filter
 chat-slash-help = Show the available commands
 chat-new-task-title = New Task
@@ -1379,7 +1374,7 @@ chat-choose-folder = Choose folder
 chat-feedback-invalid-length = Please enter between 1 and 5,000 characters.
 chat-send-switched-recall = Message not sent: another task was opened first. Press Up in the composer to recall it
 chat-send-switched-restored = Message not sent: another task was opened first. It is back in the composer
-chat-commands-help = Type / to list commands. Built-ins: /btw, /compact, /new, /pin, /web, /model, /help. Skills appear as /name.
+chat-commands-help = Type / to list commands. Built-ins: /btw, /compact, /new, /pin, /model, /help. Skills appear as /name.
 chat-skill-send-restored = Skill not sent while the previous send is settling. The command is restored; send it again when ready.
 chat-skill-send-retained = Skill not sent while the previous send is settling. The command is retained; press Up in an empty composer to recall it.
 chat-wait-upload = Wait for the current file upload or cancel it before sending more files. Text can still be queued or sent to the running task.
@@ -1395,8 +1390,6 @@ chat-compaction-failed = Compaction failed: { $message }
 chat-no-model-match = No model matches “{ $query }”
 # $message is the underlying error, which may be untranslated.
 chat-answer-failed = Could not deliver the answer: { $message }
-# $message is the underlying error, which may be untranslated.
-chat-web-failed = Could not change web access: { $message }
 # $message is the underlying error, which may be untranslated.
 chat-mode-failed = Could not change the mode: { $message }
 chat-copy-link = Copy Link
@@ -1943,8 +1936,6 @@ chat-staging-open-failed = Could not open the attachment: { $error }
 # $error is an untranslated diagnostic.
 chat-subscribe-history-failed = Could not subscribe to task history: { $error }
 # $error is an untranslated diagnostic.
-chat-web-change-error = Could not change web access: { $error }
-# $error is an untranslated diagnostic.
 chat-mode-change-error = Could not change the mode: { $error }
 # $name is an integration name; $error is an untranslated diagnostic.
 chat-integration-change-error = Could not change { $name }: { $error }
@@ -2141,7 +2132,7 @@ settings-integration-install-claude = Install Claude Code and make sure `claude`
 settings-tools-intro = Choose which tools the model can use in tasks on this computer. Changes apply to open tasks from their next request.
 settings-tools-intro-remote = Choose which tools the model can use in tasks on the selected computer. Changes apply to its open tasks from their next request.
 settings-tools-loading = Loading tools…
-settings-tools-elsewhere = Web access has its own switch on each task. External agents, MCP servers and computer use are in Integrations.
+settings-tools-elsewhere = External agents, MCP servers and computer use are in Integrations.
 settings-tools-read = Read files
 settings-tools-read-description = Read text files and images.
 settings-tools-shell = Terminal
@@ -2162,5 +2153,7 @@ settings-tools-todo-write = Task plan
 settings-tools-todo-write-description = Keep the task's steps above the message box while it works.
 settings-tools-request-user-input = Questions for you
 settings-tools-request-user-input-description = Stop to ask you short questions and wait for your answers.
+settings-tools-web = Web
+settings-tools-web-description = Search the web and read public pages.
 settings-tools-python = Python
 settings-tools-python-description = Run Python in a scratchpad that keeps its variables between calls.

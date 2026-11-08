@@ -11,18 +11,6 @@ impl SettingsScreen {
     ) -> gpui::Stateful<Div> {
         pane.child(section_title(&tr("settings-defaults")))
             .child(self.application_target(
-                || SettingsTarget::General(GeneralTarget::Web),
-                localized_toggle_row(
-                    "new-tasks-can-use-the-web",
-                    &tr("settings-web"),
-                    &tr("settings-web-description"),
-                    self.settings.default_web_enabled,
-                    cx.listener(|this, _event, _window, cx| {
-                        this.toggle_web_default(cx);
-                    }),
-                ),
-            ))
-            .child(self.application_target(
                 || SettingsTarget::General(GeneralTarget::Appearance),
                 self.setting_menu_row(
                     &tr("settings-appearance"),
