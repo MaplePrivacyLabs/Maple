@@ -167,6 +167,9 @@ impl SettingsScreen {
         if self.mcp_editor.is_some() {
             return Vec::new();
         }
+        if self.account.delete != super::account::DeleteFlow::Idle {
+            return self.delete_dialog_targets();
+        }
         match self.section {
             Section::General => [
                 GeneralTarget::Web,
@@ -561,7 +564,7 @@ impl SettingsScreen {
             return;
         }
         if self.account.delete != super::account::DeleteFlow::Idle {
-            self.cancel_account_deletion(cx);
+            self.dismiss_delete_dialog(cx);
             return;
         }
         if self.application_text_input_focused(window, cx) {
@@ -1626,6 +1629,82 @@ mod tests {
                 this.move_application_selection(1, 1, window, cx);
                 this.select_application_edge(false, window, cx);
             });
+        });
+    }
+
+    /// Account deletion runs in a dialog: it focuses the acknowledgement
+    /// field, Escape and the backdrop cancel it before a code is emailed but
+    /// not after, and while it is open Vim sees only its controls.
+    #[gpui::test]
+    fn delete_account_dialog_focuses_scopes_and_guards_the_code_step(cx: &mut TestAppContext) {
+        use super::super::account::{AccountTarget, DeleteFlow};
+        let (settings, cx) = dropdown_window(cx, true);
+        settings.update(cx, |this, cx| {
+            this.select_section(Section::Account, cx);
+            this.account.info = Some(crate::backend::MapleAccount {
+                user_id: "u".into(),
+                email: Some("a@b.c".into()),
+                name: None,
+                email_verified: true,
+                login_method: crate::backend::MapleLoginMethod::Email,
+                created_at: String::new(),
+            });
+            assert!(
+                this.visible_application_targets()
+                    .contains(&SettingsTarget::Account(AccountTarget::DeleteStart)),
+                "the quiet row is reachable"
+            );
+            this.begin_account_deletion(cx);
+            assert_eq!(
+                this.visible_application_targets(),
+                vec![
+                    SettingsTarget::Account(AccountTarget::DeleteAcknowledge),
+                    SettingsTarget::Account(AccountTarget::DeleteCancel),
+                    SettingsTarget::Account(AccountTarget::DeleteRequestCode),
+                ],
+                "only the dialog's controls while it is open"
+            );
+        });
+        cx.run_until_parked();
+        assert!(cx.debug_bounds("account-delete-dialog").is_some());
+        cx.update(|window, app| {
+            settings.update(app, |this, cx| {
+                let ack = this.account.delete_ack.read(cx).focus_handle(cx);
+                assert!(
+                    ack.is_focused(window),
+                    "the acknowledgement field is focused"
+                );
+                this.account
+                    .delete_ack
+                    .update(cx, |input, cx| input.set_text("DEL", cx));
+            });
+        });
+
+        // Escape before a code is emailed cancels and clears the field. With
+        // Application Vim on, the first Escape leaves the text field (as in
+        // every Settings field); the second reaches the dialog.
+        cx.simulate_keystrokes("escape escape");
+        cx.run_until_parked();
+        settings.update(cx, |this, cx| {
+            assert_eq!(this.account.delete, DeleteFlow::Idle);
+            assert!(this.account.delete_ack.read(cx).text().is_empty());
+        });
+        assert!(cx.debug_bounds("account-delete-dialog").is_none());
+
+        // After the code is emailed, a light dismissal keeps the flow; only
+        // Cancel ends it. A busy flow ignores both.
+        settings.update(cx, |this, cx| {
+            this.account.delete = DeleteFlow::CodeSent {
+                secret: "s".to_string(),
+            };
+            this.dismiss_delete_dialog(cx);
+            assert!(matches!(this.account.delete, DeleteFlow::CodeSent { .. }));
+            this.account.delete_busy = true;
+            this.cancel_account_deletion(cx);
+            assert!(matches!(this.account.delete, DeleteFlow::CodeSent { .. }));
+            this.account.delete_busy = false;
+            this.cancel_account_deletion(cx);
+            assert_eq!(this.account.delete, DeleteFlow::Idle);
         });
     }
 

@@ -209,20 +209,7 @@ impl SettingsScreen {
         }
         targets.push(SettingsTarget::Account(AccountTarget::SignOut));
         if self.account.info.is_some() {
-            let delete = match self.account.delete {
-                DeleteFlow::Idle => vec![AccountTarget::DeleteStart],
-                DeleteFlow::Acknowledging => vec![
-                    AccountTarget::DeleteAcknowledge,
-                    AccountTarget::DeleteRequestCode,
-                    AccountTarget::DeleteCancel,
-                ],
-                DeleteFlow::CodeSent { .. } => vec![
-                    AccountTarget::DeleteCode,
-                    AccountTarget::DeleteConfirm,
-                    AccountTarget::DeleteCancel,
-                ],
-            };
-            targets.extend(delete.into_iter().map(SettingsTarget::Account));
+            targets.push(SettingsTarget::Account(AccountTarget::DeleteStart));
         }
         targets
     }
@@ -283,6 +270,36 @@ impl SettingsScreen {
             .update(cx, |input, cx| input.clear(cx));
         self.reconcile_application_vim_target();
         cx.notify();
+    }
+
+    /// The deletion dialog's controls, in display order; the only targets
+    /// while it is open.
+    pub(super) fn delete_dialog_targets(&self) -> Vec<SettingsTarget> {
+        match self.account.delete {
+            DeleteFlow::Idle => Vec::new(),
+            DeleteFlow::Acknowledging => vec![
+                AccountTarget::DeleteAcknowledge,
+                AccountTarget::DeleteCancel,
+                AccountTarget::DeleteRequestCode,
+            ],
+            DeleteFlow::CodeSent { .. } => vec![
+                AccountTarget::DeleteCode,
+                AccountTarget::DeleteCancel,
+                AccountTarget::DeleteConfirm,
+            ],
+        }
+        .into_iter()
+        .map(SettingsTarget::Account)
+        .collect()
+    }
+
+    /// Escape or a backdrop click. Before a code is emailed this is a plain
+    /// cancel; after it, the code is real and a stray click must not throw
+    /// it away, so only the explicit Cancel button ends the flow.
+    pub(super) fn dismiss_delete_dialog(&mut self, cx: &mut Context<Self>) {
+        if self.account.delete == DeleteFlow::Acknowledging {
+            self.cancel_account_deletion(cx);
+        }
     }
 
     /// Step one: the user typed DELETE; ask the server to email a code.
@@ -643,7 +660,7 @@ impl SettingsScreen {
                 .justify_center()
                 .on_mouse_down(
                     gpui::MouseButton::Left,
-                    cx.listener(|this, _event, _window, cx| this.cancel_account_deletion(cx)),
+                    cx.listener(|this, _event, _window, cx| this.dismiss_delete_dialog(cx)),
                 )
                 .child(
                     div()
@@ -672,7 +689,7 @@ impl SettingsScreen {
                                     && !event.keystroke.modifiers.modified()
                                 {
                                     cx.stop_propagation();
-                                    this.cancel_account_deletion(cx);
+                                    this.dismiss_delete_dialog(cx);
                                 }
                             },
                         ))
