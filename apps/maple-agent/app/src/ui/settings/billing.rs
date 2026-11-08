@@ -33,8 +33,9 @@ pub(super) struct BillingState {
     /// True while a portal or checkout link is being minted.
     pub(super) busy: bool,
     pub(super) notice: Option<UiText>,
-    /// A portal or checkout tab is open; refetch when the window comes back.
-    pub(super) awaiting_browser: bool,
+    /// When a portal or checkout tab was opened. While recent, every return
+    /// to the window refetches, since payment and webhooks take their time.
+    pub(super) awaiting_browser: Option<std::time::Instant>,
     pub(super) credits: super::api_credits::CreditsState,
 }
 
@@ -50,7 +51,7 @@ impl BillingState {
             products: None,
             busy: false,
             notice: None,
-            awaiting_browser: false,
+            awaiting_browser: None,
             credits: super::api_credits::CreditsState::new(
                 application_vim_enabled,
                 application_focus,
@@ -262,6 +263,26 @@ impl SettingsScreen {
         cx.notify();
     }
 
+    /// How long after a portal or checkout handoff a return to the window
+    /// still refetches billing.
+    pub(super) const BROWSER_HANDOFF_WINDOW: std::time::Duration =
+        std::time::Duration::from_secs(10 * 60);
+
+    /// The window came back to the front. If a browser handoff is recent,
+    /// refetch billing, keeping the notice that explains what was opened.
+    pub(super) fn on_window_activated(&mut self, cx: &mut Context<Self>) {
+        let Some(since) = self.billing.awaiting_browser else {
+            return;
+        };
+        if since.elapsed() > Self::BROWSER_HANDOFF_WINDOW {
+            self.billing.awaiting_browser = None;
+            return;
+        }
+        self.load_billing(cx);
+        self.load_plan(cx);
+        cx.notify();
+    }
+
     pub(super) fn open_billing_portal(&mut self, cx: &mut Context<Self>) {
         if self.billing.busy {
             return;
@@ -276,7 +297,7 @@ impl SettingsScreen {
             cx,
             |this, result, cx| {
                 this.billing.busy = false;
-                this.billing.awaiting_browser = result.is_ok();
+                this.billing.awaiting_browser = result.is_ok().then(std::time::Instant::now);
                 this.billing.notice = Some(match result {
                     Ok(()) => UiText::key("settings-billing-opened-the-subscription-portal-in-your-browser-refresh-after-maki"),
                     Err(message) => message.into(),
@@ -327,7 +348,7 @@ impl SettingsScreen {
                     cx,
                     |this, result, cx| {
                         this.billing.busy = false;
-                        this.billing.awaiting_browser = result.is_ok();
+                        this.billing.awaiting_browser = result.is_ok().then(std::time::Instant::now);
                         this.billing.notice = Some(match result {
                             Ok(()) => UiText::key("settings-billing-opened-checkout-in-your-browser-refresh-after-paying-to-see-the-n"),
                             Err(message) => message.into(),

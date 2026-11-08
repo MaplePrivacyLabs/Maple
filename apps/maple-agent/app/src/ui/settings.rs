@@ -1734,6 +1734,12 @@ impl SettingsScreen {
         if section == Section::Api {
             self.refresh_local_api_status(cx);
         }
+        // Billing changes in a browser tab or on another device; refetch on
+        // every visit rather than only when Settings opened.
+        if matches!(section, Section::Billing | Section::Usage) {
+            self.load_billing(cx);
+            self.load_plan(cx);
+        }
         self.remote_screen.update(cx, |screen, cx| {
             screen.set_active(section == Section::Remote, cx)
         });
@@ -1774,10 +1780,8 @@ impl Render for SettingsScreen {
         if self.activation_subscription.is_none() {
             self.activation_subscription =
                 Some(cx.observe_window_activation(window, |this, window, cx| {
-                    if window.is_window_active()
-                        && std::mem::take(&mut this.billing.awaiting_browser)
-                    {
-                        this.refresh_billing(cx);
+                    if window.is_window_active() {
+                        this.on_window_activated(cx);
                     }
                 }));
         }
@@ -2153,7 +2157,8 @@ impl SettingsScreen {
         }
         #[cfg(feature = "acp")]
         {
-            let refresh = self.page_refresh_button("developer-refresh", cx);
+            let refresh = (self.developer_tab == DeveloperTab::Api)
+                .then(|| self.page_refresh_button("developer-refresh", cx));
             let tab_button = |tab: DeveloperTab, id: &'static str, label: gpui::SharedString| {
                 self.application_target(
                     move || SettingsTarget::DeveloperTab(tab),
@@ -2181,7 +2186,7 @@ impl SettingsScreen {
                             &tr("settings-section-developer"),
                             &tr("settings-developer-subtitle"),
                         ))
-                        .child(refresh),
+                        .children(refresh),
                 )
                 .child(
                     div()

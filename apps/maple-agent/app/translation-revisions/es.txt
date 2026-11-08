@@ -1233,7 +1233,7 @@ settings-local-api-connect-help 9904707736f2a3f4
 settings-local-api-copy-local-api-base-url 824993b47e345033
 settings-local-api-could-not-read-the-local-api-status-reconnect-to-this-computer-an 981d1b5a8767d73b
 settings-local-api-could-not-start bf3ca2a45bea052d
-settings-local-api-could-not-update-the-local-api-refresh-its-status-and-try-again 6797cfe002ebfeb8
+settings-local-api-could-not-update-the-local-api-refresh-its-status-and-try-again 2e750f20398438ca
 settings-local-api-enable-local-api-on-this-computer 0c6a8c5ee1f846d6
 settings-local-api-enter-a-port-between-1-and-65535 f1264fa1cd04856b
 settings-local-api-failed-help bdaa6fd187cec17e

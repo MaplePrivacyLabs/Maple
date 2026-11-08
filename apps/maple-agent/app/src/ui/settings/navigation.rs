@@ -203,11 +203,14 @@ impl SettingsScreen {
             Section::Api => {
                 #[cfg(feature = "acp")]
                 {
-                    let mut targets = vec![
-                        SettingsTarget::PageRefresh,
+                    let mut targets = Vec::new();
+                    if self.developer_tab == DeveloperTab::Api {
+                        targets.push(SettingsTarget::PageRefresh);
+                    }
+                    targets.extend([
                         SettingsTarget::DeveloperTab(DeveloperTab::Api),
                         SettingsTarget::DeveloperTab(DeveloperTab::Acp),
-                    ];
+                    ]);
                     targets.extend(match self.developer_tab {
                         DeveloperTab::Api => self.api_targets(),
                         DeveloperTab::Acp => self.acp_targets(),
@@ -1610,6 +1613,48 @@ mod tests {
                 this.move_application_selection(1, 1, window, cx);
                 this.select_application_edge(false, window, cx);
             });
+        });
+    }
+
+    /// Coming back from a portal or checkout tab refetches billing while the
+    /// handoff is recent; otherwise activation does nothing.
+    #[gpui::test]
+    fn window_activation_refetches_billing_only_after_a_recent_handoff(cx: &mut TestAppContext) {
+        let (settings, cx) = dropdown_window(cx, false);
+        cx.run_until_parked();
+
+        // No handoff: nothing is fetched (the dead test backend would record
+        // an error).
+        settings.update(cx, |this, cx| {
+            this.billing.status_error = None;
+            this.billing.awaiting_browser = None;
+            this.on_window_activated(cx);
+        });
+        cx.run_until_parked();
+        settings.update(cx, |this, _| assert!(this.billing.status_error.is_none()));
+
+        // A stale handoff is dropped without a fetch.
+        settings.update(cx, |this, cx| {
+            this.billing.awaiting_browser =
+                Some(std::time::Instant::now() - SettingsScreen::BROWSER_HANDOFF_WINDOW * 2);
+            this.on_window_activated(cx);
+            assert!(this.billing.awaiting_browser.is_none());
+        });
+        cx.run_until_parked();
+        settings.update(cx, |this, _| assert!(this.billing.status_error.is_none()));
+
+        // A recent handoff fetches, keeps the notice, and stays armed for the
+        // next return.
+        settings.update(cx, |this, cx| {
+            this.billing.awaiting_browser = Some(std::time::Instant::now());
+            this.billing.notice = Some(crate::ui::i18n::UiText::from("opened"));
+            this.on_window_activated(cx);
+        });
+        cx.run_until_parked();
+        settings.update(cx, |this, _| {
+            assert!(this.billing.status_error.is_some(), "a billing fetch ran");
+            assert!(this.billing.notice.is_some(), "the handoff notice stays");
+            assert!(this.billing.awaiting_browser.is_some());
         });
     }
 
