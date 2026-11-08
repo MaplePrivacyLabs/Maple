@@ -4,7 +4,7 @@
 
 use gpui::{
     Context, Div, InteractiveElement, ParentElement, SharedString, StatefulInteractiveElement,
-    Styled, div, prelude::FluentBuilder, px,
+    Styled, div, point, prelude::FluentBuilder, px,
 };
 use maple_agent::agent::AgentQueuedMessage;
 
@@ -12,6 +12,7 @@ use super::{COMPOSER_PLACEHOLDER, ChatScreen, QUEUE_EDIT_PLACEHOLDER, QueueEdit}
 use crate::backend::QueuedMessageRequest;
 use crate::ui::i18n::{UiText, tr};
 use crate::ui::icons::icon;
+use crate::ui::motion;
 use crate::ui::task::Failure as UiFailure;
 use crate::ui::theme;
 
@@ -369,7 +370,10 @@ impl ChatScreen {
                     } else {
                         self.queue_previews.get(index).cloned().unwrap_or_default()
                     };
-                    div()
+                    // A chip rises in when its message is queued and
+                    // leaves at once.
+                    let chip_id = SharedString::from(format!("queue-chip-{}", item.queue_id));
+                    let chip = div()
                         .flex()
                         .items_center()
                         .gap_2()
@@ -447,7 +451,8 @@ impl ChatScreen {
                                     },
                                 )),
                             )
-                        })
+                        });
+                    motion::slide_in(chip, chip_id, motion::ENTER, point(px(0.), motion::RISE))
                 })),
         )
     }
