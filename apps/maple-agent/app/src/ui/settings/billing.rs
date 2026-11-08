@@ -4,7 +4,10 @@
 use crate::ui::i18n::{UiText, tr};
 use gpui::{Context, Div, div, prelude::*};
 
-use super::{SettingsScreen, SettingsTarget, page_header, plan_card, subsection_title};
+use super::{
+    Section, SettingsScreen, SettingsTarget, info_row_content, page_header, plan_card,
+    subsection_title,
+};
 use crate::billing::{BillingStatus, BillingStatusExt, PlanTier, Product};
 use crate::ui::theme;
 use crate::ui::widgets;
@@ -14,6 +17,8 @@ use crate::ui::widgets;
 pub(super) enum BillingTarget {
     Refresh,
     ManageSubscription,
+    /// Usage → Plan & Billing.
+    ManagePlan,
     /// Checkout, or the web pricing page for plans this app cannot start.
     Product(String),
     Credits(super::api_credits::CreditsTarget),
@@ -171,9 +176,80 @@ impl SettingsScreen {
         match target {
             BillingTarget::Refresh => self.refresh_billing(cx),
             BillingTarget::ManageSubscription => self.open_billing_portal(cx),
+            BillingTarget::ManagePlan => self.select_section(Section::Billing, cx),
             BillingTarget::Product(id) => self.choose_product(&id, cx),
             BillingTarget::Credits(target) => self.activate_credits_target(target, window, cx),
         }
+    }
+
+    /// Usage: the plan meter and extra-credit balance at a glance; plan
+    /// changes and purchases stay on Plan & Billing.
+    pub(super) fn render_usage_pane(&self, cx: &mut Context<Self>) -> Div {
+        let mut pane = div().flex().flex_col().gap_4().child(
+            div()
+                .flex()
+                .items_start()
+                .justify_between()
+                .gap_4()
+                .child(page_header(
+                    &tr("settings-section-usage"),
+                    &tr("settings-usage-subtitle"),
+                ))
+                .child(
+                    self.application_target(
+                        || SettingsTarget::Billing(BillingTarget::Refresh),
+                        widgets::ghost_button("usage-refresh")
+                            .py_1p5()
+                            .on_click(cx.listener(|this, _event, _window, cx| {
+                                this.refresh_billing(cx);
+                            }))
+                            .child(tr("settings-billing-refresh")),
+                    ),
+                ),
+        );
+        pane = pane.child(subsection_title(&tr("settings-billing-plan")));
+        pane = pane.child(match &self.plan {
+            Some(usage) => plan_card(usage, &self.messages).into_any_element(),
+            None => div()
+                .text_sm()
+                .text_color(gpui::rgb(theme::text_muted()))
+                .child(tr("settings-settings-plan-usage-unavailable"))
+                .into_any_element(),
+        });
+        let rows = vec![
+            info_row_content(
+                &tr("settings-usage-extra-credits"),
+                self.billing.credits.balance_label(),
+            )
+            .into_any_element(),
+            div()
+                .text_xs()
+                .text_color(gpui::rgb(theme::text_muted()))
+                .child(gpui::text!(tr("settings-usage-what-counts")))
+                .into_any_element(),
+            self.application_target(
+                || SettingsTarget::Billing(BillingTarget::ManagePlan),
+                div()
+                    .flex()
+                    .items_center()
+                    .justify_between()
+                    .gap_4()
+                    .child(super::setting_copy(
+                        tr("settings-usage-manage-plan"),
+                        tr("settings-usage-manage-plan-description"),
+                    ))
+                    .child(
+                        widgets::secondary_button("usage-manage-plan")
+                            .flex_none()
+                            .py_1p5()
+                            .on_click(cx.listener(|this, _event, _window, cx| {
+                                this.select_section(Section::Billing, cx);
+                            }))
+                            .child(tr("settings-usage-manage-plan")),
+                    ),
+            ),
+        ];
+        pane.child(widgets::card_stack(rows))
     }
 
     pub(super) fn refresh_billing(&mut self, cx: &mut Context<Self>) {
@@ -282,15 +358,6 @@ impl SettingsScreen {
                     ),
                 ),
         );
-        pane = pane.child(subsection_title(&tr("settings-billing-plan")));
-        pane = pane.child(match &self.plan {
-            Some(usage) => plan_card(usage, &self.messages).into_any_element(),
-            None => div()
-                .text_sm()
-                .text_color(gpui::rgb(theme::text_muted()))
-                .child(tr("settings-settings-plan-usage-unavailable"))
-                .into_any_element(),
-        });
         let Some(status) = self.billing.status.as_ref() else {
             return pane.child(
                 div()

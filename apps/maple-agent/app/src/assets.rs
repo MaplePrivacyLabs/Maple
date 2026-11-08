@@ -63,6 +63,7 @@ assets!(
     "icons/folder-open.svg",
     "icons/folder-plus.svg",
     "icons/folder.svg",
+    "icons/gauge.svg",
     "icons/globe.svg",
     "icons/image.svg",
     "icons/info.svg",

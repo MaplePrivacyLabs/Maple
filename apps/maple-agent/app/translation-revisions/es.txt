@@ -1118,7 +1118,7 @@ settings-billing-price-period 6a6d7fda8407746d
 settings-billing-refresh f35575422c1a279a
 settings-billing-renews d7781c8de40ea63a
 settings-billing-see-on-the-web 8ade850491fa25b1
-settings-billing-subtitle a1d561017f73a3d4
+settings-billing-subtitle 0da2f2c4823dd377
 settings-billing-trial 2701250015fde84a
 settings-billing-week 4226c1722e65fa58
 settings-billing-year 1d3c7336330bf222
@@ -1217,13 +1217,14 @@ settings-integrations-no-servers f72c46d18bd131da
 settings-keywords-about 14eb017c25602e9d
 settings-keywords-account 291c31da702e369d
 settings-keywords-appearance 2810172f7551c986
-settings-keywords-billing b8e354af7ac930b3
+settings-keywords-billing 2f018149058b669c
 settings-keywords-developer 136446487145060e
 settings-keywords-general f3778d78ab2ea019
 settings-keywords-integrations 392c764146f2d901
 settings-keywords-prompt 529c150f4b44ddb3
 settings-keywords-remote 7c8f31884b6425d0
 settings-keywords-shortcuts 9fcdf7d586f8ae1a
+settings-keywords-usage 54cbc174f526c678
 settings-language 09f155342d72d6e2
 settings-language-description 981c7b5af9832822
 settings-language-system 462d9392f9989aba
@@ -1513,6 +1514,7 @@ settings-section-integrations c6934bf244517566
 settings-section-prompt c9fc661d55ad03a4
 settings-section-remote 932b0e0770174e06
 settings-section-shortcuts b3bd3507768f51d7
+settings-section-usage 54debe827b73f10e
 settings-sections 6d2f1a3d9e69e42f
 settings-server-exists f5a24b98248ad68c
 settings-settings-a-shortcut-can-contain-at-most-four-strokes 9ff0e2ea21d2e63d
@@ -1850,8 +1852,13 @@ settings-update-relaunch d31b94df570dbf10
 settings-update-restart f01c0c4126987b54
 settings-update-restart-required bda4c6d85ae259f7
 settings-update-version-status cf31ce549c2c26fe
+settings-usage-extra-credits 7a5f16171a844f4d
+settings-usage-manage-plan 6c05816c233b898f
+settings-usage-manage-plan-description 1e1d6e1f1569fc11
 settings-usage-percent b1b0eb69f5dafec4
 settings-usage-resets 77d7a82cc2e74bd0
+settings-usage-subtitle 543818788d50dfd5
+settings-usage-what-counts 26f309694a7c1345
 settings-voice a957f09855daa29c
 settings-voice-ar-male 43ca6b9f79a1f37d
 settings-voice-casual-female 15bc306994250c1a

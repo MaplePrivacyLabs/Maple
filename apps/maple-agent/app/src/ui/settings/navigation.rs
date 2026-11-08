@@ -182,6 +182,10 @@ impl SettingsScreen {
             .map(SettingsTarget::Appearance)
             .collect(),
             Section::Account => self.account_targets(),
+            Section::Usage => vec![
+                SettingsTarget::Billing(BillingTarget::Refresh),
+                SettingsTarget::Billing(BillingTarget::ManagePlan),
+            ],
             Section::Billing => self.billing_targets(),
             Section::Api => {
                 #[cfg(feature = "acp")]
@@ -252,11 +256,17 @@ impl SettingsScreen {
         }
     }
 
+    /// Re-derive the Application Vim target after the visible controls
+    /// changed. Data loads call this from background tasks, so it must not
+    /// move a sidebar cursor the user has parked on another section: only the
+    /// pane region is bound to the selected section.
     pub(super) fn reconcile_application_vim_target(&mut self) {
         if !self.settings.application_vim_enabled {
             return;
         }
-        self.application_vim.section = self.section;
+        if self.application_vim.region == SettingsRegion::Pane {
+            self.application_vim.section = self.section;
+        }
         let targets = self.visible_application_targets();
         if self
             .application_vim
@@ -1458,6 +1468,26 @@ mod tests {
         });
     }
 
+    /// Background loads (billing, profile, keys…) re-reconcile the Vim
+    /// target when they land. That must not yank a sidebar cursor the user
+    /// moved away from the selected section back onto it.
+    #[gpui::test]
+    fn data_loads_keep_the_sidebar_vim_cursor_where_the_user_left_it(cx: &mut TestAppContext) {
+        let (settings, cx) = dropdown_window(cx, true);
+        settings.update(cx, |this, _| {
+            assert_eq!(this.section, Section::General);
+            this.application_vim.region = SettingsRegion::Navigation;
+            this.application_vim.section = Section::Appearance;
+
+            this.reconcile_application_vim_target();
+            assert_eq!(this.application_vim.section, Section::Appearance);
+
+            this.application_vim.region = SettingsRegion::Pane;
+            this.reconcile_application_vim_target();
+            assert_eq!(this.application_vim.section, Section::General);
+        });
+    }
+
     #[gpui::test]
     fn appearance_segmented_theme_switches_on_pointer_and_vim_activation(cx: &mut TestAppContext) {
         let _guard = crate::settings::SETTINGS_IO_LOCK.lock();
@@ -1590,7 +1620,7 @@ mod tests {
         let (settings, cx) = dropdown_window(cx, false);
         for (query, expected) in [
             ("privacy", Section::Account),
-            ("usage", Section::Billing),
+            ("usage", Section::Usage),
             ("mcp", Section::Integrations),
             ("acp", Section::Api),
             ("theme", Section::Appearance),

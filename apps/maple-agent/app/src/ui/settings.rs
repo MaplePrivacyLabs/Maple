@@ -81,6 +81,7 @@ pub enum Section {
     Api,
     Remote,
     Account,
+    Usage,
     Billing,
     About,
 }
@@ -122,6 +123,7 @@ impl Section {
             Self::Api => "API",
             Self::Remote => "Remote computers",
             Self::Account => "Account",
+            Self::Usage => "Usage",
             Self::Billing => "Billing",
             Self::About => "About",
         }
@@ -137,6 +139,7 @@ impl Section {
             Self::Api => "terminal",
             Self::Remote => "monitor",
             Self::Account => "shield-check",
+            Self::Usage => "gauge",
             Self::Billing => "credit-card",
             Self::About => "info",
         }
@@ -148,7 +151,7 @@ impl Section {
                 Some(NavGroup::Workspace)
             }
             Self::Integrations | Self::Api | Self::Remote => Some(NavGroup::Connections),
-            Self::Account | Self::Billing => Some(NavGroup::Account),
+            Self::Account | Self::Usage | Self::Billing => Some(NavGroup::Account),
             Self::About => None,
         }
     }
@@ -166,6 +169,7 @@ impl Section {
             Self::Api => "settings-section-api",
             Self::Remote => "settings-section-remote",
             Self::Account => "settings-section-account",
+            Self::Usage => "settings-section-usage",
             Self::Billing => "settings-section-billing",
             Self::About => "settings-section-about",
         })
@@ -190,6 +194,7 @@ impl Section {
                 "settings-remote-work-on-another-computer-or-allow-a-paired-computer-to-work-on-th"
             }
             Self::Account => "settings-account-subtitle",
+            Self::Usage => "settings-usage-subtitle",
             Self::Billing => "settings-billing-subtitle",
             Self::About => "settings-about-subtitle",
         })
@@ -207,6 +212,7 @@ impl Section {
             Self::Api => "settings-keywords-developer",
             Self::Remote => "settings-keywords-remote",
             Self::Account => "settings-keywords-account",
+            Self::Usage => "settings-keywords-usage",
             Self::Billing => "settings-keywords-billing",
             Self::About => "settings-keywords-about",
         })
@@ -221,6 +227,7 @@ impl Section {
         Self::Api,
         Self::Remote,
         Self::Account,
+        Self::Usage,
         Self::Billing,
         Self::About,
     ];
@@ -2066,6 +2073,9 @@ impl SettingsScreen {
             }
             Section::Account => {
                 pane = pane.child(self.render_account_pane(cx));
+            }
+            Section::Usage => {
+                pane = pane.child(self.render_usage_pane(cx));
             }
             Section::Billing => {
                 pane = pane.child(self.render_billing_pane(cx));
