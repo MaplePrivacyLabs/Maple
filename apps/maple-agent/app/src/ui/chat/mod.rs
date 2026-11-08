@@ -570,6 +570,8 @@ pub struct ChatScreen {
     /// The effort slider's motion, kept while its popover is closed so a
     /// model with other levels glides into place when it reopens.
     effort_slider: std::rc::Rc<std::cell::RefCell<crate::ui::effort_slider::EffortSliderState>>,
+    /// Resets so far; each one spins the reset icon back once.
+    effort_reset_spins: usize,
     /// Desktop notifications enabled (settings).
     notify_enabled: bool,
     /// Local-store policy, independent of the selected execution computer.
@@ -1490,6 +1492,7 @@ impl ChatScreen {
             effort_preview: None,
             effort_return: false,
             effort_slider: Default::default(),
+            effort_reset_spins: 0,
             notify_enabled: settings.desktop_notifications,
             notify_details: settings.notification_details_enabled(),
             window_active: true,

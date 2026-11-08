@@ -1,15 +1,28 @@
 //! The model chip's popover: how hard the selected model thinks, on a
 //! slider sized to the levels that model offers, with the model's name
 //! above it as the way to another model.
+//!
+//! Changes of state move rather than swap: the level's name morphs letter
+//! by letter into the next one, the brain gives a small pulse as the level
+//! lands, reset spins back, and the whole popover rises in as it opens.
+
+use std::time::Duration;
+
+use gpui::{Animation, AnimationExt as _, Transformation};
 
 use super::thinking::thinking_label;
 use super::*;
 use crate::ui::effort_slider::{effort_slider, heat_color};
 use crate::ui::i18n::tr;
 use crate::ui::icons::{icon, spinner};
+use crate::ui::morph_text::morph_text;
 use crate::ui::popup::Menu;
 
 const POPOVER_WIDTH: gpui::Pixels = px(300.);
+/// The brain's pulse as a level lands.
+const PULSE: Duration = Duration::from_millis(420);
+/// Reset's spin back.
+const SPIN: Duration = Duration::from_millis(560);
 
 /// A level's place on one scale shared by every model, from no thinking
 /// (0) to the most a model offers (1). The slider spreads a model's own
@@ -110,6 +123,7 @@ impl ChatScreen {
 
     fn reset_effort(&mut self, cx: &mut Context<Self>) {
         if let Some(level) = self.effort_levels().and_then(recommended_level) {
+            self.effort_reset_spins += 1;
             self.pick_thinking(level, cx);
         }
     }
@@ -155,19 +169,34 @@ impl ChatScreen {
             .map(|model| SharedString::from(self.model_label(model).to_string()))
             .unwrap_or_else(|| tr("chat-model"));
 
+        let landed = shown.map_or(0, |level| level as usize + 1);
         let header = div()
             .flex()
             .items_center()
             .gap_1()
             .child(
-                // What this popover sets, warming with the level.
+                // What this popover sets, warming with the level and giving
+                // a small pulse as one lands.
                 div()
                     .size_8()
                     .flex_none()
                     .flex()
                     .items_center()
                     .justify_center()
-                    .child(icon("brain", px(18.), theme::text_muted()).text_color(title_color)),
+                    .child(
+                        icon("brain", px(18.), theme::text_muted())
+                            .text_color(title_color)
+                            .with_animation(
+                                ("effort-brain", landed),
+                                Animation::new(PULSE).with_easing(gpui::ease_out_quint()),
+                                |brain, delta| {
+                                    let scale = 1. + 0.16 * (std::f32::consts::PI * delta).sin();
+                                    brain.with_transformation(Transformation::scale(gpui::size(
+                                        scale, scale,
+                                    )))
+                                },
+                            ),
+                    ),
             )
             .child(
                 div()
@@ -194,18 +223,16 @@ impl ChatScreen {
                         this.open_model_list(cx);
                     }))
                     .child(
-                        // The new level rises into place.
-                        motion::rise_in(
-                            div()
-                                .debug_selector(|| "effort-title".to_string())
-                                .text_size(px(15.))
-                                .line_height(px(20.))
-                                .font_weight(gpui::FontWeight::SEMIBOLD)
-                                .text_color(title_color)
-                                .whitespace_nowrap()
-                                .child(gpui::text!(title.clone())),
-                            ("effort-title", shown.map_or(0, |level| level as usize + 1)),
-                        ),
+                        // The level's name morphs into the next one.
+                        div()
+                            .debug_selector(|| "effort-title".to_string())
+                            .text_size(px(15.))
+                            .line_height(px(20.))
+                            .font_weight(gpui::FontWeight::SEMIBOLD)
+                            .whitespace_nowrap()
+                            .child(
+                                morph_text("effort-title-text", title.clone()).color(title_color),
+                            ),
                     )
                     .child(
                         div()
@@ -219,33 +246,60 @@ impl ChatScreen {
                             .child(icon("chevron-right", px(12.), theme::text_muted())),
                     ),
             )
-            .child(if resettable {
-                widgets::icon_button(
-                    "effort-reset",
+            .child({
+                // Reset spins back as it acts, and rests dimmed at the
+                // recommended level.
+                let reset = icon(
                     "rotate-ccw",
-                    tr("chat-effort-reset"),
                     px(16.),
-                    theme::text_secondary(),
-                )
-                .size_8()
-                .debug_selector(|| "effort-reset".to_string())
-                .on_click(cx.listener(|this, _: &gpui::ClickEvent, _, cx| {
-                    cx.stop_propagation();
-                    this.reset_effort(cx);
-                }))
-                .into_any_element()
-            } else {
-                // Already at the recommended level: the reset rests, dimmed.
+                    if resettable {
+                        theme::text_secondary()
+                    } else {
+                        theme::text_faint()
+                    },
+                );
+                let reset = if self.effort_reset_spins > 0 {
+                    reset
+                        .with_animation(
+                            ("effort-reset-spin", self.effort_reset_spins),
+                            Animation::new(SPIN).with_easing(gpui::ease_out_quint()),
+                            |reset, delta| {
+                                // One turn back, counterclockwise like the icon.
+                                reset.with_transformation(Transformation::rotate(gpui::radians(
+                                    -std::f32::consts::TAU * delta,
+                                )))
+                            },
+                        )
+                        .into_any_element()
+                } else {
+                    reset.into_any_element()
+                };
                 div()
                     .id("effort-reset")
                     .debug_selector(|| "effort-reset".to_string())
+                    .role(gpui::Role::Button)
+                    .aria_label(tr("chat-effort-reset"))
                     .size_8()
                     .flex_none()
                     .flex()
                     .items_center()
                     .justify_center()
-                    .child(icon("rotate-ccw", px(16.), theme::text_faint()))
-                    .into_any_element()
+                    .rounded(theme::RADIUS_SM)
+                    .when(resettable, |button| {
+                        button
+                            .hover(|style| {
+                                style
+                                    .bg(gpui::rgb(theme::bg_sidebar_row_hover()))
+                                    .cursor_pointer()
+                            })
+                            .active(|style| style.bg(gpui::rgb(theme::bg_sidebar_row_selected())))
+                            .tooltip(widgets::tooltip(tr("chat-effort-reset"), None))
+                            .on_click(cx.listener(|this, _: &gpui::ClickEvent, _, cx| {
+                                cx.stop_propagation();
+                                this.reset_effort(cx);
+                            }))
+                    })
+                    .child(reset)
             });
 
         let body = match levels {
@@ -312,15 +366,19 @@ impl ChatScreen {
             // The keyboard's way to the model name's list.
             .on_confirm(|this: &mut Self, _, cx| this.open_model_list(cx))
             .child(
-                div()
-                    .flex()
-                    .flex_col()
-                    .gap_3()
-                    .px_1()
-                    .pt_1()
-                    .pb_2()
-                    .child(header)
-                    .child(body),
+                // The popover's content rises in as it opens.
+                motion::rise_in(
+                    div()
+                        .flex()
+                        .flex_col()
+                        .gap_3()
+                        .px_1()
+                        .pt_1()
+                        .pb_2()
+                        .child(header)
+                        .child(body),
+                    "effort-popover-content",
+                ),
             )
     }
 

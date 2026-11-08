@@ -1679,12 +1679,13 @@ fn chip(
                 .when(shrinks, |label| label.min_w_0().truncate())
                 .child(label),
         )
+        // The detail morphs from one value to the next (High to Maximum).
         .children(detail.map(|detail| {
             div()
                 .flex_none()
                 .whitespace_nowrap()
                 .text_color(gpui::rgb(theme::text_muted()))
-                .child(detail)
+                .child(crate::ui::morph_text::morph_text((id, 1usize), detail))
         }))
         .when(chevron, |el| {
             el.child(icon("chevron-down", px(14.), color).flex_none())
