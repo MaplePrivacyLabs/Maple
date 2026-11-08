@@ -12073,6 +12073,8 @@ mod state_tests {
     #[gpui::test]
     fn project_picker_shows_only_three_most_recent_roots(cx: &mut TestAppContext) {
         let (chat, cx) = chat_window(cx, |this, _| {
+            // The folder picker belongs to a new task.
+            this.selected_session = None;
             let roots = [
                 ("old", 1),
                 ("second", 40),
