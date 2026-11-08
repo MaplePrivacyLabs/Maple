@@ -6122,7 +6122,11 @@ impl ChatScreen {
             None => {
                 let index = self.timeline.len();
                 self.timeline_index.insert(item.id.clone(), (index, 0));
-                self.row_motion.arrive(&item.id, motion::now());
+                self.row_motion.arrive(
+                    &item.id,
+                    motion::now(),
+                    self.list_state.is_following_tail(),
+                );
                 self.timeline.push(item);
                 self.list_state.splice(index..index, 1);
                 if index == 0 {
@@ -6184,6 +6188,38 @@ impl ChatScreen {
         true
     }
 
+    /// Whether the slot under the transcript shows something: the message
+    /// being sent or the waiting dots.
+    fn waiting_slot_shown(&self) -> bool {
+        self.has_send_feedback() || (self.awaiting_first_token && self.is_run_active())
+    }
+
+    /// The slot under the transcript: the message being sent with its
+    /// status line, or the waiting dots, both `WAITING_ROW_HEIGHT` tall so
+    /// one taking over from the other moves nothing.
+    pub(super) fn render_under_transcript(
+        &mut self,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> [Option<gpui::AnyElement>; 2] {
+        let preview = self.render_send_preview(window, cx);
+        let dots = self.awaiting_first_token && self.is_run_active() && !self.has_send_feedback();
+        self.row_motion.slot_on_screen = preview.is_some() || dots;
+        [
+            preview.map(IntoElement::into_any_element),
+            // Same gutter as transcript text so the dots line up.
+            dots.then(|| {
+                div()
+                    .w_full()
+                    .max_w(CONTENT_WIDTH)
+                    .mx_auto()
+                    .px_6()
+                    .child(render_waiting_indicator())
+                    .into_any_element()
+            }),
+        ]
+    }
+
     /// One timeline item arrived for the selected session.
     fn apply_incoming_item(
         &mut self,
@@ -6198,11 +6234,21 @@ impl ChatScreen {
         // work; the summary checks read the stored item after the merge.
         let completed = item.status.as_deref() == Some("completed");
         let is_tool = matches!(item.item_type.as_str(), "tool" | "toolCall");
+        let new_row = !self.timeline_index.contains_key(&item.id);
         self.load_attachment_images_for(&item, cx);
         let plan = plan_entries(&item);
         let Some(index) = self.apply_timeline_item(session_id, item) else {
             return;
         };
+        // The waiting row (or the sent message's status) leaves the slot
+        // under the transcript as this row arrives: the row opens from that
+        // height, so nothing above it jumps.
+        if new_row && self.row_motion.slot_on_screen && !self.waiting_slot_shown() {
+            self.row_motion.slot_on_screen = false;
+            let id = self.timeline[index].id.clone();
+            self.row_motion
+                .open_from_more(&id, transcript::WAITING_ROW_HEIGHT);
+        }
         if let Some(plan) = plan {
             self.update_live_plan(plan, cx);
         }
@@ -7201,6 +7247,8 @@ impl Render for ChatScreen {
         let rise = gpui::point(px(0.), motion::RISE);
         let composer_resize = self.composer_resize_frame(window, cx);
         let main = if empty {
+            // No slot under a transcript here; rows opening from it start at 0.
+            self.row_motion.slot_on_screen = false;
             self.render_empty_state(composer_resize, window, cx)
         } else {
             div()
@@ -7213,20 +7261,10 @@ impl Render for ChatScreen {
                 // takes scrolls the transcript.
                 .on_scroll_wheel(cx.listener(Self::scroll_transcript_from_pane))
                 .child(self.render_transcript(window, cx))
-                .children(self.render_send_preview())
-                .when(
-                    self.awaiting_first_token && self.is_run_active() && !self.has_send_feedback(),
-                    |main| {
-                        // Same gutter as transcript text so the dots line up
-                        main.child(
-                            div()
-                                .w_full()
-                                .max_w(CONTENT_WIDTH)
-                                .mx_auto()
-                                .px_6()
-                                .child(render_waiting_indicator()),
-                        )
-                    },
+                .children(
+                    self.render_under_transcript(window, cx)
+                        .into_iter()
+                        .flatten(),
                 )
                 .when_some(self.current_question(), |container, question| {
                     let input = self.pending_question_input.clone();
