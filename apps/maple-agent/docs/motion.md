@@ -96,9 +96,13 @@ appear only after 300 ms, so fast loads never flash a spinner.
   Settings section).
 - Never fade an ancestor of a cached view (`Entity::cached`, the sidebar):
   gpui replays a cached view's last paint with the opacity it was painted
-  at, so it would stay as faint as its first frame. `swap_in` fades a cover
+  at, so it would stay as faint as its first frame. `swap_in` paints a cover
   in the background color over the content instead, so the content always
-  paints at full opacity.
+  paints at full opacity. The one exception is a fade during which the
+  cached view's bounds or content mask change every frame and change again
+  when it settles: the sidebar collapse clips its column only while it
+  moves, which forces a fresh paint each frame and a full-opacity one at
+  rest.
 - Menus open from their trigger: the panel's fade and slide are drawn inside
   the deferred draw, because opacity does not reach into `deferred()`.
   A menu the keyboard opens appears at once, and keyboard highlight moves

@@ -1006,10 +1006,10 @@ impl Element for HoverBackground {
 /// first paint is never held back. `id` must be stable across frames.
 ///
 /// The content itself always paints at full opacity; a `cover` in the
-/// color behind it, laid over it as its last child, fades out instead.
-/// gpui replays a cached view's last paint, opacity included, so fading
-/// an ancestor of one (the sidebar) would leave it stuck at its first,
-/// nearly transparent frame.
+/// color behind it, painted over its bounds, fades out instead. gpui
+/// replays a cached view's last paint, opacity included, so fading an
+/// ancestor of one (the sidebar) would leave it stuck at its first, nearly
+/// transparent frame.
 pub fn swap_in<E>(
     element: E,
     id: impl Into<ElementId>,
@@ -1017,7 +1017,7 @@ pub fn swap_in<E>(
     cover: impl Into<gpui::Hsla>,
 ) -> Swap<E>
 where
-    E: IntoElement + ParentElement + 'static,
+    E: IntoElement + 'static,
 {
     Swap {
         id: id.into(),
@@ -1040,7 +1040,7 @@ struct Swapped {
     started: Option<Instant>,
 }
 
-impl<E: IntoElement + ParentElement + 'static> IntoElement for Swap<E> {
+impl<E: IntoElement + 'static> IntoElement for Swap<E> {
     type Element = Self;
 
     fn into_element(self) -> Self {
@@ -1048,8 +1048,9 @@ impl<E: IntoElement + ParentElement + 'static> IntoElement for Swap<E> {
     }
 }
 
-impl<E: IntoElement + ParentElement + 'static> Element for Swap<E> {
-    type RequestLayoutState = AnyElement;
+impl<E: IntoElement + 'static> Element for Swap<E> {
+    // The content, and how much of it shows through the cover.
+    type RequestLayoutState = (AnyElement, f32);
     type PrepaintState = ();
 
     fn id(&self) -> Option<ElementId> {
@@ -1066,11 +1067,11 @@ impl<E: IntoElement + ParentElement + 'static> Element for Swap<E> {
         _inspector_id: Option<&InspectorElementId>,
         window: &mut Window,
         cx: &mut App,
-    ) -> (LayoutId, AnyElement) {
+    ) -> (LayoutId, (AnyElement, f32)) {
         let now = now();
         let reduced = cx.reduce_motion();
         let key = &self.key;
-        let opacity = window.with_element_state(
+        let shown = window.with_element_state(
             id.expect("swaps have an id"),
             |state: Option<Swapped>, _| {
                 let mut state = state.unwrap_or_else(|| Swapped {
@@ -1081,31 +1082,24 @@ impl<E: IntoElement + ParentElement + 'static> Element for Swap<E> {
                     state.key = key.clone();
                     state.started = Some(now);
                 }
-                let opacity = state.started.map_or(1., |started| {
+                let shown = state.started.map_or(1., |started| {
                     ease_out_quint(progress(started, REVEAL, now, reduced))
                 });
-                if opacity >= 1. {
+                if shown >= 1. {
                     state.started = None;
                 }
-                (opacity, state)
+                (shown, state)
             },
         );
-        let element = self.element.take().expect("a swap is laid out once");
-        let mut element = if opacity < 1. {
+        if shown < 1. {
             window.request_animation_frame();
-            element
-                .child(
-                    gpui::div()
-                        .absolute()
-                        .inset_0()
-                        .bg(self.cover)
-                        .opacity(1. - opacity),
-                )
-                .into_any_element()
-        } else {
-            element.into_any_element()
-        };
-        (element.request_layout(window, cx), element)
+        }
+        let mut element = self
+            .element
+            .take()
+            .expect("a swap is laid out once")
+            .into_any_element();
+        (element.request_layout(window, cx), (element, shown))
     }
 
     fn prepaint(
@@ -1113,7 +1107,7 @@ impl<E: IntoElement + ParentElement + 'static> Element for Swap<E> {
         _id: Option<&GlobalElementId>,
         _inspector_id: Option<&InspectorElementId>,
         _bounds: Bounds<Pixels>,
-        element: &mut AnyElement,
+        (element, _): &mut (AnyElement, f32),
         window: &mut Window,
         cx: &mut App,
     ) {
@@ -1124,13 +1118,18 @@ impl<E: IntoElement + ParentElement + 'static> Element for Swap<E> {
         &mut self,
         _id: Option<&GlobalElementId>,
         _inspector_id: Option<&InspectorElementId>,
-        _bounds: Bounds<Pixels>,
-        element: &mut AnyElement,
+        bounds: Bounds<Pixels>,
+        (element, shown): &mut (AnyElement, f32),
         _: &mut (),
         window: &mut Window,
         cx: &mut App,
     ) {
         element.paint(window, cx);
+        if *shown < 1. {
+            let mut cover = self.cover;
+            cover.a *= 1. - *shown;
+            window.paint_quad(gpui::fill(bounds, cover));
+        }
     }
 }
 

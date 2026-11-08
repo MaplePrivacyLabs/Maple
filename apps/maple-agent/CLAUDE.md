@@ -127,7 +127,9 @@ reduced motion. Streaming text, typing, and keyboard navigation do not
 animate. Rows inside `gpui::list` time their entrance from view state, not
 element state, so they never replay when scrolled back into view. Never put
 opacity on an ancestor of a cached view: its replayed paint keeps the
-opacity of its first frame. Fade a cover over it instead, as `swap_in` does.
+opacity of its first frame. Paint a cover over it instead, as `swap_in`
+does, unless its bounds or content mask change on every frame of the fade
+and again at rest, as in the sidebar collapse.
 
 ## Accessibility
 
