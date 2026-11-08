@@ -1755,7 +1755,9 @@ async fn auto_runs_clear_calls_and_the_user_decides_the_rest() {
     let harness = Harness::new().await;
     let task = harness.create_task().await;
     let marker = harness.project.path().join("marker");
-    let command = format!("touch {}", marker.display());
+    // Relative to the task's project folder, where `bash` runs. Git Bash on
+    // Windows reads the backslashes of an absolute path as escapes.
+    let command = "touch marker".to_string();
     let touch = || faux_tool_call("bash", json!({ "command": command.clone() }));
 
     // Clear: it runs, and nobody is asked.
