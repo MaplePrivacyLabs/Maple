@@ -28,10 +28,10 @@ pub const TRAFFIC_LIGHT_ROW: Pixels = px(36.);
 /// Back both start here.
 pub const TRAFFIC_LIGHT_TOOLBAR_LEFT: Pixels = px(86.);
 
-/// Height of the title bar row each screen's main pane starts with. The
-/// task header and Settings share it, so the card below starts on one
-/// line on both screens.
-pub const TITLE_BAR_HEIGHT: Pixels = px(40.);
+/// Height of the title bar row at the top of each screen's canvas, as tall
+/// as the traffic lights' row. The task header and Settings share it, so
+/// their content starts on one line on both screens.
+pub const TITLE_BAR_HEIGHT: Pixels = px(36.);
 
 /// Height of the first row of a sidebar column: the task sidebar's
 /// wordmark, Settings' title.

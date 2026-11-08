@@ -1709,9 +1709,9 @@ impl Render for SettingsScreen {
                     .h_full()
                     .flex()
                     .flex_col()
-                    .bg(gpui::rgb(theme::bg_sidebar()))
-                    // The task header's row, with nothing to name: the
-                    // screen's title heads the sidebar instead.
+                    .bg(gpui::rgb(theme::bg_app()))
+                    // The title bar's row, on the canvas: the screen's
+                    // title heads the sidebar instead.
                     .child(crate::ui::titlebar::drag_region(
                         div()
                             .id("settings-header")
@@ -1724,7 +1724,6 @@ impl Render for SettingsScreen {
                             .relative()
                             .flex_1()
                             .min_h_0()
-                            .rounded_tl(theme::RADIUS_LG)
                             .bg(gpui::rgb(theme::bg_app()))
                             .child(self.render_pane(window, cx))
                             .child(crate::ui::scrollbar::scrollbar(
