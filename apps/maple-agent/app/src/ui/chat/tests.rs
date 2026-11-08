@@ -8675,6 +8675,7 @@ mod state_tests {
     /// A press on an item still reaches the intended action.
     #[gpui::test]
     fn test_a_press_on_a_menu_item_reaches_the_item(cx: &mut TestAppContext) {
+        cx.update(|cx| cx.set_reduce_motion(true));
         let (chat, cx) = chat_window(cx, |this, cx| {
             this.sessions = vec![
                 summary("s1", "One"),
@@ -11955,6 +11956,7 @@ mod state_tests {
     #[gpui::test]
     fn test_composer_menu_floats_above_the_composer(cx: &mut TestAppContext) {
         cx.executor().allow_parking();
+        cx.update(|cx| cx.set_reduce_motion(true));
         struct ChatHost {
             chat: Entity<ChatScreen>,
         }

@@ -715,6 +715,7 @@ pub fn hover_background(
         hover: hover.into(),
         highlighted: None,
         revealed: None,
+        instant: false,
         #[cfg(test)]
         observed: None,
         #[cfg(test)]
@@ -730,6 +731,7 @@ pub struct HoverBackground {
     hover: gpui::Hsla,
     highlighted: Option<bool>,
     revealed: Option<bool>,
+    instant: bool,
     #[cfg(test)]
     observed: Option<std::rc::Rc<RefCell<gpui::Fill>>>,
     #[cfg(test)]
@@ -757,6 +759,13 @@ impl HoverBackground {
     /// Native focus styles can still reveal a keyboard target immediately.
     pub fn revealed(mut self, visible: bool) -> Self {
         self.revealed = Some(visible);
+        self
+    }
+
+    /// Settle at once instead of easing, for a highlight the keyboard
+    /// moved: arrow keys inside a menu must not trail behind.
+    pub fn instant(mut self, instant: bool) -> Self {
+        self.instant = instant;
         self
     }
 }
@@ -846,7 +855,7 @@ impl Element for HoverBackground {
         let now = now();
         #[cfg(test)]
         let now = self.test_now.unwrap_or(now);
-        let reduced = cx.reduce_motion();
+        let reduced = cx.reduce_motion() || self.instant;
         let (amount, animating) = window.with_element_state(
             id.expect("hover controls have an id"),
             |state: Option<HoverPlate>, _| {
@@ -914,6 +923,122 @@ impl Element for HoverBackground {
                     .unwrap_or(1.),
             );
         }
+    }
+}
+
+// ---- Content swaps --------------------------------------------------------
+
+/// Content that replaces other content in one place, such as the window's
+/// screen or a Settings section: whenever `key` changes, the new content
+/// fades in over [`REVEAL`]. Its first appearance does not fade, so a
+/// first paint is never held back. `id` must be stable across frames; the
+/// fade sets the element's opacity while it runs.
+pub fn swap_in<E>(element: E, id: impl Into<ElementId>, key: impl Into<ElementId>) -> Swap<E>
+where
+    E: IntoElement + Styled + 'static,
+{
+    Swap {
+        id: id.into(),
+        key: key.into(),
+        element: Some(element),
+    }
+}
+
+pub struct Swap<E> {
+    id: ElementId,
+    key: ElementId,
+    element: Option<E>,
+}
+
+// The key last drawn, and when content under a new key arrived.
+struct Swapped {
+    key: ElementId,
+    started: Option<Instant>,
+}
+
+impl<E: IntoElement + Styled + 'static> IntoElement for Swap<E> {
+    type Element = Self;
+
+    fn into_element(self) -> Self {
+        self
+    }
+}
+
+impl<E: IntoElement + Styled + 'static> Element for Swap<E> {
+    type RequestLayoutState = AnyElement;
+    type PrepaintState = ();
+
+    fn id(&self) -> Option<ElementId> {
+        Some(self.id.clone())
+    }
+
+    fn source_location(&self) -> Option<&'static core::panic::Location<'static>> {
+        None
+    }
+
+    fn request_layout(
+        &mut self,
+        id: Option<&GlobalElementId>,
+        _inspector_id: Option<&InspectorElementId>,
+        window: &mut Window,
+        cx: &mut App,
+    ) -> (LayoutId, AnyElement) {
+        let now = now();
+        let reduced = cx.reduce_motion();
+        let key = &self.key;
+        let opacity = window.with_element_state(
+            id.expect("swaps have an id"),
+            |state: Option<Swapped>, _| {
+                let mut state = state.unwrap_or_else(|| Swapped {
+                    key: key.clone(),
+                    started: None,
+                });
+                if &state.key != key {
+                    state.key = key.clone();
+                    state.started = Some(now);
+                }
+                let opacity = state.started.map_or(1., |started| {
+                    ease_out_quint(progress(started, REVEAL, now, reduced))
+                });
+                if opacity >= 1. {
+                    state.started = None;
+                }
+                (opacity, state)
+            },
+        );
+        let element = self.element.take().expect("a swap is laid out once");
+        let mut element = if opacity < 1. {
+            window.request_animation_frame();
+            element.opacity(opacity).into_any_element()
+        } else {
+            element.into_any_element()
+        };
+        (element.request_layout(window, cx), element)
+    }
+
+    fn prepaint(
+        &mut self,
+        _id: Option<&GlobalElementId>,
+        _inspector_id: Option<&InspectorElementId>,
+        _bounds: Bounds<Pixels>,
+        element: &mut AnyElement,
+        window: &mut Window,
+        cx: &mut App,
+    ) {
+        element.prepaint(window, cx);
+    }
+
+    fn paint(
+        &mut self,
+        _id: Option<&GlobalElementId>,
+        _inspector_id: Option<&InspectorElementId>,
+        _bounds: Bounds<Pixels>,
+        element: &mut AnyElement,
+        _: &mut (),
+        window: &mut Window,
+        cx: &mut App,
+    ) {
+        element.paint(window, cx);
     }
 }
 
