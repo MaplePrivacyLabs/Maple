@@ -12,8 +12,8 @@ use maple_agent::agent::{
 use maple_agent::store::records::{McpDefinition, McpTarget};
 
 use super::{
-    SettingsScreen, SettingsTarget, TextInput, pill_button, spinner, subsection_title, theme,
-    widgets,
+    Section, SettingsScreen, SettingsTarget, TextInput, page_header, spinner, subsection_title,
+    theme, widgets,
 };
 
 /// The pop-up that asks where an app is, for one only the person can find.
@@ -146,13 +146,27 @@ impl SettingsScreen {
         self.catalog_visible = mcp_catalog()
             .iter()
             .filter(|entry| {
-                !is_connected(entry, servers)
-                    && self
-                        .catalog_category
-                        .is_none_or(|category| category == entry.category)
-                    && matches_search(entry, &self.catalog_query)
+                !is_connected(entry, servers) && matches_search(entry, &self.catalog_query)
             })
             .collect();
+    }
+
+    /// The directory in the order the Apps page draws it: by category while
+    /// nothing is searched, otherwise one flat list of matches. Application
+    /// Vim follows the same order.
+    pub(super) fn catalog_display_order(&self) -> Vec<&'static McpCatalogEntry> {
+        if !self.catalog_query.is_empty() {
+            return self.catalog_visible.clone();
+        }
+        McpCatalogCategory::ALL
+            .into_iter()
+            .flat_map(|category| {
+                self.catalog_visible
+                    .iter()
+                    .copied()
+                    .filter(move |entry| entry.category == category)
+            })
+            .collect()
     }
 
     pub(super) fn start_mcp_sign_in(&mut self, request: McpSignIn, cx: &mut Context<Self>) {
@@ -530,24 +544,23 @@ impl SettingsScreen {
         )
     }
 
-    pub(super) fn set_catalog_category(
-        &mut self,
-        category: Option<McpCatalogCategory>,
-        cx: &mut Context<Self>,
-    ) {
-        self.catalog_category = category;
-        self.refresh_catalog();
-        cx.notify();
-    }
-
+    /// One directory row: logo, name, a one-line summary (or the connect
+    /// feedback), and a `+`. `featured` rows sit in the Popular section and
+    /// get their own target so the same app lower down stays distinct.
     fn render_catalog_card(
         &self,
         entry: &'static McpCatalogEntry,
+        featured: bool,
         cx: &mut Context<Self>,
     ) -> gpui::AnyElement {
         let waiting = self.mcp_signing_in.as_deref() == Some(entry.name.as_str());
         let busy = self.mcp_signing_in.is_some() && !waiting;
-        let button_id = gpui::SharedString::from(format!("catalog-connect-{}", entry.id));
+        let prefix = if featured {
+            "catalog-popular"
+        } else {
+            "catalog"
+        };
+        let button_id = gpui::SharedString::from(format!("{prefix}-connect-{}", entry.id));
         let missing = self
             .mcp_app_missing
             .as_ref()
@@ -575,12 +588,17 @@ impl SettingsScreen {
                 ))
                 .child(tr("settings-catalog-cancel"))
         } else {
-            widgets::secondary_button(button_id)
-                .when(busy, |button| button.opacity(0.5))
-                .on_click(cx.listener(move |this, _event, _window, cx| {
-                    this.connect_catalog_entry(&entry.id, cx);
-                }))
-                .child(tr("settings-catalog-connect"))
+            widgets::icon_button(
+                button_id,
+                "plus",
+                tr("settings-catalog-connect"),
+                widgets::ROW_ICON,
+                theme::text_secondary(),
+            )
+            .when(busy, |button| button.opacity(0.5))
+            .on_click(cx.listener(move |this, _event, _window, cx| {
+                this.connect_catalog_entry(&entry.id, cx);
+            }))
         };
         let (detail, detail_color) = match (missing, self.sign_in_error_for(&entry.name)) {
             (Some(missing), _) => {
@@ -602,14 +620,18 @@ impl SettingsScreen {
             (None, Some(error)) => (error.to_string(), theme::status_error()),
             (None, None) => (summary(entry).to_string(), theme::text_secondary()),
         };
-        let card = widgets::card_row()
-            .debug_selector(move || format!("catalog-card-{}", entry.id))
+        let card = div()
+            .debug_selector(move || format!("{prefix}-card-{}", entry.id))
             .flex()
             .items_center()
             .gap_3()
+            .px_2()
+            .py_1p5()
+            .rounded(theme::RADIUS_MD)
+            .hover(|style| style.bg(gpui::rgb(theme::bg_sidebar_row_hover())))
             .child(
                 div()
-                    .size(px(40.))
+                    .size(px(32.))
                     .flex_none()
                     .flex()
                     .items_center()
@@ -621,7 +643,7 @@ impl SettingsScreen {
                     .border_color(gpui::rgb(theme::border_subtle()))
                     .child(
                         gpui::img(logo_path(entry))
-                            .size(px(30.))
+                            .size(px(24.))
                             .rounded(theme::RADIUS_SM),
                     ),
             )
@@ -631,37 +653,44 @@ impl SettingsScreen {
                     .min_w_0()
                     .flex()
                     .flex_col()
-                    .gap_0p5()
                     .child(
                         div()
                             .text_sm()
-                            .font_weight(gpui::FontWeight::SEMIBOLD)
+                            .font_weight(gpui::FontWeight::MEDIUM)
                             .text_color(gpui::rgb(theme::text_primary()))
+                            .truncate()
                             .child(entry.name.clone()),
                     )
                     .child(
                         div()
                             .text_xs()
                             .text_color(gpui::rgb(detail_color))
-                            .line_clamp(3)
+                            .line_clamp(2)
                             .child(detail),
                     ),
             )
             .child(div().flex_none().child(button));
-        self.application_target(|| SettingsTarget::McpCatalog(entry.id.clone()), card)
-            .into_any_element()
+        let id = entry.id.clone();
+        self.application_target(
+            move || {
+                if featured {
+                    SettingsTarget::McpFeatured(id.clone())
+                } else {
+                    SettingsTarget::McpCatalog(id.clone())
+                }
+            },
+            card,
+        )
     }
 
-    /// Jump to the full directory, with search and category cleared so the
-    /// person sees everything.
-    pub(super) fn reveal_catalog(&mut self, cx: &mut Context<Self>) {
-        self.catalog_category = None;
+    /// Open the Apps page with the search cleared, so the person sees the
+    /// whole directory.
+    pub(super) fn open_apps_directory(&mut self, cx: &mut Context<Self>) {
         self.catalog_search
             .update(cx, |input, cx| input.set_text("", cx));
         self.catalog_query.clear();
         self.refresh_catalog();
-        self.catalog_reveal = true;
-        cx.notify();
+        self.select_section(Section::Apps, cx);
     }
 
     /// "Popular apps": a short strip of well-known apps above the built-ins,
@@ -682,9 +711,10 @@ impl SettingsScreen {
                 self.application_target(
                     || SettingsTarget::McpCatalogSeeAll,
                     widgets::ghost_button("catalog-see-all")
+                        .debug_selector(|| "catalog-see-all".into())
                         .py_1()
                         .on_click(cx.listener(|this, _event, _window, cx| {
-                            this.reveal_catalog(cx);
+                            this.open_apps_directory(cx);
                         }))
                         .child(self.messages.get(
                             "settings-catalog-see-all",
@@ -817,65 +847,80 @@ impl SettingsScreen {
         self.application_target(move || SettingsTarget::McpFeatured(entry.id.clone()), tile)
     }
 
-    pub(super) fn render_app_catalog(&self, cx: &mut Context<Self>) -> gpui::Stateful<Div> {
-        let mut section = div()
-            .id("catalog-section")
-            .anchor_scroll(Some(self.catalog_anchor.clone()))
-            .flex()
-            .flex_col()
-            .gap_3()
-            .child(subsection_title(&tr("settings-catalog-apps")));
-        section = section.child(
+    /// The Apps page: the directory grouped by category, Popular first, with
+    /// a search that flattens it into one list of matches.
+    pub(super) fn render_apps_pane(&self, cx: &mut Context<Self>) -> Div {
+        let mut pane = div().flex().flex_col().gap_4().child(
             div()
-                .text_sm()
-                .text_color(gpui::rgb(theme::text_muted()))
-                .child(tr("settings-catalog-intro")),
+                .flex()
+                .items_start()
+                .justify_between()
+                .gap_4()
+                .child(page_header(
+                    &tr("settings-section-apps"),
+                    &tr("settings-catalog-intro"),
+                ))
+                .child(
+                    widgets::input_frame()
+                        .debug_selector(|| "catalog-search".into())
+                        .flex_none()
+                        .w(px(260.))
+                        .text_sm()
+                        .child(self.catalog_search.clone()),
+                ),
         );
-        section = section
-            .child(
-                widgets::input_frame()
-                    .debug_selector(|| "catalog-search".into())
-                    .text_sm()
-                    .child(self.catalog_search.clone()),
-            )
-            .child(
-                div()
-                    .flex()
-                    .flex_wrap()
-                    .gap_2()
-                    .child(pill_button(
-                        "catalog-category-all".to_string(),
-                        tr("settings-catalog-all"),
-                        self.catalog_category.is_none(),
-                        cx.listener(|this, _event, _window, cx| {
-                            this.set_catalog_category(None, cx);
-                        }),
-                    ))
-                    .children(McpCatalogCategory::ALL.into_iter().map(|category| {
-                        pill_button(
-                            format!("catalog-category-{}", category.label()),
-                            category_label(category),
-                            self.catalog_category == Some(category),
-                            cx.listener(move |this, _event, _window, cx| {
-                                this.set_catalog_category(Some(category), cx);
-                            }),
-                        )
-                    })),
-            );
+        if !self.catalog_query.is_empty() {
+            if self.catalog_visible.is_empty() {
+                return pane.child(
+                    div()
+                        .text_sm()
+                        .text_color(gpui::rgb(theme::text_muted()))
+                        .child(tr("settings-catalog-empty")),
+                );
+            }
+            return pane.child(self.render_catalog_grid(&self.catalog_visible, false, cx));
+        }
+        if !self.catalog_featured.is_empty() {
+            pane = pane
+                .child(subsection_title(&tr("settings-catalog-popular")))
+                .child(self.render_catalog_grid(&self.catalog_featured, true, cx));
+        }
+        for category in McpCatalogCategory::ALL {
+            let entries: Vec<&'static McpCatalogEntry> = self
+                .catalog_visible
+                .iter()
+                .copied()
+                .filter(|entry| entry.category == category)
+                .collect();
+            if entries.is_empty() {
+                continue;
+            }
+            pane = pane
+                .child(subsection_title(&category_label(category)))
+                .child(self.render_catalog_grid(&entries, false, cx));
+        }
         if self.catalog_visible.is_empty() {
-            return section.child(
+            pane = pane.child(
                 div()
                     .text_sm()
                     .text_color(gpui::rgb(theme::text_muted()))
-                    .child(tr("settings-catalog-empty")),
+                    .child(tr("settings-catalog-all-connected")),
             );
         }
-        let cards: Vec<_> = self
-            .catalog_visible
-            .iter()
-            .map(|entry| self.render_catalog_card(entry, cx))
-            .collect();
-        section.child(div().grid().grid_cols(2).gap_3().children(cards))
+        pane
+    }
+
+    fn render_catalog_grid(
+        &self,
+        entries: &[&'static McpCatalogEntry],
+        featured: bool,
+        cx: &mut Context<Self>,
+    ) -> Div {
+        div().grid().grid_cols(2).gap_x_6().gap_y_1().children(
+            entries
+                .iter()
+                .map(|entry| self.render_catalog_card(entry, featured, cx)),
+        )
     }
 }
 

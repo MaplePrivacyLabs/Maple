@@ -68,6 +68,7 @@ assets!(
     "icons/image.svg",
     "icons/info.svg",
     "icons/keyboard.svg",
+    "icons/layout-grid.svg",
     "icons/list-filter.svg",
     "icons/loader-circle.svg",
     "icons/lock.svg",

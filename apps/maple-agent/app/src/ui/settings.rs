@@ -77,6 +77,7 @@ pub enum Section {
     Appearance,
     Shortcuts,
     Integrations,
+    Apps,
     Api,
     Remote,
     Account,
@@ -118,6 +119,7 @@ impl Section {
             Self::Appearance => "Appearance",
             Self::Shortcuts => "Keyboard Shortcuts",
             Self::Integrations => "Integrations",
+            Self::Apps => "Apps",
             Self::Api => "API",
             Self::Remote => "Remote computers",
             Self::Account => "Account",
@@ -133,6 +135,7 @@ impl Section {
             Self::Appearance => "palette",
             Self::Shortcuts => "keyboard",
             Self::Integrations => "plug",
+            Self::Apps => "layout-grid",
             Self::Api => "terminal",
             Self::Remote => "monitor",
             Self::Account => "shield-check",
@@ -145,7 +148,9 @@ impl Section {
     fn group(self) -> Option<NavGroup> {
         match self {
             Self::General | Self::Appearance | Self::Shortcuts => Some(NavGroup::Workspace),
-            Self::Integrations | Self::Api | Self::Remote => Some(NavGroup::Connections),
+            Self::Integrations | Self::Apps | Self::Api | Self::Remote => {
+                Some(NavGroup::Connections)
+            }
             Self::Account | Self::Usage | Self::Billing => Some(NavGroup::Account),
             Self::About => None,
         }
@@ -157,6 +162,7 @@ impl Section {
             Self::Appearance => "settings-section-appearance",
             Self::Shortcuts => "settings-section-shortcuts",
             Self::Integrations => "settings-section-integrations",
+            Self::Apps => "settings-section-apps",
             #[cfg(feature = "acp")]
             Self::Api => "settings-section-developer",
             #[cfg(not(feature = "acp"))]
@@ -177,6 +183,7 @@ impl Section {
             Self::Integrations => {
                 "settings-settings-manage-integrations-here-enable-coding-agents-to-make-them-availa"
             }
+            Self::Apps => "settings-catalog-intro",
             #[cfg(feature = "acp")]
             Self::Api => "settings-developer-subtitle",
             #[cfg(not(feature = "acp"))]
@@ -199,6 +206,7 @@ impl Section {
             Self::Appearance => "settings-keywords-appearance",
             Self::Shortcuts => "settings-keywords-shortcuts",
             Self::Integrations => "settings-keywords-integrations",
+            Self::Apps => "settings-keywords-apps",
             Self::Api => "settings-keywords-developer",
             Self::Remote => "settings-keywords-remote",
             Self::Account => "settings-keywords-account",
@@ -213,6 +221,7 @@ impl Section {
         Self::Appearance,
         Self::Shortcuts,
         Self::Integrations,
+        Self::Apps,
         Self::Api,
         Self::Remote,
         Self::Account,
@@ -300,14 +309,10 @@ pub struct SettingsScreen {
     mcp_app_missing: Option<(String, maple_agent::agent::McpAppMissing)>,
     catalog_search: Entity<TextInput>,
     catalog_query: String,
-    catalog_category: Option<maple_agent::agent::McpCatalogCategory>,
     /// The catalog entries showing, worked out when they change.
     catalog_visible: Vec<&'static maple_agent::agent::McpCatalogEntry>,
     /// The handful of well-known apps shown at the top of Integrations.
     catalog_featured: Vec<&'static maple_agent::agent::McpCatalogEntry>,
-    /// Scrolls the full directory into view after "See all".
-    catalog_anchor: ScrollAnchor,
-    catalog_reveal: bool,
     /// Device-local integrations discovered by the runtime; None until loaded.
     integrations: Option<Vec<AgentIntegration>>,
     integration_notice: Option<UiText>,
@@ -661,11 +666,8 @@ impl SettingsScreen {
             mcp_app_missing: None,
             catalog_search,
             catalog_query: String::new(),
-            catalog_category: None,
             catalog_visible: Vec::new(),
             catalog_featured: Vec::new(),
-            catalog_anchor: ScrollAnchor::for_handle(pane_scroll.clone()),
-            catalog_reveal: false,
             integrations: None,
             integration_notice: None,
             integration_saving: HashSet::new(),
@@ -1793,9 +1795,6 @@ impl Render for SettingsScreen {
         if std::mem::take(&mut self.api_keys.reveal_card) {
             self.api_keys.card_anchor.scroll_to(window, cx);
         }
-        if std::mem::take(&mut self.catalog_reveal) {
-            self.catalog_anchor.scroll_to(window, cx);
-        }
         self.focus_mcp_address(window, cx);
         let mcp_address = self.render_mcp_address(window, cx);
         div()
@@ -2088,6 +2087,9 @@ impl SettingsScreen {
             }
             Section::Integrations => {
                 pane = pane.child(self.render_integrations_pane(cx));
+            }
+            Section::Apps => {
+                pane = pane.child(self.render_apps_pane(cx));
             }
             Section::Remote => {
                 pane = pane.child(self.remote_screen.clone());
@@ -2746,21 +2748,15 @@ impl SettingsScreen {
                 &tr("settings-settings-integrations"),
                 &tr("settings-settings-manage-integrations-here-enable-coding-agents-to-make-them-availa"),
             ))
-            .child(
+            .children(self.integrations_backend.remote_host().map(|host| {
                 div()
                     .text_xs()
                     .text_color(gpui::rgb(theme::text_muted()))
-                    .child(match self.integrations_backend.remote_host() {
-                        Some(host) => self
-                            .messages
-                            .get(
-                                "settings-execution-computer",
-                                [("computer", (host[..host.len().min(10)]).to_string().into())],
-                            )
-                            .to_string(),
-                        None => tr("settings-settings-execution-computer-this-computer").to_string(),
-                    }),
-            );
+                    .child(self.messages.get(
+                        "settings-execution-computer",
+                        [("computer", (host[..host.len().min(10)]).to_string().into())],
+                    ))
+            }));
 
         if let Some(notice) = &self.integration_notice {
             pane = pane.child(widgets::notice(
@@ -2814,10 +2810,9 @@ impl SettingsScreen {
             }
         }
 
-        // Connected servers, ending in the row that adds one (Claude/Luma
-        // pattern), so the action sits with the list it extends.
-        pane = pane.child(subsection_title(&tr("settings-settings-connected")));
-        let mut rows: Vec<gpui::AnyElement> = match &self.mcp_servers {
+        // Connected servers, only once there is one to show; the directory
+        // lives on the Apps page, so an empty list needs no placeholder.
+        let connected: Vec<gpui::AnyElement> = match &self.mcp_servers {
             Some(servers) => servers
                 .iter()
                 .map(|server| {
@@ -2906,16 +2901,20 @@ impl SettingsScreen {
                 .collect(),
             None => Vec::new(),
         };
-        if self.mcp_servers.as_ref().is_some_and(Vec::is_empty) {
-            rows.push(
-                div()
-                    .text_sm()
-                    .text_color(gpui::rgb(theme::text_muted()))
-                    .child(gpui::text!(tr("settings-integrations-no-servers")))
-                    .into_any_element(),
-            );
+        if !connected.is_empty() {
+            pane = pane.child(subsection_title(&tr("settings-settings-connected")));
+            pane = pane.child(widgets::card_stack(connected));
         }
-        rows.push(
+
+        // A server of one's own, by address or command.
+        pane = pane.child(subsection_title(&tr("settings-catalog-custom")));
+        pane = pane.child(
+            div()
+                .text_sm()
+                .text_color(gpui::rgb(theme::text_muted()))
+                .child(gpui::text!(tr("settings-catalog-custom-description"))),
+        );
+        let add_row = vec![
             self.application_target(
                 || SettingsTarget::McpAdd,
                 div()
@@ -2944,13 +2943,10 @@ impl SettingsScreen {
                         }
                     }))
                     .child(icon("plus", widgets::ROW_ICON, theme::text_secondary()))
-                    .child(gpui::text!(tr("settings-catalog-custom"))),
+                    .child(gpui::text!(tr("settings-catalog-add-custom"))),
             ),
-        );
-        pane = pane.child(widgets::card_stack(rows));
-
-        // Everything else the user could connect, always on the page.
-        pane.child(self.render_app_catalog(cx))
+        ];
+        pane.child(widgets::card_stack(add_row))
     }
 
     fn render_integration_card(

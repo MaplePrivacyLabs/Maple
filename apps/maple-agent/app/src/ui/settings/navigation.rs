@@ -224,7 +224,7 @@ impl SettingsScreen {
                 .collect(),
             Section::Integrations => {
                 // Display order: the Popular apps strip, built-ins, connected
-                // servers, the add row, then every catalog app.
+                // servers, then the add row. The directory is the Apps page.
                 // Display order: built-ins, connected servers, the add row,
                 // then every catalog app.
                 let mut targets: Vec<SettingsTarget> = Vec::new();
@@ -262,9 +262,22 @@ impl SettingsScreen {
                         .map(|server| SettingsTarget::McpServer(server.name.clone())),
                 );
                 targets.push(SettingsTarget::McpAdd);
+                targets
+            }
+            Section::Apps => {
+                // Display order: Popular, then the directory by category (or
+                // the flat list of matches while searching).
+                let mut targets: Vec<SettingsTarget> = Vec::new();
+                if self.catalog_query.is_empty() {
+                    targets.extend(
+                        self.catalog_featured
+                            .iter()
+                            .map(|entry| SettingsTarget::McpFeatured(entry.id.clone())),
+                    );
+                }
                 targets.extend(
-                    self.catalog_visible
-                        .iter()
+                    self.catalog_display_order()
+                        .into_iter()
                         .map(|entry| SettingsTarget::McpCatalog(entry.id.clone())),
                 );
                 targets
@@ -480,7 +493,7 @@ impl SettingsScreen {
             Some(SettingsTarget::McpCatalog(id) | SettingsTarget::McpFeatured(id)) => {
                 self.connect_catalog_entry(&id, cx)
             }
-            Some(SettingsTarget::McpCatalogSeeAll) => self.reveal_catalog(cx),
+            Some(SettingsTarget::McpCatalogSeeAll) => self.open_apps_directory(cx),
             None => {}
         }
     }
@@ -881,12 +894,26 @@ mod tests {
                         SettingsTarget::McpServer("custom".to_string()),
                         SettingsTarget::McpAdd,
                     ])
+                    .collect::<Vec<_>>()
+            );
+
+            // The Apps page: Popular, then every category in catalog order.
+            this.section = Section::Apps;
+            assert_eq!(
+                this.visible_application_targets(),
+                this.catalog_featured
+                    .iter()
+                    .map(|entry| SettingsTarget::McpFeatured(entry.id.clone()))
                     .chain(
-                        maple_agent::agent::mcp_catalog()
-                            .iter()
+                        this.catalog_display_order()
+                            .into_iter()
                             .map(|entry| SettingsTarget::McpCatalog(entry.id.clone()))
                     )
                     .collect::<Vec<_>>()
+            );
+            assert_eq!(
+                this.catalog_display_order().len(),
+                maple_agent::agent::mcp_catalog().len()
             );
         });
     }
@@ -938,17 +965,19 @@ mod tests {
             );
         });
 
-        // Start from a card whose app is also a strip tile: that is the case
-        // where a shared target would resolve to the tile and jump back up.
+        // On the Apps page, start from a directory row whose app is also in
+        // Popular: a shared target would resolve to the Popular row and jump
+        // back up.
         cx.update(|window, app| {
             settings.update(app, |this, cx| {
-                let index = this
-                    .catalog_visible
+                this.section = Section::Apps;
+                let order = this.catalog_display_order();
+                let index = order
                     .iter()
                     .position(|entry| this.catalog_featured.iter().any(|f| f.id == entry.id))
                     .expect("a featured app is in the directory");
-                let start = this.catalog_visible[index].id.clone();
-                let next = this.catalog_visible[index + 1].id.clone();
+                let start = order[index].id.clone();
+                let next = order[index + 1].id.clone();
                 this.application_vim.region = SettingsRegion::Pane;
                 this.application_vim.target = Some(SettingsTarget::McpCatalog(start));
                 this.move_application_selection(1, 1, window, cx);
@@ -962,14 +991,13 @@ mod tests {
         // No parking here: the test backend's server list would land and
         // replace the connected Notion above.
         settings.update(cx, |this, cx| {
-            this.set_catalog_category(Some(maple_agent::agent::McpCatalogCategory::Developer), cx);
+            this.section = Section::Integrations;
             this.catalog_query = "git".to_string();
             this.refresh_catalog();
             assert!(this.catalog_visible.len() < maple_agent::agent::mcp_catalog().len() - 1);
-            this.reveal_catalog(cx);
-            assert_eq!(this.catalog_category, None);
+            this.open_apps_directory(cx);
+            assert_eq!(this.section, Section::Apps);
             assert!(this.catalog_query.is_empty());
-            assert!(this.catalog_reveal);
             assert_eq!(
                 this.catalog_visible.len(),
                 maple_agent::agent::mcp_catalog().len() - 1,
@@ -1686,9 +1714,9 @@ mod tests {
     }
 
     /// The "Add custom server" row is a Tab stop and opens the editor from
-    /// the keyboard; the catalog renders on the same page below it.
+    /// the keyboard; the directory lives on the Apps page, not here.
     #[gpui::test]
-    fn integrations_add_row_is_a_keyboard_tab_stop_and_catalog_is_on_the_page(
+    fn integrations_add_row_is_a_keyboard_tab_stop_and_directory_is_the_apps_page(
         cx: &mut TestAppContext,
     ) {
         let (settings, cx) = dropdown_window(cx, false);
@@ -1697,24 +1725,29 @@ mod tests {
         });
         cx.run_until_parked();
         assert!(cx.debug_bounds("mcp-add").is_some(), "add row renders");
-        let first_card: &'static str = Box::leak(
-            format!("catalog-card-{}", maple_agent::agent::mcp_catalog()[0].id).into_boxed_str(),
+        let first = &maple_agent::agent::mcp_catalog()[0];
+        assert_eq!(
+            first.id, "notion",
+            "the literal selector below tracks the first entry"
+        );
+        let first_card = "catalog-card-notion";
+        assert!(
+            cx.debug_bounds(first_card).is_none(),
+            "the directory is not on Integrations"
         );
         assert!(
-            cx.debug_bounds(first_card).is_some(),
-            "catalog cards render without a tab switch"
+            cx.debug_bounds("catalog-see-all").is_some(),
+            "the strip links to the Apps page"
         );
-        // Shift-Tab out of the catalog search (tab 3) lands on the add row
-        // (tab 1); Space presses it. The search sits below the test window's
-        // viewport, so focus it directly rather than by pointer.
-        assert!(cx.debug_bounds("catalog-search").is_some());
+        // Tab out of the sidebar filter (tab 0) lands on the add row (tab 1);
+        // Space presses it.
         cx.update(|window, app| {
             settings.update(app, |this, cx| {
-                let handle = this.catalog_search.read(cx).focus_handle(cx);
+                let handle = this.sidebar_filter.read(cx).focus_handle(cx);
                 window.focus(&handle, cx);
             });
         });
-        cx.simulate_keystrokes("shift-tab space");
+        cx.simulate_keystrokes("tab space");
         cx.run_until_parked();
         settings.update(cx, |this, cx| {
             assert!(this.mcp_editor.is_some());
@@ -1726,6 +1759,15 @@ mod tests {
         cx.simulate_click(add.center(), gpui::Modifiers::default());
         cx.run_until_parked();
         settings.update(cx, |this, _| assert!(this.mcp_editor.is_some()));
+
+        // The Apps page renders the directory with its search.
+        settings.update(cx, |this, cx| {
+            this.mcp_editor = None;
+            this.select_section(Section::Apps, cx)
+        });
+        cx.run_until_parked();
+        assert!(cx.debug_bounds("catalog-search").is_some());
+        assert!(cx.debug_bounds(first_card).is_some());
     }
 
     /// Former page names and moved controls still find their new section.
