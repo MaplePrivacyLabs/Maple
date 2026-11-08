@@ -650,6 +650,11 @@ pub struct ChatScreen {
     mcp_enabled_count: usize,
     /// Composer fills the pane (fullscreen editing).
     composer_expanded: bool,
+    /// How far the composer is from the height of its text (0) toward
+    /// expanded (1) while it eases between them; `None` at rest.
+    composer_resize: Option<motion::Tween>,
+    /// Heights that transition eases between, measured last frame.
+    composer_frame: std::rc::Rc<std::cell::Cell<self::composer::ComposerFrame>>,
     /// Latest todo list from the selected task, pinned above the composer
     /// while any entry is unfinished. A finished list stays in the
     /// transcript.
@@ -1516,6 +1521,8 @@ impl ChatScreen {
             session_mcp: Vec::new(),
             mcp_enabled_count: 0,
             composer_expanded: false,
+            composer_resize: None,
+            composer_frame: std::rc::Rc::default(),
             web_enabled: true,
             default_web_enabled: settings.default_web_enabled,
             permission_mode: settings.new_task_permission_mode.unwrap_or_default(),
@@ -4107,10 +4114,36 @@ impl ChatScreen {
     }
 
     fn toggle_composer_expanded(&mut self, cx: &mut Context<Self>) {
+        let now = motion::now();
+        let from = self
+            .composer_resize
+            .map(|transition| transition.value(now))
+            .unwrap_or(if self.composer_expanded { 1. } else { 0. });
         self.composer_expanded = !self.composer_expanded;
         let expanded = self.composer_expanded;
+        let to = if expanded { 1. } else { 0. };
+        let distance = (to - from).abs();
+        // Eases between heights measured on screen, so it needs a frame
+        // drawn first; reduced motion switches at once.
+        let frame = self.composer_frame.get();
+        let measured = frame.region.is_some() && frame.room.is_some();
+        self.composer_resize =
+            (!cx.reduce_motion() && measured && distance > f32::EPSILON).then(|| {
+                let mut transition = motion::Tween::new(from);
+                transition.set(
+                    to,
+                    motion::PANEL.mul_f32(distance),
+                    motion::ease_out_cubic,
+                    now,
+                    false,
+                );
+                transition
+            });
+        // The field fills the box while it moves, so typed text stays put
+        // and the box's text height can be read off the field.
+        let fill = self.composer_fills();
         if let Some(composer) = self.composer.clone() {
-            composer.update(cx, |input, cx| input.set_fill_height(expanded, cx));
+            composer.update(cx, |input, cx| input.set_fill_height(fill, cx));
         }
         cx.notify();
     }
@@ -7160,8 +7193,9 @@ impl Render for ChatScreen {
         let empty = self.shows_empty_state();
         let sidebar_expansion = self.sidebar_expansion(window, cx);
         let rise = gpui::point(px(0.), motion::RISE);
+        let composer_resize = self.composer_resize_frame(window, cx);
         let main = if empty {
-            self.render_empty_state(window, cx)
+            self.render_empty_state(composer_resize, window, cx)
         } else {
             div()
                 .flex()
@@ -7209,12 +7243,18 @@ impl Render for ChatScreen {
                         .mx_auto()
                         .px_6()
                         .pb_4()
-                        .when(self.composer_expanded, |wrap| {
-                            wrap.flex_none()
+                        .map(|wrap| match composer_resize {
+                            // Easing between its text's height and expanded.
+                            Some((_, height)) => {
+                                wrap.flex_none().h(height).min_h_0().flex().flex_col()
+                            }
+                            None if self.composer_expanded => wrap
+                                .flex_none()
                                 .h(gpui::relative(0.7))
                                 .min_h_0()
                                 .flex()
-                                .flex_col()
+                                .flex_col(),
+                            None => wrap,
                         })
                         // The composer, its cards and the palette keep their
                         // own wheel; the space beside them scrolls the
@@ -7233,8 +7273,21 @@ impl Render for ChatScreen {
                         }))
                         .child(self.render_composer(window, cx))
                         .children(self.render_slash_palette(cx))
-                        .children(self.render_persistence_failure(cx)),
+                        .children(self.render_persistence_failure(cx))
+                        .child(composer::measure(
+                            &self.composer_frame,
+                            |frame, bounds, _| {
+                                frame.region = Some(bounds.size.height);
+                            },
+                        )),
                 )
+                // Expanded, the composer region takes 70% of this column.
+                .child(composer::measure(
+                    &self.composer_frame,
+                    |frame, bounds, _| {
+                        frame.room = Some(bounds.size.height * 0.7);
+                    },
+                ))
         };
         div()
             .key_context(self.application_vim_context())
@@ -7851,8 +7904,73 @@ impl ChatScreen {
 
     /// Hero layout for a task with no messages: display heading, composer,
     /// and privacy note centered in the pane (mirrors EmptyAgentState).
-    fn render_empty_state(&mut self, window: &mut Window, cx: &mut Context<Self>) -> Div {
+    /// Expanded, the composer fills the pane; while it eases there and
+    /// back (`composer_resize`), the heading and the note fold away and
+    /// fade with it so the column never jumps.
+    fn render_empty_state(
+        &mut self,
+        composer_resize: Option<(f32, gpui::Pixels)>,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> Div {
         let expanded = self.composer_expanded;
+        let fills = self.composer_fills();
+        let hero = match composer_resize {
+            Some((progress, _)) => 1. - progress,
+            None if expanded => 0.,
+            None => 1.,
+        };
+        let measured = self.composer_frame.get();
+        // At rest a block records its height; on the way it is drawn at
+        // `hero` of that height and opacity. Each block carries the
+        // spacing beside it as its content's margin (padding would not
+        // fold), so nothing is left behind.
+        let fold = |block: Div, rest: Option<gpui::Pixels>, record: composer::Record| {
+            if composer_resize.is_some() {
+                block
+                    .flex_none()
+                    .h(rest.unwrap_or_default() * hero)
+                    .overflow_hidden()
+                    .opacity(hero)
+            } else {
+                block
+                    .relative()
+                    .child(composer::measure(&self.composer_frame, record))
+            }
+        };
+        let title = (hero > 0.).then(|| {
+            fold(
+                div().w_full().flex().flex_col().items_center().child(
+                    div()
+                        // Its own space and the gap to the composer.
+                        .mb_12()
+                        .font_family(crate::assets::FONT_DISPLAY)
+                        .text_size(px(36.))
+                        .line_height(px(48.))
+                        .text_color(gpui::rgb(theme::display_text()))
+                        .child(tr("chat-empty-title")),
+                ),
+                measured.title,
+                |frame, bounds, _| frame.title = Some(bounds.size.height),
+            )
+        });
+        let privacy = (hero > 0.).then(|| {
+            fold(
+                div().w_full().flex().justify_center().child(
+                    div()
+                        .mt_6()
+                        .flex()
+                        .items_center()
+                        .gap_1()
+                        .text_xs()
+                        .text_color(gpui::rgb(theme::text_muted()))
+                        .child(icon("lock", px(12.), theme::text_muted()))
+                        .child(tr("chat-empty-private")),
+                ),
+                measured.privacy,
+                |frame, bounds, _| frame.privacy = Some(bounds.size.height),
+            )
+        });
         let body = div()
             .flex()
             .flex_col()
@@ -7862,7 +7980,14 @@ impl ChatScreen {
             .items_center()
             .justify_center()
             .px_6()
-            .when(expanded, |pane| pane.py_6())
+            .when(fills, |pane| pane.py_6())
+            // Expanded, the composer region takes the pane less its padding.
+            .child(composer::measure(
+                &self.composer_frame,
+                |frame, bounds, window| {
+                    frame.room = Some(bounds.size.height - window.rem_size() * 3.);
+                },
+            ))
             .child(
                 div()
                     .w_full()
@@ -7871,48 +7996,43 @@ impl ChatScreen {
                     .flex()
                     .flex_col()
                     .items_center()
-                    .gap_6()
-                    .when(expanded, |column| column.h_full().min_h_0())
-                    .when(!expanded, |column| {
-                        column.child(
-                            div()
-                                .mb_6()
-                                .font_family(crate::assets::FONT_DISPLAY)
-                                .text_size(px(36.))
-                                .line_height(px(48.))
-                                .text_color(gpui::rgb(theme::display_text()))
-                                .child(tr("chat-empty-title")),
-                        )
-                    })
+                    .when(fills, |column| column.h_full().min_h_0().justify_center())
+                    .children(title)
                     .child(
                         div()
                             .relative()
                             .w_full()
-                            .when(expanded, |wrap| wrap.flex_1().min_h_0().flex().flex_col())
+                            .map(|wrap| match composer_resize {
+                                // Grows into the free space up to this
+                                // frame's height.
+                                Some((_, height)) => {
+                                    wrap.flex_1().min_h_0().max_h(height).flex().flex_col()
+                                }
+                                None if expanded => wrap.flex_1().min_h_0().flex().flex_col(),
+                                None => wrap,
+                            })
                             .child(self.render_composer(window, cx))
-                            .children(self.render_slash_palette(cx)),
+                            .children(self.render_slash_palette(cx))
+                            .child(composer::measure(
+                                &self.composer_frame,
+                                |frame, bounds, _| {
+                                    frame.region = Some(bounds.size.height);
+                                },
+                            )),
                     )
                     .when(
                         self.awaiting_first_token && self.is_run_active(),
-                        |column| column.child(render_waiting_indicator()),
+                        |column| column.child(render_waiting_indicator().mt_6()),
                     )
-                    .when(!expanded, |column| {
-                        column.child(
-                            div()
-                                .flex()
-                                .items_center()
-                                .gap_1()
-                                .text_xs()
-                                .text_color(gpui::rgb(theme::text_muted()))
-                                .child(icon("lock", px(12.), theme::text_muted()))
-                                .child(tr("chat-empty-private")),
-                        )
-                    })
+                    .children(privacy)
                     .when_some(self.runtime_error.clone(), |column, error| {
-                        column.child(widgets::banner(theme::status_error()).child(error))
+                        column.child(widgets::banner(theme::status_error()).mt_6().child(error))
                     })
-                    .children(self.render_persistence_failure(cx))
-                    .children(self.render_notice(cx)),
+                    .children(
+                        self.render_persistence_failure(cx)
+                            .map(|failure| failure.mt_6()),
+                    )
+                    .children(self.render_notice(cx).map(|notice| notice.mt_6())),
             );
         div()
             .flex()

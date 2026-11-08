@@ -89,6 +89,42 @@ fn mode_note(mode: AgentPermissionMode) -> &'static str {
     }
 }
 
+/// Heights the composer expand/shrink transition eases between, recorded
+/// as each frame is laid out so the next one can start from the screen.
+#[derive(Clone, Copy, Default)]
+pub(super) struct ComposerFrame {
+    /// The composer region: cards, composer box, palette, padding.
+    pub(super) region: Option<gpui::Pixels>,
+    /// The height the region takes when expanded.
+    pub(super) room: Option<gpui::Pixels>,
+    /// The empty state's title and privacy line at rest, which fold away
+    /// while the composer expands there.
+    pub(super) title: Option<gpui::Pixels>,
+    pub(super) privacy: Option<gpui::Pixels>,
+}
+
+/// Stores a measured element's bounds in a [`ComposerFrame`].
+pub(super) type Record = fn(&mut ComposerFrame, gpui::Bounds<gpui::Pixels>, &Window);
+
+/// A paint-free canvas over its parent that hands the parent's bounds to
+/// `record` at prepaint, for the next frame's composer transition.
+pub(super) fn measure(
+    frame: &std::rc::Rc<std::cell::Cell<ComposerFrame>>,
+    record: Record,
+) -> impl IntoElement {
+    let frame = frame.clone();
+    gpui::canvas(
+        move |bounds, window, _| {
+            let mut measured = frame.get();
+            record(&mut measured, bounds, window);
+            frame.set(measured);
+        },
+        |_, _, _, _| {},
+    )
+    .absolute()
+    .inset_0()
+}
+
 impl ChatScreen {
     pub(super) fn render_header(
         &self,
@@ -1220,6 +1256,49 @@ impl ChatScreen {
         (row, false)
     }
 
+    /// While the composer eases between the height of its text and
+    /// expanded: how far toward expanded it is, and the region's height
+    /// for this frame, from heights measured last frame. `None` at rest;
+    /// once a transition lands the field goes back to its resting fill.
+    pub(super) fn composer_resize_frame(
+        &mut self,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> Option<(f32, gpui::Pixels)> {
+        let transition = self.composer_resize?;
+        let now = motion::now();
+        let frame = self.composer_frame.get();
+        let sample = (!cx.reduce_motion() && transition.is_moving(now))
+            .then(|| {
+                let progress = transition.value(now);
+                // The field fills the box throughout, so the box at the
+                // height of its text is the region less the field's spare
+                // height. Its row is never shorter than the expand button
+                // beside it (`size_6`).
+                let (drawn, text) = self.composer.as_ref()?.read(cx).drawn_and_text_height()?;
+                let row = text.max(window.rem_size() * 1.5);
+                let natural = frame.region? - (drawn - row).max(gpui::px(0.));
+                let room = frame.room?;
+                Some((progress, natural + (room - natural) * progress))
+            })
+            .flatten();
+        if sample.is_some() {
+            window.request_animation_frame();
+            return sample;
+        }
+        self.composer_resize = None;
+        let expanded = self.composer_expanded;
+        if let Some(composer) = self.composer.clone() {
+            composer.update(cx, |input, cx| input.set_fill_height(expanded, cx));
+        }
+        None
+    }
+
+    /// The composer box lays out expanded: at rest there, or on the way.
+    pub(super) fn composer_fills(&self) -> bool {
+        self.composer_expanded || self.composer_resize.is_some()
+    }
+
     pub(super) fn render_composer(&mut self, window: &mut Window, cx: &mut Context<Self>) -> Div {
         let running = self.is_run_active();
         // The first send's create keeps the composer's text on show and
@@ -1247,6 +1326,9 @@ impl ChatScreen {
         let show_stop = running && !self.booting && !pending_create && !drafting;
         let queue_chips = self.render_queue(cx);
         let expanded = self.composer_expanded;
+        // Layout follows the box while it eases; the icon and tooltip
+        // name the state it is heading to.
+        let fills = self.composer_fills();
         let composer = self.composer.clone();
         let vim_badge = composer
             .as_ref()
@@ -1308,7 +1390,7 @@ impl ChatScreen {
             .flex_col()
             .relative()
             .debug_selector(|| "composer-box".to_string())
-            .when(expanded, |container| container.flex_1().min_h_0())
+            .when(fills, |container| container.flex_1().min_h_0())
             .rounded(theme::RADIUS_XL)
             .bg(gpui::rgb(theme::bg_app()))
             .border_1()
@@ -1441,20 +1523,27 @@ impl ChatScreen {
                     .px_4()
                     .pt_4()
                     .pb_2()
-                    .when(expanded, |row| row.flex_1().min_h_0())
+                    .when(fills, |row| row.flex_1().min_h_0())
                     .child(
                         crate::ui::typography::chat_reading(div())
                             .flex_1()
                             .min_w_0()
-                            .when(expanded, |cell| cell.h_full())
+                            .when(fills, |cell| cell.h_full())
                             .text_color(gpui::rgb(theme::text_primary()))
                             // The first send remains visibly editable until
                             // task creation settles; keep its real focus path.
                             .children(composer),
                     )
-                    .child(
+                    .child({
+                        let label = if expanded {
+                            tr("chat-shrink-composer")
+                        } else {
+                            tr("chat-expand-composer")
+                        };
                         div()
                             .id("composer-expand")
+                            .role(gpui::Role::Button)
+                            .aria_label(label.clone())
                             .size_6()
                             .flex()
                             .items_center()
@@ -1469,23 +1558,18 @@ impl ChatScreen {
                                 )
                             })
                             .hover(|style| style.cursor_pointer())
-                            .tooltip(widgets::tooltip(
-                                if expanded {
-                                    tr("chat-shrink-composer")
-                                } else {
-                                    tr("chat-expand-composer")
-                                },
-                                None,
-                            ))
+                            .tooltip(widgets::tooltip(label, None))
                             .on_click(cx.listener(|this, _event, _window, cx| {
                                 this.toggle_composer_expanded(cx);
                             }))
-                            .child(icon(
-                                if expanded { "minimize-2" } else { "maximize-2" },
+                            .child(motion::icon_swap(
+                                "composer-expand-icon",
+                                expanded,
+                                ["maximize-2", "minimize-2"],
                                 px(14.),
                                 theme::text_muted(),
-                            )),
-                    ),
+                            ))
+                    }),
             )
             .child(
                 div()
@@ -1690,4 +1774,206 @@ fn chip(
         .children(leading.map(|name| icon(name, px(16.), color)))
         .child(div().whitespace_nowrap().child(label))
         .when(chevron, |el| el.child(icon("chevron-down", px(14.), color)))
+}
+
+#[cfg(test)]
+mod resize_tests {
+    use super::*;
+    use gpui::{Entity, TestAppContext, VisualTestContext};
+    use maple_agent::agent::AgentTimelineItem;
+    use std::time::{Duration, Instant};
+
+    struct Host {
+        chat: Entity<ChatScreen>,
+    }
+
+    impl Render for Host {
+        fn render(&mut self, _window: &mut Window, _cx: &mut Context<Self>) -> impl IntoElement {
+            div()
+                .w(px(1200.))
+                .h(px(800.))
+                .flex()
+                .flex_col()
+                .child(self.chat.clone())
+        }
+    }
+
+    /// A chat whose transcript holds `rows` messages and follows its
+    /// tail; none shows the empty state.
+    fn chat_window(
+        cx: &mut TestAppContext,
+        rows: usize,
+    ) -> (Entity<ChatScreen>, &mut VisualTestContext) {
+        cx.executor().allow_parking();
+        let backend = {
+            let _guard = crate::settings::SETTINGS_IO_LOCK.lock();
+            Arc::new(
+                crate::backend::AgentBackend::for_test("http://127.0.0.1:9".into(), String::new())
+                    .expect("backend"),
+            )
+        };
+        let chat = cx.new(|cx| {
+            let _guard = crate::settings::SETTINGS_IO_LOCK.lock();
+            let mut chat = ChatScreen::new_without_start(backend, "user".to_string(), cx);
+            chat.selected_session = Some("s1".to_string());
+            chat.booting = false;
+            chat.trust_prompts = false;
+            chat.sidebar_collapsed = true;
+            chat.sidebar
+                .update(cx, |sidebar, _| sidebar.reset_persisted_for_test());
+            chat.replace_timeline(
+                (0..rows)
+                    .map(|index| AgentTimelineItem {
+                        label: None,
+                        persisted: None,
+                        live: None,
+                        truncated: None,
+                        revision: 0,
+                        id: format!("m{index}"),
+                        item_type: "message".to_string(),
+                        role: None,
+                        title: None,
+                        text: Some(format!("Message {index}\n\n{}", "lorem ipsum ".repeat(30))),
+                        status: None,
+                        input: None,
+                        output: None,
+                        created_ms: 0,
+                        merge: "replace".to_string(),
+                    })
+                    .collect(),
+            );
+            chat
+        });
+        let (_host, cx) = cx.add_window_view(|_window, _cx| Host { chat: chat.clone() });
+        cx.simulate_resize(gpui::size(px(1200.), px(800.)));
+        cx.run_until_parked();
+        (chat, cx)
+    }
+
+    fn composer_height(cx: &mut VisualTestContext) -> gpui::Pixels {
+        cx.debug_bounds("composer-box")
+            .expect("composer")
+            .size
+            .height
+    }
+
+    /// Space between the newest transcript row and the composer: constant
+    /// while the transcript keeps its tail on screen.
+    fn tail_gap(cx: &mut VisualTestContext) -> gpui::Pixels {
+        let newest = cx
+            .debug_bounds("timeline-row-m39")
+            .expect("the newest row is on screen");
+        cx.debug_bounds("composer-box").expect("composer").top() - newest.bottom()
+    }
+
+    fn toggle(chat: &Entity<ChatScreen>, cx: &mut VisualTestContext) {
+        chat.update(cx, |chat, cx| chat.toggle_composer_expanded(cx));
+        cx.run_until_parked();
+    }
+
+    fn frame_at(at: Instant, cx: &mut VisualTestContext) {
+        motion::set_test_now(Some(at));
+        cx.update(|window, app| window.simulate_next_frame(app));
+        cx.run_until_parked();
+    }
+
+    #[gpui::test]
+    fn expanding_the_composer_eases_reverses_and_keeps_the_tail(cx: &mut TestAppContext) {
+        let start = Instant::now();
+        motion::set_test_now(Some(start));
+        cx.update(|cx| cx.set_reduce_motion(false));
+        let (chat, cx) = chat_window(cx, 40);
+        let rest = composer_height(cx);
+        let pinned = tail_gap(cx);
+
+        toggle(&chat, cx);
+        assert_eq!(
+            composer_height(cx),
+            rest,
+            "starts from the height on screen"
+        );
+        frame_at(start + motion::PANEL - Duration::from_millis(1), cx);
+        let landing = composer_height(cx);
+        assert_eq!(tail_gap(cx), pinned, "the transcript keeps its tail");
+        frame_at(start + motion::PANEL, cx);
+        let expanded = composer_height(cx);
+        assert!(expanded > rest * 2., "expanded: {expanded:?}");
+        assert!(
+            (expanded - landing).abs() < px(1.),
+            "lands on the resting layout: {landing:?} then {expanded:?}"
+        );
+        assert_eq!(tail_gap(cx), pinned, "the transcript keeps its tail");
+
+        // Shrink, then expand again halfway down.
+        let shrink = start + motion::PANEL * 2;
+        motion::set_test_now(Some(shrink));
+        toggle(&chat, cx);
+        frame_at(shrink + motion::PANEL / 2, cx);
+        let partway = composer_height(cx);
+        assert!(partway > rest && partway < expanded, "partway: {partway:?}");
+        assert_eq!(tail_gap(cx), pinned, "the tail stays put mid-flight");
+        toggle(&chat, cx);
+        assert_eq!(
+            composer_height(cx),
+            partway,
+            "a reversal starts where it is"
+        );
+        frame_at(shrink + motion::PANEL / 2 + Duration::from_millis(30), cx);
+        assert!(composer_height(cx) > partway, "heading back up");
+        frame_at(shrink + motion::PANEL * 2, cx);
+        assert_eq!(composer_height(cx), expanded);
+        assert!(chat.read_with(cx, |chat, _| chat.composer_resize.is_none()));
+
+        // Reduced motion switches at once.
+        cx.update(|_window, app| app.set_reduce_motion(true));
+        toggle(&chat, cx);
+        assert_eq!(composer_height(cx), rest);
+        assert_eq!(tail_gap(cx), pinned);
+        motion::set_test_now(None);
+    }
+
+    #[gpui::test]
+    fn expanding_from_the_empty_state_folds_the_hero_without_a_jump(cx: &mut TestAppContext) {
+        let start = Instant::now();
+        motion::set_test_now(Some(start));
+        cx.update(|cx| cx.set_reduce_motion(false));
+        let (chat, cx) = chat_window(cx, 0);
+        let rest = cx.debug_bounds("composer-box").expect("composer");
+
+        toggle(&chat, cx);
+        assert_eq!(
+            cx.debug_bounds("composer-box"),
+            Some(rest),
+            "the heading and the note are still there on the first frame"
+        );
+        frame_at(start + motion::PANEL / 2, cx);
+        let partway = composer_height(cx);
+        assert!(partway > rest.size.height, "partway: {partway:?}");
+        frame_at(start + motion::PANEL - Duration::from_millis(1), cx);
+        let landing = cx.debug_bounds("composer-box").expect("composer");
+        frame_at(start + motion::PANEL, cx);
+        let expanded = cx.debug_bounds("composer-box").expect("composer");
+        assert!(
+            (expanded.top() - landing.top()).abs() < px(1.),
+            "{landing:?} {expanded:?}"
+        );
+        assert!(
+            (expanded.size.height - landing.size.height).abs() < px(1.),
+            "{landing:?} {expanded:?}"
+        );
+
+        let shrink = start + motion::PANEL * 2;
+        motion::set_test_now(Some(shrink));
+        toggle(&chat, cx);
+        assert_eq!(cx.debug_bounds("composer-box"), Some(expanded));
+        frame_at(shrink + motion::PANEL - Duration::from_millis(1), cx);
+        let landing = cx.debug_bounds("composer-box").expect("composer");
+        frame_at(shrink + motion::PANEL, cx);
+        assert!(
+            (rest.top() - landing.top()).abs() < px(1.),
+            "{landing:?} {rest:?}"
+        );
+        assert_eq!(cx.debug_bounds("composer-box"), Some(rest));
+        motion::set_test_now(None);
+    }
 }

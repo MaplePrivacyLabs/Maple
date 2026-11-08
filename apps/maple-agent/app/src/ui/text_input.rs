@@ -441,6 +441,17 @@ impl TextInput {
         }
     }
 
+    /// The field's height as drawn last frame, and the height its text
+    /// needs (one to `max_lines` rows). They differ while it fills its
+    /// parent; the expanded composer eases back to the text's height.
+    pub fn drawn_and_text_height(&self) -> Option<(Pixels, Pixels)> {
+        let (layout, bounds) = (self.last_layout.as_ref()?, self.last_bounds.as_ref()?);
+        let text = layout
+            .height()
+            .min(layout.line_height * self.max_lines as f32);
+        Some((bounds.size.height, text))
+    }
+
     /// The height to draw for `rows` measured at `width` in `font`. A
     /// new row count under the same measure comes from the text, so the
     /// box eases to it from the height on screen; a new width or font
