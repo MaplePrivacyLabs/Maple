@@ -1517,7 +1517,7 @@ settings-server-exists f5a24b98248ad68c
 settings-settings-a-shortcut-can-contain-at-most-four-strokes 9ff0e2ea21d2e63d
 settings-settings-about f0499e5aad8e333a
 settings-settings-add-instructions-for-every-task 57ad27b181bf493c
-settings-settings-added-to-every-task-after-maple-s-own-system-prompt-use-it-for-pr bb001dcbb0afcb61
+settings-settings-added-to-every-task-after-maple-s-own-system-prompt-use-it-for-pr 9c255280c55353b6
 settings-settings-additional-instructions 730b5b111cbd1ee7
 settings-settings-automatically-download-updates 2c911778add68a00
 settings-settings-available 6ea672b5f01b4156
