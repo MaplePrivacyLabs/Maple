@@ -21,7 +21,7 @@ pub const TRAFFIC_LIGHT_POSITION: gpui::Point<Pixels> = gpui::point(px(12.), px(
 
 /// Vertical room the traffic lights take at the top of a column, for a
 /// row that sits under them instead of beside them.
-pub const TRAFFIC_LIGHT_ROW: Pixels = px(36.);
+const TRAFFIC_LIGHT_ROW: Pixels = px(36.);
 
 /// Where the first toolbar button starts beside the traffic lights: past
 /// their 78 px, after an 8 px gap. The task header's toolbar and Settings'
@@ -37,13 +37,20 @@ pub const TITLE_BAR_HEIGHT: Pixels = px(36.);
 /// wordmark, Settings' title.
 pub const SIDEBAR_ROW_HEIGHT: Pixels = px(28.);
 
+/// Top of a `SIDEBAR_ROW_HEIGHT` row centered in the title bar: the task
+/// header's toolbar and Settings' Back, and without traffic lights each
+/// sidebar's first row.
+pub fn title_bar_row_top() -> Pixels {
+    (TITLE_BAR_HEIGHT - SIDEBAR_ROW_HEIGHT) / 2.
+}
+
 /// Top of a sidebar column's first row. Under traffic lights it starts
-/// below them; without them it is centered on the title bar's line.
+/// below them; without them it is centered in the title bar.
 pub fn sidebar_row_top() -> Pixels {
     if TRANSPARENT_TITLEBAR {
         TRAFFIC_LIGHT_ROW
     } else {
-        (TITLE_BAR_HEIGHT - SIDEBAR_ROW_HEIGHT) / 2.
+        title_bar_row_top()
     }
 }
 

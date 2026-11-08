@@ -1126,7 +1126,19 @@ mod tests {
         settings.update(cx, |this, cx| this.select_section(Section::Account, cx));
         cx.run_until_parked();
         assert!(settings.update(cx, |this, _| this.account.info.is_none()));
-        assert!(cx.debug_bounds("account-sign-out").is_some());
+        assert!(
+            cx.debug_bounds("account-sign-out").is_some(),
+            "while loading"
+        );
+        settings.update(cx, |this, cx| {
+            this.account.load_error = Some("offline".into());
+            cx.notify();
+        });
+        cx.run_until_parked();
+        assert!(
+            cx.debug_bounds("account-sign-out").is_some(),
+            "after a failed load"
+        );
     }
 
     #[gpui::test]

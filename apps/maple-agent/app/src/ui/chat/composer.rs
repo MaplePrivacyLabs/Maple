@@ -130,7 +130,7 @@ impl ChatScreen {
             div()
                 .absolute()
                 .left(toolbar_left)
-                .top((titlebar::TITLE_BAR_HEIGHT - titlebar::SIDEBAR_ROW_HEIGHT) / 2.)
+                .top(titlebar::title_bar_row_top())
                 .flex()
                 .items_center()
                 .gap_1()

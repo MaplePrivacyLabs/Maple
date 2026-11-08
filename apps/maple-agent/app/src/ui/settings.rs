@@ -1786,11 +1786,7 @@ impl SettingsScreen {
                 div()
                     .absolute()
                     .left(crate::ui::titlebar::TRAFFIC_LIGHT_TOOLBAR_LEFT)
-                    .top(
-                        (crate::ui::titlebar::TITLE_BAR_HEIGHT
-                            - crate::ui::titlebar::SIDEBAR_ROW_HEIGHT)
-                            / 2.,
-                    )
+                    .top(crate::ui::titlebar::title_bar_row_top())
                     .child(back)
             }))
     }
@@ -1806,7 +1802,7 @@ impl SettingsScreen {
             theme::text_secondary(),
         )
         .debug_selector(|| "settings-back".to_string())
-        // Inside a drag region: a press here is a click, not a drag.
+        // In or over a drag region: a press here is a click, not a drag.
         .on_mouse_down(gpui::MouseButton::Left, |_event, _window, cx| {
             cx.stop_propagation();
         })
