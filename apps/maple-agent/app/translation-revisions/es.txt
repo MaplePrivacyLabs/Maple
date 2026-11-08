@@ -1130,7 +1130,7 @@ settings-catalog-address-label-home-assistant e8f3e8c252d28fb9
 settings-catalog-address-label-vana caac565c15d2de86
 settings-catalog-address-title ea58494f7afdfd9a
 settings-catalog-all afbd753639e3faf6
-settings-catalog-apps ebf1a443c7c198e4
+settings-catalog-apps 9537955d926ff41f
 settings-catalog-browser-sign-in ba71db9877de0ec4
 settings-catalog-business ec48d33e8f508744
 settings-catalog-cancel cf9c0b54671613b4
@@ -1213,9 +1213,7 @@ settings-integration-cua-name d722fc53e2befe3c
 settings-integration-install-claude cfa67599615e0568
 settings-integration-install-codex f2505116f461e834
 settings-integration-version d94dbeea131c72f3
-settings-integrations-tab-catalog 89c6ca1e0a336f23
-settings-integrations-tab-connected aa322116b3708cd6
-settings-integrations-tabs 4a73bb2220a2dd2d
+settings-integrations-no-servers f72c46d18bd131da
 settings-keywords-about 14eb017c25602e9d
 settings-keywords-account 291c31da702e369d
 settings-keywords-appearance 2810172f7551c986

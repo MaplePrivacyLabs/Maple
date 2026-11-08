@@ -18,8 +18,8 @@ use super::billing::BillingTarget;
 #[cfg(feature = "proxy")]
 use super::local_api::LocalApiTarget;
 use super::{
-    IntegrationsTab, Section, SettingMenu, SettingsScreen, integration_can_setup,
-    integration_can_toggle, integration_is_visible,
+    Section, SettingMenu, SettingsScreen, integration_can_setup, integration_can_toggle,
+    integration_is_visible,
 };
 use crate::ui::application_vim::{self, CountOutcome, CountState, SpatialDirection};
 
@@ -55,7 +55,6 @@ pub(super) enum AppearanceTarget {
 pub(super) enum SettingsTarget {
     General(GeneralTarget),
     Appearance(AppearanceTarget),
-    IntegrationsTab(IntegrationsTab),
     #[cfg(feature = "acp")]
     DeveloperTab(DeveloperTab),
     Account(AccountTarget),
@@ -215,49 +214,38 @@ impl SettingsScreen {
                 SettingsTarget::PromptClear,
             ],
             Section::Integrations => {
-                let mut targets = vec![
-                    SettingsTarget::IntegrationsTab(IntegrationsTab::Connected),
-                    SettingsTarget::IntegrationsTab(IntegrationsTab::Catalog),
-                ];
-                match self.integrations_tab {
-                    IntegrationsTab::Connected => {
-                        targets.push(SettingsTarget::McpAdd);
-                        targets.extend(
-                            self.integrations
-                                .as_deref()
-                                .unwrap_or_default()
-                                .iter()
-                                .filter(|integration| integration_is_visible(integration))
-                                .flat_map(|integration| {
-                                    [
-                                        integration_can_setup(integration).then(|| {
-                                            SettingsTarget::IntegrationSetup(integration.id.clone())
-                                        }),
-                                        integration_can_toggle(integration).then(|| {
-                                            SettingsTarget::Integration(integration.id.clone())
-                                        }),
-                                    ]
-                                    .into_iter()
-                                    .flatten()
-                                }),
-                        );
-                        targets.extend(
-                            self.mcp_servers
-                                .as_deref()
-                                .unwrap_or_default()
-                                .iter()
-                                .map(|server| SettingsTarget::McpServer(server.name.clone())),
-                        );
-                    }
-                    IntegrationsTab::Catalog => {
-                        targets.push(SettingsTarget::McpAdd);
-                        targets.extend(
-                            self.catalog_visible
-                                .iter()
-                                .map(|entry| SettingsTarget::McpCatalog(entry.id.clone())),
-                        );
-                    }
-                }
+                // Display order: built-ins, connected servers, the add row,
+                // then every catalog app.
+                let mut targets: Vec<SettingsTarget> = self
+                    .integrations
+                    .as_deref()
+                    .unwrap_or_default()
+                    .iter()
+                    .filter(|integration| integration_is_visible(integration))
+                    .flat_map(|integration| {
+                        [
+                            integration_can_setup(integration)
+                                .then(|| SettingsTarget::IntegrationSetup(integration.id.clone())),
+                            integration_can_toggle(integration)
+                                .then(|| SettingsTarget::Integration(integration.id.clone())),
+                        ]
+                        .into_iter()
+                        .flatten()
+                    })
+                    .collect();
+                targets.extend(
+                    self.mcp_servers
+                        .as_deref()
+                        .unwrap_or_default()
+                        .iter()
+                        .map(|server| SettingsTarget::McpServer(server.name.clone())),
+                );
+                targets.push(SettingsTarget::McpAdd);
+                targets.extend(
+                    self.catalog_visible
+                        .iter()
+                        .map(|entry| SettingsTarget::McpCatalog(entry.id.clone())),
+                );
                 targets
             }
             Section::Remote | Section::About => Vec::new(),
@@ -434,7 +422,6 @@ impl SettingsScreen {
         match self.application_vim.target.clone() {
             Some(SettingsTarget::General(target)) => self.activate_general_target(target, cx),
             Some(SettingsTarget::Appearance(target)) => self.activate_appearance_target(target, cx),
-            Some(SettingsTarget::IntegrationsTab(tab)) => self.select_integrations_tab(tab, cx),
             #[cfg(feature = "acp")]
             Some(SettingsTarget::DeveloperTab(tab)) => self.select_developer_tab(tab, cx),
             Some(SettingsTarget::Account(target)) => {
@@ -853,22 +840,9 @@ mod tests {
             assert_eq!(
                 this.visible_application_targets(),
                 vec![
-                    SettingsTarget::IntegrationsTab(IntegrationsTab::Connected),
-                    SettingsTarget::IntegrationsTab(IntegrationsTab::Catalog),
-                    SettingsTarget::McpAdd,
                     SettingsTarget::IntegrationSetup("cua-driver".to_string()),
                     SettingsTarget::Integration("cua-driver".to_string()),
                     SettingsTarget::McpServer("custom".to_string()),
-                ]
-            );
-        });
-        settings.update(cx, |this, cx| {
-            this.select_integrations_tab(IntegrationsTab::Catalog, cx);
-            assert_eq!(
-                this.visible_application_targets(),
-                vec![
-                    SettingsTarget::IntegrationsTab(IntegrationsTab::Connected),
-                    SettingsTarget::IntegrationsTab(IntegrationsTab::Catalog),
                     SettingsTarget::McpAdd,
                 ]
                 .into_iter()
@@ -1553,19 +1527,6 @@ mod tests {
         crate::settings::discard_decrypted_cache();
     }
 
-    #[gpui::test]
-    fn catalog_add_custom_server_switches_to_connected_tab(cx: &mut TestAppContext) {
-        let (settings, cx) = dropdown_window(cx, true);
-        settings.update(cx, |this, cx| {
-            this.select_section(Section::Integrations, cx);
-            this.select_integrations_tab(IntegrationsTab::Catalog, cx);
-            assert_eq!(this.integrations_tab, IntegrationsTab::Catalog);
-            this.open_mcp_editor(None, cx);
-            assert_eq!(this.integrations_tab, IntegrationsTab::Connected);
-            assert!(this.mcp_editor.is_some());
-        });
-    }
-
     /// A stalled or failed profile fetch must not take Sign out with it:
     /// the page header no longer has one.
     #[gpui::test]
@@ -1582,29 +1543,43 @@ mod tests {
         assert!(cx.debug_bounds("account-sign-out").is_some());
     }
 
-    /// The Integrations tab bar is a keyboard surface: Tab reaches the
-    /// App Catalog tab and Space opens it.
+    /// The "Add custom server" row is a Tab stop and opens the editor from
+    /// the keyboard; the catalog renders on the same page below it.
     #[gpui::test]
-    fn integrations_tabs_are_keyboard_tab_stops(cx: &mut TestAppContext) {
+    fn integrations_add_row_is_a_keyboard_tab_stop_and_catalog_is_on_the_page(
+        cx: &mut TestAppContext,
+    ) {
         let (settings, cx) = dropdown_window(cx, false);
         settings.update(cx, |this, cx| {
             this.select_section(Section::Integrations, cx)
         });
         cx.run_until_parked();
-        let connected = cx
-            .debug_bounds("integrations-tab-connected")
-            .expect("Connected tab renders");
-        cx.simulate_click(connected.center(), gpui::Modifiers::default());
-        cx.simulate_keystrokes("tab space");
+        assert!(cx.debug_bounds("mcp-add").is_some(), "add row renders");
+        let first_card: &'static str = Box::leak(
+            format!("catalog-card-{}", maple_agent::agent::mcp_catalog()[0].id).into_boxed_str(),
+        );
+        assert!(
+            cx.debug_bounds(first_card).is_some(),
+            "catalog cards render without a tab switch"
+        );
+        // Shift-Tab out of the catalog search (tab 3) lands on the add row
+        // (tab 1); Space presses it.
+        let search = cx
+            .debug_bounds("catalog-search")
+            .expect("catalog search renders");
+        cx.simulate_click(search.center(), gpui::Modifiers::default());
+        cx.simulate_keystrokes("shift-tab space");
         cx.run_until_parked();
-        settings.update(cx, |this, _| {
-            assert_eq!(this.integrations_tab, IntegrationsTab::Catalog);
+        settings.update(cx, |this, cx| {
+            assert!(this.mcp_editor.is_some());
+            this.mcp_editor = None;
+            cx.notify();
         });
-        cx.simulate_keystrokes("shift-tab enter");
         cx.run_until_parked();
-        settings.update(cx, |this, _| {
-            assert_eq!(this.integrations_tab, IntegrationsTab::Connected);
-        });
+        let add = cx.debug_bounds("mcp-add").unwrap();
+        cx.simulate_click(add.center(), gpui::Modifiers::default());
+        cx.run_until_parked();
+        settings.update(cx, |this, _| assert!(this.mcp_editor.is_some()));
     }
 
     /// Former page names and moved controls still find their new section.

@@ -12,7 +12,7 @@ use maple_agent::agent::{
 use maple_agent::store::records::{McpDefinition, McpTarget};
 
 use super::{
-    SettingsScreen, SettingsTarget, TextInput, icon, pill_button, spinner, subsection_title, theme,
+    SettingsScreen, SettingsTarget, TextInput, pill_button, spinner, subsection_title, theme,
     widgets,
 };
 
@@ -594,6 +594,7 @@ impl SettingsScreen {
             (None, None) => (summary(entry).to_string(), theme::text_secondary()),
         };
         let card = widgets::card_row()
+            .debug_selector(move || format!("catalog-card-{}", entry.id))
             .flex()
             .items_center()
             .gap_3()
@@ -643,39 +644,21 @@ impl SettingsScreen {
     }
 
     pub(super) fn render_app_catalog(&self, cx: &mut Context<Self>) -> Div {
-        let mut section = div().flex().flex_col().gap_3().child(
-            div()
-                .flex()
-                .items_center()
-                .justify_between()
-                .child(subsection_title(&tr("settings-catalog-apps")))
-                .child(
-                    self.application_target(
-                        || SettingsTarget::McpAdd,
-                        widgets::secondary_button("mcp-add")
-                            .on_click(cx.listener(|this, _event, _window, cx| {
-                                this.open_mcp_editor(None, cx);
-                            }))
-                            .child(icon("plus", widgets::ROW_ICON, theme::text_secondary()))
-                            .child(tr("settings-catalog-custom")),
-                    ),
-                ),
-        );
+        let mut section = div()
+            .flex()
+            .flex_col()
+            .gap_3()
+            .child(subsection_title(&tr("settings-catalog-apps")));
         section = section.child(
             div()
                 .text_sm()
                 .text_color(gpui::rgb(theme::text_muted()))
                 .child(tr("settings-catalog-intro")),
         );
-        if let Some(notice) = &self.mcp_notice {
-            section = section.child(widgets::banner(theme::status_warning()).child(notice.clone()));
-        }
-        if let Some(editor) = &self.mcp_editor {
-            section = section.child(self.render_mcp_editor(editor, cx));
-        }
         section = section
             .child(
                 widgets::input_frame()
+                    .debug_selector(|| "catalog-search".into())
                     .text_sm()
                     .child(self.catalog_search.clone()),
             )

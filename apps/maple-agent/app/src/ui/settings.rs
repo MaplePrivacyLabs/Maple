@@ -104,12 +104,6 @@ impl NavGroup {
     }
 }
 
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub(super) enum IntegrationsTab {
-    Connected,
-    Catalog,
-}
-
 #[cfg(feature = "acp")]
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(super) enum DeveloperTab {
@@ -276,7 +270,6 @@ pub struct SettingsScreen {
     /// `settings.theme` parsed once; render only reads the label.
     theme: theme::Preference,
     section: Section,
-    integrations_tab: IntegrationsTab,
     #[cfg(feature = "acp")]
     developer_tab: DeveloperTab,
     sidebar_filter: Entity<TextInput>,
@@ -637,7 +630,6 @@ impl SettingsScreen {
             settings,
             update: crate::update::Snapshot::initial(),
             section,
-            integrations_tab: IntegrationsTab::Connected,
             #[cfg(feature = "acp")]
             developer_tab: DeveloperTab::Api,
             sidebar_filter,
@@ -940,7 +932,6 @@ impl SettingsScreen {
     }
 
     fn open_mcp_editor(&mut self, existing: Option<McpDefinition>, cx: &mut Context<Self>) {
-        self.integrations_tab = IntegrationsTab::Connected;
         let application_focus = self.application_focus.clone();
         let application_vim_enabled = self.settings.application_vim_enabled;
         let mut field = |placeholder: &str, value: &str, index: isize, secret: bool| {
@@ -1738,17 +1729,6 @@ impl SettingsScreen {
         });
         if self.settings.application_vim_enabled {
             self.application_vim.section = section;
-            self.reconcile_application_vim_target();
-        }
-        cx.notify();
-    }
-
-    pub(super) fn select_integrations_tab(&mut self, tab: IntegrationsTab, cx: &mut Context<Self>) {
-        if self.integrations_tab == tab {
-            return;
-        }
-        self.integrations_tab = tab;
-        if self.settings.application_vim_enabled {
             self.reconcile_application_vim_target();
         }
         cx.notify();
@@ -2782,63 +2762,6 @@ impl SettingsScreen {
                     }),
             );
 
-        let tab_button = |tab: IntegrationsTab, id: &'static str, label: gpui::SharedString| {
-            self.application_target(
-                move || SettingsTarget::IntegrationsTab(tab),
-                pane_tab(
-                    id,
-                    label,
-                    self.integrations_tab == tab,
-                    PANE_TAB_INDEX + tab as isize,
-                    move |this, cx| this.select_integrations_tab(tab, cx),
-                    cx,
-                ),
-            )
-        };
-        pane = pane.child(
-            div()
-                .flex()
-                .items_center()
-                .justify_between()
-                .gap_3()
-                .pb_2()
-                .border_b_1()
-                .border_color(gpui::rgb(theme::border_subtle()))
-                .child(
-                    div()
-                        .id("integrations-tabs")
-                        .role(gpui::Role::TabList)
-                        .aria_label(tr("settings-integrations-tabs"))
-                        .flex()
-                        .items_center()
-                        .gap_2()
-                        .child(tab_button(
-                            IntegrationsTab::Connected,
-                            "integrations-tab-connected",
-                            tr("settings-integrations-tab-connected"),
-                        ))
-                        .child(tab_button(
-                            IntegrationsTab::Catalog,
-                            "integrations-tab-catalog",
-                            tr("settings-integrations-tab-catalog"),
-                        )),
-                )
-                .when(self.integrations_tab == IntegrationsTab::Connected, |row| {
-                    row.child(
-                        self.application_target(
-                            || SettingsTarget::McpAdd,
-                            widgets::secondary_button("mcp-add")
-                                .py_1p5()
-                                .on_click(cx.listener(|this, _event, _window, cx| {
-                                    this.open_mcp_editor(None, cx);
-                                }))
-                                .child(icon("plus", widgets::ROW_ICON, theme::text_secondary()))
-                                .child(tr("settings-catalog-custom")),
-                        ),
-                    )
-                }),
-        );
-
         if let Some(notice) = &self.integration_notice {
             pane = pane.child(widgets::notice(
                 "integration-notice-close",
@@ -2848,10 +2771,6 @@ impl SettingsScreen {
                     cx.notify();
                 }),
             ));
-        }
-
-        if self.integrations_tab == IntegrationsTab::Catalog {
-            return pane.child(self.render_app_catalog(cx));
         }
 
         if let Some(notice) = &self.mcp_notice {
@@ -2891,107 +2810,143 @@ impl SettingsScreen {
             }
         }
 
-        match &self.mcp_servers {
-            Some(servers) if !servers.is_empty() => {
-                pane = pane.child(subsection_title(&tr("settings-settings-connected")));
-                let rows: Vec<_> = servers
-                    .iter()
-                    .map(|server| {
-                        let name = server.name.clone();
-                        let summary = match &server.target {
-                            McpTarget::Stdio { command } => format!("STDIO · {command}"),
-                            McpTarget::StreamableHttp { url } => format!("HTTP · {url}"),
-                        };
-                        let card = div()
-                            .flex()
-                            .items_center()
-                            .gap_3()
-                            .child(
-                                div()
-                                    .flex_1()
-                                    .min_w_0()
-                                    .flex()
-                                    .flex_col()
-                                    .gap_0p5()
-                                    .child(
-                                        div()
-                                            .text_sm()
-                                            .font_weight(gpui::FontWeight::MEDIUM)
-                                            .text_color(gpui::rgb(theme::text_primary()))
-                                            .child(server.name.clone()),
-                                    )
-                                    .when(!server.description.is_empty(), |col| {
-                                        col.child(
-                                            div()
-                                                .text_xs()
-                                                .text_color(gpui::rgb(theme::text_secondary()))
-                                                .child(catalog::saved_description(
-                                                    &server.name,
-                                                    &server.description,
-                                                )),
-                                        )
-                                    })
-                                    .child(
+        // Connected servers, ending in the row that adds one (Claude/Luma
+        // pattern), so the action sits with the list it extends.
+        pane = pane.child(subsection_title(&tr("settings-settings-connected")));
+        let mut rows: Vec<gpui::AnyElement> = match &self.mcp_servers {
+            Some(servers) => servers
+                .iter()
+                .map(|server| {
+                    let name = server.name.clone();
+                    let summary = match &server.target {
+                        McpTarget::Stdio { command } => format!("STDIO · {command}"),
+                        McpTarget::StreamableHttp { url } => format!("HTTP · {url}"),
+                    };
+                    let card = div()
+                        .flex()
+                        .items_center()
+                        .gap_3()
+                        .child(
+                            div()
+                                .flex_1()
+                                .min_w_0()
+                                .flex()
+                                .flex_col()
+                                .gap_0p5()
+                                .child(
+                                    div()
+                                        .text_sm()
+                                        .font_weight(gpui::FontWeight::MEDIUM)
+                                        .text_color(gpui::rgb(theme::text_primary()))
+                                        .child(server.name.clone()),
+                                )
+                                .when(!server.description.is_empty(), |col| {
+                                    col.child(
                                         div()
                                             .text_xs()
-                                            .text_color(gpui::rgb(theme::text_muted()))
-                                            .line_clamp(1)
-                                            .child(summary),
-                                    ),
-                            )
-                            .child(pill_button(
-                                format!("mcp-toggle-{name}"),
-                                if server.enabled {
-                                    tr("settings-settings-enabled")
-                                } else {
-                                    tr("settings-settings-disabled")
-                                },
-                                server.enabled,
-                                cx.listener({
-                                    let name = name.clone();
-                                    move |this, _event, _window, cx| {
-                                        this.toggle_mcp_server(&name, cx)
-                                    }
-                                }),
-                            ))
-                            .child(
-                                widgets::icon_button(
-                                    gpui::SharedString::from(format!("mcp-edit-{name}")),
-                                    "pencil",
-                                    tr("settings-settings-edit"),
-                                    widgets::ROW_ICON,
-                                    theme::text_secondary(),
-                                )
-                                .on_click(cx.listener({
-                                    let name = name.clone();
-                                    move |this, _event, _window, cx| this.edit_mcp_server(&name, cx)
-                                })),
-                            )
-                            .child(
-                                widgets::icon_button(
-                                    gpui::SharedString::from(format!("mcp-remove-{name}")),
-                                    "trash-2",
-                                    tr("settings-settings-remove"),
-                                    widgets::ROW_ICON,
-                                    theme::status_error(),
-                                )
-                                .on_click(cx.listener(
-                                    move |this, _event, _window, cx| {
-                                        this.remove_mcp_server(&name, cx)
-                                    },
-                                )),
-                            );
-                        self.application_target(
-                            || SettingsTarget::McpServer(server.name.clone()),
-                            card,
+                                            .text_color(gpui::rgb(theme::text_secondary()))
+                                            .child(catalog::saved_description(
+                                                &server.name,
+                                                &server.description,
+                                            )),
+                                    )
+                                })
+                                .child(
+                                    div()
+                                        .text_xs()
+                                        .text_color(gpui::rgb(theme::text_muted()))
+                                        .line_clamp(1)
+                                        .child(summary),
+                                ),
                         )
-                    })
-                    .collect();
-                pane = pane.child(widgets::card_stack(rows));
-            }
-            _ => {}
+                        .child(pill_button(
+                            format!("mcp-toggle-{name}"),
+                            if server.enabled {
+                                tr("settings-settings-enabled")
+                            } else {
+                                tr("settings-settings-disabled")
+                            },
+                            server.enabled,
+                            cx.listener({
+                                let name = name.clone();
+                                move |this, _event, _window, cx| this.toggle_mcp_server(&name, cx)
+                            }),
+                        ))
+                        .child(
+                            widgets::icon_button(
+                                gpui::SharedString::from(format!("mcp-edit-{name}")),
+                                "pencil",
+                                tr("settings-settings-edit"),
+                                widgets::ROW_ICON,
+                                theme::text_secondary(),
+                            )
+                            .on_click(cx.listener({
+                                let name = name.clone();
+                                move |this, _event, _window, cx| this.edit_mcp_server(&name, cx)
+                            })),
+                        )
+                        .child(
+                            widgets::icon_button(
+                                gpui::SharedString::from(format!("mcp-remove-{name}")),
+                                "trash-2",
+                                tr("settings-settings-remove"),
+                                widgets::ROW_ICON,
+                                theme::status_error(),
+                            )
+                            .on_click(cx.listener(
+                                move |this, _event, _window, cx| this.remove_mcp_server(&name, cx),
+                            )),
+                        );
+                    self.application_target(|| SettingsTarget::McpServer(server.name.clone()), card)
+                })
+                .collect(),
+            None => Vec::new(),
+        };
+        if self.mcp_servers.as_ref().is_some_and(Vec::is_empty) {
+            rows.push(
+                div()
+                    .text_sm()
+                    .text_color(gpui::rgb(theme::text_muted()))
+                    .child(gpui::text!(tr("settings-integrations-no-servers")))
+                    .into_any_element(),
+            );
         }
-        pane
+        rows.push(
+            self.application_target(
+                || SettingsTarget::McpAdd,
+                div()
+                    .id("mcp-add")
+                    .debug_selector(|| "mcp-add".into())
+                    .role(gpui::Role::Button)
+                    .tab_index(PANE_TAB_INDEX)
+                    .flex()
+                    .items_center()
+                    .gap_3()
+                    .text_sm()
+                    .text_color(gpui::rgb(theme::text_secondary()))
+                    .focus_visible(widgets::focus_ring)
+                    .hover(|style| {
+                        style
+                            .text_color(gpui::rgb(theme::text_primary()))
+                            .cursor_pointer()
+                    })
+                    .on_click(cx.listener(|this, _event, _window, cx| {
+                        this.open_mcp_editor(None, cx);
+                    }))
+                    .on_key_down(cx.listener(|this, event: &gpui::KeyDownEvent, _, cx| {
+                        if activates(event) {
+                            cx.stop_propagation();
+                            this.open_mcp_editor(None, cx);
+                        }
+                    }))
+                    .child(icon("plus", widgets::ROW_ICON, theme::text_secondary()))
+                    .child(gpui::text!(tr("settings-catalog-custom"))),
+            ),
+        );
+        pane = pane.child(widgets::card_stack(rows));
+
+        // Everything else the user could connect, always on the page.
+        pane.child(self.render_app_catalog(cx))
     }
 
     fn render_integration_card(
