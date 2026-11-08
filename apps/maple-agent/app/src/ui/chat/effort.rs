@@ -124,6 +124,7 @@ impl ChatScreen {
     fn reset_effort(&mut self, cx: &mut Context<Self>) {
         if let Some(level) = self.effort_levels().and_then(recommended_level) {
             self.effort_reset_spins += 1;
+            self.effort_reset_at = Some(std::time::Instant::now());
             self.pick_thinking(level, cx);
         }
     }
@@ -230,8 +231,12 @@ impl ChatScreen {
                             .line_height(px(20.))
                             .font_weight(gpui::FontWeight::SEMIBOLD)
                             .whitespace_nowrap()
+                            // A drag swaps the name as it crosses stops;
+                            // a morph per stop would garble a fast sweep.
                             .child(
-                                morph_text("effort-title-text", title.clone()).color(title_color),
+                                morph_text("effort-title-text", title.clone())
+                                    .color(title_color)
+                                    .instant(self.effort_preview.is_some()),
                             ),
                     )
                     .child(
@@ -258,7 +263,10 @@ impl ChatScreen {
                         theme::text_faint()
                     },
                 );
-                let reset = if self.effort_reset_spins > 0 {
+                // Only while the spin runs: a reopened popover must not
+                // replay an earlier reset.
+                let spinning = self.effort_reset_at.is_some_and(|at| at.elapsed() < SPIN);
+                let reset = if spinning {
                     reset
                         .with_animation(
                             ("effort-reset-spin", self.effort_reset_spins),

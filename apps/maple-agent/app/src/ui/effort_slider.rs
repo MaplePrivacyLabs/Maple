@@ -13,8 +13,8 @@
 //!   with a jelly overshoot. It stretches along its motion and squashes
 //!   across it, so a fast sweep reads as a drop of something thick.
 //! - The fill's edge is its own, softer spring chasing the thumb. When the
-//!   thumb runs ahead, a thinning neck of fill stretches between them; when
-//!   it runs back, the fill drains after it with a droplet at its tip.
+//!   thumb runs ahead, a thinning neck of fill stretches between them. The
+//!   fill never passes the thumb: no orange shows beyond the white.
 //! - Dots swell as the fill flows over them, a ripple marks each stop a
 //!   drag crosses and each level that lands, and the thumb blooms in the
 //!   level's colour when one is picked.
@@ -61,12 +61,16 @@ struct Tuning(f32, f32);
 const SNAP: Tuning = Tuning(520., 0.6);
 /// Under the pointer: close enough to feel direct, soft enough to be smooth.
 const FOLLOW: Tuning = Tuning(2200., 0.86);
-/// The fill's edge: trails the thumb and sloshes a little.
-const POUR: Tuning = Tuning(140., 0.62);
+/// The fill's edge: trails a thumb that runs ahead, without overshoot, and
+/// never passes it.
+const POUR: Tuning = Tuning(220., 0.9);
 /// The thumb lifting under the pointer.
 const LIFT: Tuning = Tuning(600., 0.7);
-/// The thumb popping in when the popover opens.
+/// The thumb settling as the popover opens: from a little large down to
+/// its size, never so small that the track shows around it.
 const POP: Tuning = Tuning(380., 0.42);
+/// Where that settle starts.
+const POP_FROM: f32 = 1.12;
 
 /// What the owner hears from the slider: the stop under a drag as it
 /// changes (`None` when the drag ends), and the stop picked by a release.
@@ -302,13 +306,13 @@ pub struct EffortSliderState {
 
 impl EffortSliderState {
     /// Start a fresh showing: forget a drag or hover the slider never saw
-    /// end (its popup closed under the pointer), pop the thumb in and pour
-    /// the fill to it.
+    /// end (its popup closed under the pointer), settle the thumb in and
+    /// pour the fill to it.
     pub fn release(&mut self) {
         self.drag = None;
         self.hover = None;
         self.preview = None;
-        self.pop.snap(0.55);
+        self.pop.snap(POP_FROM);
         self.fill.snap(0.);
         self.ripples.clear();
         self.bloom = None;
@@ -332,6 +336,11 @@ impl EffortSliderState {
         };
         if !self.started {
             self.thumb.snap(target);
+            // Shown without a release (no popover opening): no settle from
+            // nothing, which would bare the fill around a tiny thumb.
+            if self.pop.value < 1. {
+                self.pop.snap(1.);
+            }
             self.started = true;
         }
         if reduce_motion {
@@ -350,6 +359,12 @@ impl EffortSliderState {
             .step(target, if held { FOLLOW } else { SNAP }, dt);
         let before = self.fill.value;
         moving |= self.fill.step(self.thumb.value, POUR, dt);
+        // The fill only ever trails: a thumb running back takes the fill's
+        // edge with it rather than leaving orange beyond the white.
+        if self.fill.value > self.thumb.value {
+            self.fill.value = self.thumb.value;
+            self.fill.velocity = self.fill.velocity.min(self.thumb.velocity);
+        }
         // A dot swells as the fill's edge flows over it.
         let count = self.swells.len();
         let after = self.fill.value;
@@ -550,9 +565,29 @@ impl Element for EffortSlider {
             }
         };
         let thumb_x = x_at(snapshot.thumb.value);
-        let fill_x = if goo { x_at(snapshot.fill) } else { thumb_x };
-        let near = thumb_x.min(fill_x);
-        let far = thumb_x.max(fill_x);
+        // The thumb stretches along its motion and squashes across it, but
+        // never thinner than the track, so the fill cannot show around it.
+        let speed = if goo {
+            (snapshot.thumb.velocity * f32::from(travel)).abs()
+        } else {
+            0.
+        };
+        let stretch = (speed / 1400.).min(0.42);
+        let diameter = (THUMB + (THUMB_PRESSED - THUMB) * snapshot.lift) * snapshot.pop;
+        let thumb = Bounds::centered_at(
+            point(thumb_x, track.center().y),
+            size(
+                diameter * (1. + stretch),
+                (diameter * (1. - 0.32 * stretch)).max(diameter.min(TRACK_HEIGHT + px(2.))),
+            ),
+        );
+        let fill_x = if goo {
+            x_at(snapshot.fill).min(thumb_x)
+        } else {
+            thumb_x
+        };
+        let near = fill_x;
+        let far = thumb_x;
         // Colour flows with the thumb, blended between the stops around it.
         let heat = heat_at(&self.heats, snapshot.thumb.value);
 
@@ -578,14 +613,14 @@ impl Element for EffortSlider {
             }],
         );
 
-        // Fill: a full-height body up to the nearer of the thumb and the
-        // fill's edge, and between them a neck that thins as they part.
+        // Fill: a full-height body up to the fill's edge, and between it and
+        // the thumb a neck that thins as they part.
+        // Its rounded end stays under the thumb, even while the thumb pops
+        // in smaller than the track.
+        let body_end = (near + radius).min(thumb.right() - px(1.));
         let body = Bounds::new(
             track.origin,
-            size(
-                (near - track.left() + radius).max(TRACK_HEIGHT),
-                TRACK_HEIGHT,
-            ),
+            size((body_end - track.left()).max(TRACK_HEIGHT), TRACK_HEIGHT),
         );
         let fill_end = if self.enabled {
             heat_color(heat.max(0.15))
@@ -636,18 +671,6 @@ impl Element for EffortSlider {
                 gpui::transparent_black(),
                 BorderStyle::Solid,
             ));
-            if fill_x > thumb_x {
-                // Draining after a thumb that ran back: a droplet at the tip.
-                let drop = (neck * 1.25).min(TRACK_HEIGHT);
-                window.paint_quad(quad(
-                    Bounds::centered_at(point(fill_x, track.center().y), size(drop, drop)),
-                    Corners::all(drop / 2.),
-                    fill_end,
-                    px(0.),
-                    gpui::transparent_black(),
-                    BorderStyle::Solid,
-                ));
-            }
         }
         // A highlight along the body's top edge, as on the send button.
         window.paint_inset_shadows(
@@ -763,19 +786,7 @@ impl Element for EffortSlider {
             ));
         }
 
-        // Thumb: a white knob that lifts under the pointer, stretches along
-        // its motion and squashes across it.
-        let speed = if goo {
-            (snapshot.thumb.velocity * f32::from(travel)).abs()
-        } else {
-            0.
-        };
-        let stretch = (speed / 1400.).min(0.42);
-        let diameter = (THUMB + (THUMB_PRESSED - THUMB) * snapshot.lift) * snapshot.pop;
-        let thumb = Bounds::centered_at(
-            point(thumb_x, track.center().y),
-            size(diameter * (1. + stretch), diameter * (1. - 0.32 * stretch)),
-        );
+        // Thumb: a white knob that lifts under the pointer.
         let round = Corners::all(thumb.size.height / 2.);
         let mut shadows = vec![
             BoxShadow {
@@ -1052,6 +1063,36 @@ mod tests {
         assert!(state.fill.value < state.thumb.value);
         run(&mut state, 1., 400);
         assert_eq!(state.fill.value, state.thumb.value);
+    }
+
+    /// No orange runs past the white: through the opening pour, a sweep
+    /// back and the settle's overshoot, the fill's edge stays at or behind
+    /// the thumb.
+    #[test]
+    fn the_fill_never_passes_the_thumb() {
+        let mut state = started();
+        run(&mut state, 1., 400);
+        state.release();
+        let mut now = state.last_frame.unwrap();
+        for target in [1., 0., 0.75, 0.25] {
+            for _ in 0..120 {
+                now += Duration::from_millis(16);
+                state.step(target, now, false);
+                assert!(
+                    state.fill.value <= state.thumb.value,
+                    "fill {} passed thumb {} toward {target}",
+                    state.fill.value,
+                    state.thumb.value
+                );
+                // Nor around it: the settling thumb stays taller than the
+                // track, whose height the fill's body fills.
+                assert!(
+                    THUMB * state.pop.value > TRACK_HEIGHT,
+                    "thumb at {} of its size shows the fill around it",
+                    state.pop.value
+                );
+            }
+        }
     }
 
     #[test]

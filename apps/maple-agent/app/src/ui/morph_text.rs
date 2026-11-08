@@ -24,6 +24,7 @@ pub struct MorphText {
     id: ElementId,
     text: SharedString,
     color: Option<Hsla>,
+    instant: bool,
 }
 
 /// Morphing text in the surrounding text style; `id` keeps its state
@@ -33,6 +34,7 @@ pub fn morph_text(id: impl Into<ElementId>, text: impl Into<SharedString>) -> Mo
         id: id.into(),
         text: text.into(),
         color: None,
+        instant: false,
     }
 }
 
@@ -41,6 +43,14 @@ impl MorphText {
     /// colour eases along with the letters.
     pub fn color(mut self, color: impl Into<Hsla>) -> Self {
         self.color = Some(color.into());
+        self
+    }
+
+    /// Swap to a new value at once instead of morphing, for text that
+    /// changes faster than a morph can read, such as a label tracking a
+    /// drag.
+    pub fn instant(mut self, instant: bool) -> Self {
+        self.instant = instant;
         self
     }
 }
@@ -187,7 +197,7 @@ impl Element for MorphText {
         let rem = window.rem_size();
         let font_size = style.font_size.to_pixels(rem);
         let line_height = style.line_height_in_pixels(rem);
-        let reduce_motion = cx.reduce_motion();
+        let reduce_motion = cx.reduce_motion() || self.instant;
         let text = self.text.clone();
         let color = self.color.unwrap_or(style.color);
         let width = window.with_element_state::<State, _>(id, |state, window| {
@@ -320,8 +330,9 @@ impl Element for MorphText {
                         if morph.from[index].is_some() {
                             paint(window, cx, &letter.text, x, px(0.), 1.);
                         } else {
-                            // Arrivals wait a beat, then fade and rise in.
-                            let alpha = ((t - 0.25) / 0.5).clamp(0., 1.);
+                            // Arrivals start as the leavers fade, so the
+                            // text is never empty, then rise in.
+                            let alpha = ((t - 0.1) / 0.45).clamp(0., 1.);
                             paint(window, cx, &letter.text, x, RISE * (1. - alpha), alpha);
                         }
                     }
