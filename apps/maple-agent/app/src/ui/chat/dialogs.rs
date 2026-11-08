@@ -595,7 +595,7 @@ impl ChatScreen {
                         }
                         this.sync_sidebar(cx);
                         if was_current && let Some(next) = next_root {
-                            this.persist_project_root(next, cx);
+                            this.persist_project_root(next, true, cx);
                             this.refresh_sessions(cx);
                         } else {
                             this.refresh_roots(cx);

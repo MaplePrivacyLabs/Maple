@@ -1994,17 +1994,21 @@ impl ChatScreen {
 
     /// Persist `root` as the default for new tasks and the next launch
     /// without changing what is on screen. Used when a task under another
-    /// project is opened and when a project is archived.
-    fn persist_project_root(&mut self, root: String, cx: &mut Context<Self>) {
+    /// project is opened and when a project is archived. Only a changed
+    /// listing needs `refresh_roots`: recording use of the root that is
+    /// already selected keeps the sidebar's prepared rows.
+    fn persist_project_root(&mut self, root: String, refresh_roots: bool, cx: &mut Context<Self>) {
         let backend = self.backend.clone();
         let user_id = self.user_id.clone();
         self.call(
             async move { backend.select_project_root(&user_id, root).await },
             cx,
-            |this, result, cx| match result {
+            move |this, result, cx| match result {
                 Ok(registration) => {
                     this.restore_selected_project(registration.project, cx);
-                    this.refresh_roots(cx);
+                    if refresh_roots {
+                        this.refresh_roots(cx);
+                    }
                     cx.notify();
                 }
                 Err(error) => log::warn!("Cannot persist project root: {error}"),
@@ -3236,8 +3240,9 @@ impl ChatScreen {
                         this.set_active_session(detail.session, detail.timeline, summaries, cx);
                         // A different existing root is persisted by set_active_session;
                         // explicit opens in the same root also count as recent use.
+                        // Recency alone changes no listing, so no root reload.
                         if needs_recent_touch {
-                            this.persist_project_root(root, cx);
+                            this.persist_project_root(root, false, cx);
                         }
                         this.set_queue(detail.queue.items);
                     }
@@ -3653,7 +3658,7 @@ impl ChatScreen {
             // Working in another project makes it the default for new
             // tasks and the next launch, as the project selector does. An
             // archived task under a removed project restores that project.
-            self.persist_project_root(project_root, cx);
+            self.persist_project_root(project_root, true, cx);
         }
         self.set_queue(Vec::new());
         self.permission_mode = session.permission_mode;

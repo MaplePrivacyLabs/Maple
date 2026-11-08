@@ -3766,7 +3766,7 @@ mod state_tests {
                     0 => this.begin_navigation(),
                     1 => this.host_recovery.epoch += 1,
                     2 => this.user_id = "another-account".into(),
-                    _ => this.set_visible(false, cx),
+                    _ => this.cancel_scratch_send(cx),
                 }
                 this.finish_scratch_project(
                     generation,
@@ -3785,6 +3785,45 @@ mod state_tests {
                 assert!(!this.awaiting_first_token);
             });
         }
+    }
+
+    /// Settings and the plan gate hide the chat on the same computer; that
+    /// is not a switch, so the folder result still sends the first message.
+    #[gpui::test]
+    fn hiding_the_chat_keeps_a_pending_scratch_send(cx: &mut TestAppContext) {
+        cx.executor().allow_parking();
+        let chat = screen(cx);
+        chat.update(cx, |this, cx| {
+            this.booting = false;
+            this.select_scratch_project(cx);
+            this.send_text("Send after settings".into(), cx);
+            let generation = this.selection_generation;
+            this.set_visible(false, cx);
+            assert_eq!(this.scratch_creation, Some(generation));
+            assert_eq!(this.selection_generation, generation);
+            assert_eq!(
+                this.pending_first_send.as_ref().unwrap().text(),
+                "Send after settings"
+            );
+            assert!(this.notice.is_none());
+            this.set_visible(true, cx);
+            this.finish_scratch_project(
+                generation,
+                this.host_recovery.epoch,
+                &this.user_id.clone(),
+                Ok(crate::backend::SelectedProject {
+                    project_root: absolute_fixture_root("scratch"),
+                    project: recent_root(&absolute_fixture_root("scratch")),
+                }),
+                cx,
+            );
+            assert_eq!(this.project_root, Some(absolute_fixture_root("scratch")));
+            assert_eq!(
+                this.pending_first_send.as_ref().unwrap().text(),
+                "Send after settings"
+            );
+            assert!(this.session_setup_pending);
+        });
     }
 
     /// The first send on the empty screen creates the task, carrying the
