@@ -62,6 +62,7 @@ shared 15 fps `ticker` clock and pause in background windows.
 | Live transcript rows (sent message, reply, tool card, error, stop notice) | fade and 6 px rise, `ENTER` | — |
 | Streaming text | grows in place, no animation | — |
 | Cards above the composer, queued messages, send preview | fade and rise, `ENTER` | immediate |
+| Files attached to the draft | fade and 6 px rise, `ENTER` | immediate |
 | Composer and multi-line fields | height eases to the new line count, `resize_duration` | same |
 | Composer expand / shrink | height eases, `PANEL`; maximize and minimize icons cross-fade and scale, `TOGGLE` | same, reversed |
 | Send ↔ Stop | icons cross-fade and scale, `TOGGLE` | same |

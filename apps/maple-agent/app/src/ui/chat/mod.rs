@@ -655,6 +655,10 @@ pub struct ChatScreen {
     composer_resize: Option<motion::Tween>,
     /// Heights that transition eases between, measured last frame.
     composer_frame: std::rc::Rc<std::cell::Cell<self::composer::ComposerFrame>>,
+    /// Send (0) or Stop (1) on the composer's main control.
+    send_stop: motion::Tween,
+    /// The send fill, disabled (0) or ready (1).
+    send_ready: motion::Tween,
     /// Latest todo list from the selected task, pinned above the composer
     /// while any entry is unfinished. A finished list stays in the
     /// transcript.
@@ -1523,6 +1527,8 @@ impl ChatScreen {
             composer_expanded: false,
             composer_resize: None,
             composer_frame: std::rc::Rc::default(),
+            send_stop: motion::Tween::new(0.),
+            send_ready: motion::Tween::new(0.),
             web_enabled: true,
             default_web_enabled: settings.default_web_enabled,
             permission_mode: settings.new_task_permission_mode.unwrap_or_default(),

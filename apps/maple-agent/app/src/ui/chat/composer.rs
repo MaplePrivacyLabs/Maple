@@ -1329,6 +1329,26 @@ impl ChatScreen {
         // Layout follows the box while it eases; the icon and tooltip
         // name the state it is heading to.
         let fills = self.composer_fills();
+        // Send ↔ Stop and the send fill's enabled state ease over TOGGLE.
+        let (send_stop, send_ready) = {
+            let now = motion::now();
+            let reduced = cx.reduce_motion();
+            let step = |tween: &mut motion::Tween, on: bool| {
+                tween.step(
+                    if on { 1. } else { 0. },
+                    motion::TOGGLE,
+                    motion::ease_out_cubic,
+                    now,
+                    reduced,
+                )
+            };
+            let (stop, stop_moving) = step(&mut self.send_stop, show_stop);
+            let (ready, ready_moving) = step(&mut self.send_ready, can_send);
+            if stop_moving || ready_moving {
+                window.request_animation_frame();
+            }
+            (stop, ready)
+        };
         let composer = self.composer.clone();
         let vim_badge = composer
             .as_ref()
@@ -1443,7 +1463,7 @@ impl ChatScreen {
                 container.child(div().flex().flex_wrap().gap_2().px_4().pt_4().children(
                     drafts.iter().map(|attachment| {
                         let id = attachment.id;
-                        div()
+                        let chip = div()
                             .relative()
                             .max_w(px(260.))
                             .h_16()
@@ -1512,7 +1532,15 @@ impl ChatScreen {
                                         this.remove_attachment(id, cx);
                                     }))
                                     .child(icon("x", px(10.), theme::text_primary())),
-                            )
+                            );
+                        // A file joining the draft settles in; removing
+                        // one is immediate.
+                        motion::slide_in(
+                            chip,
+                            ("draft-attachment", id as usize),
+                            motion::ENTER,
+                            gpui::point(px(0.), motion::RISE),
+                        )
                     }),
                 ))
             })
@@ -1623,51 +1651,75 @@ impl ChatScreen {
                         } else {
                             tr("chat-send")
                         };
+                        // The fills cross-fade and the arrow scales while
+                        // the handler, role and label switch at once.
+                        let send_layer = (send_stop < 1.).then(|| {
+                            div()
+                                .absolute()
+                                .inset_0()
+                                .flex()
+                                .items_center()
+                                .justify_center()
+                                .rounded_full()
+                                .bg(gpui::linear_gradient(
+                                    180.,
+                                    gpui::linear_color_stop(gpui::rgb(theme::send_top()), 0.),
+                                    gpui::linear_color_stop(gpui::rgb(theme::send_bottom()), 1.),
+                                ))
+                                .opacity((0.4 + 0.6 * send_ready) * (1. - send_stop))
+                                .child(if disabled {
+                                    spinner("send-booting", px(16.), theme::on_accent())
+                                } else {
+                                    let scale = 1. - 0.4 * send_stop;
+                                    icon("arrow-up", px(16.), theme::on_accent())
+                                        .with_transformation(gpui::Transformation::scale(
+                                            gpui::size(scale, scale),
+                                        ))
+                                        .into_any_element()
+                                })
+                        });
+                        let stop_layer = (send_stop > 0.).then(|| {
+                            div()
+                                .absolute()
+                                .inset_0()
+                                .flex()
+                                .items_center()
+                                .justify_center()
+                                .rounded_full()
+                                .bg(gpui::rgb(theme::status_error()))
+                                .opacity(send_stop)
+                                .child(
+                                    div()
+                                        .size_3()
+                                        .rounded(theme::RADIUS_SM)
+                                        .bg(gpui::rgb(theme::bg_app())),
+                                )
+                        });
                         div()
                             .id(button_id)
                             .debug_selector(move || button_id.to_string())
                             .role(gpui::Role::Button)
                             .aria_label(button_label.clone())
+                            .relative()
                             .size_8()
-                            .flex()
-                            .items_center()
-                            .justify_center()
                             .rounded_full()
+                            .children(send_layer)
+                            .children(stop_layer)
                             .when(show_stop, |el| {
-                                el.bg(gpui::rgb(theme::status_error()))
-                                    .hover(|style| style.opacity(0.85).cursor_pointer())
+                                el.hover(|style| style.opacity(0.85).cursor_pointer())
                                     .active(|style| style.opacity(0.7))
                                     .tooltip(widgets::tooltip(tr("chat-stop-run"), None))
                                     .on_click(cx.listener(|this, _event, _window, cx| {
                                         this.stop(cx);
                                     }))
-                                    .child(
-                                        div()
-                                            .size_3()
-                                            .rounded(theme::RADIUS_SM)
-                                            .bg(gpui::rgb(theme::bg_app())),
-                                    )
                             })
-                            .when(!show_stop, |el| {
-                                el.bg(gpui::linear_gradient(
-                                    180.,
-                                    gpui::linear_color_stop(gpui::rgb(theme::send_top()), 0.),
-                                    gpui::linear_color_stop(gpui::rgb(theme::send_bottom()), 1.),
-                                ))
-                                .when(!can_send, |el| el.opacity(0.4))
-                                .when(can_send, |el| {
-                                    el.hover(|style| style.opacity(0.9).cursor_pointer())
-                                        .active(|style| style.opacity(0.75))
-                                        .tooltip(widgets::tooltip(button_label.clone(), Some("↵")))
-                                        .on_click(cx.listener(|this, _event, _window, cx| {
-                                            this.send_inner(cx);
-                                        }))
-                                })
-                                .child(if disabled {
-                                    spinner("send-booting", px(16.), theme::on_accent())
-                                } else {
-                                    icon("arrow-up", px(16.), theme::on_accent()).into_any_element()
-                                })
+                            .when(!show_stop && can_send, |el| {
+                                el.hover(|style| style.opacity(0.9).cursor_pointer())
+                                    .active(|style| style.opacity(0.75))
+                                    .tooltip(widgets::tooltip(button_label.clone(), Some("↵")))
+                                    .on_click(cx.listener(|this, _event, _window, cx| {
+                                        this.send_inner(cx);
+                                    }))
                             })
                     }),
             )
