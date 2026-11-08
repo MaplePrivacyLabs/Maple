@@ -113,6 +113,25 @@ fn listed_metadata(
 }
 
 impl AgentRuntimeHandle {
+    /// The execution owner's three most recently explicitly selected projects.
+    pub async fn recent_project_roots(&self) -> Result<Vec<RecentProjectRoot>, String> {
+        self.verify_generation().await?;
+        let tasks = self.store()?;
+        let roots = tokio::task::spawn_blocking(move || {
+            tasks
+                .store()
+                .recently_used_projects(tasks.account())
+                .map_err(|error| error.to_string())?
+                .into_iter()
+                .map(|record| metadata(record.root.clone(), Some(record)))
+                .collect::<Result<Vec<_>, String>>()
+        })
+        .await
+        .map_err(|_| "Project settings worker did not complete".to_owned())??;
+        self.verify_generation().await?;
+        Ok(roots)
+    }
+
     /// Resolve one owner-authoritative record without loading tasks or a catalog.
     pub async fn project_root_metadata(&self, path: String) -> Result<RecentProjectRoot, String> {
         self.verify_generation().await?;
@@ -468,14 +487,17 @@ mod tests {
                 .unwrap(),
             fixture.root
         );
-        assert_eq!(
-            fixture
-                .handle
-                .project_root_metadata(fixture.root.clone())
-                .await
-                .unwrap(),
-            expected
-        );
+        let selected = fixture
+            .handle
+            .project_root_metadata(fixture.root.clone())
+            .await
+            .unwrap();
+        assert!(selected.last_used_ms >= expected.last_used_ms);
+        let expected = RecentProjectRoot {
+            last_used_ms: selected.last_used_ms,
+            ..expected
+        };
+        assert_eq!(selected, expected);
         fixture
             .handle
             .remove_project_root(fixture.root.clone(), None)

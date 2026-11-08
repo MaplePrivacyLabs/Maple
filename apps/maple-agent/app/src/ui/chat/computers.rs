@@ -9,6 +9,9 @@ pub(crate) enum Destination {
     /// The project selector was opened from New Task. Carry that intent across
     /// computers (and a deferred connection), whose ChatScreens are independent.
     DraftProject(String),
+    /// An explicit picker choice also records use of an already-selected root.
+    DraftRecentProject(String),
+    RecentProject(String),
     Task(String),
     NewProject,
     DraftNewProject,
@@ -167,6 +170,19 @@ impl ChatScreen {
     }
 
     #[cfg(test)]
+    pub(crate) fn begin_scratch_send_for_test(&mut self, cx: &mut Context<Self>) {
+        self.booting = false;
+        self.navigation_ready = true;
+        self.select_scratch_project(cx);
+        self.send_text("Create a new project".into(), cx);
+    }
+
+    #[cfg(test)]
+    pub(crate) fn scratch_send_pending_for_test(&self) -> bool {
+        self.scratch_creation.is_some() && self.pending_first_send.is_some()
+    }
+
+    #[cfg(test)]
     pub(crate) fn seed_projects_for_test(
         &mut self,
         roots: Vec<RecentProjectRoot>,
@@ -244,6 +260,11 @@ impl ChatScreen {
         self.visible = visible;
         if !visible {
             self.project_folder_dialog = None;
+            if changed && self.scratch_creation.is_some() {
+                self.begin_navigation();
+                self.pending_first_send = None;
+                self.notice = Some(UiText::key("chat-scratch-switched-computers"));
+            }
         }
         if changed && visible && !self.computers.is_empty() {
             // Only the mounted sidebar projects every computer. Background
@@ -383,8 +404,11 @@ impl ChatScreen {
         // Opening a remote computer's projects is not a request to open its
         // newest task. Establish the draft before runtime refreshes can
         // auto-select a session. Explicit task clicks still win.
-        let needs_draft = matches!(destination, Destination::DraftProject(_))
-            || (self.navigation_only && !matches!(destination, Destination::Task(_)));
+        let needs_draft = matches!(
+            destination,
+            Destination::DraftProject(_) | Destination::DraftRecentProject(_)
+        ) || (self.navigation_only
+            && !matches!(destination, Destination::Task(_)));
         if needs_draft && !self.prepare_draft_navigation(cx) {
             return;
         }
@@ -394,6 +418,9 @@ impl ChatScreen {
                 .sidebar
                 .update(cx, |s, cx| s.set_project_filter(None, cx)),
             Destination::Task(id) => self.select_session(&id, cx),
+            Destination::RecentProject(path) | Destination::DraftRecentProject(path) => {
+                self.select_project_root(path, cx);
+            }
             Destination::Project(path) | Destination::DraftProject(path) => {
                 // The current workspace is already registered and selected.
                 // A new draft there needs no owner request or sidebar reload.
@@ -441,8 +468,105 @@ impl ChatScreen {
         cx.notify();
     }
 
+    pub(super) fn install_picker_projects(
+        &mut self,
+        mut projects: Vec<(Option<String>, RecentProjectRoot)>,
+    ) {
+        projects.sort_by(|(a_host, a), (b_host, b)| {
+            b.last_used_ms
+                .cmp(&a.last_used_ms)
+                .then_with(|| a_host.cmp(b_host))
+                .then_with(|| a.path.cmp(&b.path))
+        });
+        let mut seen = HashSet::new();
+        projects.retain(|(host, project)| seen.insert((host.clone(), project.path.clone())));
+        projects.truncate(3);
+        self.picker_projects = projects;
+    }
+
+    pub(super) fn refresh_picker_projects(&mut self, cx: &mut Context<Self>) {
+        self.picker_projects_generation += 1;
+        self.picker_projects.clear();
+        #[cfg(test)]
+        if let Some(projects) = self.picker_projects_fixture.clone() {
+            self.install_picker_projects(projects);
+            cx.notify();
+            return;
+        }
+        let generation = self.picker_projects_generation;
+        let user = self.user_id.clone();
+        let epoch = self.host_recovery.epoch;
+        let multiple = self.computers.len() > 1;
+        let sources = if multiple {
+            self.computers
+                .iter()
+                .filter_map(|computer| {
+                    Some((
+                        computer.key.clone(),
+                        computer.backend.clone()?,
+                        computer.host_epoch,
+                    ))
+                })
+                .collect::<Vec<_>>()
+        } else {
+            vec![(
+                self.backend.remote_host().map(str::to_owned),
+                self.backend.clone(),
+                epoch,
+            )]
+        };
+        for (key, backend, source_epoch) in sources {
+            let user = user.clone();
+            let request_user = user.clone();
+            let request_backend = backend.clone();
+            self.call(
+                async move { request_backend.recent_project_roots(&request_user).await },
+                cx,
+                move |this, result, cx| {
+                    if this.user_id != user
+                        || this.host_recovery.epoch != epoch
+                        || this.picker_projects_generation != generation
+                        || (this.computers.len() > 1) != multiple
+                    {
+                        return;
+                    }
+                    let current = if multiple {
+                        this.computers.iter().any(|computer| {
+                            computer.key == key
+                                && computer.host_epoch == source_epoch
+                                && computer
+                                    .backend
+                                    .as_ref()
+                                    .is_some_and(|active| Arc::ptr_eq(active, &backend))
+                        })
+                    } else {
+                        Arc::ptr_eq(&this.backend, &backend)
+                    };
+                    if !current {
+                        return;
+                    }
+                    match result {
+                        Ok(roots) => this.merge_picker_projects(key, roots),
+                        Err(error) => this.notice = Some(error.into()),
+                    }
+                    cx.notify();
+                },
+            );
+        }
+    }
+
+    pub(super) fn merge_picker_projects(
+        &mut self,
+        key: Option<String>,
+        roots: Vec<RecentProjectRoot>,
+    ) {
+        let mut projects = std::mem::take(&mut self.picker_projects);
+        projects.extend(roots.into_iter().map(|root| (key.clone(), root)));
+        self.install_picker_projects(projects);
+    }
+
     pub(super) fn computers_project_menu(&self) -> Menu<Self> {
-        let mut menu = Menu::new("computer-project-menu", px(440.))
+        let mut menu = Menu::new("computer-project-menu", px(320.))
             .label(tr("chat-projects"))
             .max_height(px(440.))
             .application_vim(self.application_vim_enabled);
@@ -456,40 +580,10 @@ impl ChatScreen {
                     .text_color(gpui::rgb(theme::text_muted()))
                     .child(computer.label.clone()),
             );
-            for (project_index, project) in computer.projects.iter().enumerate() {
-                let request = Navigate {
-                    computer: computer.key.clone(),
-                    destination: if self.draft {
-                        Destination::DraftProject(project.path.clone())
-                    } else {
-                        Destination::Project(project.path.clone())
-                    },
-                };
-                let mut item = MenuItem::new(
-                    SharedString::from(format!("computer-{index}-project-{project_index}")),
-                    project.label.clone(),
-                    move |_: &mut Self, _, cx| cx.emit(request.clone()),
-                )
-                .icon(if computer.key.is_some() {
-                    "globe"
-                } else {
-                    "folder"
-                })
-                .current(
-                    computer.key.as_deref() == self.backend.remote_host()
-                        && self.project_root.as_deref() == Some(project.path.as_str()),
-                );
-                if computer
-                    .projects
-                    .iter()
-                    .filter(|peer| peer.label == project.label)
-                    .count()
-                    > 1
-                {
-                    item = item.note(project.path.clone());
-                }
-                menu = menu.item(item);
-            }
+            menu = menu.item(self.scratch_project_item(
+                SharedString::from(format!("computer-{index}-scratch")),
+                computer.key.as_deref() == self.backend.remote_host(),
+            ));
             let request = Navigate {
                 computer: computer.key.clone(),
                 destination: if self.draft {
@@ -501,11 +595,57 @@ impl ChatScreen {
             menu = menu.item(
                 MenuItem::new(
                     SharedString::from(format!("computer-{index}-new-project")),
-                    tr("chat-new-project"),
+                    tr("chat-choose-folder-menu"),
                     move |_: &mut Self, _, cx| cx.emit(request.clone()),
                 )
-                .icon("folder-plus"),
+                .icon("folder-open"),
             );
+            if self
+                .picker_projects
+                .iter()
+                .any(|(key, _)| key == &computer.key)
+            {
+                menu = menu.separator().header(tr("chat-recent-projects"));
+            }
+            for (project_index, (_, project)) in self
+                .picker_projects
+                .iter()
+                .filter(|(key, _)| key == &computer.key)
+                .enumerate()
+            {
+                let request = Navigate {
+                    computer: computer.key.clone(),
+                    destination: if self.draft {
+                        Destination::DraftRecentProject(project.path.clone())
+                    } else {
+                        Destination::RecentProject(project.path.clone())
+                    },
+                };
+                let mut item = MenuItem::new(
+                    SharedString::from(format!("computer-{index}-project-{project_index}")),
+                    project.name.clone(),
+                    move |_: &mut Self, _, cx| cx.emit(request.clone()),
+                )
+                .icon(if computer.key.is_some() {
+                    "globe"
+                } else {
+                    "folder"
+                })
+                .current(
+                    computer.key.as_deref() == self.backend.remote_host()
+                        && self.project_root.as_deref() == Some(project.path.as_str()),
+                );
+                if self
+                    .picker_projects
+                    .iter()
+                    .filter(|(key, peer)| key == &computer.key && peer.name == project.name)
+                    .count()
+                    > 1
+                {
+                    item = item.note(project.path.clone());
+                }
+                menu = menu.item(item);
+            }
         }
         menu.separator().item(
             MenuItem::new(

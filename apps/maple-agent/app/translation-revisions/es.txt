@@ -28,6 +28,7 @@ chat-btw-question 429cfbcba974d75b
 chat-cancel ab19decdab4115a3
 chat-checking-send 13ae0e39d789574e
 chat-choose-folder ebe6800ffff596d0
+chat-choose-folder-menu bf3d9ce4d3281860
 chat-choose-project 8afc6dab74e013e7
 chat-clear-search 3cddadc352e9880e
 chat-close 13d547f7505df8cd
@@ -163,7 +164,6 @@ chat-more-tasks 92ae015f42289e24
 chat-move-down c583e532582c3440
 chat-move-up cfeef885dbc0a67c
 chat-name d8bba8b563a63c8d
-chat-new-project b60ae66e401751c2
 chat-new-project-button 22cc25348cd1190b
 chat-new-project-on f94ce976fd5d274f
 chat-new-project-on-computer f95fd7399d807a56
@@ -255,6 +255,7 @@ chat-queue-editing 90a3a641ae156437
 chat-queue-next-turn af933f2f37669432
 chat-queue-remove 88aa4df45b3b6de1
 chat-queue-send-now a36a55f66a60511a
+chat-recent-projects c99c4880bde55214
 chat-reload-latest d85000ccceaff534
 chat-remote-computer 0c63b40a9d34efd4
 chat-remote-computer-settings 34705b763cab4fdb
@@ -270,6 +271,9 @@ chat-retry-save e40b6ebed81a2007
 chat-retry-save-remote 793858d46fd53ac4
 chat-runtime-start-failed 9947accdbc6dd68b
 chat-runtime-starting c2c0812013b25505
+chat-scratch-note db9f25c5d11b34a5
+chat-scratch-switch-computer 45ef7455b0162fa2
+chat-scratch-switched-computers dbc287b83f851b24
 chat-search 634b3c02b1fae3fb
 chat-search-again 6ed13f117284abd4
 chat-search-tasks 85b21c72756c0476
@@ -338,6 +342,7 @@ chat-staging-open-failed d3b2d773f22b7a4f
 chat-staging-prepare-failed 7a18a5c381a67a1f
 chat-staging-private-directory 6c5052ac114c779f
 chat-staging-unsafe-directory 13ed7aa88e08c0a8
+chat-start-from-scratch 22de17f381c187c5
 chat-starting f00ec83fc396c4b0
 chat-starting-agent 0e61b8da983ef787
 chat-status-allowed 11310a7438dc9e0c
@@ -727,6 +732,7 @@ runtime-error-folder-browser-worker a00fa3d3fa0b49e1
 runtime-error-folder-create-worker c0b77be2e9df4112
 runtime-error-folder-cursor ae2435b303c00fd3
 runtime-error-folder-directory e5b030dcf452dd57
+runtime-error-folder-documents 89bbcfb42d3d833a
 runtime-error-folder-encode 1cb4e270d31ed066
 runtime-error-folder-exists fc19b6c19bce3a00
 runtime-error-folder-home c4d9351d8e4cde64
@@ -737,7 +743,9 @@ runtime-error-folder-missing c2351cc513626ff3
 runtime-error-folder-name 8c0e7ec2d36ed92c
 runtime-error-folder-path 8c2181a78f34905d
 runtime-error-folder-permission 50ae565331769827
+runtime-error-folder-scratch-worker 3c568856224bde39
 runtime-error-folder-unicode fc880982a42063d7
+runtime-error-folder-unique a48ce4bba9aeb13e
 runtime-error-guest-login 3275f643b005ca44
 runtime-error-host-disconnected 5bc169be967725cd
 runtime-error-host-disconnected-before-send b9d881b547a2531f
