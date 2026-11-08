@@ -8,6 +8,8 @@
 use crate::ui::i18n::UiText;
 use gpui::{Context, Focusable, IntoElement, StatefulInteractiveElement, Window, div, prelude::*};
 
+#[cfg(feature = "acp")]
+use super::DeveloperTab;
 use super::account::AccountTarget;
 #[cfg(feature = "acp")]
 use super::acp::AcpTarget;
@@ -16,8 +18,8 @@ use super::billing::BillingTarget;
 #[cfg(feature = "proxy")]
 use super::local_api::LocalApiTarget;
 use super::{
-    Section, SettingMenu, SettingsScreen, integration_can_setup, integration_can_toggle,
-    integration_is_visible,
+    IntegrationsTab, Section, SettingMenu, SettingsScreen, integration_can_setup,
+    integration_can_toggle, integration_is_visible,
 };
 use crate::ui::application_vim::{self, CountOutcome, CountState, SpatialDirection};
 
@@ -30,24 +32,32 @@ pub(super) enum SettingsRegion {
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(super) enum GeneralTarget {
     Web,
-    Appearance,
     Language,
-    ChatFont,
-    ChatSize,
-    ToolDetails,
     Notifications,
     PasswordNotificationDetails,
-    ReduceMotion,
-    ToolSummaries,
     ComposerVim,
     ApplicationVim,
     Voice,
     SpeechSpeed,
 }
 
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(super) enum AppearanceTarget {
+    Theme(crate::ui::theme::Preference),
+    ReduceMotion,
+    ChatFont,
+    ChatSize,
+    ToolDetails,
+    ToolSummaries,
+}
+
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub(super) enum SettingsTarget {
     General(GeneralTarget),
+    Appearance(AppearanceTarget),
+    IntegrationsTab(IntegrationsTab),
+    #[cfg(feature = "acp")]
+    DeveloperTab(DeveloperTab),
     Account(AccountTarget),
     Billing(BillingTarget),
     ApiKeys(ApiKeysTarget),
@@ -96,6 +106,7 @@ impl SettingsScreen {
 
     pub(super) fn set_application_vim_enabled(&mut self, enabled: bool, cx: &mut Context<Self>) {
         let mut inputs = vec![
+            self.sidebar_filter.clone(),
             self.prompt_editor.clone(),
             self.shortcut_search.clone(),
             self.catalog_search.clone(),
@@ -147,15 +158,9 @@ impl SettingsScreen {
         match self.section {
             Section::General => [
                 GeneralTarget::Web,
-                GeneralTarget::Appearance,
                 GeneralTarget::Language,
-                GeneralTarget::ChatFont,
-                GeneralTarget::ChatSize,
-                GeneralTarget::ToolDetails,
                 GeneralTarget::Notifications,
                 GeneralTarget::PasswordNotificationDetails,
-                GeneralTarget::ReduceMotion,
-                GeneralTarget::ToolSummaries,
                 GeneralTarget::ComposerVim,
                 GeneralTarget::ApplicationVim,
                 GeneralTarget::Voice,
@@ -164,11 +169,39 @@ impl SettingsScreen {
             .into_iter()
             .map(SettingsTarget::General)
             .collect(),
+            Section::Appearance => [
+                AppearanceTarget::Theme(crate::ui::theme::Preference::System),
+                AppearanceTarget::Theme(crate::ui::theme::Preference::Dark),
+                AppearanceTarget::Theme(crate::ui::theme::Preference::Light),
+                AppearanceTarget::ReduceMotion,
+                AppearanceTarget::ChatFont,
+                AppearanceTarget::ChatSize,
+                AppearanceTarget::ToolDetails,
+                AppearanceTarget::ToolSummaries,
+            ]
+            .into_iter()
+            .map(SettingsTarget::Appearance)
+            .collect(),
             Section::Account => self.account_targets(),
             Section::Billing => self.billing_targets(),
-            Section::Api => self.api_targets(),
-            #[cfg(feature = "acp")]
-            Section::Acp => self.acp_targets(),
+            Section::Api => {
+                #[cfg(feature = "acp")]
+                {
+                    let mut targets = vec![
+                        SettingsTarget::DeveloperTab(DeveloperTab::Api),
+                        SettingsTarget::DeveloperTab(DeveloperTab::Acp),
+                    ];
+                    targets.extend(match self.developer_tab {
+                        DeveloperTab::Api => self.api_targets(),
+                        DeveloperTab::Acp => self.acp_targets(),
+                    });
+                    targets
+                }
+                #[cfg(not(feature = "acp"))]
+                {
+                    self.api_targets()
+                }
+            }
             Section::Shortcuts => self
                 .shortcut_list_cache
                 .visible_indices
@@ -181,37 +214,53 @@ impl SettingsScreen {
                 SettingsTarget::PromptSave,
                 SettingsTarget::PromptClear,
             ],
-            Section::Integrations => self
-                .integrations
-                .as_deref()
-                .unwrap_or_default()
-                .iter()
-                .filter(|integration| integration_is_visible(integration))
-                .flat_map(|integration| {
-                    [
-                        integration_can_setup(integration)
-                            .then(|| SettingsTarget::IntegrationSetup(integration.id.clone())),
-                        integration_can_toggle(integration)
-                            .then(|| SettingsTarget::Integration(integration.id.clone())),
-                    ]
-                    .into_iter()
-                    .flatten()
-                })
-                .chain(
-                    self.mcp_servers
-                        .as_deref()
-                        .unwrap_or_default()
-                        .iter()
-                        .map(|server| SettingsTarget::McpServer(server.name.clone())),
-                )
-                .chain(std::iter::once(SettingsTarget::McpAdd))
-                .chain(
-                    self.catalog_visible
-                        .iter()
-                        .map(|entry| SettingsTarget::McpCatalog(entry.id.clone())),
-                )
-                .collect(),
-            Section::Remote | Section::Usage | Section::About | Section::Advanced => Vec::new(),
+            Section::Integrations => {
+                let mut targets = vec![
+                    SettingsTarget::IntegrationsTab(IntegrationsTab::Connected),
+                    SettingsTarget::IntegrationsTab(IntegrationsTab::Catalog),
+                ];
+                match self.integrations_tab {
+                    IntegrationsTab::Connected => {
+                        targets.push(SettingsTarget::McpAdd);
+                        targets.extend(
+                            self.integrations
+                                .as_deref()
+                                .unwrap_or_default()
+                                .iter()
+                                .filter(|integration| integration_is_visible(integration))
+                                .flat_map(|integration| {
+                                    [
+                                        integration_can_setup(integration).then(|| {
+                                            SettingsTarget::IntegrationSetup(integration.id.clone())
+                                        }),
+                                        integration_can_toggle(integration).then(|| {
+                                            SettingsTarget::Integration(integration.id.clone())
+                                        }),
+                                    ]
+                                    .into_iter()
+                                    .flatten()
+                                }),
+                        );
+                        targets.extend(
+                            self.mcp_servers
+                                .as_deref()
+                                .unwrap_or_default()
+                                .iter()
+                                .map(|server| SettingsTarget::McpServer(server.name.clone())),
+                        );
+                    }
+                    IntegrationsTab::Catalog => {
+                        targets.push(SettingsTarget::McpAdd);
+                        targets.extend(
+                            self.catalog_visible
+                                .iter()
+                                .map(|entry| SettingsTarget::McpCatalog(entry.id.clone())),
+                        );
+                    }
+                }
+                targets
+            }
+            Section::Remote | Section::About => Vec::new(),
         }
     }
 
@@ -283,12 +332,16 @@ impl SettingsScreen {
         match self.application_vim.region {
             SettingsRegion::Navigation => {
                 let sections = self.visible_sections();
+                if sections.is_empty() {
+                    return;
+                }
                 let current = sections
                     .iter()
                     .position(|section| *section == self.application_vim.section)
                     .unwrap_or(0);
                 let index = stepped_index(Some(current), sections.len(), direction, count);
-                self.application_vim.section = sections[index];
+                let next = sections[index];
+                self.application_vim.section = next;
             }
             SettingsRegion::Pane => {
                 let targets = self.visible_application_targets();
@@ -317,11 +370,15 @@ impl SettingsScreen {
         match self.application_vim.region {
             SettingsRegion::Navigation => {
                 let sections = self.visible_sections();
-                self.application_vim.section = if first {
+                if sections.is_empty() {
+                    return;
+                }
+                let next = if first {
                     sections[0]
                 } else {
                     sections[sections.len() - 1]
                 };
+                self.application_vim.section = next;
             }
             SettingsRegion::Pane => {
                 let targets = self.visible_application_targets();
@@ -376,6 +433,10 @@ impl SettingsScreen {
         }
         match self.application_vim.target.clone() {
             Some(SettingsTarget::General(target)) => self.activate_general_target(target, cx),
+            Some(SettingsTarget::Appearance(target)) => self.activate_appearance_target(target, cx),
+            Some(SettingsTarget::IntegrationsTab(tab)) => self.select_integrations_tab(tab, cx),
+            #[cfg(feature = "acp")]
+            Some(SettingsTarget::DeveloperTab(tab)) => self.select_developer_tab(tab, cx),
             Some(SettingsTarget::Account(target)) => {
                 self.activate_account_target(target, window, cx)
             }
@@ -411,16 +472,10 @@ impl SettingsScreen {
         match target {
             GeneralTarget::Web => self.toggle_web_default(cx),
             GeneralTarget::Language => self.toggle_setting_menu(SettingMenu::Language, cx),
-            GeneralTarget::Appearance => self.toggle_setting_menu(SettingMenu::Appearance, cx),
-            GeneralTarget::ChatFont => self.toggle_setting_menu(SettingMenu::ChatFont, cx),
-            GeneralTarget::ChatSize => self.toggle_setting_menu(SettingMenu::ChatSize, cx),
-            GeneralTarget::ToolDetails => self.toggle_tool_details(cx),
             GeneralTarget::Notifications => self.toggle_desktop_notifications(cx),
             GeneralTarget::PasswordNotificationDetails => {
                 self.toggle_password_notification_details(cx);
             }
-            GeneralTarget::ReduceMotion => self.toggle_reduce_motion(cx),
-            GeneralTarget::ToolSummaries => self.toggle_tool_summaries(cx),
             GeneralTarget::ComposerVim => self.toggle_composer_vim(cx),
             GeneralTarget::ApplicationVim => {
                 let enabled = !self.settings.application_vim_enabled;
@@ -428,6 +483,17 @@ impl SettingsScreen {
             }
             GeneralTarget::Voice => self.toggle_setting_menu(SettingMenu::Voice, cx),
             GeneralTarget::SpeechSpeed => self.toggle_setting_menu(SettingMenu::SpeechSpeed, cx),
+        }
+    }
+
+    fn activate_appearance_target(&mut self, target: AppearanceTarget, cx: &mut Context<Self>) {
+        match target {
+            AppearanceTarget::Theme(preference) => self.choose_theme(preference, cx),
+            AppearanceTarget::ReduceMotion => self.toggle_reduce_motion(cx),
+            AppearanceTarget::ChatFont => self.toggle_setting_menu(SettingMenu::ChatFont, cx),
+            AppearanceTarget::ChatSize => self.toggle_setting_menu(SettingMenu::ChatSize, cx),
+            AppearanceTarget::ToolDetails => self.toggle_tool_details(cx),
+            AppearanceTarget::ToolSummaries => self.toggle_tool_summaries(cx),
         }
     }
 
@@ -462,7 +528,11 @@ impl SettingsScreen {
 
     fn application_text_input_focused(&self, window: &Window, cx: &gpui::App) -> bool {
         let focused = window.focused(cx);
-        let mut inputs = vec![&self.prompt_editor, &self.shortcut_search];
+        let mut inputs = vec![
+            &self.sidebar_filter,
+            &self.prompt_editor,
+            &self.shortcut_search,
+        ];
         if self.section == Section::Api {
             inputs.push(&self.api_keys.name);
             #[cfg(feature = "proxy")]
@@ -783,9 +853,22 @@ mod tests {
             assert_eq!(
                 this.visible_application_targets(),
                 vec![
+                    SettingsTarget::IntegrationsTab(IntegrationsTab::Connected),
+                    SettingsTarget::IntegrationsTab(IntegrationsTab::Catalog),
+                    SettingsTarget::McpAdd,
                     SettingsTarget::IntegrationSetup("cua-driver".to_string()),
                     SettingsTarget::Integration("cua-driver".to_string()),
                     SettingsTarget::McpServer("custom".to_string()),
+                ]
+            );
+        });
+        settings.update(cx, |this, cx| {
+            this.select_integrations_tab(IntegrationsTab::Catalog, cx);
+            assert_eq!(
+                this.visible_application_targets(),
+                vec![
+                    SettingsTarget::IntegrationsTab(IntegrationsTab::Connected),
+                    SettingsTarget::IntegrationsTab(IntegrationsTab::Catalog),
                     SettingsTarget::McpAdd,
                 ]
                 .into_iter()
@@ -923,7 +1006,7 @@ mod tests {
                 this.move_application_selection(1, 1, window, cx);
                 assert_eq!(
                     this.application_vim.target,
-                    Some(SettingsTarget::General(GeneralTarget::Appearance))
+                    Some(SettingsTarget::General(GeneralTarget::Language))
                 );
                 assert!(
                     this.application_reveal_pending,
@@ -1084,7 +1167,7 @@ mod tests {
                 .is_none()
         );
         assert!(
-            cx.debug_bounds("setting-value-appearance").is_some(),
+            cx.debug_bounds("setting-value-language").is_some(),
             "the other General rows still render"
         );
         settings.update(cx, |this, _| {
@@ -1101,10 +1184,14 @@ mod tests {
         crate::ui::i18n::initialize_saved_preference(Some("es"));
         let (settings, cx) = dropdown_window(cx, true);
         cx.run_until_parked();
-        assert!(cx.debug_bounds("setting-value-appearance").is_some());
+        assert!(cx.debug_bounds("setting-value-language").is_some());
+        settings.update(cx, |this, cx| {
+            this.select_section(Section::Appearance, cx);
+        });
+        cx.run_until_parked();
+        assert!(cx.debug_bounds("setting-appearance-system").is_some());
         assert!(cx.debug_bounds("setting-value-text-size").is_some());
         settings.update(cx, |this, cx| {
-            assert_eq!(this.menu_value(SettingMenu::Appearance), "Sistema");
             assert_eq!(this.menu_value(SettingMenu::ChatFont), "Sistema");
             let voices = this.menu_options(SettingMenu::Voice);
             assert_eq!(voices.len(), crate::settings::TTS_VOICES.len());
@@ -1112,11 +1199,10 @@ mod tests {
             this.pick_setting_option(SettingMenu::Voice, 8, cx);
             assert_eq!(this.settings.tts_voice, "es_female");
             assert_eq!(this.menu_value(SettingMenu::Voice), voices[8].label);
-            this.pick_setting_option(SettingMenu::Appearance, 1, cx);
+            this.choose_theme(crate::ui::theme::Preference::Dark, cx);
             assert_eq!(this.settings.theme, "dark");
-            assert_eq!(this.menu_value(SettingMenu::Appearance), "Oscuro");
             assert_eq!(Section::General.id(), "General");
-            assert_eq!(Section::Advanced.label().as_ref(), "Privacidad y seguridad");
+            assert_eq!(Section::Account.label().as_ref(), "Cuenta y seguridad");
         });
     }
 
@@ -1214,8 +1300,8 @@ mod tests {
 
             // Opening another row replaces the open one.
             this.toggle_setting_menu(SettingMenu::Voice, cx);
-            this.toggle_setting_menu(SettingMenu::Appearance, cx);
-            assert_eq!(this.popup.open_key(), Some(&SettingMenu::Appearance));
+            this.toggle_setting_menu(SettingMenu::Language, cx);
+            assert_eq!(this.popup.open_key(), Some(&SettingMenu::Language));
         });
     }
 
@@ -1223,10 +1309,10 @@ mod tests {
     #[gpui::test]
     fn a_second_press_on_a_dropdown_closes_it(cx: &mut TestAppContext) {
         let (settings, cx) = dropdown_window(cx, false);
-        for open in [Some(SettingMenu::Appearance), None] {
+        for open in [Some(SettingMenu::Language), None] {
             let bounds = cx
-                .debug_bounds("setting-value-appearance")
-                .expect("the appearance value button renders");
+                .debug_bounds("setting-value-language")
+                .expect("the language value button renders");
             cx.simulate_click(bounds.center(), gpui::Modifiers::default());
             assert_eq!(
                 settings.update(cx, |this, _| this.popup.open_key().copied()),
@@ -1336,8 +1422,7 @@ mod tests {
         cx.simulate_resize(gpui::size(px(1200.), px(800.)));
 
         settings.update(cx, |this, cx| {
-            this.toggle_setting_menu(SettingMenu::Appearance, cx);
-            this.pick_setting_option(SettingMenu::Appearance, 2, cx);
+            this.choose_theme(crate::ui::theme::Preference::Light, cx);
             this.toggle_setting_menu(SettingMenu::Language, cx);
             this.pick_setting_option(SettingMenu::Language, 2, cx);
         });
@@ -1365,5 +1450,188 @@ mod tests {
         );
         reopened.close().unwrap();
         cx.run_until_parked();
+    }
+
+    #[gpui::test]
+    fn sidebar_filter_narrows_sections_and_handles_empty_matches(cx: &mut TestAppContext) {
+        let _localization = crate::ui::i18n::TestLocalizationGuard::enable();
+        crate::ui::i18n::apply_preference(Some("en"));
+        let (settings, cx) = dropdown_window(cx, true);
+
+        settings.update(cx, |this, cx| {
+            assert_eq!(this.visible_sections(), Section::ALL.to_vec());
+            this.sidebar_filter
+                .update(cx, |input, cx| input.set_text("appearance", cx));
+        });
+        cx.run_until_parked();
+        settings.update(cx, |this, _| {
+            assert_eq!(this.visible_sections(), vec![Section::Appearance]);
+            assert_eq!(this.application_vim.section, Section::Appearance);
+        });
+
+        // Empty search matches must leave navigation motion safe without panicking.
+        settings.update(cx, |this, cx| {
+            this.sidebar_filter
+                .update(cx, |input, cx| input.set_text("zzzz-unmatched", cx));
+        });
+        cx.run_until_parked();
+        cx.update(|window, app| {
+            settings.update(app, |this, cx| {
+                assert!(this.visible_sections().is_empty());
+                this.move_application_selection(1, 1, window, cx);
+                this.select_application_edge(false, window, cx);
+            });
+        });
+    }
+
+    #[gpui::test]
+    fn appearance_segmented_theme_switches_on_pointer_and_vim_activation(cx: &mut TestAppContext) {
+        let _guard = crate::settings::SETTINGS_IO_LOCK.lock();
+        crate::settings::install_test_settings(crate::settings::AppSettings::default());
+        let (settings, cx) = dropdown_window(cx, true);
+        // The Settings header Sign out is removed; Sign out lives only in Account.
+        assert!(cx.debug_bounds("settings-sign-out").is_none());
+
+        settings.update(cx, |this, cx| {
+            this.select_section(Section::Appearance, cx);
+        });
+        cx.run_until_parked();
+
+        let dark = cx
+            .debug_bounds("setting-appearance-dark")
+            .expect("Dark segmented pill renders");
+        cx.simulate_click(dark.center(), gpui::Modifiers::default());
+        cx.run_until_parked();
+        settings.update(cx, |this, _| {
+            assert_eq!(this.settings.theme, "dark");
+            assert_eq!(this.theme, crate::ui::theme::Preference::Dark);
+        });
+
+        cx.update(|window, app| {
+            settings.update(app, |this, cx| {
+                this.application_vim.region = SettingsRegion::Pane;
+                this.application_vim.target = Some(SettingsTarget::Appearance(
+                    AppearanceTarget::Theme(crate::ui::theme::Preference::Light),
+                ));
+                this.execute_application_vim(SettingsApplicationCommand::Activate, window, cx);
+                assert_eq!(this.settings.theme, "light");
+                assert_eq!(this.theme, crate::ui::theme::Preference::Light);
+            });
+        });
+        crate::settings::discard_decrypted_cache();
+    }
+
+    /// Without Application Vim, the pills are ordinary tab stops: Tab walks
+    /// them and Space or Enter presses the focused one. (Under Application
+    /// Vim, Space is the leader prefix and Enter activates the Vim target.)
+    #[gpui::test]
+    fn appearance_theme_pills_are_keyboard_tab_stops(cx: &mut TestAppContext) {
+        let _guard = crate::settings::SETTINGS_IO_LOCK.lock();
+        crate::settings::install_test_settings(crate::settings::AppSettings::default());
+        let (settings, cx) = dropdown_window(cx, false);
+        settings.update(cx, |this, cx| {
+            this.select_section(Section::Appearance, cx);
+        });
+        cx.run_until_parked();
+
+        // Clicking Dark focuses it; Tab then reaches Light.
+        let dark = cx
+            .debug_bounds("setting-appearance-dark")
+            .expect("Dark segmented pill renders");
+        cx.simulate_click(dark.center(), gpui::Modifiers::default());
+        cx.simulate_keystrokes("tab space");
+        cx.run_until_parked();
+        settings.update(cx, |this, _| {
+            assert_eq!(this.settings.theme, "light");
+            assert_eq!(this.theme, crate::ui::theme::Preference::Light);
+        });
+        cx.simulate_keystrokes("shift-tab enter");
+        cx.run_until_parked();
+        settings.update(cx, |this, _| {
+            assert_eq!(this.settings.theme, "dark");
+        });
+        crate::settings::discard_decrypted_cache();
+    }
+
+    #[gpui::test]
+    fn catalog_add_custom_server_switches_to_connected_tab(cx: &mut TestAppContext) {
+        let (settings, cx) = dropdown_window(cx, true);
+        settings.update(cx, |this, cx| {
+            this.select_section(Section::Integrations, cx);
+            this.select_integrations_tab(IntegrationsTab::Catalog, cx);
+            assert_eq!(this.integrations_tab, IntegrationsTab::Catalog);
+            this.open_mcp_editor(None, cx);
+            assert_eq!(this.integrations_tab, IntegrationsTab::Connected);
+            assert!(this.mcp_editor.is_some());
+        });
+    }
+
+    /// A stalled or failed profile fetch must not take Sign out with it:
+    /// the page header no longer has one.
+    #[gpui::test]
+    fn sign_out_renders_while_the_profile_is_loading(cx: &mut TestAppContext) {
+        let (settings, cx) = dropdown_window(cx, false);
+        settings.update(cx, |this, cx| {
+            assert!(
+                this.account.info.is_none(),
+                "unreachable backend: no profile"
+            );
+            this.select_section(Section::Account, cx);
+        });
+        cx.run_until_parked();
+        assert!(cx.debug_bounds("account-sign-out").is_some());
+    }
+
+    /// The Integrations tab bar is a keyboard surface: Tab reaches the
+    /// App Catalog tab and Space opens it.
+    #[gpui::test]
+    fn integrations_tabs_are_keyboard_tab_stops(cx: &mut TestAppContext) {
+        let (settings, cx) = dropdown_window(cx, false);
+        settings.update(cx, |this, cx| {
+            this.select_section(Section::Integrations, cx)
+        });
+        cx.run_until_parked();
+        let connected = cx
+            .debug_bounds("integrations-tab-connected")
+            .expect("Connected tab renders");
+        cx.simulate_click(connected.center(), gpui::Modifiers::default());
+        cx.simulate_keystrokes("tab space");
+        cx.run_until_parked();
+        settings.update(cx, |this, _| {
+            assert_eq!(this.integrations_tab, IntegrationsTab::Catalog);
+        });
+        cx.simulate_keystrokes("shift-tab enter");
+        cx.run_until_parked();
+        settings.update(cx, |this, _| {
+            assert_eq!(this.integrations_tab, IntegrationsTab::Connected);
+        });
+    }
+
+    /// Former page names and moved controls still find their new section.
+    #[gpui::test]
+    fn sidebar_filter_matches_former_names_and_moved_controls(cx: &mut TestAppContext) {
+        let _localization = crate::ui::i18n::TestLocalizationGuard::enable();
+        crate::ui::i18n::apply_preference(Some("en"));
+        let (settings, cx) = dropdown_window(cx, false);
+        for (query, expected) in [
+            ("privacy", Section::Account),
+            ("usage", Section::Billing),
+            ("mcp", Section::Integrations),
+            ("acp", Section::Api),
+            ("theme", Section::Appearance),
+        ] {
+            settings.update(cx, |this, cx| {
+                this.sidebar_filter
+                    .update(cx, |input, cx| input.set_text(query, cx));
+            });
+            cx.run_until_parked();
+            settings.update(cx, |this, _| {
+                assert!(
+                    this.visible_sections().contains(&expected),
+                    "{query:?} should surface {expected:?}, got {:?}",
+                    this.visible_sections()
+                );
+            });
+        }
     }
 }

@@ -9,7 +9,7 @@ use maple_agent::store::{
 };
 use serde_json::Value;
 
-use super::{Section, SettingsScreen, TextInput, section_title, theme, widgets};
+use super::{Section, SettingsScreen, TextInput, subsection_title, theme, widgets};
 use crate::ui::store_gate::{
     ConfirmationRequest, ERASE_COPY, PasswordAction, PasswordForm, PasswordFormFinished,
     RetryStorePersistence, StoreStatus,
@@ -71,7 +71,7 @@ impl SettingsScreen {
         cx: &mut Context<Self>,
     ) -> bool {
         let message = message.into();
-        if self.section != Section::Advanced {
+        if self.section != Section::Account {
             return false;
         }
         if let Some(form) = &self.advanced.form {
@@ -392,10 +392,10 @@ impl SettingsScreen {
     }
 
     pub(super) fn render_advanced(&self, cx: &mut Context<Self>) -> Div {
-        let mut pane = div().flex().flex_col().gap_4();
+        let mut pane = div().flex().flex_col().gap_3();
         if !self.advanced.available() {
             pane = self.render_local_store_notices(
-                pane.child(section_title(&tr("settings-advanced-local-data"))),
+                pane.child(subsection_title(&tr("settings-advanced-local-data"))),
                 cx,
             );
             if !self.advanced_has_content() {
@@ -408,19 +408,20 @@ impl SettingsScreen {
             }
             return pane;
         }
-        pane = pane.child(section_title(&tr(
+        pane = pane.child(subsection_title(&tr(
             "settings-advanced-encryption-on-this-computer",
         )));
+        let mut card = widgets::card_row().flex().flex_col().gap_3();
         if let Some(form) = &self.advanced.form {
-            let pane = self.encryption_context(pane.child(form.clone()), true);
-            return self.render_local_store_notices(pane, cx);
+            let inner = self.encryption_context(card.child(form.clone()), true);
+            return self.render_local_store_notices(pane.child(inner), cx);
         }
         if let Some(success) = self.advanced.success {
-            pane = pane.child(
+            card = card.child(
                 div()
                     .rounded_md()
                     .p_3()
-                    .bg(gpui::rgb(theme::bg_elevated()))
+                    .bg(gpui::rgb(theme::bg_sidebar()))
                     .text_color(gpui::rgb(theme::status_success()))
                     .child(tr(success)),
             );
@@ -430,7 +431,7 @@ impl SettingsScreen {
             .status
             .as_ref()
             .is_some_and(|status| status.mode == StoreMode::Password);
-        pane = pane.child(
+        card = card.child(
             div()
                 .font_weight(gpui::FontWeight::MEDIUM)
                 .text_color(gpui::rgb(if password {
@@ -444,76 +445,89 @@ impl SettingsScreen {
                     tr("settings-advanced-encryption-is-off")
                 }),
         );
-        pane=pane.child(div().text_sm().text_color(gpui::rgb(theme::text_secondary())).child(if password {
-            tr("settings-advanced-maple-s-copy-of-your-conversation-text-settings-and-sign-in-on-th")
-        } else {tr("settings-advanced-your-conversation-text-settings-and-sign-in-are-stored-on-this-co")}));
+        card = card.child(
+            div()
+                .text_sm()
+                .text_color(gpui::rgb(theme::text_secondary()))
+                .child(if password {
+                    tr("settings-advanced-maple-s-copy-of-your-conversation-text-settings-and-sign-in-on-th")
+                } else {
+                    tr("settings-advanced-your-conversation-text-settings-and-sign-in-are-stored-on-this-co")
+                }),
+        );
         if self.advanced.erase {
-            pane = pane
+            card = card
                 .child(div().text_sm().child(tr(ERASE_COPY)))
                 .child(self.advanced.confirmation.clone())
-                .child(
-                    widgets::primary_button("advanced-erase-confirm")
-                        .when(self.advanced.busy, |button| button.opacity(0.5))
-                        .on_click(
-                            cx.listener(|this, _event, _window, cx| this.erase_local_store(cx)),
-                        )
-                        .child(tr("settings-advanced-erase-this-version-s-local-data")),
-                )
-                .child(
-                    widgets::ghost_button("advanced-erase-cancel")
-                        .on_click(cx.listener(|this, _event, _window, cx| {
-                            this.advanced.erase = false;
-                            cx.notify();
-                        }))
-                        .child(tr("settings-advanced-cancel")),
-                );
-        } else {
-            pane = pane
                 .child(
                     div()
                         .flex()
                         .gap_2()
                         .child(
-                            widgets::primary_button("advanced-password")
-                                .on_click(cx.listener(move |this, _event, _window, cx| {
-                                    this.open_password_form(
-                                        if password {
-                                            PasswordAction::Change
-                                        } else {
-                                            PasswordAction::Set
-                                        },
-                                        cx,
-                                    )
+                            widgets::default_button("advanced-erase-confirm")
+                                .when(self.advanced.busy, |button| button.opacity(0.5))
+                                .on_click(cx.listener(|this, _event, _window, cx| {
+                                    this.erase_local_store(cx)
                                 }))
-                                .child(if password {
-                                    tr("settings-advanced-change-password")
-                                } else {
-                                    tr("settings-advanced-set-unlock-password")
-                                }),
+                                .child(tr("settings-advanced-erase-this-version-s-local-data")),
                         )
-                        .when(password, |row| {
-                            row.child(
-                                widgets::secondary_button("advanced-remove-password")
-                                    .on_click(cx.listener(|this, _event, _window, cx| {
-                                        this.open_password_form(PasswordAction::Remove, cx)
-                                    }))
-                                    .child(tr("settings-advanced-remove-password")),
-                            )
-                        }),
-                )
-                .child(
-                    widgets::ghost_button("advanced-erase")
-                        .on_click(cx.listener(|this, _event, _window, cx| {
-                            this.advanced.erase = true;
-                            this.advanced.notice = None;
-                            this.advanced.success = None;
-                            cx.notify();
-                        }))
-                        .child(tr("settings-advanced-erase-local-data")),
+                        .child(
+                            widgets::ghost_button("advanced-erase-cancel")
+                                .on_click(cx.listener(|this, _event, _window, cx| {
+                                    this.advanced.erase = false;
+                                    cx.notify();
+                                }))
+                                .child(tr("settings-advanced-cancel")),
+                        ),
                 );
+        } else {
+            card = card.child(
+                div()
+                    .flex()
+                    .flex_wrap()
+                    .items_center()
+                    .gap_2()
+                    .child(
+                        widgets::default_button("advanced-password")
+                            .on_click(cx.listener(move |this, _event, _window, cx| {
+                                this.open_password_form(
+                                    if password {
+                                        PasswordAction::Change
+                                    } else {
+                                        PasswordAction::Set
+                                    },
+                                    cx,
+                                )
+                            }))
+                            .child(if password {
+                                tr("settings-advanced-change-password")
+                            } else {
+                                tr("settings-advanced-set-unlock-password")
+                            }),
+                    )
+                    .when(password, |row| {
+                        row.child(
+                            widgets::secondary_button("advanced-remove-password")
+                                .on_click(cx.listener(|this, _event, _window, cx| {
+                                    this.open_password_form(PasswordAction::Remove, cx)
+                                }))
+                                .child(tr("settings-advanced-remove-password")),
+                        )
+                    })
+                    .child(
+                        widgets::ghost_button("advanced-erase")
+                            .on_click(cx.listener(|this, _event, _window, cx| {
+                                this.advanced.erase = true;
+                                this.advanced.notice = None;
+                                this.advanced.success = None;
+                                cx.notify();
+                            }))
+                            .child(tr("settings-advanced-erase-local-data")),
+                    ),
+            );
         }
-        pane = self.encryption_context(pane, password);
-        self.render_local_store_notices(pane, cx)
+        let card = self.encryption_context(card, password);
+        self.render_local_store_notices(pane.child(card), cx)
     }
 
     fn encryption_context(&self, mut pane: Div, password: bool) -> Div {
@@ -776,7 +790,7 @@ mod tests {
         settings.update(cx, |settings, cx| {
             assert!(!settings.show_local_store_notice("Needs attention.", cx));
             assert!(settings.advanced.notice.is_none());
-            settings.section = Section::Advanced;
+            settings.section = Section::Account;
             assert!(settings.show_local_store_notice("Needs attention.", cx));
             assert_eq!(
                 settings
@@ -790,7 +804,9 @@ mod tests {
         });
     }
     #[gpui::test]
-    fn privacy_and_security_is_listed_only_with_something_to_show(cx: &mut gpui::TestAppContext) {
+    fn local_store_content_is_shown_in_account_only_when_available_or_noticing(
+        cx: &mut gpui::TestAppContext,
+    ) {
         cx.executor().allow_parking();
         let backend = std::sync::Arc::new(
             crate::backend::AgentBackend::for_test("http://127.0.0.1:1".into(), String::new())
@@ -813,13 +829,11 @@ mod tests {
             )
         });
         settings.update(cx, |settings, _| {
-            assert!(!settings.visible_sections().contains(&Section::Advanced));
+            assert!(!settings.advanced_has_content());
             settings.advanced.notice = Some("Needs attention.".into());
-            assert!(settings.visible_sections().contains(&Section::Advanced));
+            assert!(settings.advanced_has_content());
             settings.advanced.notice = None;
-            settings.section = Section::Advanced;
-            assert!(settings.visible_sections().contains(&Section::Advanced));
-            settings.section = Section::General;
+            assert!(!settings.advanced_has_content());
             settings.advanced.status = Some(
                 serde_json::from_value(serde_json::json!({
                     "state": {"state": "open"},
@@ -828,7 +842,8 @@ mod tests {
                 }))
                 .unwrap(),
             );
-            assert!(settings.visible_sections().contains(&Section::Advanced));
+            assert!(settings.advanced_has_content());
+            assert!(settings.visible_sections().contains(&Section::Account));
         });
     }
     #[test]

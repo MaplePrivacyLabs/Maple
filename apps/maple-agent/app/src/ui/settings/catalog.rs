@@ -24,16 +24,6 @@ pub(super) struct McpAddressPrompt {
     focus_pending: bool,
 }
 
-/// A heading that starts a new part of the page.
-pub(super) fn section_heading(heading: Div) -> Div {
-    div()
-        .mt_2()
-        .pt_5()
-        .border_t_1()
-        .border_color(gpui::rgb(theme::border_subtle()))
-        .child(heading)
-}
-
 /// Whether a saved server is this entry: by name, or by address under another.
 fn is_connected(entry: &McpCatalogEntry, servers: &[McpDefinition]) -> bool {
     let key = AgentMcpServer::key_for_name(&entry.name);
@@ -514,7 +504,7 @@ impl SettingsScreen {
                                                 .child(gpui::text!(tr("settings-catalog-cancel"))),
                                         )
                                         .child(
-                                            widgets::primary_button("mcp-address-connect")
+                                            widgets::default_button("mcp-address-connect")
                                                 .on_click(cx.listener(|this, _, _, cx| {
                                                     let given = this
                                                         .mcp_address
@@ -653,7 +643,7 @@ impl SettingsScreen {
     }
 
     pub(super) fn render_app_catalog(&self, cx: &mut Context<Self>) -> Div {
-        let mut section = div().flex().flex_col().gap_3().child(section_heading(
+        let mut section = div().flex().flex_col().gap_3().child(
             div()
                 .flex()
                 .items_center()
@@ -670,7 +660,7 @@ impl SettingsScreen {
                             .child(tr("settings-catalog-custom")),
                     ),
                 ),
-        ));
+        );
         section = section.child(
             div()
                 .text_sm()

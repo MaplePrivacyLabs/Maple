@@ -91,7 +91,21 @@ fn pill(id: impl Into<ElementId>) -> Stateful<Div> {
         .focus_visible(focus_ring)
 }
 
-/// Accent-filled action button: coral pill with a light label.
+/// Accessible default/primary action button: high-contrast neutral inverted pill.
+pub fn default_button(id: impl Into<ElementId>) -> Stateful<Div> {
+    pill(id)
+        .bg(gpui::rgb(theme::bg_default_button()))
+        .text_color(gpui::rgb(theme::text_on_default_button()))
+        .hover(|style| {
+            style
+                .bg(gpui::rgb(theme::bg_default_button_hover()))
+                .cursor_pointer()
+        })
+        .active(|style| press_depth(style.bg(gpui::rgb(theme::bg_default_button_active()))))
+}
+
+/// Legacy accent-filled action button; new and Settings surfaces use
+/// [`default_button`] for WCAG contrast until legacy callers migrate globally.
 pub fn primary_button(id: impl Into<ElementId>) -> Stateful<Div> {
     pill(id)
         .bg(gpui::rgb(theme::accent()))
@@ -99,7 +113,6 @@ pub fn primary_button(id: impl Into<ElementId>) -> Stateful<Div> {
         .hover(|style| style.bg(gpui::rgb(theme::accent_hover())).cursor_pointer())
         .active(|style| press_depth(style.bg(gpui::rgb(theme::send_bottom()))))
 }
-
 /// Neutral pill for the second action beside a [`primary_button`]
 /// (Cancel, Back, alternate sign-in): a pebble fill that darkens on hover.
 pub fn secondary_button(id: impl Into<ElementId>) -> Stateful<Div> {

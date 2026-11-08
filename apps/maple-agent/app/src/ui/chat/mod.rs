@@ -7582,7 +7582,7 @@ impl ChatScreen {
                 .application_vim(self.application_vim_enabled)
                 .item(
                     MenuItem::new("settings-menu-usage", usage_label, |_: &mut Self, _, cx| {
-                        cx.emit(OpenSettingsSection(Section::Usage));
+                        cx.emit(OpenSettingsSection(Section::Billing));
                     })
                     .content(usage),
                 )

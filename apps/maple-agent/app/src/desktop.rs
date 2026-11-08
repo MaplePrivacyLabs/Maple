@@ -5105,7 +5105,7 @@ mod tests {
                     last_error: None,
                     compatibility_warning: None,
                 },
-                Section::Advanced,
+                Section::Account,
                 cx,
             )
         });
@@ -5171,7 +5171,7 @@ mod tests {
                     },
                     cx,
                 );
-                app.show_settings(Section::Advanced, cx);
+                app.show_settings(Section::Account, cx);
             });
             let screen = active_settings(&app, cx);
             let stale_close = screen.read_with(cx, |screen, _| screen.settings_snapshot());
@@ -5303,7 +5303,7 @@ mod tests {
         retired.update(cx, |_, cx| cx.emit(SettingsClosed(stale.clone())));
         cx.run_until_parked();
         app.update(cx, |app, cx| {
-            app.show_settings(Section::Advanced, cx);
+            app.show_settings(Section::Account, cx);
             let mut refreshed = app.settings.clone();
             refreshed.store_password_mode = true;
             app.apply_refreshed_password_settings(refreshed, cx);

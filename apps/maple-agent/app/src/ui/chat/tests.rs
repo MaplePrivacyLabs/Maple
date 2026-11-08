@@ -8256,7 +8256,7 @@ mod state_tests {
             app.subscribe(
                 &chat,
                 move |_, request: &OpenSettingsSection, _| match request.0 {
-                    Section::Usage => usage_observed.set(usage_observed.get() + 1),
+                    Section::Billing => usage_observed.set(usage_observed.get() + 1),
                     Section::Account => account_observed.set(account_observed.get() + 1),
                     section => panic!("unexpected settings section: {section:?}"),
                 },

@@ -4,7 +4,7 @@
 use crate::ui::i18n::{UiText, tr};
 use gpui::{Context, Div, div, prelude::*};
 
-use super::{SettingsScreen, SettingsTarget, plan_card, section_title};
+use super::{SettingsScreen, SettingsTarget, page_header, plan_card, subsection_title};
 use crate::billing::{BillingStatus, BillingStatusExt, PlanTier, Product};
 use crate::ui::theme;
 use crate::ui::widgets;
@@ -263,9 +263,13 @@ impl SettingsScreen {
         let mut pane = div().flex().flex_col().gap_4().child(
             div()
                 .flex()
-                .items_center()
+                .items_start()
                 .justify_between()
-                .child(section_title(&tr("settings-billing-plan")))
+                .gap_4()
+                .child(page_header(
+                    &tr("settings-section-billing"),
+                    &tr("settings-billing-subtitle"),
+                ))
                 .child(
                     self.application_target(
                         || SettingsTarget::Billing(BillingTarget::Refresh),
@@ -278,6 +282,15 @@ impl SettingsScreen {
                     ),
                 ),
         );
+        pane = pane.child(subsection_title(&tr("settings-billing-plan")));
+        pane = pane.child(match &self.plan {
+            Some(usage) => plan_card(usage, &self.messages).into_any_element(),
+            None => div()
+                .text_sm()
+                .text_color(gpui::rgb(theme::text_muted()))
+                .child(tr("settings-settings-plan-usage-unavailable"))
+                .into_any_element(),
+        });
         let Some(status) = self.billing.status.as_ref() else {
             return pane.child(
                 div()
@@ -350,9 +363,6 @@ impl SettingsScreen {
             );
         }
         pane = pane.child(plan);
-        if let Some(usage) = self.plan.as_ref() {
-            pane = pane.child(plan_card(usage, &self.messages));
-        }
         if let Some(notice) = &self.billing.notice {
             pane = pane.child(
                 widgets::banner(theme::bg_sidebar_pill())
@@ -362,12 +372,14 @@ impl SettingsScreen {
             );
         }
 
-        pane = pane.child(section_title(&tr("settings-billing-plans")));
+        pane = pane.child(subsection_title(&tr("settings-billing-plans")));
         match self.billing.products.as_deref() {
             Some(products) if !products.is_empty() => {
-                for product in products {
-                    pane = pane.child(self.render_product(status, product, cx));
-                }
+                let rows: Vec<_> = products
+                    .iter()
+                    .map(|product| self.render_product(status, product, cx))
+                    .collect();
+                pane = pane.child(widgets::card_stack(rows));
             }
             Some(_) => {
                 pane = pane.child(
@@ -423,7 +435,7 @@ impl SettingsScreen {
             .py_1p5()
             .opacity(0.6)
             .child(label),
-            _ => widgets::primary_button(gpui::SharedString::from(format!(
+            _ => widgets::default_button(gpui::SharedString::from(format!(
                 "billing-product-{}",
                 product.id
             )))
@@ -436,7 +448,7 @@ impl SettingsScreen {
             })
             .child(label),
         };
-        let row = widgets::card_row()
+        let row = div()
             .flex()
             .items_center()
             .justify_between()

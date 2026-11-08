@@ -8,7 +8,7 @@ use crate::ui::i18n::{UiText, tr, tr_args};
 use gpui::{Context, Div, Entity, Focusable, div, prelude::*};
 
 use super::billing::BillingTarget;
-use super::{SettingsScreen, SettingsTarget, section_title};
+use super::{SettingsScreen, SettingsTarget, subsection_title};
 use crate::billing::{
     CREDIT_PACKAGES_DOLLARS, CREDITS_PER_DOLLAR, MAX_CREDIT_PURCHASE_DOLLARS,
     MIN_CREDIT_PURCHASE_DOLLARS, PaymentMethod, format_count,
@@ -314,7 +314,7 @@ impl SettingsScreen {
                 .flex()
                 .items_center()
                 .justify_between()
-                .child(section_title(&tr("settings-api-credits-api-credits")))
+                .child(subsection_title(&tr("settings-api-credits-api-credits")))
                 .child(
                     self.application_target(
                         target(CreditsTarget::Refresh),
@@ -480,7 +480,7 @@ impl SettingsScreen {
                 label
             };
             let button = match method {
-                PaymentMethod::Stripe => widgets::primary_button(id),
+                PaymentMethod::Stripe => widgets::default_button(id),
                 PaymentMethod::Zaprite => widgets::secondary_button(id),
             };
             button

@@ -12,7 +12,7 @@ use gpui::{
     prelude::*,
 };
 
-use super::{Section, SettingsScreen, SettingsTarget, activates, section_title};
+use super::{Section, SettingsScreen, SettingsTarget, activates};
 use crate::backend::{MapleApiKey, MapleApiKeyCreated};
 use crate::billing::BillingStatusExt;
 use crate::ui::text_input::TextInput;
@@ -312,17 +312,14 @@ impl SettingsScreen {
 
     pub(super) fn render_api_pane(&self, cx: &mut Context<Self>) -> Div {
         let unlocked = self.api_access() != Some(false);
-        let pane = div()
-            .flex()
-            .flex_col()
-            .gap_4()
-            .child(section_title(&tr("settings-section-api")))
-            .child(self.render_api_intro(cx))
-            .child(if unlocked {
-                self.render_credits_strip(cx)
-            } else {
-                self.render_api_upgrade(cx)
-            });
+        let pane = div().flex().flex_col().gap_4();
+        #[cfg(not(feature = "acp"))]
+        let pane = pane.child(super::section_title(&tr("settings-section-api")));
+        let pane = pane.child(self.render_api_intro(cx)).child(if unlocked {
+            self.render_credits_strip(cx)
+        } else {
+            self.render_api_upgrade(cx)
+        });
         #[cfg(feature = "proxy")]
         let pane = pane.child(self.render_local_api_card(cx));
         pane.when(unlocked, |pane| pane.child(self.render_api_keys_card(cx)))
@@ -374,7 +371,7 @@ impl SettingsScreen {
             .child(
                 self.application_target(
                     || SettingsTarget::ApiKeys(ApiKeysTarget::SeePlans),
-                    widgets::primary_button("api-keys-see-plans")
+                    widgets::default_button("api-keys-see-plans")
                         .py_1p5()
                         .tab_index(tab_order::PLAN)
                         .on_click(cx.listener(move |this, _, _, cx| see_plans(this, cx)))
@@ -459,7 +456,7 @@ impl SettingsScreen {
                     .child(
                         self.application_target(
                             || SettingsTarget::ApiKeys(ApiKeysTarget::Create),
-                            widgets::primary_button("api-keys-create")
+                            widgets::default_button("api-keys-create")
                                 .flex_none()
                                 .py_1p5()
                                 .tab_index(tab_order::KEY_CREATE)

@@ -54,6 +54,7 @@ assets!(
     // Claude mark (simple-icons, CC0) for the Claude Code integration card.
     "icons/claude-mark.svg",
     "icons/copy.svg",
+    "icons/credit-card.svg",
     // Contrast-safe partner marks published at https://cua.ai/branding.
     "icons/cua-mark-black.svg",
     "icons/cua-mark-white.svg",
@@ -64,6 +65,8 @@ assets!(
     "icons/folder.svg",
     "icons/globe.svg",
     "icons/image.svg",
+    "icons/info.svg",
+    "icons/keyboard.svg",
     "icons/list-filter.svg",
     "icons/loader-circle.svg",
     "icons/lock.svg",
@@ -77,6 +80,7 @@ assets!(
     // OpenAI mark (simple-icons, CC0) for the Codex integration card.
     "icons/openai-mark.svg",
     "icons/paperclip.svg",
+    "icons/palette.svg",
     "icons/pin.svg",
     "icons/plus.svg",
     "icons/puzzle.svg",
@@ -89,6 +93,7 @@ assets!(
     "icons/shield-check.svg",
     "icons/square-pen.svg",
     "icons/square.svg",
+    "icons/terminal.svg",
     "icons/trash-2.svg",
     "icons/undo-2.svg",
     "icons/user.svg",

@@ -5,7 +5,8 @@ use crate::ui::i18n::{UiText, tr};
 use gpui::{Context, Div, Entity, Focusable, div, prelude::*, px};
 
 use super::{
-    AccountDeleted, SettingsScreen, SettingsTarget, SignOutRequested, info_row, section_title,
+    AccountDeleted, SettingsScreen, SettingsTarget, SignOutRequested, info_row_content,
+    page_header, subsection_title,
 };
 use crate::backend::{MapleAccount, MapleLoginMethod};
 use crate::ui::icons::icon;
@@ -432,13 +433,12 @@ impl SettingsScreen {
     }
 
     pub(super) fn render_account_pane(&self, cx: &mut Context<Self>) -> Div {
-        let mut pane = div()
-            .flex()
-            .flex_col()
-            .gap_4()
-            .child(section_title(&tr("settings-account-account")));
+        let mut pane = div().flex().flex_col().gap_4().child(page_header(
+            &tr("settings-section-account"),
+            &tr("settings-account-subtitle"),
+        ));
         let Some(info) = self.account.info.as_ref() else {
-            return pane.child(
+            pane = pane.child(
                 div()
                     .text_sm()
                     .text_color(gpui::rgb(theme::text_faint()))
@@ -447,18 +447,42 @@ impl SettingsScreen {
                         None => tr("settings-account-loading-account"),
                     }),
             );
+            // Sign out and the local encryption controls do not depend on the
+            // profile fetch; an expired or offline session still needs them.
+            pane = pane
+                .child(subsection_title(&tr("settings-account-security-group")))
+                .child(self.render_sign_out_row(cx));
+            if self.advanced_has_content() {
+                pane = pane.child(self.render_advanced(cx));
+            }
+            return pane;
         };
 
         let is_guest = info.login_method == MapleLoginMethod::Guest;
-        pane = pane.child(match &info.email {
-            Some(email) => self.render_email_row(email, info.email_verified, cx),
-            None if is_guest => guest_id_row(&info.user_id, cx),
-            None => info_row(
-                &tr("settings-account-email"),
-                tr("settings-account-no-email-on-this-account").to_string(),
+        let profile_rows = vec![
+            match &info.email {
+                Some(email) => self.render_email_row(email, info.email_verified, cx),
+                None if is_guest => guest_id_row(&info.user_id, cx),
+                None => info_row_content(
+                    &tr("settings-account-email"),
+                    tr("settings-account-no-email-on-this-account").to_string(),
+                )
+                .into_any_element(),
+            },
+            info_row_content(
+                &tr("settings-account-sign-in-method"),
+                super::presentation::login_method(info.login_method),
             )
             .into_any_element(),
-        });
+            info_row_content(
+                &tr("settings-account-member-since"),
+                member_since(&info.created_at, &self.messages),
+            )
+            .into_any_element(),
+        ];
+        pane = pane
+            .child(subsection_title(&tr("settings-account-profile")))
+            .child(widgets::card_stack(profile_rows));
         if let Some(notice) = &self.account.verification_notice {
             pane = pane.child(
                 widgets::banner(theme::bg_sidebar_pill())
@@ -467,43 +491,41 @@ impl SettingsScreen {
                     .child(notice.clone()),
             );
         }
-        pane = pane
-            .child(info_row(
-                &tr("settings-account-sign-in-method"),
-                super::presentation::login_method(info.login_method),
-            ))
-            .child(info_row(
-                &tr("settings-account-member-since"),
-                member_since(&info.created_at, &self.messages),
-            ));
+        pane = pane.child(subsection_title(&tr("settings-account-security-group")));
         if info.login_method.has_password() {
             pane = pane.child(self.render_password_form(cx));
         }
-        pane = pane.child(
-            self.application_target(
-                || SettingsTarget::Account(AccountTarget::SignOut),
-                widgets::card_row()
-                    .flex()
-                    .items_center()
-                    .justify_between()
-                    .gap_4()
-                    .child(super::setting_copy(
-                        tr("settings-account-sign-out"),
-                        tr("settings-account-ends-this-session-on-this-device-your-tasks-stay-in-your-account"),
-                    ))
-                    .child(
-                        widgets::secondary_button("account-sign-out")
-                            .flex_none()
-                            .py_1p5()
-                            .on_click(cx.listener(|_this, _event, _window, cx| {
-                                cx.emit(SignOutRequested);
-                            }))
-                            .child(tr("settings-account-sign-out")),
-                    ),
-            ),
-        );
-        pane.child(section_title(&tr("settings-account-danger-zone")))
+        pane = pane.child(self.render_sign_out_row(cx));
+        if self.advanced_has_content() {
+            pane = pane.child(self.render_advanced(cx));
+        }
+        pane.child(subsection_title(&tr("settings-account-danger-zone")))
             .child(self.render_delete_account(cx))
+    }
+
+    fn render_sign_out_row(&self, cx: &mut Context<Self>) -> gpui::AnyElement {
+        self.application_target(
+            || SettingsTarget::Account(AccountTarget::SignOut),
+            widgets::card_row()
+                .flex()
+                .items_center()
+                .justify_between()
+                .gap_4()
+                .child(super::setting_copy(
+                    tr("settings-account-sign-out"),
+                    tr("settings-account-ends-this-session-on-this-device-your-tasks-stay-in-your-account"),
+                ))
+                .child(
+                    widgets::secondary_button("account-sign-out")
+                        .debug_selector(|| "account-sign-out".into())
+                        .flex_none()
+                        .py_1p5()
+                        .on_click(cx.listener(|_this, _event, _window, cx| {
+                            cx.emit(SignOutRequested);
+                        }))
+                        .child(tr("settings-account-sign-out")),
+                ),
+        )
     }
 
     fn render_delete_account(&self, cx: &mut Context<Self>) -> Div {
@@ -693,7 +715,7 @@ impl SettingsScreen {
             div().flex().justify_end().child(
                 self.application_target(
                     || SettingsTarget::Account(AccountTarget::PasswordSave),
-                    widgets::primary_button("account-password-save")
+                    widgets::default_button("account-password-save")
                         .py_1p5()
                         .when(busy, |el| el.opacity(0.6))
                         .when(!busy, |el| {
@@ -751,7 +773,7 @@ impl SettingsScreen {
                     }),
             );
         }
-        let row = widgets::card_row()
+        let row = div()
             .flex()
             .items_center()
             .justify_between()
@@ -777,7 +799,7 @@ impl SettingsScreen {
 /// Guests sign in with their account id, so it is the thing to show and
 /// copy where an email would be.
 fn guest_id_row(user_id: &str, cx: &mut Context<SettingsScreen>) -> gpui::AnyElement {
-    widgets::card_row()
+    div()
         .flex()
         .items_center()
         .justify_between()
