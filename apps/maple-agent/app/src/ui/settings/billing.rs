@@ -354,12 +354,7 @@ impl SettingsScreen {
             pane = pane.child(plan_card(usage, &self.messages));
         }
         if let Some(notice) = &self.billing.notice {
-            pane = pane.child(
-                widgets::banner(theme::bg_sidebar_pill())
-                    .text_sm()
-                    .text_color(gpui::rgb(theme::text_secondary()))
-                    .child(notice.clone()),
-            );
+            pane = pane.child(widgets::banner(widgets::Tone::Info, notice.clone()));
         }
 
         pane = pane.child(section_title(&tr("settings-billing-plans")));

@@ -2083,57 +2083,55 @@ impl SettingsScreen {
             );
 
         if let Some(error) = &self.shortcut_snapshot.last_error {
-            pane = pane.child(
-                widgets::banner(theme::status_warning()).child(
-                    self.messages
-                        .get(
-                            "settings-shortcut-overrides-invalid",
-                            [("error", (error).to_string().into())],
-                        )
-                        .to_string(),
-                ),
-            );
+            pane = pane.child(widgets::banner(
+                widgets::Tone::Warning,
+                self.messages
+                    .get(
+                        "settings-shortcut-overrides-invalid",
+                        [("error", (error).to_string().into())],
+                    )
+                    .to_string(),
+            ));
         }
         if let Some(warning) = &self.shortcut_snapshot.compatibility_warning {
-            pane = pane.child(widgets::banner(theme::status_warning()).child(warning.clone()));
+            pane = pane.child(widgets::banner(widgets::Tone::Warning, warning.clone()));
         }
         if let Some(notice) = &self.shortcut_notice {
-            pane = pane.child(widgets::banner(theme::status_warning()).child(notice.clone()));
+            pane = pane.child(widgets::banner(widgets::Tone::Warning, notice.clone()));
         }
         if self.shortcut_reset_confirmation {
             pane = pane.child(
-                widgets::banner(theme::status_warning())
-                    .flex()
-                    .items_center()
-                    .gap_3()
-                    .child(div().flex_1().child(
-                        if self.shortcut_snapshot.last_error.is_some() && modified_count == 0 {
-                            tr("settings-settings-clear-the-invalid-saved-shortcut-overrides")
-                                .to_string()
-                        } else {
-                            self.messages
-                                .get(
-                                    "settings-shortcut-reset-confirm",
-                                    [("modified-count", (modified_count).to_string().into())],
-                                )
-                                .to_string()
-                        },
-                    ))
-                    .child(
-                        widgets::primary_button("shortcuts-reset-all-confirm")
-                            .on_click(cx.listener(|this, _event, _window, cx| {
-                                this.request_shortcut_change(ShortcutSettingsChange::ResetAll, cx);
-                            }))
-                            .child(tr("settings-settings-reset")),
-                    )
-                    .child(
-                        widgets::ghost_button("shortcuts-reset-all-cancel")
-                            .on_click(cx.listener(|this, _event, _window, cx| {
-                                this.shortcut_reset_confirmation = false;
-                                cx.notify();
-                            }))
-                            .child(tr("settings-settings-cancel")),
-                    ),
+                widgets::banner(
+                    widgets::Tone::Warning,
+                    if self.shortcut_snapshot.last_error.is_some() && modified_count == 0 {
+                        tr("settings-settings-clear-the-invalid-saved-shortcut-overrides")
+                            .to_string()
+                    } else {
+                        self.messages
+                            .get(
+                                "settings-shortcut-reset-confirm",
+                                [("modified-count", (modified_count).to_string().into())],
+                            )
+                            .to_string()
+                    },
+                )
+                .child(
+                    widgets::secondary_button("shortcuts-reset-all-confirm")
+                        .flex_none()
+                        .on_click(cx.listener(|this, _event, _window, cx| {
+                            this.request_shortcut_change(ShortcutSettingsChange::ResetAll, cx);
+                        }))
+                        .child(tr("settings-settings-reset")),
+                )
+                .child(
+                    widgets::ghost_button("shortcuts-reset-all-cancel")
+                        .flex_none()
+                        .on_click(cx.listener(|this, _event, _window, cx| {
+                            this.shortcut_reset_confirmation = false;
+                            cx.notify();
+                        }))
+                        .child(tr("settings-settings-cancel")),
+                ),
             );
         }
         if let Some(recorder) = self.shortcut_recorder.as_ref() {

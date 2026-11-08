@@ -437,7 +437,7 @@ impl SettingsScreen {
                         }),
                 ),
             );
-        let banner = |message: SharedString| widgets::banner(theme::status_error()).child(message);
+        let banner = |message: SharedString| widgets::banner(widgets::Tone::Error, message);
         div()
             .flex()
             .flex_col()

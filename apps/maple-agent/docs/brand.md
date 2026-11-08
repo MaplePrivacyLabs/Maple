@@ -184,6 +184,9 @@ the dark background.
 | `accent_hover` | `#f67d57` Maple 600 | `#ffa88a` Maple 400 | |
 | `on_accent` | `#f7f7f9` | same | on primary (stays bright so coral stays readable) |
 | `accent_container`, `permission_fill` | `#ffe8e0` Maple 100 | `#3a2118` / `#2a1a14` | primary container |
+| `accent_ink` | `#e8633d` Maple 700 | `#ff9771` Maple 500 | coral icon on a primary container |
+| `bg_composer_tray` | `#f7f7f9` Pebble 50 | `#222228` | panel docked inside the composer |
+| `bg_inverse`, `on_inverse` | `#171717` / `#f7f7f9` | `#e8e8ed` / `#18181c` | inverted pill for a docked notice's action |
 | `link` | `#9e7469` Bark 500 | `#c29a8d` Bark 300 | tertiary |
 | `status_success` | `#7b8f4a` | `#8fa35a` | success |
 | `status_warning` | `#d4a35a` | same | warning |
@@ -249,6 +252,21 @@ designed to sit on a Pebble 300 panel and washes out on the app's white
 and near-black surfaces. The hover and press scale motion is not applied:
 gpui has no transition primitive, and a stepped scale change on hover
 reads as a flicker.
+
+### Status banners
+
+Status colors never fill a surface behind text. `widgets::banner` takes a
+`Tone` (error, warning, info) and draws a neutral `bg_elevated` card with a
+hairline border; the tone shows only as its icon (`circle-alert`,
+`triangle-alert`, `info`) on a small tile tinted with the status hue. The
+message keeps `text_primary`, and actions line up at the card's end as
+ordinary secondary or ghost buttons.
+
+A state that blocks the next message sits with the composer instead of
+the transcript: when the latest turn ended out of usage, a panel docked
+inside the composer (`bg_composer_tray`, a coral `accent_container` tile)
+offers Billing through an inverted pill (`bg_inverse`, `on_inverse`) until
+another turn starts. The transcript keeps a one-line marker of that turn.
 
 ### Spacing
 

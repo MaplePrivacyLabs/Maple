@@ -212,6 +212,9 @@ tokens! {
     on_accent: 0xf7f7f9, 0xf7f7f9;
     /// Soft coral container (maple-100 / a dark coral tint).
     accent_container: 0x3a2118, 0xffe8e0;
+    /// Coral for an icon on a coral container: maple-500 on dark,
+    /// maple-700 on light, where maple-500 washes out.
+    accent_ink: 0xff9771, 0xe8633d;
 
     status_running: 0xbabccb, 0xa3a3a3;
     status_success: 0x8fa35a, 0x7b8f4a;
@@ -228,6 +231,16 @@ tokens! {
     /// Elicitation row fill/border: the coral container and maple-300.
     permission_fill: 0x2a1a14, 0xffe8e0;
     permission_border: 0x784a38, 0xffbaa2;
+
+    /// Panel docked inside the composer (the out-of-usage notice): half a
+    /// step above the composer's well.
+    bg_composer_tray: 0x222228, 0xf7f7f9;
+
+    /// The single action of a docked notice: an inverted pill, Pebble 100
+    /// on dark and Neutral 900 on light, with the opposite label.
+    bg_inverse: 0xe8e8ed, 0x171717;
+    bg_inverse_hover: 0xf7f7f9, 0x262626;
+    on_inverse: 0x18181c, 0xf7f7f9;
 
     user_bubble_border: 0x3a3a44, 0xe8e8ed;
 
@@ -356,8 +369,10 @@ mod contrast_tests {
     /// Every text role must read on every resting surface in both
     /// palettes: 4.5:1 for body roles (WCAG AA), 3:1 for status and link
     /// colors, which the brand kit fixes and which carry short labels.
-    /// `text_faint` is decorative and not held to a ratio. Hover and
-    /// selection fills are transient and not checked.
+    /// A label on a filled control is body text and needs 4.5:1 on its
+    /// fill, hover included. `text_faint` is decorative and not held to a
+    /// ratio. Other hover and selection fills are transient and not
+    /// checked.
     #[test]
     fn text_roles_read_on_every_surface() {
         let mut failures = Vec::new();
@@ -369,6 +384,7 @@ mod contrast_tests {
                 ("bg_input", palette.bg_input),
                 ("bg_sidebar_card", palette.bg_sidebar_card),
                 ("bg_tool_card", palette.bg_tool_card),
+                ("bg_composer_tray", palette.bg_composer_tray),
             ];
             let body = [
                 ("text_primary", palette.text_primary),
@@ -383,6 +399,26 @@ mod contrast_tests {
                 ("status_warning", palette.status_warning),
                 ("link", palette.link),
             ];
+            let filled = [
+                (
+                    "on_inverse",
+                    palette.on_inverse,
+                    "bg_inverse",
+                    palette.bg_inverse,
+                ),
+                (
+                    "on_inverse",
+                    palette.on_inverse,
+                    "bg_inverse_hover",
+                    palette.bg_inverse_hover,
+                ),
+            ];
+            for (role, color, fill_name, fill) in filled {
+                let ratio = contrast(color, fill);
+                if ratio < 4.5 {
+                    failures.push(format!("{name}: {role} on {fill_name} is {ratio:.2}:1"));
+                }
+            }
             for (surface, fill) in surfaces {
                 for (role, color) in body {
                     let ratio = contrast(color, fill);

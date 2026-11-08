@@ -678,7 +678,7 @@ impl SettingsScreen {
                 .child(tr("settings-catalog-intro")),
         );
         if let Some(notice) = &self.mcp_notice {
-            section = section.child(widgets::banner(theme::status_warning()).child(notice.clone()));
+            section = section.child(widgets::banner(widgets::Tone::Warning, notice.clone()));
         }
         if let Some(editor) = &self.mcp_editor {
             section = section.child(self.render_mcp_editor(editor, cx));

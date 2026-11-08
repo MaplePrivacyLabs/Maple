@@ -12102,22 +12102,21 @@ mod state_tests {
              width before truncating (title {thinking_title:?}, card {card:?})"
         );
     }
+
     #[gpui::test]
-    fn out_of_usage_banner_opens_billing(cx: &mut TestAppContext) {
+    fn out_of_usage_offers_billing_from_the_composer_until_a_later_turn(cx: &mut TestAppContext) {
         use std::cell::Cell;
         use std::rc::Rc;
 
         use maple_agent::agent::USAGE_LIMIT_MESSAGE;
 
-        let (chat, cx) = chat_window(cx, |chat, _cx| {
-            chat.replace_timeline(vec![
-                item("usage-1", "error", Some(USAGE_LIMIT_MESSAGE)),
-                item(
-                    "other-1",
-                    "error",
-                    Some("Maple rejected the inference request (status 403)"),
-                ),
-            ]);
+        let out_of_usage = vec![
+            user_item("user-1", "test"),
+            item("usage-1", "error", Some(USAGE_LIMIT_MESSAGE)),
+        ];
+        let (chat, cx) = chat_window(cx, {
+            let timeline = out_of_usage.clone();
+            move |chat, _cx| chat.replace_timeline(timeline)
         });
         let opened = Rc::new(Cell::new(0));
         let observed = opened.clone();
@@ -12130,11 +12129,32 @@ mod state_tests {
                 },
             )
         });
-        assert!(cx.debug_bounds("open-billing-usage-1").is_some());
-        assert!(cx.debug_bounds("open-billing-other-1").is_none());
-        press(cx, "open-billing-usage-1");
+        press(cx, "composer-open-billing");
         cx.run_until_parked();
         assert_eq!(opened.get(), 1);
+
+        // A message sent since, or a next turn that failed for another
+        // reason, takes the offer away; the transcript keeps the history.
+        let retried = [user_item("user-2", "try again")];
+        let failed_otherwise = [
+            user_item("user-2", "try again"),
+            item(
+                "other-1",
+                "error",
+                Some("Maple rejected the inference request (status 403)"),
+            ),
+        ];
+        for later in [&retried[..], &failed_otherwise[..]] {
+            let mut timeline = out_of_usage.clone();
+            timeline.extend_from_slice(later);
+            chat.update(cx, |chat, cx| {
+                chat.replace_timeline(timeline);
+                cx.notify();
+            });
+            cx.update(|window, _| window.refresh());
+            cx.run_until_parked();
+            assert!(cx.debug_bounds("composer-open-billing").is_none());
+        }
     }
 
     #[gpui::test]
