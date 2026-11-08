@@ -1221,7 +1221,6 @@ chat-projects = Projects
 chat-start-from-scratch = Start from scratch
 chat-choose-folder-menu = Choose folder…
 chat-recent-projects = Recent projects
-chat-scratch-note = Creates a folder on first send.
 chat-scratch-switch-computer = Switch to this computer first.
 chat-scratch-switched-computers = Message not sent: you switched computers. Send again to continue.
 chat-no-integrations = No integrations available for this task.

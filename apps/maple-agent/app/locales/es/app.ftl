@@ -1158,7 +1158,6 @@ chat-projects = Proyectos
 chat-start-from-scratch = Empezar desde cero
 chat-choose-folder-menu = Elegir carpeta…
 chat-recent-projects = Proyectos recientes
-chat-scratch-note = Crea una carpeta al enviar el primer mensaje.
 chat-scratch-switch-computer = Primero cambia a esta computadora.
 chat-scratch-switched-computers = Mensaje no enviado: cambiaste de computadora. Envíalo de nuevo para continuar.
 chat-no-integrations = No hay integraciones disponibles para esta tarea.
