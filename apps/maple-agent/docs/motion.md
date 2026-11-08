@@ -20,9 +20,10 @@ between the user and the next action. This page records the shared decisions;
   not wait for it. Reversible state changes run the same curve both ways.
 - **Opacity first, small distances.** gpui cannot scale or transform a `div`,
   so content enters with opacity and at most a 6 px rise, drawn as a
-  relative offset that does not change layout. Only SVG icons scale or
-  rotate. Height animates only where a box truly changes size (text fields,
-  the expanded composer, the sidebar).
+  paint offset that does not change layout. Only SVG icons scale or rotate.
+  Height animates only where a box truly changes size: text fields, the
+  expanded composer, the sidebar, and a row arriving at the end of the
+  thread, which opens so older rows glide up rather than jump.
 - **High-frequency work stays still.** Streaming tokens, typed characters,
   keyboard navigation inside menus and lists, and history that loads or
   scrolls into view do not animate. Rows animate once, when they arrive
@@ -59,9 +60,13 @@ shared 15 fps `ticker` clock and pause in background windows.
 | Dialogs and confirmations | scrim fades, card fades and rises, `ENTER` | immediate |
 | Screen change (Chat ↔ Settings) and Settings sections | new content fades in, `REVEAL` | immediate |
 | Switching tasks | transcript fades in when its snapshot lands, `REVEAL` | immediate |
-| Live transcript rows (sent message, reply, tool card, error, stop notice) | fade and 6 px rise, `ENTER` | — |
+| Live transcript rows at the end of the thread (sent message, reply, thinking, tool card, error, stop notice) | height grows from 0 and the row fades in, `ENTER`, so older rows glide up; scrolled up, a fade and 6 px rise | — |
+| Sent message | the bubble rises in; the real row takes its exact place, and "Sending…" and the waiting dots share one slot under it | — |
+| Tool status | spinner leaves at once, the outcome fades in, `TOGGLE` | — |
+| Disclosed details (tool output, thinking) | fade in, `REVEAL` | immediate |
 | Streaming text | grows in place, no animation | — |
-| Cards above the composer, queued messages, send preview | fade and rise, `ENTER` | immediate |
+| Waiting dots | fade in, `REVEAL` | immediate |
+| Notices, queued messages, cards above the composer | fade and rise, `ENTER` | immediate |
 | Files attached to the draft | fade and 6 px rise, `ENTER` | immediate |
 | Composer and multi-line fields | height eases to the new line count, `resize_duration` | same |
 | Composer expand / shrink | height eases, `PANEL`; maximize and minimize icons cross-fade and scale, `TOGGLE` | same, reversed |
@@ -69,7 +74,7 @@ shared 15 fps `ticker` clock and pause in background windows.
 | Switches and checkboxes | knob slides, fill cross-fades, `TOGGLE` | same, reversed |
 | Disclosure chevrons | rotate 90°, `TOGGLE` | same, reversed |
 | Sidebar collapse | width eases, `PANEL` | same, reversed |
-| Task status in the sidebar | indicators cross-fade, `TOGGLE` | same |
+| Task status in the sidebar, project folders | indicators and folder icons cross-fade, `TOGGLE` | same |
 
 Loading spinners for work that usually finishes quickly (opening a task)
 appear only after 300 ms, so fast loads never flash a spinner.
