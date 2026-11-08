@@ -5354,11 +5354,13 @@ mod tests {
         assert_eq!(cx.debug_bounds("maple-page"), Some(original));
     }
 
-    /// Settings opens in the task screen's frame: its title takes the task
-    /// title's place and Back takes the wordmark's row, so nothing on the
-    /// window's top line moves between the two screens.
+    /// Settings opens in the task screen's frame. With the task sidebar
+    /// open, its card takes the task card's place, its title the task
+    /// title's, and Back the wordmark's row, so the frame does not move
+    /// between the two screens. (From the collapsed rail, Settings still
+    /// opens with its full column.)
     #[gpui::test]
-    fn settings_keeps_the_task_screens_title_and_sidebar_row(cx: &mut gpui::TestAppContext) {
+    fn settings_opens_in_the_task_screens_frame(cx: &mut gpui::TestAppContext) {
         struct AppHost(Entity<MapleApp>);
         impl Render for AppHost {
             fn render(&mut self, _: &mut Window, _: &mut Context<Self>) -> impl IntoElement {
@@ -5369,13 +5371,16 @@ mod tests {
         let (_host, cx) = cx.add_window_view(|_, _| AppHost(app.clone()));
         cx.simulate_resize(size(px(1100.), px(850.)));
         cx.run_until_parked();
+        let task_card = cx.debug_bounds("task-card").expect("task card");
         let task_title = cx.debug_bounds("header-title").expect("task title");
         let wordmark = cx.debug_bounds("sidebar-wordmark").expect("wordmark");
 
         app.update(cx, |app, cx| app.show_settings(Section::General, cx));
         cx.run_until_parked();
+        let card = cx.debug_bounds("settings-card").expect("settings card");
         let title = cx.debug_bounds("settings-title").expect("settings title");
         let back = cx.debug_bounds("settings-back").expect("back");
+        assert_eq!(card, task_card);
         assert_eq!(title.left(), task_title.left());
         assert_eq!(title.center().y, task_title.center().y);
         assert_eq!(back.center().y, wordmark.center().y);

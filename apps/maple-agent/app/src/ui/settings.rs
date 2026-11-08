@@ -1777,6 +1777,7 @@ impl Render for SettingsScreen {
                     ))
                     .child(
                         div()
+                            .debug_selector(|| "settings-card".to_string())
                             .relative()
                             .flex_1()
                             .min_h_0()
@@ -1812,13 +1813,13 @@ impl SettingsScreen {
             .text_sm()
             .font_weight(gpui::FontWeight::MEDIUM)
             .text_color(gpui::rgb(theme::text_secondary()))
-            .focus_visible(widgets::focus_ring)
             .hover(|style| {
                 style
                     .text_color(gpui::rgb(theme::text_primary()))
                     .bg(gpui::rgb(theme::bg_elevated()))
                     .cursor_pointer()
             })
+            .active(|style| style.bg(gpui::rgb(theme::bg_sidebar_pill())))
             // Inside a drag region: a press here is a click, not a drag.
             .on_mouse_down(gpui::MouseButton::Left, |_event, _window, cx| {
                 cx.stop_propagation();

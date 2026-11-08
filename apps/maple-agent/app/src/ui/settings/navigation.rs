@@ -1095,6 +1095,25 @@ mod tests {
         });
     }
 
+    /// The card bounds the pane: General is taller than the window, so the
+    /// pane has a scroll range and a wheel over the card moves its content.
+    #[gpui::test]
+    fn the_pane_scrolls_inside_its_card(cx: &mut TestAppContext) {
+        let (settings, cx) = dropdown_window(cx, false);
+        let card = cx.debug_bounds("settings-card").expect("settings card");
+        let range = settings.update(cx, |this, _| this.pane_scroll.max_offset().y);
+        assert!(range > px(0.), "General overflows the card");
+        cx.simulate_event(gpui::ScrollWheelEvent {
+            // In the pane's gutter, so no row takes the wheel.
+            position: gpui::point(card.left() + px(8.), card.center().y),
+            delta: gpui::ScrollDelta::Pixels(gpui::point(px(0.), px(-200.))),
+            ..Default::default()
+        });
+        cx.run_until_parked();
+        let offset = settings.update(cx, |this, _| this.pane_scroll.offset().y);
+        assert!(offset < px(0.), "the wheel scrolls the pane");
+    }
+
     #[gpui::test]
     fn spanish_general_preserves_controls_and_saved_values(cx: &mut TestAppContext) {
         let _localization = crate::ui::i18n::TestLocalizationGuard::enable();

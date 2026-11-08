@@ -7240,6 +7240,7 @@ impl Render for ChatScreen {
                             )
                             .child(
                                 div()
+                                    .debug_selector(|| "task-card".to_string())
                                     .flex()
                                     .flex_col()
                                     .flex_1()
