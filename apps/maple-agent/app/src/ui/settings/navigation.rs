@@ -938,16 +938,23 @@ mod tests {
             );
         });
 
+        // Start from a card whose app is also a strip tile: that is the case
+        // where a shared target would resolve to the tile and jump back up.
         cx.update(|window, app| {
             settings.update(app, |this, cx| {
-                let first = this.catalog_visible[0].id.clone();
-                let second = this.catalog_visible[1].id.clone();
+                let index = this
+                    .catalog_visible
+                    .iter()
+                    .position(|entry| this.catalog_featured.iter().any(|f| f.id == entry.id))
+                    .expect("a featured app is in the directory");
+                let start = this.catalog_visible[index].id.clone();
+                let next = this.catalog_visible[index + 1].id.clone();
                 this.application_vim.region = SettingsRegion::Pane;
-                this.application_vim.target = Some(SettingsTarget::McpCatalog(first));
+                this.application_vim.target = Some(SettingsTarget::McpCatalog(start));
                 this.move_application_selection(1, 1, window, cx);
                 assert_eq!(
                     this.application_vim.target,
-                    Some(SettingsTarget::McpCatalog(second))
+                    Some(SettingsTarget::McpCatalog(next))
                 );
             });
         });

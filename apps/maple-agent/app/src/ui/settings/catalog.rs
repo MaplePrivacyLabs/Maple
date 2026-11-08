@@ -714,6 +714,32 @@ impl SettingsScreen {
     ) -> gpui::AnyElement {
         let waiting = self.mcp_signing_in.as_deref() == Some(entry.name.as_str());
         let busy = self.mcp_signing_in.is_some() && !waiting;
+        let missing = self
+            .mcp_app_missing
+            .as_ref()
+            .filter(|(name, _)| *name == entry.name)
+            .map(|(_, missing)| missing.clone());
+        // The card below the fold carries the same detail; repeat it here so
+        // a failed connect from the strip is not a dead click.
+        let (detail, detail_color): (gpui::SharedString, u32) =
+            match (&missing, self.sign_in_error_for(&entry.name)) {
+                (Some(missing), _) => (
+                    self.messages.get(
+                        "settings-catalog-get-app",
+                        [("name", missing.name.clone().into())],
+                    ),
+                    theme::status_error(),
+                ),
+                (None, Some(error)) => (error, theme::status_error()),
+                (None, None) => (
+                    tr(if waiting {
+                        "settings-catalog-cancel"
+                    } else {
+                        "settings-catalog-connect"
+                    }),
+                    theme::text_muted(),
+                ),
+            };
         let tile = div()
             .id(gpui::SharedString::from(format!(
                 "catalog-featured-{}",
@@ -738,6 +764,15 @@ impl SettingsScreen {
                     .on_click(cx.listener(move |this, _event, _window, cx| {
                         if this.mcp_signing_in.as_deref() == Some(entry.name.as_str()) {
                             this.cancel_mcp_sign_in(cx);
+                        } else if let Some(url) = this
+                            .mcp_app_missing
+                            .as_ref()
+                            .filter(|(name, _)| *name == entry.name)
+                            .map(|(_, missing)| missing.get_url.clone())
+                        {
+                            cx.open_url(&url);
+                            this.mcp_app_missing = None;
+                            cx.notify();
                         } else {
                             this.connect_catalog_entry(&entry.id, cx);
                         }
@@ -779,15 +814,11 @@ impl SettingsScreen {
                             .items_center()
                             .gap_1()
                             .text_xs()
-                            .text_color(gpui::rgb(theme::text_muted()))
+                            .text_color(gpui::rgb(detail_color))
                             .when(waiting, |row| {
                                 row.child(spinner(&entry.id, px(10.), theme::text_muted()))
                             })
-                            .child(tr(if waiting {
-                                "settings-catalog-cancel"
-                            } else {
-                                "settings-catalog-connect"
-                            })),
+                            .child(div().truncate().child(detail)),
                     ),
             );
         self.application_target(move || SettingsTarget::McpFeatured(entry.id.clone()), tile)
