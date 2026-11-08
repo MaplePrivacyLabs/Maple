@@ -95,7 +95,7 @@ class PreparationTests(unittest.TestCase):
                 prepare.prepare_pbs("test", destination, cache, worker, True)
                 self.assertEqual((destination / "worker.py").read_text(), "updated worker")
 
-    def test_tk_and_idle_are_left_out_of_every_runtime(self):
+    def test_tk_idle_and_libpython_are_left_out_of_every_runtime(self):
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary)
             archive = self.archive(root, [
@@ -103,6 +103,14 @@ class PreparationTests(unittest.TestCase):
                 ("python/bin/idle3.14", "idle", False),
                 ("python/bin/idle3", "idle3.14", True),
                 ("python/LICENSE.txt", "license", False),
+                ("python/lib/libpython3.14.so.1.0", "libpython", False),
+                ("python/lib/libpython3.14.so", "libpython3.14.so.1.0", True),
+                ("python/lib/libpython3.so", "stable abi stub", False),
+                ("python/lib/libpython3.14.dylib", "libpython", False),
+                ("python/share/terminfo/x/xterm", "terminfo", False),
+                ("python/share/man/man1/python3.14.1", "man", False),
+                ("python/python314.dll", "windows interpreter", False),
+                ("python/python3.dll", "windows stable abi", False),
                 ("python/lib/libtcl9.0.so", "tcl", False),
                 ("python/lib/tcl9.0/init.tcl", "tcl", False),
                 ("python/lib/tk9.0/tk.tcl", "tk", False),
@@ -127,10 +135,15 @@ class PreparationTests(unittest.TestCase):
                           if path.is_file() and not path.name.startswith("."))
             self.assertIn("lib/python3.14/lib-dynload/_ssl.cpython-314-x86_64-linux-gnu.so", kept)
             self.assertIn("lib/python3.14/json/__init__.py", kept)
+            self.assertIn("bin/python3.14", kept)
+            # Windows' python.exe loads its DLLs, so they stay.
+            self.assertIn("python314.dll", kept)
+            self.assertIn("python3.dll", kept)
             # The pinned upstream notice set stays complete, including Tcl's.
             for name in (name for name in kept if not name.startswith("licenses/")):
-                self.assertNotRegex(name, r"tcl|tk9|tkinter|idle")
+                self.assertNotRegex(name, r"tcl|tk9|tkinter|idle|libpython|^share/")
             self.assertFalse((destination / "bin/idle3").is_symlink())
+            self.assertFalse((destination / "lib/libpython3.14.so").is_symlink())
 
     def test_failed_publication_restores_previous_tree(self):
         with tempfile.TemporaryDirectory() as temporary:

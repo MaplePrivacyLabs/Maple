@@ -140,4 +140,8 @@ as the pin) into `share/maple-agent/python`.
 
 Every runtime leaves out Tcl/Tk, tkinter, IDLE and turtledemo: the worker has no
 use for Tk GUIs, and Python Build Standalone's Linux Tcl/Tk libraries carry an
-absolute build-host library path.
+absolute build-host library path. The macOS and Linux runtimes also leave out
+`libpython`: their interpreter has it built in, and only programs that embed
+Python load it. On Linux, a C extension built from source can link `libpython`
+and then fail to import; install binary wheels as described above. Linux
+runtimes also leave out the terminfo database and man pages.

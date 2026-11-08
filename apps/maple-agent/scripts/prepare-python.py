@@ -20,8 +20,13 @@ RECEIPT = ".prepared.json"
 LICENSES = Path(__file__).with_name("python-licenses")
 # The worker has no use for Tk GUIs, and Python Build Standalone's Linux Tcl/Tk
 # libraries carry an absolute build-host RPATH (/tools/deps/lib). Every bundle
-# leaves Tcl/Tk, tkinter, IDLE and turtledemo out.
+# leaves Tcl/Tk, tkinter, IDLE and turtledemo out. The macOS and Linux
+# interpreters have libpython built in and never load lib/libpython*, which
+# only programs embedding Python use; Windows' python.exe does load its
+# python3*.dll, which these patterns do not match. The worker has no terminal
+# for the Linux terminfo database, and nobody reads the man pages.
 PRUNED = (
+    "lib/libpython3*.so*", "lib/libpython3*.dylib", "share/terminfo", "share/man",
     "bin/idle3*", "lib/libtcl9*", "lib/tcl9*", "lib/tk9*", "lib/itcl*", "lib/thread3*",
     "lib/python3.*/tkinter", "lib/python3.*/idlelib", "lib/python3.*/turtledemo",
     "lib/python3.*/lib-dynload/_tkinter.*",
