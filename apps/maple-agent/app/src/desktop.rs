@@ -5355,10 +5355,10 @@ mod tests {
     }
 
     /// Settings opens in the task screen's frame. With the task sidebar
-    /// open, its card takes the task card's place, its title the wordmark's
-    /// row, and Back the sidebar toggle's place beside the traffic lights
-    /// (without them, Back leads the title's row). (From the collapsed
-    /// rail, Settings still opens with its full column.)
+    /// open, its content takes the task content's place on the canvas, its
+    /// title the wordmark's row, and Back the sidebar toggle's place beside
+    /// the traffic lights (without them, Back leads the title's row). (From
+    /// the collapsed rail, Settings still opens with its full column.)
     #[gpui::test]
     fn settings_opens_in_the_task_screens_frame(cx: &mut gpui::TestAppContext) {
         struct AppHost(Entity<MapleApp>);
@@ -5371,7 +5371,7 @@ mod tests {
         let (_host, cx) = cx.add_window_view(|_, _| AppHost(app.clone()));
         cx.simulate_resize(size(px(1100.), px(850.)));
         cx.run_until_parked();
-        let task_card = cx.debug_bounds("task-card").expect("task card");
+        let task_content = cx.debug_bounds("task-content").expect("task content");
         let toggle = cx
             .debug_bounds("header-sidebar-toggle")
             .expect("sidebar toggle");
@@ -5379,10 +5379,12 @@ mod tests {
 
         app.update(cx, |app, cx| app.show_settings(Section::General, cx));
         cx.run_until_parked();
-        let card = cx.debug_bounds("settings-card").expect("settings card");
+        let content = cx
+            .debug_bounds("settings-content")
+            .expect("settings content");
         let title = cx.debug_bounds("settings-title").expect("settings title");
         let back = cx.debug_bounds("settings-back").expect("back");
-        assert_eq!(card, task_card);
+        assert_eq!(content, task_content);
         assert_eq!(title.center().y, wordmark.center().y);
         if crate::ui::titlebar::TRANSPARENT_TITLEBAR {
             assert_eq!(back, toggle);

@@ -1095,17 +1095,20 @@ mod tests {
         });
     }
 
-    /// The card bounds the pane: General is taller than the window, so the
-    /// pane has a scroll range and a wheel over the card moves its content.
+    /// The content area below the title bar bounds the pane: General is
+    /// taller than the window, so the pane has a scroll range and a wheel
+    /// over it moves its content.
     #[gpui::test]
-    fn the_pane_scrolls_inside_its_card(cx: &mut TestAppContext) {
+    fn the_pane_scrolls_below_the_title_bar(cx: &mut TestAppContext) {
         let (settings, cx) = dropdown_window(cx, false);
-        let card = cx.debug_bounds("settings-card").expect("settings card");
+        let content = cx
+            .debug_bounds("settings-content")
+            .expect("settings content");
         let range = settings.update(cx, |this, _| this.pane_scroll.max_offset().y);
-        assert!(range > px(0.), "General overflows the card");
+        assert!(range > px(0.), "General overflows its content area");
         cx.simulate_event(gpui::ScrollWheelEvent {
             // In the pane's gutter, so no row takes the wheel.
-            position: gpui::point(card.left() + px(8.), card.center().y),
+            position: gpui::point(content.left() + px(8.), content.center().y),
             delta: gpui::ScrollDelta::Pixels(gpui::point(px(0.), px(-200.))),
             ..Default::default()
         });

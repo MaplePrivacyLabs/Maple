@@ -1720,7 +1720,7 @@ impl Render for SettingsScreen {
                     ))
                     .child(
                         div()
-                            .debug_selector(|| "settings-card".to_string())
+                            .debug_selector(|| "settings-content".to_string())
                             .relative()
                             .flex_1()
                             .min_h_0()
