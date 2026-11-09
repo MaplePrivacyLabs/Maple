@@ -7993,8 +7993,8 @@ impl ChatScreen {
                     .relative()
                     .child(composer::measure(&self.composer_frame, record));
                 if composer_resize.is_some() {
-                    // Squared, so text that has slid past the pane's edge is
-                    // already faint.
+                    // Squared, so text nearing the pane's edge, where the
+                    // pane clips it, is already faint.
                     let content = content.absolute().left_0().right_0().opacity(hero * hero);
                     div()
                         .relative()
@@ -8056,6 +8056,10 @@ impl ChatScreen {
             .justify_center()
             .px_6()
             .when(fills, |pane| pane.py_6())
+            // The folding heading rides above its shrinking box; in a short
+            // pane it would reach past the pane's top edge and draw faintly
+            // over the title bar, so the pane clips while the composer moves.
+            .when(composer_resize.is_some(), |pane| pane.overflow_hidden())
             // Expanded, the composer region takes the pane less its padding.
             .child(composer::measure(
                 &self.composer_frame,
