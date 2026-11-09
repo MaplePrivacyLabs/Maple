@@ -87,11 +87,13 @@ impl LoginScreen {
                 }
             });
         });
+        // Like email, the callback handler takes the text it is given: the
+        // field is mid-update while it runs Enter, and reading it panics.
         let oauth_weak = weak;
         callback.update(cx, |input, _| {
-            input.set_on_enter(move |_, _, cx| {
+            input.set_on_enter(move |redirected, _, cx| {
                 if let Some(this) = oauth_weak.upgrade() {
-                    this.update(cx, |screen, cx| screen.confirm_oauth(cx));
+                    this.update(cx, |screen, cx| screen.confirm_oauth(redirected, cx));
                 }
             });
         });
@@ -331,14 +333,13 @@ impl LoginScreen {
         );
     }
 
-    fn confirm_oauth(&mut self, cx: &mut Context<Self>) {
+    fn confirm_oauth(&mut self, redirected: String, cx: &mut Context<Self>) {
         let OAuthFlow::Pending { provider, .. } = self.oauth else {
             return;
         };
         if self.busy {
             return;
         }
-        let redirected = self.callback_input.read(cx).text();
         if redirected.trim().is_empty() {
             self.error = Some(UiText::key("flows-login-paste-required"));
             cx.notify();
@@ -554,7 +555,8 @@ impl Render for LoginScreen {
                             .when(busy, |el| el.bg(gpui::rgb(theme::bg_sidebar_pill())))
                             .when(!busy, |el| {
                                 el.on_click(cx.listener(|this, _event, _window, cx| {
-                                    this.confirm_oauth(cx);
+                                    let redirected = this.callback_input.read(cx).text();
+                                    this.confirm_oauth(redirected, cx);
                                 }))
                             })
                             .child(gpui::text!(if busy {
@@ -1011,6 +1013,53 @@ mod tests {
                 assert!(!screen.guest);
             })
         });
+    }
+
+    /// Enter in the pasted-URL field completes sign-in with the field's
+    /// text. It used to read the field while the field was handling the
+    /// key, which panicked inside the key event and quit the app.
+    #[gpui::test]
+    fn enter_in_the_redirect_field_completes_oauth(cx: &mut TestAppContext) {
+        let _locale = super::super::i18n::TestLocalizationGuard::enable();
+        cx.executor().allow_parking();
+        cx.update(crate::desktop::register_key_bindings);
+        let backend =
+            Arc::new(AgentBackend::for_test("http://127.0.0.1:9".into(), String::new()).unwrap());
+        let (screen, cx) = cx.add_window_view(|_, cx| LoginScreen::new(backend, cx));
+        screen.update(cx, |screen, cx| {
+            screen.oauth = OAuthFlow::Pending {
+                provider: OAuthProvider::Github,
+                auth_url: "https://example.com/authorize".to_string(),
+            };
+            cx.notify();
+        });
+        cx.run_until_parked();
+        let focus = screen.update(cx, |screen, cx| screen.callback_input.focus_handle(cx));
+        cx.update(|window, app| window.focus(&focus, app));
+        let paste_required = UiText::key("flows-login-paste-required").resolve();
+        let error = |screen: &Entity<LoginScreen>, cx: &mut gpui::VisualTestContext| {
+            screen.update(cx, |screen, _| screen.error.as_ref().map(UiText::resolve))
+        };
+
+        cx.simulate_keystrokes("enter");
+        assert_eq!(
+            error(&screen, cx),
+            Some(paste_required.clone()),
+            "empty field"
+        );
+
+        screen.update(cx, |screen, cx| {
+            screen.error = None;
+            screen.callback_input.update(cx, |input, cx| {
+                input.set_text("https://example.com/callback?code=fixture", cx)
+            });
+        });
+        cx.simulate_keystrokes("enter");
+        assert_ne!(
+            error(&screen, cx),
+            Some(paste_required),
+            "the field's text went out"
+        );
     }
 
     #[gpui::test]
