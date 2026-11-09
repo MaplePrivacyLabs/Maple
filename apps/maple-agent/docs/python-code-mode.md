@@ -80,6 +80,14 @@ Raw/native and subprocess output is labelled unattributed; late Python output
 retains its original execution ID and is consumed by a later call. Large outputs
 should be written to files. Output limits do not impose a Python memory sandbox.
 
+## Permissions
+
+The classifier judges each cell's code, as it judges a shell command. It does
+not see what earlier cells left behind: a call into a function defined earlier
+can do whatever that function does, as a script run from the shell can. A change
+of permission mode applies to later calls; it does not stop a running cell or
+background work an earlier cell started.
+
 ## Lifetime
 
 - **Reset.** `{"code":"","reset":true}` discards the scratchpad without starting
