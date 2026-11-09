@@ -10,6 +10,7 @@ pub mod login;
 pub mod markdown;
 pub mod menus;
 pub mod motion;
+pub mod outline_trace;
 pub mod plan_gate;
 pub(crate) mod popup;
 pub mod rich_text;

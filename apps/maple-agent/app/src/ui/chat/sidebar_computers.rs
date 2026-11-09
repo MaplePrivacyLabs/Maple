@@ -2505,9 +2505,7 @@ impl Sidebar {
                                 )
                             }),
                     )
-                    .when_some(task.activity, |row, activity| {
-                        row.child(activity_indicator(&task.id, activity))
-                    })
+                    .children(task.activity.and_then(activity_indicator))
                     .when(task.pinned, |row| {
                         row.child(
                             row_button(
@@ -2535,6 +2533,9 @@ impl Sidebar {
                             window,
                             cx,
                         ))
+                    })
+                    .when(task.activity == Some(SessionActivity::Running), |row| {
+                        row.child(running_trace(task.id.clone()))
                     })
                     .into_any_element()
             }
