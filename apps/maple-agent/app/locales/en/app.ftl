@@ -1356,6 +1356,12 @@ chat-connecting = Connecting…
 chat-offline = Offline
 chat-project-options = Project options
 chat-task-options = Task options
+chat-task-running = Running
+chat-task-needs-you = Waiting for your answer
+chat-task-failed = Last run failed
+chat-task-finished-unseen = Finished, not opened yet
+# $status is one of the task status labels above; $details is the task's project and computer names, not translated.
+chat-task-status-details = { $status }. { $details }
 chat-more = More
 chat-rename = Rename
 chat-unpin = Unpin

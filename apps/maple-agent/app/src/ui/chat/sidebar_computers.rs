@@ -2461,6 +2461,10 @@ impl Sidebar {
                     .group(task.id.clone())
                     .role(gpui::Role::ListBoxOption)
                     .aria_label(task.title.clone())
+                    .when_some(
+                        self.activity_description(task.activity, &task.metadata),
+                        |row, text| row.aria_description(text),
+                    )
                     .aria_selected(false)
                     .mx_2()
                     .my(px(1.))
@@ -2541,9 +2545,10 @@ impl Sidebar {
                             cx,
                         ))
                     })
-                    .when(task.activity == Some(SessionActivity::Running), |row| {
-                        row.child(running_trace(task.id.clone()))
-                    })
+                    .when(
+                        task.activity == Some(SessionActivity::Running) && !renaming,
+                        |row| row.child(running_trace(task.id.clone())),
+                    )
                     .into_any_element()
             }
             SidebarEntry::Computer(index) => {

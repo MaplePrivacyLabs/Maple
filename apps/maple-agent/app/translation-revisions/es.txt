@@ -356,7 +356,12 @@ chat-subscribe-history-failed efcbfea0fd223b98
 chat-task 18e7eadd2d1ee4dd
 chat-task-cancelled 3b640b3cda8db4fe
 chat-task-creating 73485b54c5bfed5b
+chat-task-failed 30dcf87a991d6938
+chat-task-finished-unseen 5a6b5ec6b84a1cc0
+chat-task-needs-you f4d20e20814b295d
 chat-task-options 77f2f2d494397278
+chat-task-running 1652a6ab704d99c1
+chat-task-status-details 6cd6bbbd0091eb32
 chat-tasks 2e8ded459c3711e1
 chat-thinking 7218df9687f2fbed
 chat-thinking-choose-model 44c32f022b0e6942

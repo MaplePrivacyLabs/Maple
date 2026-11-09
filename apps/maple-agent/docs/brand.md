@@ -188,7 +188,7 @@ the dark background.
 | `status_success` | `#7b8f4a` | `#8fa35a` | success |
 | `status_warning` | `#d4a35a` | same | warning |
 | `status_error` | `#d05e41` | `#e07052` | error |
-| `attention` | `#e8633d` Maple 700 | `#ff9771` Maple 500 | sidebar dot: a task waits on the user |
+| `attention` | `#e8633d` Maple 700 | `#ff9771` Maple 500 | sidebar mark (dot in a 28% halo with a 70% edge): a task waits on the user |
 | `activity_trace` | `#6e6f7e` | `#babccb` Pebble 300 | a running task row's outline trace |
 | `display_text` | `#474854` Pebble 800 | `#babccb` Pebble 300 | Array titles; large type can sit dimmer than body |
 

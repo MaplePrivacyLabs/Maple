@@ -4293,7 +4293,10 @@ impl Sidebar {
             .role(gpui::Role::ListBoxOption)
             .accessibility_id(row.id.to_string())
             .aria_label(row.title.clone())
-            .aria_description(row.metadata.clone())
+            .when_some(
+                self.activity_description(activity, &row.metadata),
+                |row, text| row.aria_description(text),
+            )
             .aria_selected(is_selected)
             .when(application_selected, |row| row.aria_active_descendant())
             .group(row.group.clone())
@@ -4375,9 +4378,11 @@ impl Sidebar {
                     cx,
                 ))
             })
-            .when(activity == Some(SessionActivity::Running), |row_element| {
-                row_element.child(running_trace(row.spinner_id.clone()))
-            })
+            // A row being renamed is a text field; the trace stays off it.
+            .when(
+                activity == Some(SessionActivity::Running) && !renaming,
+                |row_element| row_element.child(running_trace(row.spinner_id.clone())),
+            )
     }
 }
 
@@ -4547,24 +4552,38 @@ fn row_fade_background(color: u32) -> gpui::Background {
 
 /// What a task row shows beside its title. Each state has one channel:
 /// motion means working, so a running row traces its outline (see
-/// [`running_trace`]) and shows no glyph here; coral means the task needs
-/// you; green means a run completed unseen; the red alert means one failed
-/// unseen. Every glyph sits centered in one box the size of the largest.
+/// [`running_trace`]) and shows no glyph here; a coral dot in an edged
+/// coral halo means the task needs you; a plain green dot means a run
+/// completed unseen; the red alert means one failed unseen. The halo's edge
+/// keeps the two dots apart by shape, not by colour alone, on every row
+/// fill. Every glyph sits centered in one box the size of the largest.
 fn activity_indicator(activity: SessionActivity) -> Option<AnyElement> {
-    let dot = |color: u32| {
-        div()
-            .size(px(8.))
-            .rounded_full()
-            .bg(gpui::rgb(color))
-            .into_any_element()
-    };
     let glyph = match activity {
         SessionActivity::Running => return None,
-        SessionActivity::NeedsYou => dot(theme::attention()),
+        SessionActivity::NeedsYou => div()
+            .size(px(13.))
+            .rounded_full()
+            .bg(gpui::rgb(theme::attention()).alpha(0.28))
+            .border_1()
+            .border_color(gpui::rgb(theme::attention()).alpha(0.7))
+            .flex()
+            .items_center()
+            .justify_center()
+            .child(
+                div()
+                    .size(px(5.))
+                    .rounded_full()
+                    .bg(gpui::rgb(theme::attention())),
+            )
+            .into_any_element(),
         SessionActivity::Failed => {
             icon("circle-alert", px(13.), theme::status_error()).into_any_element()
         }
-        SessionActivity::CompletedUnread => dot(theme::status_success()),
+        SessionActivity::CompletedUnread => div()
+            .size(px(8.))
+            .rounded_full()
+            .bg(gpui::rgb(theme::status_success()))
+            .into_any_element(),
     };
     Some(
         div()
@@ -4576,6 +4595,41 @@ fn activity_indicator(activity: SessionActivity) -> Option<AnyElement> {
             .child(glyph)
             .into_any_element(),
     )
+}
+
+impl Sidebar {
+    /// A task row's accessibility description: its status, which the
+    /// indicator and trace only show, ahead of its project details.
+    /// Nothing when there is neither. Rows render on every trace frame, so
+    /// a cache hit borrows the details and allocates nothing.
+    pub(super) fn activity_description(
+        &self,
+        activity: Option<SessionActivity>,
+        details: &SharedString,
+    ) -> Option<SharedString> {
+        let Some(activity) = activity else {
+            return (!details.is_empty()).then(|| details.clone());
+        };
+        let key = match activity {
+            SessionActivity::Running => "chat-task-running",
+            SessionActivity::NeedsYou => "chat-task-needs-you",
+            SessionActivity::Failed => "chat-task-failed",
+            SessionActivity::CompletedUnread => "chat-task-finished-unseen",
+        };
+        if details.is_empty() {
+            return Some(tr(key));
+        }
+        Some(self.messages.computed(key, details, || {
+            let status = tr(key);
+            tr_args(
+                "chat-task-status-details",
+                [
+                    ("status", status.as_ref().into()),
+                    ("details", details.as_ref().into()),
+                ],
+            )
+        }))
+    }
 }
 
 /// The running state: a neutral trace around the row's outline, the one
