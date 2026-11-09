@@ -22,7 +22,8 @@ pub(crate) mod web;
 
 pub(super) use desktop::parse_user_questions;
 pub(crate) use python::{
-    ARCHIVED_REASON, PROJECT_REMOVED_REASON, PythonWorkers, python_extension, python_tool,
+    ARCHIVED_REASON, PROJECT_REMOVED_REASON, PythonWorkers, SWITCHED_OFF_REASON, python_extension,
+    python_tool,
 };
 pub(crate) use read_image::ReadImageFor;
 

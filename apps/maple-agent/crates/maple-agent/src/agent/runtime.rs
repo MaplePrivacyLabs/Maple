@@ -857,12 +857,23 @@ impl AgentRuntime {
     /// tool changes, from the task's next model request; see
     /// [`tools::set_tool_active`].
     pub(super) async fn apply_tool_switch(&self, switch: ToolSwitch) {
-        let sessions = self.sessions.lock().await;
-        // Read under the lock, as a session's build does: when changes race,
-        // the last to get here applies the last one saved.
-        let enabled = tool_switches(&self.host.paths, &self.user_id).enabled(switch);
-        for task in sessions.values() {
-            tools::set_tool_active(&task.session, switch.tool_name(task.shell), enabled);
+        let enabled = {
+            let sessions = self.sessions.lock().await;
+            // Read under the lock, as a session's build does: when changes
+            // race, the last to get here applies the last one saved.
+            let enabled = tool_switches(&self.host.paths, &self.user_id).enabled(switch);
+            for task in sessions.values() {
+                tools::set_tool_active(&task.session, switch.tool_name(task.shell), enabled);
+            }
+            enabled
+        };
+        // Off means off: no interpreter, and no background work an earlier
+        // cell left running, outlives the Python switch.
+        if switch == ToolSwitch::Python
+            && !enabled
+            && let Some(python) = &self.python
+        {
+            python.discard_all(tools::SWITCHED_OFF_REASON).await;
         }
     }
 

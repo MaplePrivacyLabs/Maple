@@ -5,7 +5,8 @@ directory. It is switched off by default: turn it on in Settings → Tools, whic
 lists it only in a build that bundles the runtime (other builds have no
 `python` tool). The switch is saved for the account on the computer that runs
 the tasks; new and reopened tasks start with it, and open tasks get it from
-their next model request. With a paired computer selected, the page switches
+their next model request. Switching it off also discards every scratchpad,
+background work included. With a paired computer selected, the page switches
 that computer's tools; one running an older Maple shows no switches, only a
 hint to update it. Its calls pass the task's [permission mode](permissions.md)
 like any other tool call: the classifier judges the code. It is a scratchpad

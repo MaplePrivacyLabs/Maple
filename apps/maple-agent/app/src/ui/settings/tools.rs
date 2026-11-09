@@ -165,7 +165,20 @@ impl SettingsScreen {
     ) {
         self.tools.saving.remove(id);
         match result {
-            Ok(switches) => self.tools.switches = Some(switches),
+            // Replies to changes of different switches can arrive in either
+            // order, and each lists every switch as the host saw it then.
+            // Taking only the changed row keeps an older reply from undoing
+            // a newer change.
+            Ok(switches) => match self.tools.switches.as_mut() {
+                Some(current) => {
+                    if let Some(changed) = switches.into_iter().find(|switch| switch.id == id)
+                        && let Some(row) = current.iter_mut().find(|switch| switch.id == id)
+                    {
+                        *row = changed;
+                    }
+                }
+                None => self.tools.switches = Some(switches),
+            },
             Err(failure) => self.tools.notice = Some(failure.into()),
         }
         if self.settings.application_vim_enabled {
@@ -342,6 +355,34 @@ mod tests {
                     "request_user_input"
                 ]
             );
+        });
+    }
+
+    /// Replies to changes of two switches can arrive in either order, and
+    /// each lists every switch as the host saw it then. A reply changes
+    /// only its own row, so an older one cannot undo a newer change.
+    #[gpui::test]
+    fn an_older_reply_cannot_undo_a_newer_change_of_another_switch(cx: &mut TestAppContext) {
+        let screen = screen(cx);
+        settle(cx, &screen, |screen| screen.tools.switches.is_some());
+        let row = |id: &str, enabled: bool| AgentToolSwitch {
+            id: id.to_string(),
+            enabled,
+            enabled_by_default: false,
+            available: true,
+        };
+        screen.update(cx, |screen, cx| {
+            screen.tools.switches = Some(vec![row("grep", false), row("find", false)]);
+            screen
+                .tools
+                .saving
+                .extend(["grep".to_string(), "find".to_string()]);
+            // Find's reply lands first; grep's, saved before find changed,
+            // lands last.
+            screen.finish_tool_change("find", Ok(vec![row("grep", true), row("find", true)]), cx);
+            screen.finish_tool_change("grep", Ok(vec![row("grep", true), row("find", false)]), cx);
+            assert!(screen.tools.saving.is_empty());
+            assert_eq!(enabled(screen), ["grep", "find"]);
         });
     }
 
