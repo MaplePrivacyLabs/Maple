@@ -2443,7 +2443,12 @@ impl Sidebar {
                 let rename_field = self.other_task_rename_field(&task.target, cx);
                 let renaming = rename_field.is_some();
                 let pin_target = TaskTarget::Other(task.target.clone());
-                let row_bg = if selected {
+                let menu_open = self
+                    .popup
+                    .is_open(&SidebarPopup::OtherTask(task.target.clone()));
+                let row_bg = if menu_open {
+                    hover_bg
+                } else if selected {
                     theme::bg_sidebar_row_hover()
                 } else {
                     theme::bg_sidebar()
@@ -2472,6 +2477,7 @@ impl Sidebar {
                         row.aria_active_descendant()
                             .bg(gpui::rgb(theme::bg_sidebar_row_hover()))
                     })
+                    .when(menu_open, |row| row.bg(gpui::rgb(hover_bg)))
                     .hover(move |s| {
                         if dragging || renaming {
                             s
@@ -2513,6 +2519,7 @@ impl Sidebar {
                                 &task.row.group,
                                 "pin",
                                 tr("chat-unpin-task"),
+                                false,
                             )
                             .opacity(1.)
                             .tooltip(widgets::tooltip(tr("chat-unpin"), None))

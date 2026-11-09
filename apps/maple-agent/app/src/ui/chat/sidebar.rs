@@ -4004,6 +4004,7 @@ impl Sidebar {
                                 &root.row_group,
                                 "square-pen",
                                 tr("chat-new-task"),
+                                false,
                             )
                             .aria_label(root.new_task_label.clone())
                             .tooltip(widgets::tooltip(root.new_task_label.clone(), None))
@@ -4168,10 +4169,15 @@ impl Sidebar {
         cx: &mut Context<Self>,
     ) -> Div {
         let (pinned, rung) = state;
+        // The menu opens below the row and takes the pointer's hover with
+        // it; the strip keeps its fill so the open button still covers the
+        // title, as a project header's does.
+        let open = self.popup.is_open(&target.popup_key());
         let rename = target.clone();
         let advance = target.clone();
         let step = rung.step();
         hover_actions(&row.group, hover_bg)
+            .when(open, |strip| strip.bg(gpui::rgb(hover_bg)))
             .pl_0()
             .when(pinned, |overlay| overlay.right(px(26.)))
             .when(!pinned, |overlay| overlay.right_0().rounded_r(ROW_RADIUS))
@@ -4183,6 +4189,7 @@ impl Sidebar {
                     .bottom_0()
                     .right_full()
                     .w(ROW_FADE)
+                    .when(open, |fade| fade.bg(row_fade_background(hover_bg)))
                     .group_hover(row.group.clone(), |style| {
                         style.bg(row_fade_background(hover_bg))
                     }),
@@ -4265,7 +4272,12 @@ impl Sidebar {
         } else {
             theme::bg_sidebar_row_hover()
         };
-        let row_bg = if is_selected {
+        // An open menu holds the row in its hover fill, as a project
+        // header's does, so the action strip over it never shows as a patch.
+        let menu_open = self.popup.is_open(&SidebarPopup::Task(row.id.clone()));
+        let row_bg = if menu_open {
+            hover_bg
+        } else if is_selected {
             theme::bg_sidebar_row_selected()
         } else {
             theme::bg_sidebar()
@@ -4296,6 +4308,7 @@ impl Sidebar {
             .when(is_selected, |row| {
                 row.bg(gpui::rgb(theme::bg_sidebar_row_selected()))
             })
+            .when(menu_open, |row| row.bg(gpui::rgb(hover_bg)))
             .text_color(gpui::rgb(theme::text_sidebar()))
             // A row being renamed is a text field: no hover highlight and
             // no hover actions over it, so the edit is plain to see.
@@ -4342,11 +4355,8 @@ impl Sidebar {
                         .items_center()
                         .justify_center()
                         .rounded(theme::RADIUS_SM)
-                        .hover(|style| {
-                            style
-                                .bg(gpui::rgb(theme::bg_sidebar_row_selected()))
-                                .cursor_pointer()
-                        })
+                        .hover(|style| style.bg(theme::overlay_hover()).cursor_pointer())
+                        .active(|style| style.bg(theme::overlay_press()))
                         .tooltip(widgets::tooltip(tr("chat-unpin"), None))
                         .on_click(cx.listener(move |this, _event, _window, cx| {
                             cx.stop_propagation();
@@ -4550,7 +4560,7 @@ fn activity_indicator(activity: SessionActivity) -> Option<AnyElement> {
     };
     let glyph = match activity {
         SessionActivity::Running => return None,
-        SessionActivity::NeedsYou => dot(theme::accent()),
+        SessionActivity::NeedsYou => dot(theme::attention()),
         SessionActivity::Failed => {
             icon("circle-alert", px(13.), theme::status_error()).into_any_element()
         }
@@ -4572,7 +4582,7 @@ fn activity_indicator(activity: SessionActivity) -> Option<AnyElement> {
 /// looping motion in the sidebar. Neutral, not coral, so coral keeps
 /// meaning "needs you". `id` is prebuilt so render allocates no id.
 fn running_trace(id: SharedString) -> impl IntoElement {
-    outline_trace(id, ROW_RADIUS, theme::status_running)
+    outline_trace(id, ROW_RADIUS, theme::activity_trace)
 }
 
 /// The strip over a row's end that holds its hover buttons, with the
@@ -4598,7 +4608,7 @@ pub(super) fn row_action(
     on_click: impl Fn(&gpui::ClickEvent, &mut Window, &mut gpui::App) + 'static,
 ) -> gpui::Stateful<Div> {
     let label = label.into();
-    row_button(id, group, icon_name, label.clone())
+    row_button(id, group, icon_name, label.clone(), false)
         .tooltip(widgets::tooltip(label, None))
         .on_click(on_click)
 }
@@ -4612,11 +4622,7 @@ fn row_menu_button(
     open: bool,
 ) -> gpui::Stateful<Div> {
     let label = label.into();
-    row_button(id, group, "ellipsis", label).when(open, |button| {
-        button
-            .opacity(1.)
-            .bg(gpui::rgb(theme::bg_sidebar_row_selected()))
-    })
+    row_button(id, group, "ellipsis", label, open).when(open, |button| button.opacity(1.))
 }
 
 /// An icon button of the Projects header. It stays pressed, without its
@@ -4653,13 +4659,21 @@ fn header_button(
 }
 
 /// The small icon button a sidebar row shows while it is hovered.
+/// `pressed` holds it in its press fill, under the pointer too, while its
+/// menu is open.
 fn row_button(
     id: SharedString,
     group: &SharedString,
     icon_name: &'static str,
     label: impl Into<SharedString>,
+    pressed: bool,
 ) -> gpui::Stateful<Div> {
     let label = label.into();
+    let hover = if pressed {
+        theme::overlay_press()
+    } else {
+        theme::overlay_hover()
+    };
     div()
         .debug_selector(|| id.to_string())
         .id(id)
@@ -4673,12 +4687,11 @@ fn row_button(
         .rounded(theme::RADIUS_SM)
         .opacity(0.)
         .group_hover(group.clone(), |style| style.opacity(1.))
-        .hover(|style| {
-            style
-                .bg(gpui::rgb(theme::bg_sidebar_row_selected()))
-                .cursor_pointer()
-        })
-        .active(|style| style.bg(gpui::rgb(theme::border())))
+        .when(pressed, |button| button.bg(theme::overlay_press()))
+        // Overlays, not fills: the row beneath may be resting, hovered,
+        // selected or both, and a press must read past each of them.
+        .hover(move |style| style.bg(hover).cursor_pointer())
+        .active(|style| style.bg(theme::overlay_press()))
         .child(icon(icon_name, px(14.), theme::text_secondary()))
 }
 
