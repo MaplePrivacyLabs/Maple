@@ -3,6 +3,8 @@
 
 use super::ChatScreen;
 use crate::backend::{HistoryAnchorRequest, RowRangeRequest};
+use crate::ui::i18n::UiText;
+use crate::ui::task::Failure as UiFailure;
 use base64::Engine;
 use gpui::{Context, ListOffset};
 use maple_agent::agent::AgentTimelineItem;
@@ -100,7 +102,7 @@ impl ChatScreen {
         let backend = self.backend.clone();
         let user = self.user_id.clone();
         let target = task.clone();
-        self.call(
+        self.call_semantic(
             async move {
                 let request = HistoryAnchorRequest {
                     task,
@@ -110,9 +112,9 @@ impl ChatScreen {
                     limit_bytes: None,
                 };
                 if older {
-                    backend.history_before_anchor(&user, request).await
+                    backend.call_presented::<maple_agent::store::HistoryPage>("history_before", (&user, request,)).await.map_err(UiFailure::from)
                 } else {
-                    backend.history_forward_after(&user, request).await
+                    backend.call_presented::<maple_agent::store::HistoryPage>("history_forward", (&user, request,)).await.map_err(UiFailure::from)
                 }
             },
             cx,
@@ -157,7 +159,8 @@ impl ChatScreen {
                         cx.notify();
                     }
                     Err(error) => {
-                        if error.contains("epoch") || error.contains("changed") {
+                        if matches!(&error, UiFailure::Host(failure) if matches!(failure.code.as_str(), "paging-changed" | "storage-epoch"))
+                            || error.raw_message().is_some_and(|raw| raw.contains("epoch") || raw.contains("changed")) {
                             this.reload_timeline(&target, cx);
                         } else {
                             this.notice = Some(error.into());
@@ -185,6 +188,9 @@ impl ChatScreen {
             .collect();
         self.markdown_cache.clear();
         self.derived.clear();
+        self.messages = Default::default();
+        self.local_error_text
+            .retain(|id, _| self.timeline_index.contains_key(id));
         self.tool_summaries
             .retain(|id, _| self.timeline_index.contains_key(id));
         self.unsaved_summaries
@@ -225,6 +231,7 @@ impl ChatScreen {
                 self.pages.after = true;
                 self.timeline.pop().unwrap()
             };
+            self.local_error_text.remove(&item.id);
             bytes = bytes.saturating_sub(item_bytes(&item));
             changed = true;
         }
@@ -241,7 +248,7 @@ impl ChatScreen {
             return;
         };
         let Some(identity) = item.persisted.clone() else {
-            self.notice = Some("Full output is available after this message is saved.".into());
+            self.notice = Some(UiText::key("chat-output-unsaved"));
             cx.notify();
             return;
         };
@@ -254,7 +261,7 @@ impl ChatScreen {
         let target = task.clone();
         let key = id.to_owned();
         let generation = self.pages.generation;
-        self.call(
+        self.call_semantic(
             async move {
                 let mut request = RowRangeRequest {
                     task,
@@ -264,30 +271,53 @@ impl ChatScreen {
                     offset: 0,
                     len: 0,
                 };
-                let meta = backend.read_row(&user, request.clone()).await?;
+                let meta = backend
+                    .call_presented::<maple_agent::store::RowRange>(
+                        "read_row",
+                        (&user, request.clone()),
+                    )
+                    .await
+                    .map_err(UiFailure::from)?;
                 if meta.total > MAX_BYTES as u64 {
-                    return Err("Full output exceeds the 32 MiB view budget.".into());
+                    return Err(UiFailure::Local(
+                        "chat-output-full-budget",
+                        "Full output exceeds the 32 MiB view budget.",
+                    ));
                 }
                 let mut bytes = Vec::with_capacity(meta.total as usize);
                 while (bytes.len() as u64) < meta.total {
                     request.offset = bytes.len() as u64;
                     request.len = 1024 * 1024;
-                    let range = backend.read_row(&user, request.clone()).await?;
+                    let range = backend
+                        .call_presented::<maple_agent::store::RowRange>(
+                            "read_row",
+                            (&user, request.clone()),
+                        )
+                        .await
+                        .map_err(UiFailure::from)?;
                     if range.update_seq != meta.update_seq || range.total != meta.total {
-                        return Err("The output changed; reopen it.".into());
+                        return Err(UiFailure::Local(
+                            "chat-output-changed",
+                            "The output changed; reopen it.",
+                        ));
                     }
                     let part = base64::engine::general_purpose::STANDARD
                         .decode(range.data)
-                        .map_err(|_| "Invalid output range")?;
+                        .map_err(|_| {
+                            UiFailure::Local("chat-output-range-invalid", "Invalid output range")
+                        })?;
                     if part.is_empty() {
-                        return Err("The output range did not advance.".into());
+                        return Err(UiFailure::Local(
+                            "chat-output-range-stalled",
+                            "The output range did not advance.",
+                        ));
                     }
                     bytes.extend(part);
                 }
-                let mut item: AgentTimelineItem =
-                    serde_json::from_slice(&bytes).map_err(|_| "Invalid full output")?;
+                let mut item: AgentTimelineItem = serde_json::from_slice(&bytes)
+                    .map_err(|_| UiFailure::Local("chat-output-invalid", "Invalid full output"))?;
                 item.persisted = Some(identity);
-                Ok::<_, String>(normalize(item))
+                Ok::<_, UiFailure>(normalize(item))
             },
             cx,
             move |this, result, cx| {
@@ -301,7 +331,7 @@ impl ChatScreen {
                             return;
                         };
                         if this.timeline[index].persisted != item.persisted {
-                            this.notice = Some("The output changed; reopen it.".into());
+                            this.notice = Some(UiText::key("chat-output-changed"));
                         } else if this
                             .timeline
                             .iter()
@@ -312,13 +342,14 @@ impl ChatScreen {
                             .saturating_add(item_bytes(&item))
                             > MAX_BYTES
                         {
-                            this.notice =
-                                Some("Full output exceeds the current 32 MiB view budget.".into());
+                            this.notice = Some(UiText::key("chat-output-budget"));
                         } else {
                             this.pages.weights.remove(&key);
+                            this.local_error_text.remove(&key);
                             this.timeline[index] = item;
                             this.markdown_cache.clear();
                             this.derived.clear();
+                            this.messages = Default::default();
                             this.remeasure_item(index);
                             this.warm_markdown(cx);
                         }
@@ -395,6 +426,7 @@ mod tests {
                     message_count: 1,
                     model: None,
                     web_enabled: true,
+                    permission_mode: Default::default(),
                     state: AgentTaskState::Active,
                     acp: false,
                 },

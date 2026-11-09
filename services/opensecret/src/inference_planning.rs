@@ -288,7 +288,9 @@ mod tests {
         ModelPlan, AUTO_POWERFUL_MODEL_ID, DEEPSEEK_V4_1_FLASH_MODEL_ID, GLM_5_3_FLASH_MODEL_ID,
         GLM_5_3_MODEL_ID,
     };
-    use crate::provider_registry::{ProviderId, DUAL_INSTANCE_TEST_REGISTRY, PROVIDER_REGISTRY};
+    use crate::provider_registry::{
+        ProviderId, DUAL_INSTANCE_TEST_REGISTRY, PROVIDER_REGISTRY, STOCK_REPLICA_TEST_REGISTRY,
+    };
     use uuid::Uuid;
 
     fn intent(requested_model: &str, public_model: &str) -> InferenceIntent {
@@ -640,7 +642,7 @@ mod tests {
                 workload,
             );
             let weighted = plan_completion_route(
-                &PROVIDER_REGISTRY,
+                &STOCK_REPLICA_TEST_REGISTRY,
                 RoutePlanningInput {
                     intent: &intent,
                     configured_providers: ConfiguredProviders::all(),
@@ -668,7 +670,7 @@ mod tests {
             assert_eq!(weighted.policy_version, MAPLE_ROUTING_POLICY_VERSION);
 
             let remembered_shared = plan_completion_route(
-                &PROVIDER_REGISTRY,
+                &STOCK_REPLICA_TEST_REGISTRY,
                 RoutePlanningInput {
                     intent: &intent,
                     configured_providers: ConfiguredProviders::all(),
@@ -685,8 +687,8 @@ mod tests {
     }
 
     #[test]
-    fn stock_deepseek_allocates_one_shared_and_ninety_nine_i01_account_buckets() {
-        let providers = [ProviderId::Tinfoil, ProviderId::Maple(MapleInstanceId::I01)];
+    fn stock_deepseek_allocates_one_shared_and_ninety_nine_i02_account_buckets() {
+        let providers = [ProviderId::Tinfoil, ProviderId::Maple(MapleInstanceId::I02)];
         let mut counts = [0; 2];
         for bucket in 0..100u8 {
             let mut request = intent(DEEPSEEK_V4_1_FLASH_MODEL_ID, DEEPSEEK_V4_1_FLASH_MODEL_ID);
@@ -712,21 +714,23 @@ mod tests {
     }
 
     #[test]
-    fn drained_i02_cannot_be_restored_by_configuration_or_sticky_memory() {
+    fn drained_i01_cannot_be_restored_by_configuration_or_sticky_memory() {
         let request = intent(DEEPSEEK_V4_1_FLASH_MODEL_ID, DEEPSEEK_V4_1_FLASH_MODEL_ID);
         let i01 = ProviderId::Maple(MapleInstanceId::I01);
-        let i02 = ProviderId::Maple(MapleInstanceId::I02);
         let configured = ConfiguredProviders::all();
         let plan = plan_completion_route(
             &PROVIDER_REGISTRY,
             RoutePlanningInput {
                 intent: &request,
                 configured_providers: configured,
-                remembered_provider: Some(i02),
+                remembered_provider: Some(i01),
             },
         )
         .unwrap();
-        assert_eq!(plan.selected.provider, i01);
+        assert_eq!(
+            plan.selected.provider,
+            ProviderId::Maple(MapleInstanceId::I02)
+        );
         assert_eq!(
             plan.selected.selection_source,
             RouteSelectionSource::StaticSplit
@@ -734,16 +738,16 @@ mod tests {
         assert!(plan
             .eligible_routes
             .iter()
-            .all(|route| route.provider != i02));
+            .all(|route| route.provider != i01));
 
-        let only_i02 = ConfiguredProviders::none().with_provider(i02);
+        let only_i01 = ConfiguredProviders::none().with_provider(i01);
         assert_eq!(
             plan_completion_route(
                 &PROVIDER_REGISTRY,
                 RoutePlanningInput {
                     intent: &request,
-                    configured_providers: only_i02,
-                    remembered_provider: Some(i02),
+                    configured_providers: only_i01,
+                    remembered_provider: Some(i01),
                 }
             )
             .unwrap_err(),
@@ -785,7 +789,7 @@ mod tests {
     fn unavailable_maple_routes_leave_the_same_shared_model_eligible() {
         let request = intent(DEEPSEEK_V4_1_FLASH_MODEL_ID, DEEPSEEK_V4_1_FLASH_MODEL_ID);
         let plan = plan_completion_route(
-            &PROVIDER_REGISTRY,
+            &STOCK_REPLICA_TEST_REGISTRY,
             RoutePlanningInput {
                 intent: &request,
                 configured_providers: ConfiguredProviders::none()

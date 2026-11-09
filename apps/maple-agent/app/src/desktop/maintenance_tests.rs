@@ -21,6 +21,11 @@ enum HostCommand {
     State(StoreState),
     ReleaseFlush,
     AutomaticDownloads(bool),
+    ReconnectWithLocale(&'static str),
+    /// Answer the next store_status that arrives during Maintenance as of
+    /// its arrival, but send that answer only on ReleaseStatus.
+    HoldNextStatus,
+    ReleaseStatus,
 }
 
 struct FixtureHost {
@@ -63,6 +68,7 @@ fn selected_task() -> AgentSessionSummary {
         message_count: 0,
         model: None,
         web_enabled: true,
+        permission_mode: Default::default(),
         state: AgentTaskState::Active,
         acp: false,
     }
@@ -130,6 +136,9 @@ impl FixtureHost {
                 let mut running = runtime_survives;
                 let mut pending_flush = None;
                 let mut automatic_downloads = true;
+                let mut saved_locale = None;
+                let mut hold_status = false;
+                let mut held_status = None;
                 loop {
                     tokio::select! {
                         command = control.recv() => {
@@ -139,13 +148,28 @@ impl FixtureHost {
                                     state = next;
                                     store_id = generation;
                                     let id = pending.take().expect("an admitted password operation");
-                                    if protocol::write(&mut output, &protocol::Message::Response { id, result }).await.is_err() { break; }
+                                    if protocol::write(&mut output, &protocol::Message::Response { failure: None, id, result }).await.is_err() { break; }
+                                }
+                                HostCommand::ReconnectWithLocale(locale) => {
+                                    saved_locale = Some(locale.to_string());
+                                    if protocol::write(&mut output, &protocol::Message::Event(Box::new(AgentServiceEvent::HostReconnected))).await.is_err() { break; }
+                                    continue;
                                 }
                                 HostCommand::State(next) => state = next,
                                 HostCommand::AutomaticDownloads(enabled) => automatic_downloads = enabled,
                                 HostCommand::ReleaseFlush => {
                                     let id = pending_flush.take().expect("a deferred settings flush");
-                                    if protocol::write(&mut output, &protocol::Message::Response { id, result: Ok(Value::Null) }).await.is_err() { break; }
+                                    if protocol::write(&mut output, &protocol::Message::Response { failure: None, id, result: Ok(Value::Null) }).await.is_err() { break; }
+                                    continue;
+                                }
+                                HostCommand::HoldNextStatus => {
+                                    hold_status = true;
+                                    recorded.lock().unwrap().push("hold store_status".into());
+                                    continue;
+                                }
+                                HostCommand::ReleaseStatus => {
+                                    let (id, result) = held_status.take().expect("a held store_status");
+                                    if protocol::write(&mut output, &protocol::Message::Response { failure: None, id, result }).await.is_err() { break; }
                                     continue;
                                 }
                             }
@@ -171,6 +195,7 @@ impl FixtureHost {
                                 "get_ui_settings" => {
                                     let settings = crate::settings::AppSettings {
                                         automatic_update_downloads: automatic_downloads,
+                                        locale: saved_locale.clone(),
                                         ..Default::default()
                                     };
                                     Ok(serde_json::to_value(settings).unwrap())
@@ -209,7 +234,13 @@ impl FixtureHost {
                                 // readiness regression and must never contact a real service.
                                 _ => Err("Optional fixture operation unavailable".into()),
                             };
-                            if protocol::write(&mut output, &protocol::Message::Response { id:request.id, result }).await.is_err() { break; }
+                            if request.method == "store_status" && hold_status && state == StoreState::Maintenance {
+                                hold_status = false;
+                                held_status = Some((request.id, result));
+                                recorded.lock().unwrap().push("held store_status".into());
+                                continue;
+                            }
+                            if protocol::write(&mut output, &protocol::Message::Response { failure: None, id:request.id, result }).await.is_err() { break; }
                         }
                     }
                 }
@@ -450,6 +481,37 @@ fn successful_password_operations_restart_once_and_preserve_parked_chat(
         drop(host);
         settle(cx);
     }
+}
+
+/// The Maintenance event sends a store_status check, and its answer can
+/// reach the UI after the host's later Open event. That stale Maintenance
+/// must not pause the reopened chat, because no further event resumes it.
+#[gpui::test]
+fn a_late_maintenance_status_cannot_pause_the_reopened_chat(cx: &mut gpui::TestAppContext) {
+    let settings = crate::settings::SETTINGS_IO_LOCK.lock();
+    let host = FixtureHost::new();
+    let app = shell(&host, cx, true, &settings);
+    let chat = app.read_with(cx, |app, _| app.local_chat.clone().unwrap());
+    let cx = window(&app, cx);
+    host.commands.send(HostCommand::HoldNextStatus).unwrap();
+    wait(cx, "status hold", |_| host.count("hold store_status") == 1);
+    let operation = host.begin("change_store_password");
+    wait(cx, "held Maintenance check", |_| {
+        host.count("held store_status") == 1
+    });
+    host.finish(None);
+    wait(cx, "runtime recovery", |cx| {
+        operation.is_finished() && host.count("start_runtime") == 1 && chat_ready(&app, cx)
+    });
+    host.commands.send(HostCommand::ReleaseStatus).unwrap();
+    wait(cx, "stale Maintenance answer", |_| {
+        host.backend.host_calls_in_flight_for_test() == 0
+    });
+    settle(cx);
+    app.update(cx, |app, _| assert!(!app.password_settings_refresh_pending));
+    assert_preserved(&app, &chat, &host, cx);
+    drop(host);
+    settle(cx);
 }
 
 #[gpui::test]
@@ -849,6 +911,12 @@ fn committed_restart_retry_quit_and_close_do_not_contact_the_retired_host(
         }
     }
     let cx = window(&app, cx);
+    // Every call checks retirement before it is sent, so only calls sent
+    // earlier can still reach the host. Let those land before clearing, or
+    // a slow startup store_status is counted against close and quit.
+    wait(cx, "calls sent before retirement", |_| {
+        host.backend.host_calls_in_flight_for_test() == 0
+    });
     host.requests.lock().unwrap().clear();
     cx.update(close_window);
     cx.update(|_, cx| quit_app(cx));
@@ -958,4 +1026,50 @@ fn explicit_quit_before_soft_detach_commit_keeps_host_stop_priority(cx: &mut gpu
     settle(cx);
     crate::settings::discard_decrypted_cache();
     settings_store.close().unwrap();
+}
+
+#[gpui::test]
+fn reconnect_and_password_maintenance_preserve_saved_language(cx: &mut gpui::TestAppContext) {
+    let _locale = ui::i18n::TestLocalizationGuard::enable();
+    let settings = crate::settings::SETTINGS_IO_LOCK.lock();
+    ui::i18n::apply_preference(None);
+    let system = ui::i18n::current_locale();
+    let saved = if system == "es" { "en" } else { "es" };
+    let host = FixtureHost::new();
+    let app = shell(&host, cx, true, &settings);
+    ui::i18n::apply_preference(Some(saved));
+    let cx = window(&app, cx);
+    host.commands
+        .send(HostCommand::ReconnectWithLocale(saved))
+        .unwrap();
+    wait(cx, "reconnected settings refresh", |cx| {
+        app.update(cx, |app, _| {
+            app.settings.locale.as_deref() == Some(saved)
+                && !app.password_settings_refreshing
+                && !app.password_settings_refresh_pending
+        })
+    });
+    assert_eq!(ui::i18n::current_locale().to_string(), saved);
+    let operation = host.begin("change_store_password");
+    wait(cx, "password maintenance", |cx| {
+        app.update(cx, |app, _| app.password_settings_refresh_pending)
+    });
+    assert_eq!(ui::i18n::current_locale().to_string(), saved);
+    host.finish(None);
+    wait(cx, "maintenance settings refresh", |cx| {
+        operation.is_finished()
+            && app.update(cx, |app, _| {
+                !app.password_settings_refreshing && !app.password_settings_refresh_pending
+            })
+    });
+    assert_eq!(ui::i18n::current_locale().to_string(), saved);
+    host.commands
+        .send(HostCommand::State(StoreState::Locked))
+        .unwrap();
+    wait(cx, "locked store clears language", |cx| {
+        app.update(cx, |app, _| matches!(app.screen, Screen::StoreGate(_)))
+    });
+    assert_eq!(ui::i18n::current_locale(), system);
+    drop(host);
+    settle(cx);
 }

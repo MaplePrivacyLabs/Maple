@@ -15,6 +15,9 @@ pub const DOWNLOAD_CAPABILITY: &str = "remote_update_download_v1";
 pub const PROJECT_FOLDERS_CAPABILITY: &str = "project_folders_v1";
 /// The host summarizes a tool call from its input as the call starts.
 pub const TOOL_SUMMARY_START_CAPABILITY: &str = "tool_summary_start_v1";
+/// A paired controller may set a task's permission mode. Agent 0.0.19 has
+/// the modes but refuses the setter; earlier hosts have no modes at all.
+pub const PERMISSION_MODES_CAPABILITY: &str = "permission_modes_v1";
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ProtocolInfo {
@@ -34,6 +37,7 @@ impl ProtocolInfo {
                 PROJECT_FOLDERS_CAPABILITY.into(),
                 TOOL_SUMMARY_START_CAPABILITY.into(),
                 DOWNLOAD_CAPABILITY.into(),
+                PERMISSION_MODES_CAPABILITY.into(),
             ],
         }
     }
@@ -148,23 +152,6 @@ pub enum BlockedReason {
     Unknown,
 }
 
-impl BlockedReason {
-    #[cfg(feature = "desktop")]
-    pub fn message(self) -> &'static str {
-        match self {
-            Self::PasswordProtected => "Its data is password protected. Update it there.",
-            Self::UnsupportedInstallation => "This installation updates only on that computer.",
-            Self::UpdatesDisabled => "Updates are off for this build.",
-            Self::UpdateNotReady => "The update isn’t ready there yet.",
-            Self::Busy => "It’s busy. Try again shortly.",
-            Self::DesktopUnavailable => "Open Maple on that computer to update it.",
-            Self::CoordinatorUnavailable => "Update it on that computer.",
-            Self::PairingConfirmationRequired => "Pair it again to update it remotely.",
-            Self::Unknown => "It can’t be updated remotely.",
-        }
-    }
-}
-
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum OperationState {
@@ -246,6 +233,10 @@ impl PeerInfo {
 
     pub fn supports_tool_summary_start(&self) -> bool {
         self.protocol.supports(TOOL_SUMMARY_START_CAPABILITY)
+    }
+
+    pub fn supports_permission_modes(&self) -> bool {
+        self.protocol.supports(PERMISSION_MODES_CAPABILITY)
     }
 
     pub(crate) fn validate(&self) -> Result<(), String> {
@@ -374,24 +365,6 @@ pub enum InstallRefusal {
     Unavailable,
     /// An older execution host installs only an update it already downloaded.
     DownloadRequired,
-}
-
-impl InstallRefusal {
-    #[cfg(feature = "desktop")]
-    pub fn message(self) -> &'static str {
-        match self {
-            Self::AuthorizationChanged => "The pairing changed. Check again, or pair it again.",
-            Self::UpdateChanged => "The update changed. Check again.",
-            Self::NotReady => "It wasn’t ready. Check again.",
-            Self::Unsupported => "This version can’t update remotely. Update it there.",
-            Self::AccountChanged => "The account changed. Reopen Settings.",
-            Self::Busy => "It was busy. Check again shortly.",
-            Self::Unavailable => "It didn’t accept the request. Check again.",
-            Self::DownloadRequired => {
-                "It must download the update first. Turn on automatic downloads there, or update it there."
-            }
-        }
-    }
 }
 
 #[derive(Serialize, Deserialize)]
@@ -1019,6 +992,43 @@ mod tests {
         for version in ["6.2.0", "8.0.0", "invalid"] {
             info.protocol.version = version.into();
             assert!(!info.supports_tool_summary_start(), "{version}");
+        }
+    }
+
+    #[test]
+    fn setting_permission_modes_needs_the_capability_and_current_major() {
+        // Agent 0.0.19 shipped the modes with exactly these capabilities
+        // and refuses the setter; a controller must not send it there.
+        let released: PeerInfo = serde_json::from_value(serde_json::json!({
+            "protocol": {
+                "version": "7.1.0",
+                "capabilities": [
+                    "peer_info_v1",
+                    "remote_update_install_v1",
+                    "remote_update_refresh_v1",
+                    "project_folders_v1",
+                    "tool_summary_start_v1",
+                    "remote_update_download_v1"
+                ]
+            },
+            "running": {"version": "0.0.19", "source_sha": "07131886", "platform": "darwin-aarch64"},
+            "update": {}
+        }))
+        .unwrap();
+        released.validate().unwrap();
+        assert!(released.supports_tool_summary_start());
+        assert!(!released.supports_permission_modes());
+        let mut info = PeerInfo {
+            protocol: ProtocolInfo::current(),
+            ..released
+        };
+        for version in ["7.0.0", "7.1.0", "7.2.0"] {
+            info.protocol.version = version.into();
+            assert!(info.supports_permission_modes(), "{version}");
+        }
+        for version in ["6.2.0", "8.0.0", "invalid"] {
+            info.protocol.version = version.into();
+            assert!(!info.supports_permission_modes(), "{version}");
         }
     }
 

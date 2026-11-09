@@ -21,6 +21,63 @@ mod shell_tests;
 
 const USER: &str = "slice@example.com";
 
+/// Answers every permission check with the hazard it holds, sure of it, and
+/// counts the requests.
+#[derive(Default)]
+pub(crate) struct ScriptedClassifier {
+    hazard: Mutex<Option<&'static str>>,
+    requests: std::sync::atomic::AtomicUsize,
+}
+
+impl ScriptedClassifier {
+    fn set_hazard(&self, hazard: Option<&'static str>) {
+        *self.hazard.lock().unwrap() = hazard;
+    }
+
+    fn requests(&self) -> usize {
+        self.requests.load(std::sync::atomic::Ordering::SeqCst)
+    }
+}
+
+#[async_trait::async_trait]
+impl pi_ai::ClassifyFn for ScriptedClassifier {
+    async fn classify(
+        &self,
+        model: &pi_ai::ClassifierModel,
+        context: pi_ai::ClassifierContext,
+        _options: pi_ai::ClassifierOptions,
+    ) -> pi_ai::ClassifierResult {
+        self.requests
+            .fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+        let hazard = (*self.hazard.lock().unwrap()).unwrap_or("none");
+        let mut result = pi_ai::ClassifierResult::empty(model);
+        for (name, question) in context.questions {
+            let answer = match question {
+                pi_ai::ClassifierQuestion::Choice { criteria, .. } => {
+                    let picked = if criteria.contains_key(hazard) {
+                        hazard.to_string()
+                    } else {
+                        criteria.keys().next().unwrap().clone()
+                    };
+                    json!({
+                        "type": "choice",
+                        "choice": picked,
+                        "confidence": 0.9,
+                        "probabilities": criteria.keys().map(|option| {
+                            (option.clone(), json!(if *option == picked { 0.99 } else { 0.0 }))
+                        }).collect::<serde_json::Map<String, serde_json::Value>>(),
+                    })
+                }
+                _ => json!({"type": "bool", "probability": 0.99}),
+            };
+            result
+                .answers
+                .insert(name, serde_json::from_value(answer).unwrap());
+        }
+        result
+    }
+}
+
 #[derive(Default)]
 pub(super) struct Recorder {
     events: Mutex<Vec<AgentServiceEvent>>,
@@ -73,6 +130,8 @@ pub(crate) struct Harness {
     pub(super) recorder: Arc<Recorder>,
     /// The tasks' model.
     pub(crate) faux: FauxProvider,
+    /// Answers the task's permission checks: everything is clear until told.
+    pub(crate) classifier: Arc<ScriptedClassifier>,
     /// The side model of titles and summaries, scripted apart so a task's
     /// script does not depend on when they are asked.
     side: FauxProvider,
@@ -150,6 +209,7 @@ impl Harness {
             recorder,
             faux,
             side: FauxProvider::new(),
+            classifier: Arc::default(),
             data,
             project,
         };
@@ -173,6 +233,7 @@ impl Harness {
             task: self.faux.clone(),
             side: self.side.clone(),
         }));
+        runtime.use_classifier(self.classifier.clone());
     }
 
     /// A service over the same files, as after the app restarts.
@@ -556,6 +617,14 @@ async fn the_web_tools_follow_the_tasks_web_switch() {
             .set_session_web_enabled(switch(enabled))
             .await
             .unwrap();
+        assert!(
+            harness.recorder.events().iter().any(|event| matches!(
+                event,
+                AgentServiceEvent::SessionUpdated { session_id, session, .. }
+                    if session_id == &task && session.web_enabled == enabled
+            )),
+            "every window showing the task hears of the change"
+        );
         harness.faux.push_text(reply);
         let mut run = harness.send(&task, "Look it up").await;
         assert_eq!(finished(&mut run).await, AgentRunTerminal::Completed);
@@ -1660,6 +1729,157 @@ async fn pasted_foreign_file_listing_does_not_poison_later_requests() {
         assert_eq!(last_user_text(&request), text);
         assert_eq!(user_texts(&request)[0], pasted);
     }
+}
+
+/// The pending permission card of `task`, with what it says.
+async fn permission_card(
+    harness: &Harness,
+    task: &str,
+    seen: usize,
+) -> (String, AgentPermissionPrompt) {
+    let cards = || {
+        harness
+            .recorder
+            .events()
+            .iter()
+            .filter_map(|event| match event {
+                AgentServiceEvent::Question {
+                    session_id,
+                    request_id,
+                    questions,
+                } if session_id == task => {
+                    Some((request_id.clone(), questions.first()?.permission.clone()?))
+                }
+                _ => None,
+            })
+            .collect::<Vec<_>>()
+    };
+    eventually(|| cards().len() > seen).await;
+    cards().swap_remove(seen)
+}
+
+#[tokio::test]
+async fn auto_runs_clear_calls_and_the_user_decides_the_rest() {
+    let harness = Harness::new().await;
+    let task = harness.create_task().await;
+    let marker = harness.project.path().join("marker");
+    // Relative to the task's project folder, where `bash` runs. Git Bash on
+    // Windows reads the backslashes of an absolute path as escapes.
+    let command = "touch marker".to_string();
+    let touch = || faux_tool_call("bash", json!({ "command": command.clone() }));
+
+    // Clear: it runs, and nobody is asked.
+    harness.faux.push_message(vec![touch()]);
+    harness.faux.push_text("Done.");
+    let mut run = harness.send(&task, "Touch it").await;
+    finished(&mut run).await;
+    assert!(marker.exists());
+    std::fs::remove_file(&marker).unwrap();
+    assert!(
+        !harness
+            .recorder
+            .events()
+            .iter()
+            .any(|event| matches!(event, AgentServiceEvent::Question { .. }))
+    );
+
+    // Not clear, and denied: it does not run, and the model is told.
+    harness.classifier.set_hazard(Some("other_destructive"));
+    harness.faux.push_message(vec![touch()]);
+    harness.faux.push_text("Understood.");
+    let mut run = harness.send(&task, "Touch it again").await;
+    let (card, prompt) = permission_card(&harness, &task, 0).await;
+    assert_eq!(prompt.reason, AgentPermissionReason::Destructive);
+    assert_eq!(prompt.tool, "bash");
+    assert_eq!(prompt.action, command);
+    assert!(
+        harness
+            .service
+            .answer_question(
+                &card,
+                r#"{"answers":{"permission":{"answers":["Deny","Additional note: not now"]}}}"#
+                    .into(),
+            )
+            .await
+    );
+    finished(&mut run).await;
+    assert!(!marker.exists());
+    let told = harness.faux.requests().pop().unwrap();
+    let told = serde_json::to_string(&told.context.messages).unwrap();
+    assert!(told.contains("declined this tool call"), "{told}");
+    assert!(told.contains("not now"), "{told}");
+
+    // Not clear, and allowed: it runs.
+    harness.faux.push_message(vec![touch()]);
+    harness.faux.push_text("Done.");
+    let mut run = harness.send(&task, "Touch it once more").await;
+    let (card, _) = permission_card(&harness, &task, 1).await;
+    assert!(
+        harness
+            .service
+            .answer_question(
+                &card,
+                r#"{"answers":{"permission":{"answers":["Allow once"]}}}"#.into(),
+            )
+            .await
+    );
+    finished(&mut run).await;
+    assert!(marker.exists());
+}
+
+#[tokio::test]
+async fn a_tasks_mode_is_saved_and_applies_to_its_next_call() {
+    let mut harness = Harness::new().await;
+    let task = harness.create_task().await;
+    let mode = |mode| AgentSetSessionPermissionModeRequest {
+        session_id: task.clone(),
+        mode,
+    };
+    let new = harness.handle.create_session(None).await.unwrap();
+    assert_eq!(
+        new.session.permission_mode,
+        AgentPermissionMode::Auto,
+        "a new task starts in Auto"
+    );
+
+    harness
+        .handle
+        .set_session_permission_mode(mode(AgentPermissionMode::FullAccess))
+        .await
+        .unwrap();
+    harness.classifier.set_hazard(Some("force_push"));
+    harness
+        .faux
+        .push_message(vec![faux_tool_call("bash", json!({"command": "true"}))]);
+    harness.faux.push_text("Done.");
+    let mut run = harness.send(&task, "Go").await;
+    finished(&mut run).await;
+    assert_eq!(
+        harness.classifier.requests(),
+        0,
+        "full access checks nothing"
+    );
+
+    harness
+        .handle
+        .set_session_permission_mode(mode(AgentPermissionMode::ReadOnly))
+        .await
+        .unwrap();
+    assert!(
+        harness.recorder.events().iter().any(|event| matches!(
+            event,
+            AgentServiceEvent::SessionUpdated { session_id, session, .. }
+                if session_id == &task && session.permission_mode == AgentPermissionMode::ReadOnly
+        )),
+        "every window showing the task, here or paired, hears of the change"
+    );
+    harness.restart().await;
+    harness.start().await;
+    assert_eq!(
+        harness.handle.list_sessions(None).await.unwrap()[0].permission_mode,
+        AgentPermissionMode::ReadOnly,
+        "the mode survives a restart"
+    );
 }
 
 async fn attachment_question_barrier(harness: &Harness, task: &str) -> (AgentRunHandle, String) {

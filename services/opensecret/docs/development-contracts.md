@@ -92,6 +92,34 @@ the shared JWT/API-key cooldown, independent-account and read access, and waits
 for actual cooldown recovery. Keep fixture credentials in private environment
 inputs, never in command arguments or logs.
 
+### Responses context scope
+
+`responses_compaction` must never widen what a model can see. Each request's
+active context is the sliding window's own boundary: its newest metadata rows,
+model budget, instructions, required current input, and complete tool
+relationships. Source outside that boundary stays in canonical storage for
+history and retrieval, but it is neither replayed nor summarized. Preserving
+database history is not the same requirement as summarizing all of it; recovering
+windowed-out history would be a separate feature with its own design and approval.
+
+Compaction summarizes the older part of the active context and keeps a recent
+tail verbatim, updating any previous summary in one helper request. Do not fold a
+selection through serial batches or fragments: when a selection cannot fit, narrow
+it from the old end. A checkpoint records where its gap ends in `active_start`,
+because a freed budget must not walk a recomputed window back into archived source.
+
+Helper work is advisory. The windowed prompt fits whenever the required input
+does, so a failed, stalled, or rejected helper falls back to it and the Response
+still answers. Validation needs a successful main Response and a later reuse or recall: a
+completed helper or saved checkpoint alone proves neither. Attribute slow helpers
+with `responses.compaction.helper_timing`, not total preparation time.
+
+A model's window is not its only limit. Continuum's proxy refuses content past
+4,000,000 bytes before forwarding anything, as an HTTP 500, because its shard key
+cannot grow further. Helpers measure their request and narrow rather than send
+one it would refuse. That exact refusal is an input-size rejection: it can start
+reactive compaction, and it never counts against the route's health.
+
 ## Client application attribution
 
 Clients may send one `x-maple-client-app` logical header with the canonical value

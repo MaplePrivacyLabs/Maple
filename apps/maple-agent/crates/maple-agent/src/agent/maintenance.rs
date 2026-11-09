@@ -432,32 +432,48 @@ impl Worker {
             if !admitted(state) {
                 return;
             }
-            // Only the short enqueue write holds normal run admission and all
-            // external-agent launch/state guards. Source parsing happens below.
-            let ticket = match while_task_idle(state, account, &uuid, || {
-                store.begin_timeline_rebuild(account, &uuid, false)
-            }) {
-                Ok(ticket) => ticket,
-                Err(StoreError::Busy) => continue,
-                Err(error) => {
-                    self.report("timeline repair enqueue", error);
-                    continue;
-                }
-            };
-            match store.prepare_timeline_rebuild(&ticket) {
-                Ok(prepared) => {
-                    self.rebuild = Some(RebuildJob {
-                        account,
-                        user_id,
-                        uuid,
-                        prepared,
-                    });
-                    return;
-                }
-                Err(error) => self.report("timeline repair snapshot", error),
+            if !self.enqueue_rebuild(state, store, account, &user_id, uuid) {
+                return;
             }
-            return;
         }
+    }
+
+    /// Enqueue one candidate that discovery read outside admission. Returns
+    /// whether discovery should try its next candidate.
+    fn enqueue_rebuild(
+        &mut self,
+        state: &ServiceState,
+        store: &Arc<Store>,
+        account: AccountId,
+        user_id: &str,
+        uuid: String,
+    ) -> bool {
+        // Only the short enqueue write holds normal run admission and all
+        // external-agent launch/state guards. Source parsing happens below.
+        // A foreground open may have finished this task since discovery; it
+        // then gets no new epoch, which would replace an attached reader's history.
+        let ticket = match while_task_idle(state, account, &uuid, || {
+            store.begin_queued_timeline_rebuild(account, &uuid)
+        }) {
+            Ok(Some(ticket)) => ticket,
+            Ok(None) | Err(StoreError::Busy) => return true,
+            Err(error) => {
+                self.report("timeline repair enqueue", error);
+                return true;
+            }
+        };
+        match store.prepare_timeline_rebuild(&ticket) {
+            Ok(prepared) => {
+                self.rebuild = Some(RebuildJob {
+                    account,
+                    user_id: user_id.to_owned(),
+                    uuid,
+                    prepared,
+                });
+            }
+            Err(error) => self.report("timeline repair snapshot", error),
+        }
+        false
     }
 
     fn advance_rebuild(
@@ -789,6 +805,65 @@ mod tests {
             .unwrap()
             .into_manager("/project");
         assert_eq!(reopened.branch().len(), 1);
+    }
+
+    #[test]
+    fn a_rebuild_finished_after_discovery_gets_no_new_epoch() {
+        let (_directory, store, service, events, account) = fixture();
+        create_task(&store, account);
+        let mut manager = store
+            .load_session(account, TASK, SessionLoad::Context)
+            .unwrap()
+            .into_manager("/project");
+        manager.append_message(SessionMessage::Llm(Message::User(UserMessage {
+            content: vec![Content::text("Keep the loaded history")],
+            timestamp: 10,
+        })));
+        assert!(manager.take_persist_error().is_none());
+        store.retire_task_timeline_for_test(account, TASK).unwrap();
+        // Discovery reads the queue outside run admission.
+        assert_eq!(
+            store
+                .timeline_rebuild_queue(account, REBUILD_CANDIDATES)
+                .unwrap(),
+            [TASK]
+        );
+        // A foreground open then finishes the same rebuild.
+        let ticket = store.begin_timeline_rebuild(account, TASK, false).unwrap();
+        let prepared = store.prepare_timeline_rebuild(&ticket).unwrap();
+        let chunk = store.prepare_timeline_chunk(&prepared).unwrap();
+        assert!(matches!(
+            store.commit_timeline_chunk(&chunk, false),
+            Ok(RebuildProgress::Replaced { .. })
+        ));
+        let loaded = store.task(account, TASK).unwrap().unwrap().rows_epoch;
+
+        // The stale candidate must not start another epoch, whose flip would
+        // replace the history a reader just loaded.
+        let mut worker = Worker::default();
+        assert!(worker.enqueue_rebuild(
+            &service.state,
+            &store,
+            account,
+            "maintenance@example.test",
+            TASK.to_owned(),
+        ));
+        assert!(worker.rebuild.is_none());
+        for _ in 0..4 {
+            worker.tick(&service.state, &store, None, &service.host.events);
+        }
+        assert_eq!(
+            store.task(account, TASK).unwrap().unwrap().rows_epoch,
+            loaded
+        );
+        assert!(
+            !events
+                .0
+                .lock()
+                .unwrap()
+                .iter()
+                .any(|event| matches!(event, AgentServiceEvent::HistoryReplaced { .. }))
+        );
     }
 
     #[test]

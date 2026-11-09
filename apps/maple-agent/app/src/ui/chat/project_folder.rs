@@ -9,6 +9,7 @@ use gpui::{
 };
 
 use crate::backend::{AgentBackend, ProjectFolderPage, ProjectFolderRequest, SelectedProject};
+use crate::ui::i18n::{MessageCache, UiText, tr};
 use crate::ui::{icons::icon, task, text_input::TextInput, theme, widgets};
 
 const PAGE_SIZE: u16 = 100;
@@ -46,7 +47,7 @@ enum Control {
 pub(super) struct ProjectFolderDialog {
     backend: Arc<AgentBackend>,
     user_id: String,
-    computer: SharedString,
+    computer: UiText,
     pub(super) path_input: Entity<TextInput>,
     name_input: Entity<TextInput>,
     page: Option<ProjectFolderPage>,
@@ -58,7 +59,8 @@ pub(super) struct ProjectFolderDialog {
     show_hidden: bool,
     creating: bool,
     busy: Option<Busy>,
-    error: Option<SharedString>,
+    error: Option<UiText>,
+    messages: MessageCache,
     generation: u64,
     closed: bool,
     initial_focus: bool,
@@ -71,10 +73,15 @@ pub(super) struct ProjectFolderDialog {
 impl EventEmitter<FolderDialogEvent> for ProjectFolderDialog {}
 
 impl ProjectFolderDialog {
+    pub(super) fn set_computer_label(&mut self, label: UiText, cx: &mut Context<Self>) {
+        self.computer = label;
+        cx.notify();
+    }
+
     pub(super) fn new(
         backend: Arc<AgentBackend>,
         user_id: String,
-        computer: SharedString,
+        computer: UiText,
         application_vim_enabled: bool,
         cx: &mut Context<Self>,
     ) -> Self {
@@ -84,42 +91,49 @@ impl ProjectFolderDialog {
             let keys = owner.clone();
             let escape = owner.clone();
             cx.new(|cx| {
-                TextInput::new(if name { "Folder name" } else { "Folder path" }, cx)
-                    .application_vim(application_vim_enabled)
-                    .on_application_escape(move |window, cx| {
-                        let escape = escape.clone();
-                        window.defer(cx, move |window, cx| {
-                            escape.update(cx, |this, cx| this.escape(window, cx)).ok();
-                        });
-                    })
-                    .on_enter(move |text, window, cx| {
-                        let submit = submit.clone();
-                        window.defer(cx, move |_, cx| {
-                            submit
-                                .update(cx, |this, cx| {
-                                    if name {
-                                        this.create_folder(text, cx);
-                                    } else {
-                                        this.go(text, cx);
-                                    }
-                                })
-                                .ok();
-                        });
-                    })
-                    .on_key(move |event, _, window, cx| {
-                        if !matches!(event.keystroke.key.as_str(), "escape" | "tab") {
-                            return false;
-                        }
-                        // The field is borrowed while its handler runs. Defer
-                        // before the dialog reads any of its input entities.
-                        let event = event.clone();
-                        let keys = keys.clone();
-                        window.defer(cx, move |window, cx| {
-                            keys.update(cx, |this, cx| this.key(&event, window, cx))
-                                .ok();
-                        });
-                        true
-                    })
+                TextInput::localized(
+                    if name {
+                        "chat-folder-name"
+                    } else {
+                        "chat-folder-path"
+                    },
+                    cx,
+                )
+                .application_vim(application_vim_enabled)
+                .on_application_escape(move |window, cx| {
+                    let escape = escape.clone();
+                    window.defer(cx, move |window, cx| {
+                        escape.update(cx, |this, cx| this.escape(window, cx)).ok();
+                    });
+                })
+                .on_enter(move |text, window, cx| {
+                    let submit = submit.clone();
+                    window.defer(cx, move |_, cx| {
+                        submit
+                            .update(cx, |this, cx| {
+                                if name {
+                                    this.create_folder(text, cx);
+                                } else {
+                                    this.go(text, cx);
+                                }
+                            })
+                            .ok();
+                    });
+                })
+                .on_key(move |event, _, window, cx| {
+                    if !matches!(event.keystroke.key.as_str(), "escape" | "tab") {
+                        return false;
+                    }
+                    // The field is borrowed while its handler runs. Defer
+                    // before the dialog reads any of its input entities.
+                    let event = event.clone();
+                    let keys = keys.clone();
+                    window.defer(cx, move |window, cx| {
+                        keys.update(cx, |this, cx| this.key(&event, window, cx))
+                            .ok();
+                    });
+                    true
+                })
             })
         };
         let path_input = input(false, cx);
@@ -156,6 +170,7 @@ impl ProjectFolderDialog {
             creating: false,
             busy: None,
             error: None,
+            messages: MessageCache::default(),
             generation: 0,
             closed: false,
             initial_focus: true,
@@ -224,7 +239,7 @@ impl ProjectFolderDialog {
 
     fn go(&mut self, path: String, cx: &mut Context<Self>) {
         if path.is_empty() {
-            self.error = Some("Enter a folder path, or choose Home.".into());
+            self.error = Some(UiText::key("chat-folder-path-required"));
             cx.notify();
         } else {
             self.browse(Some(path), vec![None], cx);
@@ -257,9 +272,10 @@ impl ProjectFolderDialog {
         };
         let backend = self.backend.clone();
         let user_id = self.user_id.clone();
-        let bridge = task::call(
+        let bridge = task::call_semantic(
             &self.backend,
             async move { backend.browse_project_folders(&user_id, request).await },
+            "chat-task-cancelled",
             cx,
             move |this, result, cx| this.finish_browse(generation, typed, cursors, result, cx),
         );
@@ -272,7 +288,7 @@ impl ProjectFolderDialog {
         generation: u64,
         typed: String,
         cursors: Vec<Option<String>>,
-        result: Result<ProjectFolderPage, String>,
+        result: Result<ProjectFolderPage, task::Failure>,
         cx: &mut Context<Self>,
     ) {
         if self.closed || generation != self.generation {
@@ -293,7 +309,7 @@ impl ProjectFolderDialog {
                 self.cursors = cursors;
                 self.error = None;
             }
-            Err(error) => self.error = Some(format!("Could not open folder: {error}").into()),
+            Err(error) => self.error = Some(error.context("chat-folder-open-error")),
         }
         cx.notify();
     }
@@ -356,7 +372,7 @@ impl ProjectFolderDialog {
             return;
         }
         if name.is_empty() {
-            self.error = Some("Enter a name for the new folder.".into());
+            self.error = Some(UiText::key("chat-folder-name-required"));
             cx.notify();
             return;
         }
@@ -370,9 +386,10 @@ impl ProjectFolderDialog {
         let generation = self.generation;
         self.busy = Some(Busy::Creating);
         self.error = None;
-        let bridge = task::call(
+        let bridge = task::call_semantic(
             &self.backend,
             async move { backend.create_project_folder(&user_id, parent, name).await },
+            "chat-task-cancelled",
             cx,
             move |this, result, cx| {
                 if this.closed || this.generation != generation {
@@ -382,7 +399,7 @@ impl ProjectFolderDialog {
                 match result {
                     Ok(path) => this.browse(Some(path), vec![None], cx),
                     Err(error) => {
-                        this.error = Some(format!("Could not create folder: {error}").into());
+                        this.error = Some(error.context("chat-folder-create-error"));
                         cx.notify();
                     }
                 }
@@ -402,9 +419,10 @@ impl ProjectFolderDialog {
         self.generation += 1;
         let generation = self.generation;
         self.busy = Some(Busy::Selecting);
-        let bridge = task::call(
+        let bridge = task::call_semantic(
             &self.backend,
             async move { backend.select_project_root(&user_id, path).await },
+            "chat-task-cancelled",
             cx,
             move |this, result, cx| {
                 if this.closed || this.generation != generation {
@@ -416,9 +434,7 @@ impl ProjectFolderDialog {
                         this.closed = true;
                         cx.emit(FolderDialogEvent::Selected(project));
                     }
-                    Err(error) => {
-                        this.error = Some(format!("Could not use folder: {error}").into())
-                    }
+                    Err(error) => this.error = Some(error.context("chat-folder-use-error")),
                 }
                 cx.notify();
             },
@@ -606,9 +622,9 @@ impl Render for ProjectFolderDialog {
                 .unwrap_or_else(|_| div().into_any_element())
         })
         .size_full();
-        let small_button = |id, label, control| {
+        let small_button = |id, label: SharedString, control| {
             widgets::secondary_button(id)
-                .aria_label(label)
+                .aria_label(label.clone())
                 .px_3()
                 .py_1()
                 .track_focus(&self.focus(control, cx))
@@ -629,7 +645,7 @@ impl Render for ProjectFolderDialog {
                     .id("project-folder-dialog")
                     .debug_selector(|| "project-folder-dialog".into())
                     .role(gpui::Role::Dialog)
-                    .aria_label("Choose a project folder")
+                    .aria_label(tr("chat-folder-choose"))
                     .key_context("Dialog")
                     .on_key_down(cx.listener(Self::key))
                     .w(width)
@@ -655,13 +671,13 @@ impl Render for ProjectFolderDialog {
                                 div()
                                     .text_lg()
                                     .font_weight(gpui::FontWeight::SEMIBOLD)
-                                    .child("Choose a project folder"),
+                                    .child(tr("chat-folder-choose")),
                             )
                             .child(
                                 div()
                                     .text_xs()
                                     .text_color(gpui::rgb(theme::text_secondary()))
-                                    .child(self.computer.clone()),
+                                    .child(self.computer.resolve()),
                             ),
                     )
                     .child(
@@ -674,7 +690,7 @@ impl Render for ProjectFolderDialog {
                                 widgets::icon_button(
                                     "project-folder-up",
                                     "arrow-left",
-                                    "Back to parent folder",
+                                    tr("chat-folder-parent"),
                                     widgets::ROW_ICON,
                                     theme::text_secondary(),
                                 )
@@ -696,11 +712,14 @@ impl Render for ProjectFolderDialog {
                                     .child(self.path_input.clone()),
                             )
                             .child(
-                                small_button("project-folder-go", "Go", Control::Go).on_click(
-                                    cx.listener(|this, _, _, cx| {
-                                        this.go(this.path_input.read(cx).text(), cx)
-                                    }),
-                                ),
+                                small_button(
+                                    "project-folder-go",
+                                    tr("chat-folder-go"),
+                                    Control::Go,
+                                )
+                                .on_click(cx.listener(
+                                    |this, _, _, cx| this.go(this.path_input.read(cx).text(), cx),
+                                )),
                             ),
                     )
                     .child(
@@ -711,16 +730,20 @@ impl Render for ProjectFolderDialog {
                             .items_center()
                             .gap_2()
                             .child(
-                                small_button("project-folder-home", "Home", Control::Home)
-                                    .on_click(cx.listener(|this, _, _, cx| this.open_home(cx))),
+                                small_button(
+                                    "project-folder-home",
+                                    tr("chat-folder-home"),
+                                    Control::Home,
+                                )
+                                .on_click(cx.listener(|this, _, _, cx| this.open_home(cx))),
                             )
                             .child(
                                 small_button(
                                     "project-folder-hidden",
                                     if self.show_hidden {
-                                        "Hide hidden folders"
+                                        tr("chat-folder-hide-hidden")
                                     } else {
-                                        "Show hidden folders"
+                                        tr("chat-folder-show-hidden")
                                     },
                                     Control::Hidden,
                                 )
@@ -732,7 +755,7 @@ impl Render for ProjectFolderDialog {
                             .id("project-folder-list")
                             .debug_selector(|| "project-folder-list".into())
                             .role(gpui::Role::ListBox)
-                            .aria_label("Folders — Enter opens the highlighted folder")
+                            .aria_label(tr("chat-folder-list-label"))
                             .track_focus(&self.focus(Control::List, cx))
                             .focus_visible(|style| style.border_color(gpui::rgb(theme::accent())))
                             .flex_1()
@@ -761,7 +784,7 @@ impl Render for ProjectFolderDialog {
                                             .items_center()
                                             .justify_center()
                                             .text_color(gpui::rgb(theme::text_muted()))
-                                            .child("No folders here"),
+                                            .child(tr("chat-folder-empty")),
                                     )
                                 },
                             ),
@@ -780,7 +803,7 @@ impl Render for ProjectFolderDialog {
                                         row.child(
                                             small_button(
                                                 "project-folder-previous",
-                                                "Previous folders",
+                                                tr("chat-folder-previous"),
                                                 Control::Previous,
                                             )
                                             .on_click(
@@ -794,7 +817,7 @@ impl Render for ProjectFolderDialog {
                                             row.child(
                                                 small_button(
                                                     "project-folder-next",
-                                                    "More folders",
+                                                    tr("chat-folder-more"),
                                                     Control::Next,
                                                 )
                                                 .on_click(cx.listener(|this, _, _, cx| {
@@ -813,9 +836,9 @@ impl Render for ProjectFolderDialog {
                                 .text_xs()
                                 .text_color(gpui::rgb(theme::text_secondary()))
                                 .child(match busy {
-                                    Busy::Browsing => "Loading folders…",
-                                    Busy::Creating => "Creating folder…",
-                                    Busy::Selecting => "Opening project…",
+                                    Busy::Browsing => tr("chat-folder-loading"),
+                                    Busy::Creating => tr("chat-folder-creating"),
+                                    Busy::Selecting => tr("chat-folder-opening"),
                                 }),
                         )
                     })
@@ -830,9 +853,12 @@ impl Render for ProjectFolderDialog {
                                 .child(error)
                                 .when_some(self.page.as_ref(), |error, page| {
                                     error.child(
-                                        div()
-                                            .text_color(gpui::rgb(theme::text_secondary()))
-                                            .child(format!("Folders shown: {}", page.path)),
+                                        div().text_color(gpui::rgb(theme::text_secondary())).child(
+                                            self.messages.get(
+                                                "chat-folder-shown",
+                                                [("path", page.path.clone().into())],
+                                            ),
+                                        ),
                                     )
                                 }),
                         )
@@ -854,7 +880,7 @@ impl Render for ProjectFolderDialog {
                                 .child(
                                     small_button(
                                         "project-folder-create",
-                                        "Create",
+                                        tr("chat-folder-create"),
                                         Control::Create,
                                     )
                                     .on_click(cx.listener(
@@ -866,10 +892,10 @@ impl Render for ProjectFolderDialog {
                                 .child(
                                     small_button(
                                         "project-folder-create-cancel",
-                                        "Cancel",
+                                        tr("chat-cancel"),
                                         Control::CancelCreate,
                                     )
-                                    .aria_label("Cancel new folder")
+                                    .aria_label(tr("chat-folder-cancel-new"))
                                     .on_click(cx.listener(
                                         |this, _, window, cx| this.cancel_create(window, cx),
                                     )),
@@ -886,12 +912,12 @@ impl Render for ProjectFolderDialog {
                             .when(!self.creating, |row| {
                                 row.child(
                                     widgets::ghost_button("project-folder-new")
-                                        .aria_label("New folder")
+                                        .aria_label(tr("chat-folder-new"))
                                         .debug_selector(|| "project-folder-new".into())
                                         .px_3()
                                         .track_focus(&self.focus(Control::NewFolder, cx))
                                         .when(!can_use, |button| button.opacity(0.5))
-                                        .child("New folder")
+                                        .child(tr("chat-folder-new"))
                                         .on_click(cx.listener(|this, _, window, cx| {
                                             this.start_create(window, cx)
                                         })),
@@ -904,21 +930,21 @@ impl Render for ProjectFolderDialog {
                                     .gap_2()
                                     .child(
                                         widgets::secondary_button("project-folder-cancel")
-                                            .aria_label("Cancel")
+                                            .aria_label(tr("chat-cancel"))
                                             .debug_selector(|| "project-folder-cancel".into())
                                             .track_focus(&self.focus(Control::Cancel, cx))
-                                            .child("Cancel")
+                                            .child(tr("chat-cancel"))
                                             .on_click(cx.listener(|this, _, window, cx| {
                                                 this.cancel(window, cx)
                                             })),
                                     )
                                     .child(
                                         widgets::primary_button("project-folder-use")
-                                            .aria_label("Use folder")
+                                            .aria_label(tr("chat-folder-use"))
                                             .debug_selector(|| "project-folder-use".into())
                                             .track_focus(&self.focus(Control::Use, cx))
                                             .when(!can_use, |button| button.opacity(0.5))
-                                            .child("Use folder")
+                                            .child(tr("chat-folder-use"))
                                             .on_click(
                                                 cx.listener(|this, _, _, cx| this.choose(cx)),
                                             ),

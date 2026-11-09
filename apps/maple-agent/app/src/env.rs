@@ -2,8 +2,7 @@
 //! trimmed, and an empty value counts as unset so a stray `NAME=` in a
 //! launcher does not override a default with nothing.
 
-// A headless build (no `desktop` feature) has no update check, the only
-// caller of `env_flag`.
+// Only desktop update checks and the localization preview gate use `env_flag`.
 #![cfg_attr(not(feature = "desktop"), allow(dead_code))]
 
 /// The trimmed value of `name`, or `None` when unset or blank.

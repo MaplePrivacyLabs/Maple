@@ -18,6 +18,7 @@ use crate::ui::chat::computers::{
     TaskAction, TaskActionRequest,
 };
 use crate::ui::chat::{ChatScreen, LoggedOut, SignOutFailed};
+use crate::ui::i18n::{UiText, tr, tr_args};
 use crate::ui::login::{LoginScreen, LoginSucceeded};
 use crate::ui::settings::{
     AccountDeleted, Section, SettingsClosed, SettingsScreen, ShortcutSettingsChange,
@@ -124,7 +125,7 @@ impl RemoteComputer {
         match &self.attempt {
             ConnectionAttempt::Failed { message, .. } => Some(
                 if crate::remote::wire::is_protocol_incompatibility_refusal(message) {
-                    "Update required — select to retry after updating".into()
+                    tr("native-remote-update-required").to_string()
                 } else {
                     message.clone()
                 },
@@ -142,7 +143,7 @@ enum StoreAttentionKind {
 
 struct StoreAttention {
     kind: StoreAttentionKind,
-    message: String,
+    message: UiText,
     retry: bool,
     store_id: Option<String>,
     epoch: u64,
@@ -167,9 +168,12 @@ struct MapleApp {
     remote_enabled: Arc<std::sync::atomic::AtomicBool>,
     store_resident: Arc<std::sync::atomic::AtomicBool>,
     store_load_epoch: u64,
+    /// Counts `StoreStateChanged` events handled, so a slower store_status
+    /// reply cannot overrule a state the host reported after it.
+    store_state_event: u64,
     store_ready: bool,
     store_id: Option<String>,
-    store_notice: Option<String>,
+    store_notice: Option<UiText>,
     store_notice_is_error: bool,
     seen_store_notice_operation: Option<String>,
     inline_password_completion: Option<String>,
@@ -204,6 +208,8 @@ struct MapleApp {
     /// Created once; re-creating it per render leaked an entity per frame.
     titlebar: Entity<TitleBar>,
     plan_check: PlanCheck,
+    native_locale: Option<fluent_templates::LanguageIdentifier>,
+    native_messages: ui::i18n::MessageCache,
 }
 
 impl MapleApp {
@@ -277,7 +283,7 @@ impl MapleApp {
     /// operation messages into the application's page chrome.
     fn present_store_attention(
         &mut self,
-        message: String,
+        message: UiText,
         kind: StoreAttentionKind,
         retry: bool,
         cx: &mut Context<Self>,
@@ -331,19 +337,24 @@ impl MapleApp {
                 break attention;
             }
         };
+        let title = tr(if attention.retry {
+            "native-save-failed"
+        } else {
+            "native-store-attention"
+        });
+        let buttons = if attention.retry {
+            vec![
+                gpui::PromptButton::Other(tr("native-retry-saving")),
+                gpui::PromptButton::Other(tr("native-keep-viewing")),
+            ]
+        } else {
+            vec![gpui::PromptButton::Ok(tr("native-ok"))]
+        };
         let prompt = window.prompt(
             gpui::PromptLevel::Warning,
-            if attention.retry {
-                "Maple couldn't save local data"
-            } else {
-                "Local data needs attention"
-            },
-            Some(&attention.message),
-            if attention.retry {
-                &["Retry saving", "Keep viewing"]
-            } else {
-                &["OK"]
-            },
+            &title,
+            Some(&attention.message.resolve()),
+            &buttons,
             cx,
         );
         self.store_attention_open = true;
@@ -551,9 +562,12 @@ impl MapleApp {
     fn verify_current_store_state(&mut self, cx: &mut Context<Self>) {
         crate::settings::clear_decrypted_cache();
         ui::spell::clear_user_words();
+        // Verification may resume the same open store without rehydrating its
+        // locale. Clear it only when retiring the store or changing identity.
         self.password_settings_refresh_pending = true;
         let epoch = self.store_load_epoch;
         let backend = self.backend.clone();
+        let state_event = self.store_state_event;
         let query = backend.clone().spawn(async move {
             tokio::time::timeout(
                 std::time::Duration::from_secs(5),
@@ -565,6 +579,13 @@ impl MapleApp {
             let result = query.await;
             let _ = this.update(cx, |this, cx| {
                 if this.store_load_epoch != epoch {
+                    return;
+                }
+                // A state event that arrived after this query was sent is
+                // newer, and its own handling already ran. This reply may
+                // predate it: a Maintenance answer landing after Open would
+                // pause the chat again with nothing left to resume it.
+                if this.store_state_event != state_event {
                     return;
                 }
                 if let Ok(Ok(Ok(status))) = result {
@@ -618,7 +639,7 @@ impl MapleApp {
             if let Some(failure) = new_failure {
                 let open = self.backend.store_state() == maple_agent::store::StoreState::Open;
                 self.present_store_attention(
-                    persistence_feedback_message(&failure, open).into(),
+                    persistence_feedback_message(&failure, open),
                     StoreAttentionKind::Persistence,
                     open,
                     cx,
@@ -709,6 +730,7 @@ impl MapleApp {
                 &event
             {
                 self.forward_service_events(std::mem::take(&mut batch), cx);
+                self.store_state_event = self.store_state_event.wrapping_add(1);
                 if *state == maple_agent::store::StoreState::Maintenance {
                     self.pause_local_chat_for_store_maintenance(cx);
                 }
@@ -746,6 +768,7 @@ impl MapleApp {
         self.updater.set_auto_download(false);
         crate::settings::clear_decrypted_cache();
         ui::spell::clear_user_words();
+        ui::i18n::clear_saved_preference();
         self.settings = crate::settings::AppSettings::default();
         ui::theme::apply_preference(ui::theme::Preference::parse(&self.settings.theme), cx);
         ui::typography::apply(
@@ -848,6 +871,7 @@ impl MapleApp {
                     if this.store_id.is_some() && this.store_id != status.store_id {
                         crate::settings::discard_decrypted_cache();
                         ui::spell::clear_user_words();
+                        ui::i18n::clear_saved_preference();
                     }
                     this.store_id = status.store_id.clone();
                     this.apply_store_completion_notice(&status, cx);
@@ -895,6 +919,7 @@ impl MapleApp {
                         }
                     }
                     this.set_store_resident(status.keeps_resident(), cx);
+                    ui::i18n::initialize_saved_preference(this.settings.locale.as_deref());
                     ui::theme::apply_preference(
                         ui::theme::Preference::parse(&this.settings.theme),
                         cx,
@@ -1072,16 +1097,25 @@ impl MapleApp {
             }
             Screen::Chat(_) => self.show_settings(Section::About, cx),
             _ => {
-                let details = format!(
-                    "Version {}\n{}",
-                    crate::ui::titlebar::TitleBar::version(),
-                    self.updater.snapshot().label
+                let details = tr_args(
+                    "native-about-details",
+                    [
+                        ("version", TitleBar::version().into()),
+                        (
+                            "status",
+                            ui::settings::presentation::update_label(
+                                &self.updater.snapshot(),
+                                &self.native_messages,
+                            )
+                            .into(),
+                        ),
+                    ],
                 );
                 drop(window.prompt(
                     gpui::PromptLevel::Info,
                     crate::profile::DISPLAY_NAME,
                     Some(&details),
-                    &["OK"],
+                    &[gpui::PromptButton::Ok(tr("native-ok"))],
                     cx,
                 ));
             }
@@ -1120,10 +1154,23 @@ impl MapleApp {
                 return;
             }
             self.restart_prompt_pending = true;
-            let title = crate::update::restart_title(self.updater.snapshot().version.as_deref());
+            #[cfg(not(target_os = "linux"))]
+            let title = self.updater.snapshot().version.as_deref().map_or_else(
+                || tr("update-confirmation-title"),
+                |version| {
+                    tr_args(
+                        "update-confirmation-title-version",
+                        [("version", version.into())],
+                    )
+                },
+            );
             #[cfg(target_os = "linux")]
             let answer = {
-                let (prompt, answer) = ui::update_confirmation::open(title, window, cx);
+                let (prompt, answer) = ui::update_confirmation::open(
+                    self.updater.snapshot().version.as_deref(),
+                    window,
+                    cx,
+                );
                 self.restart_confirmation = Some(prompt);
                 cx.notify();
                 answer
@@ -1132,8 +1179,11 @@ impl MapleApp {
             let answer = window.prompt(
                 gpui::PromptLevel::Warning,
                 &title,
-                Some(crate::update::RESTART_DETAIL),
-                &["Later", "Restart to Update"],
+                Some(&tr("update-confirmation-detail")),
+                &[
+                    tr("update-confirmation-later").as_ref(),
+                    tr("update-confirmation-restart").as_ref(),
+                ],
                 cx,
             );
             let controller = self.updater.clone();
@@ -1579,7 +1629,11 @@ impl MapleApp {
         let Some(local) = &self.local_chat else {
             return;
         };
-        let mut computers = vec![local.read(cx).computer_snapshot("This Computer".into(), cx)];
+        let mut computers = vec![
+            local
+                .read(cx)
+                .computer_snapshot(tr("native-this-computer"), cx),
+        ];
         for (key, computer) in &self.remote_computers {
             computers.push(match &computer.chat {
                 Some(chat) => chat
@@ -1669,10 +1723,7 @@ impl MapleApp {
             source.update(cx, |chat, cx| {
                 chat.finish_project_rename(
                     request.target,
-                    Err(
-                        "This computer is unavailable. Reconnect it before renaming the project."
-                            .into(),
-                    ),
+                    Err(UiText::key("native-project-unavailable")),
                     cx,
                 );
             });
@@ -1717,13 +1768,13 @@ impl MapleApp {
                 && !chat.read(cx).connection_ended()
         });
         let result = match owner {
-            Some((owner, _)) => result.map(|root| {
+            Some((owner, _)) => result.map_err(UiText::Raw).map(|root| {
                 owner.update(cx, |chat, cx| chat.apply_project_names(vec![root], cx));
                 // Publish the accepted name before removing the source's
                 // optimistic label, so it never flashes back to the old name.
                 self.sync_computers(cx);
             }),
-            None => Err("The computer connection changed. Check its current project name before trying again.".into()),
+            None => Err(UiText::key("native-project-connection-changed")),
         };
         if let Some(source) = pending.source.upgrade()
             && self.has_chat(source.entity_id())
@@ -1752,10 +1803,7 @@ impl MapleApp {
             .filter(|(chat, _)| chat.read(cx).project_names_available())
         else {
             source.update(cx, |chat, cx| {
-                chat.sidebar_task_action_notice(
-                    "This computer is unavailable. Reconnect it before changing the task.".into(),
-                    cx,
-                );
+                chat.sidebar_task_action_notice(UiText::key("native-task-unavailable"), cx);
             });
             return;
         };
@@ -1820,7 +1868,7 @@ impl MapleApp {
                     && !chat.read(cx).connection_ended()
             });
         let result = match owner {
-            Some((owner, _)) => result.map(|session| {
+            Some((owner, _)) => result.map_err(UiText::Raw).map(|session| {
                 owner.update(cx, |chat, cx| {
                     chat.apply_sidebar_task_action(
                         &pending.request.target.id,
@@ -1831,9 +1879,7 @@ impl MapleApp {
                 });
                 self.sync_computers(cx);
             }),
-            None => {
-                Err("The computer connection changed. Check the task before trying again.".into())
-            }
+            None => Err(UiText::key("native-task-connection-changed")),
         };
         if let Some(source) = pending.source.upgrade()
             && self.has_chat(source.entity_id())
@@ -2000,7 +2046,7 @@ impl MapleApp {
                             pending.request.computer.as_deref() == Some(&peer)
                         }) && let Screen::Chat(chat) = &app.screen
                         {
-                            chat.update(cx, |chat, cx| chat.navigation_notice(error, cx));
+                            chat.update(cx, |chat, cx| chat.navigation_notice(error.into(), cx));
                             app.requested_navigation = None;
                         }
                     }
@@ -2191,7 +2237,7 @@ impl MapleApp {
                         gate.update(cx, |gate, cx| gate.sign_out_failed(cx));
                     }
                     app.present_store_attention(
-                        event.message.clone(),
+                        event.message.clone().into(),
                         StoreAttentionKind::Persistence,
                         true,
                         cx,
@@ -2296,6 +2342,13 @@ impl Render for MapleApp {
         FIRST_RENDER.call_once(|| {
             log::debug!("startup: first render at {} ms", crate::startup_elapsed());
         });
+        let locale = ui::i18n::current_locale();
+        if self.native_locale.as_ref() != Some(&locale) {
+            self.native_locale = Some(locale);
+            ui::menus::install(cx);
+            self.update_tray();
+            self.sync_computers(cx);
+        }
         self.present_pending_store_attention(window, cx);
         // Activation changes force a redraw, so a return shows up here.
         let was_active = std::mem::replace(
@@ -2338,11 +2391,14 @@ impl Render for MapleApp {
                             .flex_col()
                             .gap_4()
                             .p_6()
-                            .child(div().text_xl().child("Update installed"))
-                            .child(self.updater.snapshot().label)
+                            .child(div().text_xl().child(tr("native-installed")))
+                            .child(ui::settings::presentation::update_label(
+                                &self.updater.snapshot(),
+                                &self.native_messages,
+                            ))
                             .child(
                                 ui::widgets::primary_button("restart-installed-update")
-                                    .child("Restart Maple")
+                                    .child(gpui::text!(tr("native-restart")))
                                     .on_click(cx.listener(|this, _, window, cx| {
                                         this.update_action(
                                             crate::update::UpdateAction::Relaunch,
@@ -2353,7 +2409,7 @@ impl Render for MapleApp {
                             )
                             .child(
                                 ui::widgets::secondary_button("quit-installed-update")
-                                    .child("Quit Maple")
+                                    .child(gpui::text!(tr("native-quit-maple")))
                                     .on_click(|_, _, cx| quit_app(cx)),
                             )
                             .into_any_element()
@@ -2384,12 +2440,13 @@ mod native_window;
 fn persistence_feedback_message(
     failure: &maple_agent::store::PersistenceFailure,
     open: bool,
-) -> &'static str {
-    if !open && failure.reason == maple_agent::store::PersistenceFailureReason::DiskFull {
-        "The disk is full and Maple could not open its local store. Free disk space, quit and reopen Maple, then unlock again if prompted."
-    } else {
-        failure.message()
-    }
+) -> UiText {
+    use maple_agent::store::PersistenceFailureReason;
+    UiText::key(match (failure.reason, open) {
+        (PersistenceFailureReason::DiskFull, false) => "native-disk-full-unopened",
+        (PersistenceFailureReason::DiskFull, true) => "native-disk-full-open",
+        (PersistenceFailureReason::SaveFailed, _) => "native-save-failed-open",
+    })
 }
 
 #[derive(Debug, Clone, serde::Deserialize)]
@@ -2410,11 +2467,8 @@ struct DesktopStoreStatus {
 
 #[derive(Debug, Clone, serde::Deserialize)]
 struct StoreCompletionNotice {
-    operation_id: String,
-    message: String,
-    is_error: bool,
-    #[serde(default)]
-    requires_attention: bool,
+    #[serde(flatten)]
+    operation: ui::store_gate::StoreOperationNotice,
     #[serde(default)]
     inline_password_success: bool,
     #[serde(default)]
@@ -2433,7 +2487,7 @@ impl DesktopStoreStatus {
     fn reconcile_password_completion_notice(
         &self,
         seen_operation: &mut Option<String>,
-        visible: &mut Option<String>,
+        visible: &mut Option<UiText>,
         visible_is_error: &mut bool,
         busy_recipient: bool,
         handled_operation: Option<&str>,
@@ -2441,14 +2495,14 @@ impl DesktopStoreStatus {
         if let Some(notice) = &self.completion_notice
             && notice.inline_password_success
         {
-            if handled_operation == Some(notice.operation_id.as_str()) {
-                if seen_operation.as_deref() == Some(notice.operation_id.as_str()) {
+            if handled_operation == Some(notice.operation.operation_id.as_str()) {
+                if seen_operation.as_deref() == Some(notice.operation.operation_id.as_str()) {
                     let changed = visible.take().is_some() || *visible_is_error;
                     *visible_is_error = false;
                     return changed;
                 }
                 if visible.is_none() {
-                    *seen_operation = Some(notice.operation_id.clone());
+                    *seen_operation = Some(notice.operation.operation_id.clone());
                 }
                 // A delayed status for our success cannot clear a different
                 // operation's current error or synchronization warning.
@@ -2465,7 +2519,7 @@ impl DesktopStoreStatus {
     fn reconcile_completion_notice(
         &self,
         seen_operation: &mut Option<String>,
-        visible: &mut Option<String>,
+        visible: &mut Option<UiText>,
         visible_is_error: &mut bool,
     ) -> bool {
         if let Some(message) = self.fresh_completion_notice(seen_operation) {
@@ -2473,7 +2527,7 @@ impl DesktopStoreStatus {
             *visible_is_error = self
                 .completion_notice
                 .as_ref()
-                .is_some_and(|notice| notice.is_error);
+                .is_some_and(|notice| notice.operation.is_error);
             return true;
         }
         // Successful unlock intentionally has no completion notice. Clear only
@@ -2498,13 +2552,14 @@ impl DesktopStoreStatus {
         })
     }
 
-    fn fresh_completion_notice(&self, seen_operation: &mut Option<String>) -> Option<String> {
+    fn fresh_completion_notice(&self, seen_operation: &mut Option<String>) -> Option<UiText> {
         let notice = self.completion_notice.as_ref()?;
-        if seen_operation.as_deref() == Some(notice.operation_id.as_str()) {
+        if seen_operation.as_deref() == Some(notice.operation.operation_id.as_str()) {
             return None;
         }
-        *seen_operation = Some(notice.operation_id.clone());
-        (notice.is_error || notice.requires_attention).then(|| notice.message.clone())
+        *seen_operation = Some(notice.operation.operation_id.clone());
+        (notice.operation.is_error || notice.operation.requires_attention)
+            .then(|| notice.operation.presentation())
     }
 
     fn keeps_resident(&self) -> bool {
@@ -2700,29 +2755,28 @@ fn drain_and_quit(state: DesktopLifecycle, cx: &mut App) {
         )
         .await
     });
-    cx.spawn(async move |cx| {
-        match stop.await {
-            Ok(Ok(())) => cx.update(|cx| {
-                if !may_finish_quit(cx) {
-                    state.closing.set(false);
-                    cancel_native_quit();
-                    show_update_about(cx);
-                    return;
-                }
-                state.quit_completed.set(true);
-                #[cfg(target_os = "macos")]
-                native_quit::complete(cx);
-                #[cfg(not(target_os = "macos"))]
-                cx.quit();
-            }),
-            result => {
+    cx.spawn(async move |cx| match stop.await {
+        Ok(Ok(())) => cx.update(|cx| {
+            if !may_finish_quit(cx) {
                 state.closing.set(false);
                 cancel_native_quit();
-                log::warn!("Could not complete Maple host shutdown: {result:?}");
-                cx.update(|cx| show_quit_warning("Maple has not finished stopping. Local data may remain unlocked and tasks may still be active. Keep Maple open or retry Quit.".into(), cx));
+                show_update_about(cx);
+                return;
             }
+            state.quit_completed.set(true);
+            #[cfg(target_os = "macos")]
+            native_quit::complete(cx);
+            #[cfg(not(target_os = "macos"))]
+            cx.quit();
+        }),
+        result => {
+            state.closing.set(false);
+            cancel_native_quit();
+            log::warn!("Could not complete Maple host shutdown: {result:?}");
+            cx.update(|cx| show_quit_warning(UiText::key("native-quit-not-stopped"), cx));
         }
-    }).detach();
+    })
+    .detach();
 }
 
 /// Flush presentation edits before either an explicit host stop or an
@@ -2790,13 +2844,7 @@ fn detach_and_close(state: DesktopLifecycle, cx: &mut App) {
                 state.closing.set(false);
                 cancel_native_quit();
                 log::warn!("Could not save Maple settings before closing its window: {result:?}");
-                cx.update(|cx| {
-                    show_quit_warning(
-                        "Maple could not save settings before closing. Keep Maple open and retry."
-                            .into(),
-                        cx,
-                    )
-                });
+                cx.update(|cx| show_quit_warning(UiText::key("native-close-save-failed"), cx));
             }
         }
     })
@@ -2868,11 +2916,17 @@ fn show_quit_prompt(kind: QuitPromptKind, cx: &mut App) {
             ..Default::default()
         },
         |window, cx| {
-            window.on_window_should_close(cx, |_, cx| {
-                cancel_quit(cx);
-                true
+            let prompt = cx.new(|_| QuitPrompt {
+                kind,
+                closing: false,
+                messages: Default::default(),
             });
-            cx.new(|_| QuitPrompt { kind })
+            let closing = prompt.downgrade();
+            window.on_window_should_close(cx, move |_, cx| {
+                cancel_quit(cx);
+                closing.update(cx, |prompt, cx| prompt.close(cx)).is_err()
+            });
+            prompt
         },
     ) {
         cancel_quit(cx);
@@ -2881,34 +2935,72 @@ fn show_quit_prompt(kind: QuitPromptKind, cx: &mut App) {
     cx.activate(true);
 }
 
-fn show_quit_warning(message: String, cx: &mut App) {
+fn show_quit_warning(message: UiText, cx: &mut App) {
     show_quit_prompt(QuitPromptKind::Failed(message), cx);
 }
 
 enum QuitPromptKind {
     Confirm(HostActivity),
     UnknownActivity,
-    Failed(String),
+    Failed(UiText),
 }
 struct QuitPrompt {
     kind: QuitPromptKind,
+    closing: bool,
+    messages: ui::i18n::MessageCache,
+}
+impl QuitPrompt {
+    /// Draw one empty frame, then remove the window.
+    ///
+    /// This window closes while Maple keeps running, and the pinned gpui keeps
+    /// the AccessKit adapter alive past that. AppKit can then ask a node for
+    /// its frame, and `accesskit_macos` panics across the FFI boundary once
+    /// the view has no window, aborting Maple. Emptying the tree first leaves
+    /// only the root, which answers safely. zed-industries/zed#64143 fixes
+    /// the adapter's lifetime; this can go when the pin includes it.
+    fn close(&mut self, cx: &mut Context<Self>) {
+        self.closing = true;
+        cx.notify();
+    }
+    fn presentation(&self) -> (gpui::SharedString, gpui::SharedString, bool) {
+        match &self.kind {
+            QuitPromptKind::Confirm(activity) => (
+                tr("native-stop-title"),
+                self.messages.get(
+                    "native-quit-activity",
+                    [
+                        ("tasks", activity.running_tasks.into()),
+                        ("editors", activity.acp_clients.into()),
+                        ("controllers", activity.remote_controllers.into()),
+                        ("jobs", activity.background_tasks.into()),
+                        ("requests", activity.local_api_requests.into()),
+                    ],
+                ),
+                false,
+            ),
+            QuitPromptKind::Failed(message) => (tr("native-still-open"), message.resolve(), true),
+            QuitPromptKind::UnknownActivity => (
+                tr("native-stop-title"),
+                tr("native-unknown-activity"),
+                false,
+            ),
+        }
+    }
 }
 impl Render for QuitPrompt {
-    fn render(&mut self, _: &mut Window, _: &mut Context<Self>) -> impl IntoElement {
-        let (title, message, retry) = match &self.kind {
-            QuitPromptKind::Confirm(activity) => (
-                "Stop this computer's Maple host?",
-                format!("Quitting stops {} running tasks, {} attached editors, {} remote controllers and {} background jobs. It also stops this computer's local API and its {} active requests. Maple waits for them to drain before closing.", activity.running_tasks, activity.acp_clients, activity.remote_controllers, activity.background_tasks, activity.local_api_requests),
-                false,
-            ),
-            QuitPromptKind::Failed(message) => ("Maple is still open", message.clone(), true),
-            QuitPromptKind::UnknownActivity => (
-                "Stop this computer's Maple host?",
-                "The host could not report its activity. Quitting will attempt to stop any attached editors, tasks and remote connections, and wait for the host to release local data.".into(),
-                false,
-            ),
-        };
+    fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        if self.closing {
+            window.on_next_frame(|window, _| window.remove_window());
+            return div()
+                .size_full()
+                .bg(gpui::rgb(ui::theme::bg_app()))
+                .into_any_element();
+        }
+        let (title, message, retry) = self.presentation();
         div()
+            .id("quit-prompt")
+            .role(gpui::Role::Dialog)
+            .aria_label(title.clone())
             .size_full()
             .flex()
             .flex_col()
@@ -2916,8 +3008,8 @@ impl Render for QuitPrompt {
             .p_6()
             .bg(gpui::rgb(ui::theme::bg_app()))
             .text_color(gpui::rgb(ui::theme::text_primary()))
-            .child(div().text_lg().child(title))
-            .child(message)
+            .child(div().text_lg().child(gpui::text!(title)))
+            .child(gpui::text!(message))
             .child(
                 div()
                     .flex()
@@ -2925,18 +3017,22 @@ impl Render for QuitPrompt {
                     .child(
                         ui::widgets::secondary_button("keep-maple-open")
                             .debug_selector(|| "keep-maple-open".to_string())
-                            .child("Keep open")
-                            .on_click(|_, window, cx| {
+                            .child(gpui::text!(tr("native-keep-open")))
+                            .on_click(cx.listener(|prompt, _, _, cx| {
                                 cancel_quit(cx);
-                                window.remove_window();
-                            }),
+                                prompt.close(cx);
+                            })),
                     )
                     .child(
                         ui::widgets::secondary_button("retry-maple-quit")
                             .debug_selector(|| "retry-maple-quit".to_string())
-                            .child(if retry { "Retry Quit" } else { "Quit Maple" })
-                            .on_click(move |_, window, cx| {
-                                window.remove_window();
+                            .child(gpui::text!(tr(if retry {
+                                "native-retry-quit"
+                            } else {
+                                "native-quit-maple"
+                            })))
+                            .on_click(cx.listener(move |prompt, _, _, cx| {
+                                prompt.close(cx);
                                 if retry {
                                     quit_app(cx);
                                 } else if let Some(state) =
@@ -2944,9 +3040,10 @@ impl Render for QuitPrompt {
                                 {
                                     drain_and_quit(state, cx);
                                 }
-                            }),
+                            })),
                     ),
             )
+            .into_any_element()
     }
 }
 
@@ -2981,63 +3078,93 @@ pub(crate) fn close_window(window: &mut Window, cx: &mut App) {
         .await
         .map_err(|_| "The host did not answer its store status check".to_string())?
     });
-    window.spawn(cx, async move |cx| {
-        let result = query.await;
-        let resident = match result {
-            Ok(Ok(status)) => {
-                state.store_resident.store(status.keeps_resident(), std::sync::atomic::Ordering::Release);
-                // Make the tray visible before removing the last window,
-                // including a close immediately after password setup.
-                let _ = cx.update(|window, cx| {
-                    if let Some(Some(root)) = window.root::<MapleApp>() {
-                        root.update(cx, |app, cx| {
-                            app.apply_store_completion_notice(&status, cx);
-                            app.update_tray();
-                        });
-                    }
-                });
-                state.store_resident.load(std::sync::atomic::Ordering::Acquire)
-                    || state.remote_enabled.load(std::sync::atomic::Ordering::Acquire)
-            }
-            result => {
-                state.closing.set(false);
-                log::warn!("Could not check Maple host before closing window: {result:?}");
-                let _ = cx.update(|_, cx| show_quit_warning("Maple could not check its local data state. Keep this window open and retry.".into(), cx));
+    window
+        .spawn(cx, async move |cx| {
+            let result = query.await;
+            let resident = match result {
+                Ok(Ok(status)) => {
+                    state.store_resident.store(
+                        status.keeps_resident(),
+                        std::sync::atomic::Ordering::Release,
+                    );
+                    // Make the tray visible before removing the last window,
+                    // including a close immediately after password setup.
+                    let _ = cx.update(|window, cx| {
+                        if let Some(Some(root)) = window.root::<MapleApp>() {
+                            root.update(cx, |app, cx| {
+                                app.apply_store_completion_notice(&status, cx);
+                                app.update_tray();
+                            });
+                        }
+                    });
+                    state
+                        .store_resident
+                        .load(std::sync::atomic::Ordering::Acquire)
+                        || state
+                            .remote_enabled
+                            .load(std::sync::atomic::Ordering::Acquire)
+                }
+                result => {
+                    state.closing.set(false);
+                    log::warn!("Could not check Maple host before closing window: {result:?}");
+                    let _ = cx.update(|_, cx| {
+                        show_quit_warning(UiText::key("native-close-state-failed"), cx)
+                    });
+                    return;
+                }
+            };
+            if !resident {
+                let _ = cx.update(|_, cx| detach_and_close(state, cx));
                 return;
             }
-        };
-        if !resident {
-            let _ = cx.update(|_, cx| detach_and_close(state, cx));
-            return;
-        }
-        #[cfg(target_os = "macos")]
-        {
-            state.closing.set(false);
-            let _ = cx.update(|_, cx| cx.hide());
-        }
-        #[cfg(not(target_os = "macos"))]
-        {
-            let can_background = state.can_background;
-            let check = state.backend.spawn(async move {
-                #[cfg(target_os = "linux")]
-                { can_background && crate::tray::usable().await }
-                #[cfg(target_os = "windows")]
-                { can_background }
-            });
-            let usable = check.await.unwrap_or(false);
-            state.closing.set(false);
-            let prompt = cx.update(|window, cx| {
-                if usable { window.remove_window(); None } else {
-                    Some(window.prompt(gpui::PromptLevel::Warning, "Keep Maple open?",
-                        Some("This desktop has no available tray to reopen Maple. Keep this window open while Maple holds local data unlocked, or Quit Maple to stop its host."),
-                        &["Keep open", "Quit Maple"], cx))
-                }
-            }).ok().flatten();
-            if let Some(prompt) = prompt && prompt.await == Ok(1) {
-                let _ = cx.update(|_, cx| quit_app(cx));
+            #[cfg(target_os = "macos")]
+            {
+                state.closing.set(false);
+                let _ = cx.update(|_, cx| cx.hide());
             }
-        }
-    }).detach();
+            #[cfg(not(target_os = "macos"))]
+            {
+                let can_background = state.can_background;
+                let check = state.backend.spawn(async move {
+                    #[cfg(target_os = "linux")]
+                    {
+                        can_background && crate::tray::usable().await
+                    }
+                    #[cfg(target_os = "windows")]
+                    {
+                        can_background
+                    }
+                });
+                let usable = check.await.unwrap_or(false);
+                state.closing.set(false);
+                let prompt = cx
+                    .update(|window, cx| {
+                        if usable {
+                            window.remove_window();
+                            None
+                        } else {
+                            Some(window.prompt(
+                                gpui::PromptLevel::Warning,
+                                &tr("native-keep-open-title"),
+                                Some(&tr("native-no-tray")),
+                                &[
+                                    tr("native-keep-open").as_ref(),
+                                    tr("native-quit-maple").as_ref(),
+                                ],
+                                cx,
+                            ))
+                        }
+                    })
+                    .ok()
+                    .flatten();
+                if let Some(prompt) = prompt
+                    && prompt.await == Ok(1)
+                {
+                    let _ = cx.update(|_, cx| quit_app(cx));
+                }
+            }
+        })
+        .detach();
 }
 
 fn install_close_behavior(
@@ -3073,7 +3200,7 @@ fn restoring_view() -> gpui::Div {
             div()
                 .text_sm()
                 .text_color(gpui::rgb(ui::theme::text_secondary()))
-                .child("Signing in…"),
+                .child(tr("native-signing-in")),
         )
 }
 
@@ -3205,10 +3332,47 @@ fn main_window_options(
 }
 
 struct StartupError {
+    /// The original diagnostic. It stays on screen and in copied details
+    /// after `localized_message` replaces it as the window's status.
     message: String,
+    localized_message: Option<UiText>,
     stopping: bool,
     retry_backend: Option<Arc<AgentBackend>>,
     requires_completed_stop: bool,
+    diagnostics: StartupDiagnostics,
+    details_copied: bool,
+}
+
+/// What support needs beside the error, gathered once when the window opens.
+struct StartupDiagnostics {
+    os: String,
+    log_file: PathBuf,
+    /// The log path with the home folder written as `~` (or `%USERPROFILE%`
+    /// on Windows), so copied details do not carry the account name and the
+    /// path still pastes into Finder's or Explorer's Go to Folder.
+    log_display: String,
+    log_exists: bool,
+}
+
+impl StartupDiagnostics {
+    fn collect() -> Self {
+        let log_file = crate::backend::store_paths().log_file();
+        let log_exists = log_file.is_file();
+        Self {
+            os: crate::system_info::os_description(),
+            log_display: home_relative_path(&log_file, dirs::home_dir().as_deref()),
+            log_file,
+            log_exists,
+        }
+    }
+}
+
+fn home_relative_path(path: &std::path::Path, home: Option<&std::path::Path>) -> String {
+    let Some(relative) = home.and_then(|home| path.strip_prefix(home).ok()) else {
+        return path.display().to_string();
+    };
+    let home = if cfg!(windows) { "%USERPROFILE%" } else { "~" };
+    format!("{home}{}{}", std::path::MAIN_SEPARATOR, relative.display())
 }
 
 /// A native-hook startup failure must keep its newly owned host's stop proof
@@ -3223,20 +3387,51 @@ impl StartupError {
     fn new(message: String) -> Self {
         Self {
             message,
+            localized_message: None,
             stopping: false,
             retry_backend: None,
             requires_completed_stop: false,
+            diagnostics: StartupDiagnostics::collect(),
+            details_copied: false,
         }
     }
 
     #[cfg(target_os = "macos")]
     fn requiring_host_stop(message: String, backend: Arc<AgentBackend>) -> Self {
         Self {
-            message,
-            stopping: false,
             retry_backend: Some(backend),
             requires_completed_stop: true,
+            ..Self::new(message)
         }
+    }
+
+    /// Plain text for a support reply. Labels stay English for support;
+    /// the status is whatever the window currently shows.
+    fn details_report(&self) -> String {
+        let source = env!("MAPLE_GIT_SOURCE_SHA");
+        let mut report = format!(
+            "{} {} ({})\n{}\nStartup error: {}\n",
+            crate::profile::DISPLAY_NAME,
+            env!("CARGO_PKG_VERSION"),
+            source.get(..12).unwrap_or(source),
+            self.diagnostics.os,
+            self.message,
+        );
+        if let Some(status) = &self.localized_message {
+            report.push_str(&format!("Status: {}\n", status.resolve()));
+        }
+        report.push_str(&format!("Log file: {}\n", self.diagnostics.log_display));
+        report
+    }
+
+    fn copy_details(&mut self, cx: &mut Context<Self>) {
+        cx.write_to_clipboard(gpui::ClipboardItem::new_string(self.details_report()));
+        self.details_copied = true;
+        cx.notify();
+    }
+
+    fn show_log(&mut self, cx: &mut Context<Self>) {
+        cx.reveal_path(&self.diagnostics.log_file);
     }
 
     fn request_close(&mut self, cx: &mut Context<Self>) {
@@ -3257,15 +3452,14 @@ impl StartupError {
             Ok(()) => {
                 self.requires_completed_stop = false;
                 self.retry_backend = None;
-                self.message =
-                    "The Maple host has stopped. You can close Maple and try starting it again."
-                        .into();
+                self.localized_message = Some(UiText::key("native-stop-complete"));
                 true
             }
             Err(error) => {
-                self.message = format!(
-                    "Maple could not finish stopping its host: {error}. Keep this window open and retry stopping the host before relaunching Maple."
-                );
+                self.localized_message = Some(UiText::message(
+                    "native-stop-failed",
+                    [("error", error.into())],
+                ));
                 false
             }
         }
@@ -3278,7 +3472,7 @@ impl StartupError {
         let Some(backend) = self.retry_backend.clone() else {
             // Losing the retry handle is not evidence that the owner lock was
             // released. Keep the window and its completed-stop guard intact.
-            self.message = "Maple cannot retry stopping its host. Keep this process open until the host has been stopped.".into();
+            self.localized_message = Some(UiText::key("native-stop-unavailable"));
             cx.notify();
             return;
         };
@@ -3309,9 +3503,16 @@ impl StartupError {
         if self.stopping {
             return;
         }
-        let answer = window.prompt(gpui::PromptLevel::Warning, "Stop the existing Maple host?",
-            Some("This stops running tasks and remote access for this profile. Maple will reopen with this build."),
-            &["Cancel", "Stop and reopen"], cx);
+        let answer = window.prompt(
+            gpui::PromptLevel::Warning,
+            &tr("native-stop-existing-title"),
+            Some(&tr("native-stop-existing-detail")),
+            &[
+                gpui::PromptButton::Cancel(tr("native-cancel")),
+                gpui::PromptButton::Other(tr("native-stop-reopen")),
+            ],
+            cx,
+        );
         self.stopping = true;
         cx.spawn(async move |this, cx| {
             let result = if answer.await == Ok(1) {
@@ -3333,7 +3534,12 @@ impl StartupError {
                 this.stopping = false;
                 match result {
                     Some(Ok(())) => finish_quit(cx),
-                    Some(Err(error)) => this.message = format!("Could not restart Maple: {error}"),
+                    Some(Err(error)) => {
+                        this.localized_message = Some(UiText::message(
+                            "native-restart-failed",
+                            [("error", error.into())],
+                        ))
+                    }
                     None => {}
                 }
                 cx.notify();
@@ -3354,18 +3560,55 @@ impl Render for StartupError {
             .p_6()
             .bg(gpui::rgb(ui::theme::bg_app()))
             .text_color(gpui::rgb(ui::theme::text_primary()))
-            .child(div().text_lg().child("Maple could not start"))
-            .child(self.message.clone())
+            .child(
+                div()
+                    .text_lg()
+                    .child(gpui::text!(tr("native-startup-title"))),
+            )
+            .child(gpui::text!(
+                self.localized_message
+                    .as_ref()
+                    .map(UiText::resolve)
+                    .unwrap_or_else(|| self.message.clone().into())
+            ))
+            // Once a status replaces the original error, keep the error as
+            // details: it is the only evidence of why startup failed.
+            .when(self.localized_message.is_some(), |view| {
+                view.child(
+                    div()
+                        .flex()
+                        .flex_col()
+                        .gap_1()
+                        .text_sm()
+                        .child(
+                            div()
+                                .text_color(gpui::rgb(ui::theme::text_secondary()))
+                                .child(gpui::text!(tr("native-startup-details"))),
+                        )
+                        .child(
+                            div()
+                                .id("startup-error-details")
+                                .max_h(px(120.))
+                                .overflow_y_scroll()
+                                .px_3()
+                                .py_2()
+                                .rounded_md()
+                                .bg(gpui::rgb(ui::theme::bg_elevated()))
+                                .child(gpui::text!(self.message.clone())),
+                        ),
+                )
+            })
             .when(
-                !self.requires_completed_stop && self.message.contains("Incompatible Maple host or profile"),
+                !self.requires_completed_stop
+                    && self.message.contains("Incompatible Maple host or profile"),
                 |view| {
                     view.child(
                         ui::widgets::secondary_button("stop-incompatible-host")
-                            .child(if self.stopping {
-                                "Stopping…"
+                            .child(gpui::text!(if self.stopping {
+                                tr("native-stopping")
                             } else {
-                                "Stop existing host and reopen"
-                            })
+                                tr("native-stop-existing")
+                            }))
                             .on_click(
                                 cx.listener(|this, _, window, cx| this.stop_old_host(window, cx)),
                             ),
@@ -3373,23 +3616,69 @@ impl Render for StartupError {
                 },
             )
             .when(self.requires_completed_stop, |view| {
-                view.child(div().text_sm().child("Keep Maple open until its host has finished stopping. Local data may remain unlocked while it is still running."))
-                    .child(ui::widgets::secondary_button("retry-startup-host-stop")
-                        .child(if self.stopping { "Stopping host…" } else { "Retry stopping host" })
-                        .when(self.stopping, |button| button.opacity(0.5))
-                        .on_click(cx.listener(|this, _, _, cx| this.retry_required_stop(false, cx))))
+                view.child(div().text_sm().child(gpui::text!(tr("native-wait-stop"))))
+                    .child(
+                        ui::widgets::secondary_button("retry-startup-host-stop")
+                            .child(gpui::text!(if self.stopping {
+                                tr("native-stopping-host")
+                            } else {
+                                tr("native-retry-stop")
+                            }))
+                            .when(self.stopping, |button| button.opacity(0.5))
+                            .on_click(
+                                cx.listener(|this, _, _, cx| this.retry_required_stop(false, cx)),
+                            ),
+                    )
             })
-            .when(self.close_is_allowed(), |view| view.child(
+            .child(
                 div()
-                    .id("close-startup-error")
-                    .cursor_pointer()
-                    .px_4()
-                    .py_2()
-                    .rounded_md()
-                    .bg(gpui::rgb(ui::theme::bg_elevated()))
-                    .child("Close")
-                    .on_click(cx.listener(|this, _, _, cx| this.request_close(cx))),
-            ))
+                    .flex()
+                    .flex_col()
+                    .gap_1()
+                    .text_sm()
+                    .child(
+                        div()
+                            .text_color(gpui::rgb(ui::theme::text_secondary()))
+                            .child(gpui::text!(tr("native-startup-log-file"))),
+                    )
+                    .child(gpui::text!(self.diagnostics.log_display.clone())),
+            )
+            .child(
+                div()
+                    .flex()
+                    .flex_row()
+                    .flex_wrap()
+                    .gap_2()
+                    .child(
+                        ui::widgets::secondary_button("copy-startup-details")
+                            .child(gpui::text!(if self.details_copied {
+                                tr("native-startup-details-copied")
+                            } else {
+                                tr("native-startup-copy-details")
+                            }))
+                            .on_click(cx.listener(|this, _, _, cx| this.copy_details(cx))),
+                    )
+                    .when(self.diagnostics.log_exists, |row| {
+                        row.child(
+                            ui::widgets::secondary_button("show-startup-log")
+                                .child(gpui::text!(tr("native-startup-show-log")))
+                                .on_click(cx.listener(|this, _, _, cx| this.show_log(cx))),
+                        )
+                    }),
+            )
+            .when(self.close_is_allowed(), |view| {
+                view.child(
+                    div()
+                        .id("close-startup-error")
+                        .cursor_pointer()
+                        .px_4()
+                        .py_2()
+                        .rounded_md()
+                        .bg(gpui::rgb(ui::theme::bg_elevated()))
+                        .child(gpui::text!(tr("native-close")))
+                        .on_click(cx.listener(|this, _, _, cx| this.request_close(cx))),
+                )
+            })
     }
 }
 
@@ -3404,7 +3693,7 @@ fn show_startup_error(error: String) {
         }
         cx.on_action(|_: &QuitApp, cx| quit_app(cx));
         ui::menus::install(cx);
-        let bounds = Bounds::centered(None, size(px(560.), px(260.)), cx);
+        let bounds = Bounds::centered(None, size(px(600.), px(440.)), cx);
         let result = cx.open_window(
             WindowOptions {
                 window_bounds: Some(WindowBounds::Windowed(bounds)),
@@ -3596,7 +3885,7 @@ pub fn run() {
                 let startup = cx.new(|_| StartupError::requiring_host_stop(error, backend.clone()));
                 cx.set_global(GuardedStartupFailure(startup.clone()));
                 let view = startup.clone();
-                let bounds = Bounds::centered(None, size(px(620.), px(320.)), cx);
+                let bounds = Bounds::centered(None, size(px(640.), px(520.)), cx);
                 let opened = cx.open_window(
                     main_window_options((WindowBounds::Windowed(bounds), None)),
                     move |window, cx| {
@@ -3675,6 +3964,7 @@ pub fn run() {
                         remote_enabled: root_enabled,
                         store_resident: root_resident,
                         store_load_epoch: 0,
+                        store_state_event: 0,
                         store_ready: false,
                         store_id: None,
                         store_notice: None,
@@ -3709,6 +3999,8 @@ pub fn run() {
                         shortcuts: shortcut_runtime,
                         titlebar: cx.new(|_| TitleBar::new(ui::titlebar::WINDOW_TITLE)),
                         plan_check: PlanCheck::default(),
+                        native_locale: None,
+                        native_messages: Default::default(),
                     })
                 })
                 .unwrap_or_else(|error| panic!("{}", main_window_failure(&error)));
@@ -3957,17 +4249,107 @@ mod tests {
     }
 
     #[test]
+    fn quit_warning_preserves_all_counts_when_switching_locale() {
+        let _locale = ui::i18n::TestLocalizationGuard::enable();
+        for count in [0, 1, 2] {
+            let prompt = QuitPrompt {
+                closing: false,
+                kind: QuitPromptKind::Confirm(HostActivity {
+                    running_tasks: count,
+                    acp_clients: count,
+                    remote_controllers: count,
+                    background_tasks: count,
+                    local_api_running: true,
+                    local_api_requests: count,
+                }),
+                messages: Default::default(),
+            };
+            for (locale, labels, drain) in [
+                (
+                    "en",
+                    [
+                        "running tasks",
+                        "attached editors",
+                        "remote controllers",
+                        "background jobs",
+                        "active requests",
+                    ],
+                    "waits for them to drain",
+                ),
+                (
+                    "es",
+                    [
+                        "tareas en ejecución",
+                        "editores conectados",
+                        "controladores remotos",
+                        "trabajos en segundo plano",
+                        "solicitudes activas",
+                    ],
+                    "espera a que terminen",
+                ),
+                (
+                    "en",
+                    [
+                        "running tasks",
+                        "attached editors",
+                        "remote controllers",
+                        "background jobs",
+                        "active requests",
+                    ],
+                    "waits for them to drain",
+                ),
+            ] {
+                ui::i18n::apply_preference(Some(locale));
+                let (_, detail, retry) = prompt.presentation();
+                assert!(!retry);
+                for label in labels {
+                    assert!(detail.contains(&format!("{label} ({count})")), "{detail}");
+                }
+                assert!(detail.contains(drain));
+                assert!(
+                    matches!(&prompt.kind, QuitPromptKind::Confirm(activity) if activity.needs_confirmation())
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn native_cached_failure_and_shutdown_guidance_follow_locale() {
+        let _locale = ui::i18n::TestLocalizationGuard::enable();
+        let failure = maple_agent::store::PersistenceFailure {
+            store_id: Some("stable-store".into()),
+            revision: 1,
+            reason: maple_agent::store::PersistenceFailureReason::DiskFull,
+        };
+        let notice = persistence_feedback_message(&failure, true);
+        let mut startup = StartupError::new("external detail".into());
+        startup.requires_completed_stop = true;
+        assert!(!startup.finish_required_stop(Err("external error detail".into())));
+        for (locale, phrase) in [("es", "Mantén"), ("en", "Keep"), ("es", "Mantén")] {
+            ui::i18n::apply_preference(Some(locale));
+            assert!(notice.resolve().contains(phrase));
+            let rendered = startup.localized_message.as_ref().unwrap().resolve();
+            assert!(rendered.contains(phrase));
+            assert!(rendered.contains("external error detail"));
+            assert!(!startup.close_is_allowed());
+            assert_eq!(failure.store_id.as_deref(), Some("stable-store"));
+        }
+        assert!(startup.finish_required_stop(Ok(())));
+        assert!(startup.close_is_allowed());
+    }
+
+    #[test]
     fn disk_full_guidance_keeps_unsaved_open_sessions_alive_and_allows_restart_after_failed_open() {
         let failure = maple_agent::store::PersistenceFailure {
             store_id: Some("fixture-generation".into()),
             revision: 1,
             reason: maple_agent::store::PersistenceFailureReason::DiskFull,
         };
-        let open = super::persistence_feedback_message(&failure, true);
+        let open = super::persistence_feedback_message(&failure, true).resolve();
         assert!(open.contains("Keep Maple open"));
         assert!(open.contains("retry saving"));
         assert!(!open.contains("quit and reopen"));
-        let unopened = super::persistence_feedback_message(&failure, false);
+        let unopened = super::persistence_feedback_message(&failure, false).resolve();
         assert!(unopened.contains("quit and reopen Maple"));
         assert!(unopened.contains("unlock again if prompted"));
     }
@@ -4122,7 +4504,10 @@ mod tests {
         .unwrap();
         let mut seen = None;
         assert_eq!(
-            status.fresh_completion_notice(&mut seen).as_deref(),
+            status
+                .fresh_completion_notice(&mut seen)
+                .map(|text| text.resolve())
+                .as_deref(),
             Some("Keep both passwords until synchronization finishes.")
         );
         // Dismissing the visible string must not make the host's next poll
@@ -4131,18 +4516,133 @@ mod tests {
         status.completion_notice = None;
         assert!(status.fresh_completion_notice(&mut seen).is_none());
         status.completion_notice = Some(super::StoreCompletionNotice {
-            operation_id: "second-operation".into(),
-            message: "The operation could not finish.".into(),
-            is_error: true,
+            operation: ui::store_gate::StoreOperationNotice {
+                label: None,
+                pending: false,
+                failure: None,
+                operation_id: "second-operation".into(),
+                message: "The operation could not finish.".into(),
+                is_error: true,
+                requires_attention: true,
+            },
             inline_password_success: false,
-            requires_attention: true,
             ui_operation_id: None,
             mode_notice_id: None,
         });
         assert_eq!(
-            status.fresh_completion_notice(&mut seen).as_deref(),
+            status
+                .fresh_completion_notice(&mut seen)
+                .map(|text| text.resolve())
+                .as_deref(),
             Some("The operation could not finish.")
         );
+    }
+
+    #[test]
+    fn retained_desktop_completion_reformats_without_consuming_a_deferred_notice() {
+        let _locale = ui::i18n::TestLocalizationGuard::enable();
+        let status: DesktopStoreStatus = serde_json::from_value(serde_json::json!({
+            "state": {"state": "open"}, "mode": "password", "store_id": "current",
+            "completion_notice": {
+                "operation_id": "password-change", "message": "Original host fallback",
+                "label": "change_store_password", "pending": true,
+                "is_error": false, "requires_attention": true,
+                "inline_password_success": true, "ui_operation_id": "form-operation"
+            }
+        }))
+        .unwrap();
+        let (mut seen, mut visible, mut is_error) = (None, None, false);
+        assert!(status.matches_pending_password_operation(Some("form-operation")));
+        assert!(!status.reconcile_password_completion_notice(
+            &mut seen,
+            &mut visible,
+            &mut is_error,
+            true,
+            None,
+        ));
+        assert!(seen.is_none());
+        assert!(visible.is_none());
+        assert!(status.reconcile_password_completion_notice(
+            &mut seen,
+            &mut visible,
+            &mut is_error,
+            false,
+            None,
+        ));
+        for (locale, expected) in [
+            ("en", "Your unlock password changed on this computer."),
+            (
+                "es",
+                "Tu contraseña de desbloqueo cambió en esta computadora.",
+            ),
+            ("en", "Your unlock password changed on this computer."),
+        ] {
+            ui::i18n::apply_preference(Some(locale));
+            assert!(visible.as_ref().unwrap().resolve().starts_with(expected));
+            assert!(!status.reconcile_password_completion_notice(
+                &mut seen,
+                &mut visible,
+                &mut is_error,
+                false,
+                None,
+            ));
+            assert_eq!(seen.as_deref(), Some("password-change"));
+            assert!(!is_error);
+            assert_eq!(
+                status.completion_notice.as_ref().unwrap().operation.message,
+                "Original host fallback"
+            );
+        }
+        // Handling this exact inline success clears only its own fallback.
+        assert!(status.reconcile_password_completion_notice(
+            &mut seen,
+            &mut visible,
+            &mut is_error,
+            false,
+            Some("password-change"),
+        ));
+        assert!(visible.is_none());
+    }
+
+    #[test]
+    fn desktop_completion_preserves_legacy_and_unknown_failure_fallbacks() {
+        let _locale = ui::i18n::TestLocalizationGuard::enable();
+        for metadata in [
+            serde_json::json!({}),
+            serde_json::json!({"label": "future-operation", "pending": true}),
+            // Unknown failure takes precedence over an otherwise known label.
+            serde_json::json!({"label": "unlock", "failure": {
+                "code": "future-failure", "message": "Opaque diagnostic"
+            }}),
+        ] {
+            let mut notice = serde_json::json!({
+                "operation_id": "legacy", "message": "Opaque diagnostic",
+                "is_error": true, "requires_attention": true
+            });
+            notice
+                .as_object_mut()
+                .unwrap()
+                .extend(metadata.as_object().unwrap().clone());
+            let status: DesktopStoreStatus = serde_json::from_value(serde_json::json!({
+                "state": {"state": "open"}, "mode": "plain", "completion_notice": notice
+            }))
+            .unwrap();
+            let (mut seen, mut visible, mut is_error) = (None, None, false);
+            assert!(status.reconcile_completion_notice(&mut seen, &mut visible, &mut is_error));
+            for locale in ["en", "es", "en"] {
+                ui::i18n::apply_preference(Some(locale));
+                assert_eq!(
+                    visible.as_ref().unwrap().resolve().as_ref(),
+                    "Opaque diagnostic"
+                );
+                assert!(!status.reconcile_completion_notice(
+                    &mut seen,
+                    &mut visible,
+                    &mut is_error
+                ));
+                assert!(is_error);
+            }
+        }
     }
 
     #[test]
@@ -4193,7 +4693,10 @@ mod tests {
             false,
             Some("completed")
         ));
-        assert_eq!(visible.as_deref(), Some("Saving still needs attention."));
+        assert_eq!(
+            visible.as_ref().map(UiText::resolve).as_deref(),
+            Some("Saving still needs attention.")
+        );
         assert!(error);
     }
 
@@ -4234,7 +4737,7 @@ mod tests {
         let mut is_error = false;
         assert!(status.reconcile_completion_notice(&mut seen, &mut visible, &mut is_error));
         assert_eq!(
-            visible.as_deref(),
+            visible.as_ref().map(UiText::resolve).as_deref(),
             Some("That password didn't unlock Maple.")
         );
         assert!(is_error);
@@ -4254,18 +4757,23 @@ mod tests {
         // Failure of a later operation while already Open remains visible as
         // long as that actual failed result remains the host's current latch.
         status.completion_notice = Some(super::StoreCompletionNotice {
-            operation_id: "failed-remove".into(),
-            message: "The current password was incorrect.".into(),
-            is_error: true,
+            operation: ui::store_gate::StoreOperationNotice {
+                label: None,
+                pending: false,
+                failure: None,
+                operation_id: "failed-remove".into(),
+                message: "The current password was incorrect.".into(),
+                is_error: true,
+                requires_attention: true,
+            },
             inline_password_success: false,
-            requires_attention: true,
             ui_operation_id: None,
             mode_notice_id: None,
         });
         assert!(status.reconcile_completion_notice(&mut seen, &mut visible, &mut is_error));
         assert!(!status.reconcile_completion_notice(&mut seen, &mut visible, &mut is_error));
         assert_eq!(
-            visible.as_deref(),
+            visible.as_ref().map(UiText::resolve).as_deref(),
             Some("The current password was incorrect.")
         );
         assert!(is_error);
@@ -4273,11 +4781,16 @@ mod tests {
         // A committed operation's synchronization warning is not an obsolete
         // unlock error and must survive a status with no volatile result.
         status.completion_notice = Some(super::StoreCompletionNotice {
-            operation_id: "committed-with-warning".into(),
-            message: "Keep both passwords until synchronization finishes.".into(),
-            is_error: false,
+            operation: ui::store_gate::StoreOperationNotice {
+                label: None,
+                pending: false,
+                failure: None,
+                operation_id: "committed-with-warning".into(),
+                message: "Keep both passwords until synchronization finishes.".into(),
+                is_error: false,
+                requires_attention: true,
+            },
             inline_password_success: false,
-            requires_attention: true,
             ui_operation_id: None,
             mode_notice_id: None,
         });
@@ -4285,7 +4798,7 @@ mod tests {
         status.completion_notice = None;
         assert!(!status.reconcile_completion_notice(&mut seen, &mut visible, &mut is_error));
         assert_eq!(
-            visible.as_deref(),
+            visible.as_ref().map(UiText::resolve).as_deref(),
             Some("Keep both passwords until synchronization finishes.")
         );
     }
@@ -4320,7 +4833,14 @@ mod tests {
         assert!(!startup.stopping);
         assert!(!startup.close_is_allowed());
         assert!(startup.requires_completed_stop);
-        assert!(startup.message.contains("Keep this window open"));
+        assert!(
+            startup
+                .localized_message
+                .as_ref()
+                .unwrap()
+                .resolve()
+                .contains("Keep this window open")
+        );
         startup.stopping = true;
         assert!(!startup.close_is_allowed());
         assert!(startup.finish_required_stop(Ok(())));
@@ -4334,6 +4854,85 @@ mod tests {
         let startup = super::StartupError::new("Incompatible Maple host or profile".into());
         assert!(startup.close_is_allowed());
         assert!(startup.retry_backend.is_none());
+    }
+
+    #[gpui::test]
+    fn completed_startup_stop_keeps_the_original_error_for_support(cx: &mut gpui::TestAppContext) {
+        let _locale = ui::i18n::TestLocalizationGuard::enable();
+        let original = "Maple's active native application delegate is FixtureDelegate, \
+                        not derived from the reviewed GPUIApplicationDelegate";
+        let startup = cx.new(|_| {
+            let mut startup = super::StartupError::new(original.into());
+            startup.requires_completed_stop = true;
+            startup.diagnostics.log_display = "~/fixture/logs/maple-agent.log".into();
+            startup
+        });
+        startup.update(cx, |startup, cx| {
+            assert!(startup.finish_required_stop(Ok(())));
+            assert_eq!(startup.message, original);
+            startup.copy_details(cx);
+            assert!(startup.details_copied);
+        });
+        let report = cx.read_from_clipboard().unwrap().text().unwrap();
+        let lines = report.lines().collect::<Vec<_>>();
+        assert_eq!(
+            lines[0],
+            format!(
+                "{} {} ({})",
+                crate::profile::DISPLAY_NAME,
+                env!("CARGO_PKG_VERSION"),
+                env!("MAPLE_GIT_SOURCE_SHA")
+                    .get(..12)
+                    .unwrap_or(env!("MAPLE_GIT_SOURCE_SHA"))
+            )
+        );
+        assert_eq!(lines[1], crate::system_info::os_description());
+        assert_eq!(lines[2], format!("Startup error: {original}"));
+        assert_eq!(
+            lines[3],
+            "Status: The Maple host has stopped. You can close Maple and try starting it again."
+        );
+        assert_eq!(lines[4], "Log file: ~/fixture/logs/maple-agent.log");
+        assert_eq!(lines.len(), 5);
+
+        // Support labels stay English; only the shown status follows the locale.
+        ui::i18n::apply_preference(Some("es"));
+        let spanish = startup.read_with(cx, |startup, _| startup.details_report());
+        assert!(spanish.contains(&format!("Startup error: {original}")));
+        assert!(!spanish.contains("The Maple host has stopped"));
+        ui::i18n::apply_preference(Some("en"));
+    }
+
+    #[test]
+    fn startup_error_without_a_status_reports_only_the_error() {
+        let mut startup = super::StartupError::new("Could not open the store".into());
+        startup.diagnostics.log_display = "~/logs/maple-agent.log".into();
+        let report = startup.details_report();
+        assert!(report.contains("\nStartup error: Could not open the store\n"));
+        assert!(!report.contains("Status:"));
+        assert!(report.ends_with("Log file: ~/logs/maple-agent.log\n"));
+    }
+
+    #[test]
+    fn startup_log_path_hides_the_home_folder() {
+        let separator = std::path::MAIN_SEPARATOR;
+        let home = std::path::PathBuf::from(format!("{separator}home{separator}person"));
+        let log = home.join("store-v1").join("logs").join("maple-agent.log");
+        let shown = super::home_relative_path(&log, Some(&home));
+        let prefix = if cfg!(windows) { "%USERPROFILE%" } else { "~" };
+        assert_eq!(
+            shown,
+            format!("{prefix}{separator}store-v1{separator}logs{separator}maple-agent.log")
+        );
+        let elsewhere = std::path::PathBuf::from(format!("{separator}srv{separator}maple.log"));
+        assert_eq!(
+            super::home_relative_path(&elsewhere, Some(&home)),
+            elsewhere.display().to_string()
+        );
+        assert_eq!(
+            super::home_relative_path(&log, None),
+            log.display().to_string()
+        );
     }
 
     use super::*;
@@ -4419,6 +5018,7 @@ mod tests {
                 remote_enabled: Arc::new(std::sync::atomic::AtomicBool::new(false)),
                 store_resident: Arc::new(std::sync::atomic::AtomicBool::new(true)),
                 store_load_epoch: 0,
+                store_state_event: 0,
                 store_ready: true,
                 store_id: None,
                 store_notice: None,
@@ -4453,6 +5053,8 @@ mod tests {
                 shortcuts,
                 titlebar: cx.new(|_| TitleBar::new(ui::titlebar::WINDOW_TITLE)),
                 plan_check: PlanCheck::default(),
+                native_locale: None,
+                native_messages: Default::default(),
             }
         })
     }
@@ -4738,6 +5340,8 @@ mod tests {
                 store_id: "fixture".into(),
                 notice_id: "change".into(),
                 message: "Encryption is on.".into(),
+                kind: None,
+                at_ms: None,
             });
             app.persistence_status.failure = Some(maple_agent::store::PersistenceFailure {
                 store_id: Some("fixture".into()),
@@ -4896,8 +5500,12 @@ mod tests {
     fn replacement_generation_retires_busy_settings_and_parked_account_state(
         cx: &mut gpui::TestAppContext,
     ) {
+        let _locale = ui::i18n::TestLocalizationGuard::enable();
+        ui::i18n::apply_preference(None);
+        let system_locale = ui::i18n::current_locale();
         let settings = crate::settings::SETTINGS_IO_LOCK.lock();
         let app = password_settings_shell_locked(cx, true, &settings);
+        ui::i18n::apply_preference(Some(if system_locale == "es" { "en" } else { "es" }));
         app.update(cx, |app, cx| {
             let epoch = app.store_load_epoch;
             let status = serde_json::from_value(serde_json::json!({"state":{"state":"locked"},"mode":"password","store_id":"replacement"})).unwrap();
@@ -4906,6 +5514,10 @@ mod tests {
             assert!(app.store_load_epoch > epoch);
             assert!(app.user_id.is_none());
             assert!(app.parked_chat.is_none());
+            assert_eq!(ui::i18n::current_locale(), system_locale);
+            // A replacement store can now hydrate its own saved preference.
+            ui::i18n::initialize_saved_preference(Some("es"));
+            assert_eq!(ui::i18n::current_locale(), "es");
             let replacement_epoch = app.store_load_epoch;
             app.apply_store_completion_notice(&status, cx);
             assert_eq!(app.store_load_epoch, replacement_epoch);
@@ -4923,6 +5535,8 @@ mod tests {
                 store_id: "original".into(),
                 notice_id: "old".into(),
                 message: "Old change".into(),
+                kind: None,
+                at_ms: None,
             };
             let newer = ModeChangeNotice {
                 notice_id: "newer".into(),
@@ -4948,6 +5562,7 @@ mod tests {
             message_count: 1,
             model: None,
             web_enabled: true,
+            permission_mode: Default::default(),
             state: maple_agent::agent::AgentTaskState::Active,
             acp: false,
         }
@@ -5222,6 +5837,13 @@ mod tests {
         assert!(view.debug_bounds("quit-maple-anyway").is_none());
         let keep = view.debug_bounds("keep-maple-open").unwrap();
         view.simulate_click(keep.center(), gpui::Modifiers::default());
+        view.run_until_parked();
+        assert!(
+            view.debug_bounds("keep-maple-open").is_none(),
+            "the tree empties a frame before the window goes"
+        );
+        assert_eq!(cx.windows().len(), 1);
+        view.update(|window, cx| window.simulate_next_frame(cx));
         view.run_until_parked();
         assert!(
             cx.windows().is_empty(),

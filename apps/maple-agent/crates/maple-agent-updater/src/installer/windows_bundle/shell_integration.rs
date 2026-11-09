@@ -76,6 +76,97 @@ fn programs() -> Result<PathBuf> {
     result
 }
 
+pub(super) struct InstalledLinks {
+    created: Vec<(PathBuf, Vec<u8>)>,
+    created_directory: bool,
+    directory: PathBuf,
+    committed: bool,
+}
+impl InstalledLinks {
+    pub(super) fn commit(&mut self) {
+        self.committed = true;
+    }
+}
+impl Drop for InstalledLinks {
+    fn drop(&mut self) {
+        if !self.committed {
+            for (path, bytes) in &self.created {
+                if read_bounded(path, MAX_LINK).is_ok_and(|current| current == *bytes) {
+                    let _ = std::fs::remove_file(path);
+                }
+            }
+            // Only an empty directory is removed; unknown user files survive.
+            if self.created_directory {
+                let _ = std::fs::remove_dir(&self.directory);
+            }
+        }
+    }
+}
+
+pub(super) fn install_links(
+    root: &Path,
+    profile: &str,
+    test_menu: Option<&Path>,
+) -> Result<InstalledLinks> {
+    let _apartment = Apartment::new()?;
+    let name = match profile {
+        "dev" => "Maple Work Dev",
+        "prod" => "Maple Work",
+        _ => return Err(unavailable()),
+    };
+    let directory = match test_menu {
+        Some(path) => path.to_owned(),
+        None => programs()?.join(name),
+    };
+    let created_directory = !directory.try_exists()?;
+    windows_fs::private_directory(&directory)?;
+    let _namespace = windows_fs::pin_directory(&directory)?;
+    let mut installed = InstalledLinks {
+        created: Vec::new(),
+        created_directory,
+        directory,
+        committed: false,
+    };
+    for (name, target) in [
+        (format!("{name}.lnk"), root.join("maple-agent.exe")),
+        ("Uninstall.lnk".into(), root.join("uninstall.exe")),
+    ] {
+        let path = installed.directory.join(name);
+        if path.try_exists()? {
+            let _pin = windows_fs::open_readonly(&path)?;
+            if !matching_target(&load_link(&path)?, &target)? {
+                return Err(unavailable());
+            }
+            continue;
+        }
+        let link: IShellLinkW =
+            native(unsafe { CoCreateInstance(&ShellLink, None, CLSCTX_INPROC_SERVER) })?;
+        native(unsafe { link.SetPath(&wide_path(&super::manual_install::shell_path(&target))?) })?;
+        native(unsafe {
+            link.SetWorkingDirectory(&wide_path(&super::manual_install::shell_path(root))?)
+        })?;
+        native(unsafe {
+            link.SetIconLocation(&wide_path(&super::manual_install::shell_path(&target))?, 0)
+        })?;
+        let temporary = tempfile::Builder::new()
+            .prefix(".maple-link-")
+            .suffix(".lnk")
+            .tempfile_in(&installed.directory)?
+            .into_temp_path();
+        let persist: IPersistFile = native(link.cast())?;
+        native(unsafe { persist.Save(&wide_path(&temporary)?, false) })?;
+        if !matching_target(&load_link(&temporary)?, &target)? {
+            return Err(unavailable());
+        }
+        drop(persist);
+        drop(link);
+        windows_fs::publish_new(&temporary, &path)?;
+        let bytes = read_bounded(&path, MAX_LINK)?;
+        installed.created.push((path, bytes));
+    }
+    Ok(installed)
+}
+
 fn notify(path: &Path) {
     if let Ok(path) = wide_path(path) {
         unsafe {

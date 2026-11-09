@@ -4,6 +4,7 @@
 //! the account from the payment provider, so this pane only re-reads the
 //! balance.
 
+use crate::ui::i18n::{UiText, tr, tr_args};
 use gpui::{Context, Div, Entity, Focusable, div, prelude::*};
 
 use super::billing::BillingTarget;
@@ -35,16 +36,17 @@ enum CreditChoice {
 }
 
 pub(super) struct CreditsState {
+    messages: crate::ui::i18n::MessageCache,
     balance: Option<i64>,
-    balance_error: Option<String>,
+    balance_error: Option<UiText>,
     choice: CreditChoice,
     pub(super) custom: Entity<TextInput>,
     /// Credits for the typed custom amount, parsed when the field changes.
     /// None while it is empty.
-    custom_credits: Option<Result<u64, String>>,
+    custom_credits: Option<Result<u64, crate::billing::CreditAmountError>>,
     /// The checkout being minted, if any.
     purchasing: Option<PaymentMethod>,
-    notice: Option<String>,
+    notice: Option<UiText>,
 }
 
 impl CreditsState {
@@ -55,9 +57,20 @@ impl CreditsState {
     ) -> Self {
         let custom = cx.new(move |cx| {
             TextInput::new(
-                &format!(
-                    "Amount in dollars, ${MIN_CREDIT_PURCHASE_DOLLARS} to ${}",
-                    format_count(MAX_CREDIT_PURCHASE_DOLLARS as i64)
+                &tr_args(
+                    "settings-credits-amount-placeholder",
+                    [
+                        (
+                            "min-credit-purchase-dollars",
+                            (MIN_CREDIT_PURCHASE_DOLLARS).to_string().into(),
+                        ),
+                        (
+                            "max-credit-purchase-dollars",
+                            (format_count(MAX_CREDIT_PURCHASE_DOLLARS as i64))
+                                .to_string()
+                                .into(),
+                        ),
+                    ],
                 ),
                 cx,
             )
@@ -74,6 +87,7 @@ impl CreditsState {
         })
         .detach();
         Self {
+            messages: Default::default(),
             balance: None,
             balance_error: None,
             choice: CreditChoice::Package(CREDIT_PACKAGES_DOLLARS[0]),
@@ -84,38 +98,85 @@ impl CreditsState {
         }
     }
 
-    fn selected_credits(&self) -> Result<u64, String> {
+    fn selected_credits(&self) -> Result<u64, UiText> {
         selected_credits(self.choice, &self.custom_credits)
     }
 
     /// Compact label for the API keys strip.
     pub(super) fn balance_label(&self) -> String {
-        balance_label(self.balance, self.balance_error.as_deref())
+        balance_label(self.balance, self.balance_error.is_some(), &self.messages)
     }
 }
 
-fn balance_label(balance: Option<i64>, balance_error: Option<&str>) -> String {
-    match (balance, balance_error) {
-        (Some(balance), _) => format!("{} credits", format_count(balance)),
-        (None, None) => "Loading balance…".to_string(),
-        (None, Some(_)) => "Balance unavailable".to_string(),
+fn balance_label(
+    balance: Option<i64>,
+    has_balance_error: bool,
+    messages: &crate::ui::i18n::MessageCache,
+) -> String {
+    match (balance, has_balance_error) {
+        (Some(balance), _) => messages
+            .get(
+                "settings-credits-balance",
+                [("credits", (format_count(balance)).to_string().into())],
+            )
+            .to_string(),
+        (None, false) => tr("settings-api-credits-loading-balance").to_string(),
+        (None, true) => tr("settings-api-credits-balance-unavailable").to_string(),
     }
 }
 
 /// Credits a choice buys, or why it cannot be bought.
 fn selected_credits(
     choice: CreditChoice,
-    custom_credits: &Option<Result<u64, String>>,
-) -> Result<u64, String> {
+    custom_credits: &Option<Result<u64, crate::billing::CreditAmountError>>,
+) -> Result<u64, UiText> {
     match choice {
         CreditChoice::Package(dollars) => Ok(dollars * CREDITS_PER_DOLLAR),
-        CreditChoice::Custom => custom_credits
-            .clone()
-            .unwrap_or_else(|| Err("Enter an amount".to_string())),
+        CreditChoice::Custom => (*custom_credits)
+            .map(|result| result.map_err(credit_error))
+            .unwrap_or_else(|| Err(UiText::key("settings-api-credits-enter-an-amount"))),
+    }
+}
+
+fn credit_error(error: crate::billing::CreditAmountError) -> UiText {
+    use crate::billing::CreditAmountError;
+    match error {
+        CreditAmountError::WholeDollarsRequired => UiText::key("settings-credits-whole-dollars"),
+        CreditAmountError::BelowMinimum => UiText::message(
+            "settings-credits-minimum",
+            [("amount", MIN_CREDIT_PURCHASE_DOLLARS.to_string().into())],
+        ),
+        CreditAmountError::AboveMaximum => UiText::message(
+            "settings-credits-maximum",
+            [(
+                "amount",
+                format_count(MAX_CREDIT_PURCHASE_DOLLARS as i64).into(),
+            )],
+        ),
     }
 }
 
 impl SettingsScreen {
+    pub(super) fn refresh_credit_placeholder(&self, cx: &mut Context<Self>) {
+        let label = tr_args(
+            "settings-credits-amount-placeholder",
+            [
+                (
+                    "min-credit-purchase-dollars",
+                    MIN_CREDIT_PURCHASE_DOLLARS.to_string().into(),
+                ),
+                (
+                    "max-credit-purchase-dollars",
+                    format_count(MAX_CREDIT_PURCHASE_DOLLARS as i64).into(),
+                ),
+            ],
+        );
+        self.billing
+            .credits
+            .custom
+            .update(cx, |input, cx| input.set_placeholder(&label, cx));
+    }
+
     /// Guests have no email for card checkout and pay with Bitcoin, as on
     /// the web. Unknown until the account loads, when card stays offered
     /// and the backend still refuses it for a guest.
@@ -129,8 +190,12 @@ impl SettingsScreen {
     pub(super) fn load_credit_balance(&self, cx: &mut Context<Self>) {
         let backend = self.backend.clone();
         let user_id = self.user_id.clone();
-        self.call(
-            async move { backend.api_credit_balance(&user_id).await },
+        self.call_presented(
+            async move {
+                backend
+                    .call_presented("api_credit_balance", (&user_id,))
+                    .await
+            },
             cx,
             |this, result, cx| {
                 let credits = &mut this.billing.credits;
@@ -139,7 +204,7 @@ impl SettingsScreen {
                         credits.balance = Some(balance);
                         credits.balance_error = None;
                     }
-                    Err(message) => credits.balance_error = Some(message),
+                    Err(message) => credits.balance_error = Some(message.into()),
                 }
                 cx.notify();
             },
@@ -224,22 +289,17 @@ impl SettingsScreen {
         cx.notify();
         let backend = self.backend.clone();
         let user_id = self.user_id.clone();
-        self.call(
-            async move { backend.purchase_api_credits(&user_id, method, amount).await },
+        self.call_presented(
+            async move { backend.call_presented::<()>("purchase_api_credits", (&user_id, method, amount)).await },
             cx,
             move |this, result, cx| {
                 this.billing.credits.purchasing = None;
                 this.billing.credits.notice = Some(match result {
                     Ok(()) => match method {
-                        PaymentMethod::Stripe => "Opened checkout in your browser. Refresh \
-                                                  after paying to see the new balance."
-                            .to_string(),
-                        PaymentMethod::Zaprite => "Opened Bitcoin checkout in your browser. \
-                                                   Credits arrive once the payment \
-                                                   confirms; refresh to see them."
-                            .to_string(),
+                        PaymentMethod::Stripe => UiText::key("settings-api-credits-opened-checkout-in-your-browser-refresh-after-paying-to-see-the-n"),
+                        PaymentMethod::Zaprite => UiText::key("settings-api-credits-opened-bitcoin-checkout-in-your-browser-credits-arrive-once-the-p"),
                     },
-                    Err(message) => message,
+                    Err(message) => message.into(),
                 });
                 cx.notify();
             },
@@ -254,7 +314,7 @@ impl SettingsScreen {
                 .flex()
                 .items_center()
                 .justify_between()
-                .child(section_title("API credits"))
+                .child(section_title(&tr("settings-api-credits-api-credits")))
                 .child(
                     self.application_target(
                         target(CreditsTarget::Refresh),
@@ -263,15 +323,22 @@ impl SettingsScreen {
                             .on_click(cx.listener(|this, _event, _window, cx| {
                                 this.refresh_credit_balance(cx);
                             }))
-                            .child("Refresh"),
+                            .child(tr("settings-api-credits-refresh")),
                     ),
                 ),
         );
 
         // A failed load keeps the last balance, if any, and says so below it.
         let balance = match (credits.balance, &credits.balance_error) {
-            (Some(balance), _) => Some(format!("{} credits", format_count(balance))),
-            (None, None) => Some("Loading balance…".to_string()),
+            (Some(balance), _) => Some(
+                self.messages
+                    .get(
+                        "settings-credits-balance",
+                        [("credits", (format_count(balance)).to_string().into())],
+                    )
+                    .to_string(),
+            ),
+            (None, None) => Some(tr("settings-api-credits-loading-balance").to_string()),
             (None, Some(_)) => None,
         };
         section = section.child(
@@ -283,7 +350,7 @@ impl SettingsScreen {
                     div()
                         .text_xs()
                         .text_color(gpui::rgb(theme::text_muted()))
-                        .child("Extra credit balance"),
+                        .child(tr("settings-api-credits-extra-credit-balance")),
                 )
                 .when_some(balance, |card, balance| {
                     card.child(
@@ -307,32 +374,40 @@ impl SettingsScreen {
                         .text_xs()
                         .text_color(gpui::rgb(theme::text_muted()))
                         .child(
-                            "$1 per 1,000 credits. Extends your plan when its included \
-                             usage runs out.",
+                            tr("settings-api-credits-1-per-1-000-credits-extends-your-plan-when-its-included-usage-run"),
                         ),
                 ),
         );
 
         let mut packages = div().flex().flex_wrap().gap_2();
         for dollars in CREDIT_PACKAGES_DOLLARS {
-            packages = packages.child(self.application_target(
-                target(CreditsTarget::Package(dollars)),
-                self.credit_choice_button(
-                    CreditChoice::Package(dollars),
-                    format!(
-                        "{} credits",
-                        format_count((dollars * CREDITS_PER_DOLLAR) as i64)
+            packages = packages.child(
+                self.application_target(
+                    target(CreditsTarget::Package(dollars)),
+                    self.credit_choice_button(
+                        CreditChoice::Package(dollars),
+                        self.messages
+                            .get(
+                                "settings-credits-balance",
+                                [(
+                                    "credits",
+                                    (format_count((dollars * CREDITS_PER_DOLLAR) as i64))
+                                        .to_string()
+                                        .into(),
+                                )],
+                            )
+                            .to_string(),
+                        format!("${dollars}"),
+                        cx,
                     ),
-                    format!("${dollars}"),
-                    cx,
                 ),
-            ));
+            );
         }
         packages = packages.child(self.application_target(
             target(CreditsTarget::Custom),
             self.credit_choice_button(
                 CreditChoice::Custom,
-                "Custom amount".to_string(),
+                tr("settings-api-credits-custom-amount").to_string(),
                 format!(
                     "${MIN_CREDIT_PURCHASE_DOLLARS} – ${}",
                     format_count(MAX_CREDIT_PURCHASE_DOLLARS as i64)
@@ -349,21 +424,28 @@ impl SettingsScreen {
                     .text_sm()
                     .font_weight(gpui::FontWeight::MEDIUM)
                     .text_color(gpui::rgb(theme::text_primary()))
-                    .child("Buy credits"),
+                    .child(tr("settings-api-credits-buy-credits")),
             )
             .child(packages);
         if credits.choice == CreditChoice::Custom {
             let hint = match &credits.custom_credits {
                 None => None,
                 Some(Ok(amount)) => Some((
-                    format!(
-                        "{} credits for ${}",
-                        format_count(*amount as i64),
-                        amount / CREDITS_PER_DOLLAR
-                    ),
+                    self.messages
+                        .get(
+                            "settings-credits-cost",
+                            [
+                                ("credits", (format_count(*amount as i64)).to_string().into()),
+                                ("dollars", (amount / CREDITS_PER_DOLLAR).to_string().into()),
+                            ],
+                        )
+                        .to_string(),
                     theme::text_secondary(),
                 )),
-                Some(Err(message)) => Some((message.clone(), theme::status_error())),
+                Some(Err(error)) => Some((
+                    credit_error(*error).resolve().to_string(),
+                    theme::status_error(),
+                )),
             };
             purchase = purchase.child(
                 div()
@@ -384,11 +466,16 @@ impl SettingsScreen {
         let guest = self.guest_account();
         let pay_button = |method: PaymentMethod, enabled: bool| {
             let (id, label) = match method {
-                PaymentMethod::Stripe => ("credits-pay-card", "Pay with card"),
-                PaymentMethod::Zaprite => ("credits-pay-bitcoin", "Pay with Bitcoin"),
+                PaymentMethod::Stripe => {
+                    ("credits-pay-card", tr("settings-api-credits-pay-with-card"))
+                }
+                PaymentMethod::Zaprite => (
+                    "credits-pay-bitcoin",
+                    tr("settings-api-credits-pay-with-bitcoin"),
+                ),
             };
             let label = if credits.purchasing == Some(method) {
-                "Opening checkout…"
+                tr("settings-api-credits-opening-checkout")
             } else {
                 label
             };
@@ -411,7 +498,7 @@ impl SettingsScreen {
         // Guests see card checkout disabled, as on the web.
         let card = pay_button(PaymentMethod::Stripe, ready && !guest).when(guest, |el| {
             el.tooltip(widgets::tooltip(
-                "Anonymous accounts pay with Bitcoin",
+                tr("settings-api-credits-anonymous-accounts-pay-with-bitcoin"),
                 None,
             ))
         });
@@ -441,9 +528,9 @@ impl SettingsScreen {
                     .text_xs()
                     .text_color(gpui::rgb(theme::text_muted()))
                     .child(if guest {
-                        "Checkout opens in your browser. Anonymous accounts pay with Bitcoin."
+                        tr("settings-api-credits-checkout-opens-in-your-browser-anonymous-accounts-pay-with-bitcoi")
                     } else {
-                        "Checkout opens in your browser."
+                        tr("settings-api-credits-checkout-opens-in-your-browser")
                     }),
             ),
         };
@@ -517,13 +604,28 @@ mod tests {
             selected_credits(CreditChoice::Custom, &Some(Ok(12_000))),
             Ok(12_000)
         );
-        assert!(selected_credits(CreditChoice::Custom, &Some(Err("no".into()))).is_err());
+        assert!(
+            selected_credits(
+                CreditChoice::Custom,
+                &Some(Err(crate::billing::CreditAmountError::AboveMaximum))
+            )
+            .is_err()
+        );
     }
 
     #[test]
     fn balance_label_covers_loaded_loading_and_error() {
-        assert_eq!(balance_label(Some(12_345), None), "12,345 credits");
-        assert_eq!(balance_label(None, None), "Loading balance…");
-        assert_eq!(balance_label(None, Some("no")), "Balance unavailable");
+        assert_eq!(
+            balance_label(Some(12_345), false, &Default::default()),
+            "12,345 credits"
+        );
+        assert_eq!(
+            balance_label(None, false, &Default::default()),
+            "Loading balance…"
+        );
+        assert_eq!(
+            balance_label(None, true, &Default::default()),
+            "Balance unavailable"
+        );
     }
 }

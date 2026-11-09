@@ -24,6 +24,7 @@ mod state_tests {
     fn summary_at(id: &str, title: &str, project_root: &str) -> AgentSessionSummary {
         AgentSessionSummary {
             web_enabled: true,
+            permission_mode: Default::default(),
             state: AgentTaskState::Active,
             acp: false,
             id: id.to_string(),
@@ -707,6 +708,7 @@ mod state_tests {
                 kind: "desktop".into(),
                 pinned_ms: None,
                 web_enabled: false,
+                permission_mode: None,
                 model: None,
                 message_count: 1,
                 created_ms: 0,
@@ -795,6 +797,7 @@ mod state_tests {
                 kind: "desktop".into(),
                 pinned_ms: None,
                 web_enabled: false,
+                permission_mode: None,
                 model: None,
                 message_count: 1,
                 created_ms: 0,
@@ -1079,6 +1082,7 @@ mod state_tests {
 
     fn item(id: &str, item_type: &str, text: Option<&str>) -> AgentTimelineItem {
         AgentTimelineItem {
+            label: None,
             persisted: None,
             live: None,
             truncated: None,
@@ -1107,6 +1111,75 @@ mod state_tests {
     /// another fixture installs its own host-backed settings cache.
     use crate::settings::SETTINGS_IO_LOCK as SETTINGS_LOCK;
 
+    #[gpui::test]
+    fn locale_switch_preserves_draft_task_filter_and_semantic_notice(cx: &mut TestAppContext) {
+        let _locale = crate::ui::i18n::TestLocalizationGuard::enable();
+        crate::ui::i18n::apply_preference(Some("en"));
+        let chat = screen(cx);
+        chat.update(cx, |chat, cx| {
+            chat.sessions = vec![summary("chosen", "User title: Configuración")];
+            chat.selected_session = Some("chosen".into());
+            chat.sync_sidebar(cx);
+            chat.sidebar.update(cx, |sidebar, cx| {
+                sidebar.set_project_filter(Some("/user/project".into()), cx);
+            });
+            let composer = cx.new(|cx| TextInput::new("", cx));
+            composer.update(cx, |input, cx| input.set_text("/comp", cx));
+            chat.composer = Some(composer);
+            chat.notice = Some(UiText::key("chat-compacted"));
+            let generation = chat.selection_generation;
+            for (locale, title, notice, description) in [
+                (
+                    "es",
+                    "Nueva tarea",
+                    "Conversación compactada",
+                    "Resume la conversación",
+                ),
+                (
+                    "en",
+                    "New Task",
+                    "Conversation compacted",
+                    "Summarize the conversation",
+                ),
+            ] {
+                crate::ui::i18n::apply_preference(Some(locale));
+                chat.refresh_locale(cx);
+                assert_eq!(chat.selected_title.as_ref(), title);
+                assert_eq!(chat.notice.as_ref().unwrap().resolve().as_ref(), notice);
+                assert_eq!(chat.composer.as_ref().unwrap().read(cx).text_ref(), "/comp");
+                assert_eq!(chat.selected_session.as_deref(), Some("chosen"));
+                assert_eq!(chat.selection_generation, generation);
+                assert_eq!(chat.sessions[0].title, "User title: Configuración");
+                assert_eq!(
+                    chat.sidebar.read(cx).project_filter(),
+                    Some("/user/project")
+                );
+                assert_eq!(chat.slash_entries[0].name, "compact");
+                assert!(chat.slash_entries[0].description.starts_with(description));
+            }
+            chat.replace_timeline(
+                (0..20)
+                    .map(|index| item(&format!("row-{index}"), "message", Some("User content")))
+                    .collect(),
+            );
+            chat.list_state.scroll_to(gpui::ListOffset {
+                item_ix: 7,
+                offset_in_item: px(13.),
+            });
+            let anchor = chat.list_state.logical_scroll_top();
+            for locale in ["es", "en"] {
+                crate::ui::i18n::apply_preference(Some(locale));
+                chat.refresh_locale(cx);
+                let after = chat.list_state.logical_scroll_top();
+                assert_eq!(after.item_ix, anchor.item_ix);
+                assert_eq!(after.offset_in_item, anchor.offset_in_item);
+                assert_eq!(chat.selected_title.as_ref(), "User title: Configuración");
+                assert_eq!(chat.timeline[7].text.as_deref(), Some("User content"));
+                assert_eq!(chat.composer.as_ref().unwrap().read(cx).text_ref(), "/comp");
+            }
+        });
+    }
+
     fn screen(cx: &mut TestAppContext) -> Entity<ChatScreen> {
         let _guard = SETTINGS_LOCK.lock();
         let backend = std::sync::Arc::new(
@@ -1117,7 +1190,7 @@ mod state_tests {
         // parking is allowed; the backend runtime and attachment worker run on tokio.
         cx.executor().allow_parking();
         let screen = cx.new(|cx| {
-            let mut screen = ChatScreen::new_inner(backend, "user".to_string(), cx);
+            let mut screen = ChatScreen::new_inner_for_test(backend, "user".to_string(), cx);
             screen.selected_session = Some("s1".to_string());
             screen
         });
@@ -1126,6 +1199,8 @@ mod state_tests {
         screen.update(cx, |this, cx| {
             this.sidebar
                 .update(cx, |sidebar, _| sidebar.reset_persisted_for_test());
+            this.permission_mode = Default::default();
+            this.new_task_permission_mode = Default::default();
         });
         screen
     }
@@ -1194,6 +1269,19 @@ mod state_tests {
         cx.update(|window, _| window.activate_window());
         cx.run_until_parked();
         (chat, cx)
+    }
+
+    /// The sidebar asks for its saved order as it is built, and the fixture's
+    /// backend refuses on a real thread. A late refusal raised a notice that
+    /// moved the layout under tests that had already measured it.
+    #[gpui::test]
+    fn fixture_leaves_no_saved_order_request_to_raise_a_late_notice(cx: &mut TestAppContext) {
+        let (chat, cx) = chat_window(cx, |_, _| {});
+        // The refusal takes about a millisecond; give a late one ample time.
+        std::thread::sleep(std::time::Duration::from_millis(50));
+        cx.run_until_parked();
+        let notice = chat.read_with(cx, |this, _| this.notice.clone());
+        assert!(notice.is_none(), "unexpected notice: {notice:?}");
     }
 
     fn todo_item(id: &str, todos: serde_json::Value) -> AgentTimelineItem {
@@ -1607,7 +1695,7 @@ mod state_tests {
         // parking is allowed; the backend runtime and attachment worker run on tokio.
         cx.executor().allow_parking();
         let screen = cx.new(|cx| {
-            ChatScreen::new_inner(
+            ChatScreen::new_inner_for_test(
                 std::sync::Arc::new(
                     crate::backend::AgentBackend::for_test(
                         "http://127.0.0.1:9".to_string(),
@@ -1742,6 +1830,7 @@ mod state_tests {
                 header: "Question".to_string(),
                 question: text.to_string(),
                 options: Vec::new(),
+                permission: None,
             }],
         }
     }
@@ -1920,6 +2009,94 @@ mod state_tests {
     }
 
     #[gpui::test]
+    fn reconnecting_shows_only_the_header_spinner(cx: &mut TestAppContext) {
+        let (screen, cx) = chat_window(cx, |this, _| {
+            this.booting = false;
+        });
+        assert_eq!(cx.debug_bounds("host-reconnecting"), None);
+        let title = cx.debug_bounds("header-title").unwrap();
+        screen.update(cx, |this, cx| {
+            assert_eq!(this.host_reconnect_status(), None);
+            this.handle_service_event(AgentServiceEvent::HostReconnecting, cx);
+            assert!(
+                this.host_reconnect_status()
+                    .unwrap()
+                    .contains("Reconnecting")
+            );
+            assert!(this.runtime_error.is_none());
+            // A call the drop cut off adds no row of its own.
+            this.notice = Some("The Maple host disconnected. Reconnect before retrying.".into());
+            assert!(this.render_notice(cx).is_none());
+            this.notice = Some(UiText::context(
+                "chat-answer-failed",
+                "message",
+                UiText::Raw("The Maple host disconnected. Reconnect before retrying.".into()),
+            ));
+            assert!(
+                this.render_notice(cx).is_some(),
+                "an interrupted action must remain visible"
+            );
+            this.notice = None;
+
+            this.notice = None;
+            cx.notify();
+        });
+        cx.run_until_parked();
+        let spinner = cx.debug_bounds("host-reconnecting").expect("the spinner");
+        let header = cx.debug_bounds("chat-header").unwrap();
+        // 14 px of icon in 4 px of hover room, the icon on the row's gutter.
+        assert_eq!(spinner.size.width, px(22.));
+        assert_eq!(
+            spinner.right(),
+            header.right() - px(8.),
+            "the row's far end"
+        );
+        assert_eq!(cx.debug_bounds("header-title"), Some(title));
+
+        // Hovering is how to find out what is going on, and the tooltip
+        // stays on screen although the spinner is at the window's edge.
+        cx.simulate_mouse_move(spinner.center(), None, gpui::Modifiers::default());
+        cx.executor()
+            .advance_clock(std::time::Duration::from_millis(600));
+        cx.run_until_parked();
+        let tooltip = cx.debug_bounds("tooltip").expect("the tooltip");
+        assert!(tooltip.right() <= px(1200.), "{tooltip:?}");
+        assert!(tooltip.left() >= px(0.), "{tooltip:?}");
+
+        screen.update(cx, |this, cx| {
+            // Refused actions stay quiet too, and lose nothing. The fixture's
+            // unreachable API can raise a notice of its own at any point, so
+            // start from none inside this update.
+            this.notice = None;
+            this.fill_empty_composer("send this after the reconnect", cx);
+            this.send_inner(cx);
+            this.select_session("another-task", cx);
+            assert_eq!(this.notice, None);
+            assert_eq!(this.selected_session.as_deref(), Some("s1"));
+            assert_eq!(
+                this.composer_text(cx).as_deref(),
+                Some("send this after the reconnect")
+            );
+
+            // The socket is back and history is reloading.
+            this.host_recovery.events = Some(Vec::new());
+            assert!(this.host_reconnect_status().unwrap().contains("Refreshing"));
+            this.host_recovery.events = None;
+
+            // Everything else still shows, and an outcome that needs the
+            // user stops the spinner rather than turning beside its banner.
+            this.notice = Some("Conversation compacted".into());
+            assert!(this.render_notice(cx).is_some());
+            this.runtime_error = Some("Could not reload host state".into());
+            assert_eq!(this.host_reconnect_status(), None);
+            this.runtime_error = None;
+            this.handle_service_event(AgentServiceEvent::HostDisconnected, cx);
+            assert_eq!(this.host_reconnect_status(), None);
+            assert!(this.runtime_error.is_some());
+        });
+    }
+
+    #[gpui::test]
     fn test_question_event_sets_pending_card(cx: &mut TestAppContext) {
         cx.executor().allow_parking();
         let screen = screen(cx);
@@ -1930,6 +2107,145 @@ mod state_tests {
             assert_eq!(question.questions.len(), 1);
             assert_eq!(question.questions[0].id, "color");
             assert!(this.pending_question_input.is_some());
+        });
+    }
+
+    fn permission_event(request_id: &str) -> AgentServiceEvent {
+        AgentServiceEvent::Question {
+            session_id: "s1".to_string(),
+            request_id: request_id.to_string(),
+            questions: vec![maple_agent::agent::AgentQuestion {
+                multi_select: false,
+                id: "permission".to_string(),
+                header: "Allow this action?".to_string(),
+                question: "This pushes.\n\ngit push".to_string(),
+                options: ["Allow once", "Deny"]
+                    .map(|label| maple_agent::agent::AgentQuestionOption {
+                        label: label.to_string(),
+                        description: String::new(),
+                    })
+                    .to_vec(),
+                permission: Some(maple_agent::agent::AgentPermissionPrompt {
+                    reason: maple_agent::agent::AgentPermissionReason::SendsOut,
+                    tool: "bash".to_string(),
+                    action: "git push".to_string(),
+                }),
+            }],
+        }
+    }
+
+    /// A click answers a permission card at once. Moving the keyboard
+    /// selection does not: walking past Allow must not allow anything.
+    #[gpui::test]
+    fn test_only_a_click_answers_a_permission_card(cx: &mut TestAppContext) {
+        cx.executor().allow_parking();
+        let screen = screen(cx);
+        screen.update(cx, |this, cx| {
+            this.selected_session = Some("s1".to_string());
+            this.handle_service_event(permission_event("p1"), cx);
+            this.focus_question_option(0, 0, cx);
+            this.focus_question_option(0, 1, cx);
+            assert_eq!(this.pending_questions.len(), 1, "moving answers nothing");
+            this.toggle_question_option(0, 0, cx);
+            assert!(
+                this.pending_questions.is_empty(),
+                "a click on an option answers the card"
+            );
+        });
+    }
+
+    /// A permission card and its notification are worded in the interface's
+    /// language, and the answer stays the runtime's label in any language.
+    #[gpui::test]
+    fn test_a_permission_card_and_its_notification_follow_the_language(_cx: &mut TestAppContext) {
+        let _locale = crate::ui::i18n::TestLocalizationGuard::enable();
+        let AgentServiceEvent::Question { questions, .. } = permission_event("p3") else {
+            unreachable!()
+        };
+        let entry = &questions[0];
+        let prompt = entry.permission.as_ref().unwrap();
+        for (locale, allow, deny, body) in [
+            (
+                "es",
+                "Permitir una vez",
+                "Rechazar",
+                "Esto envía o publica algo fuera de esta computadora.\ngit push",
+            ),
+            (
+                "en",
+                "Allow once",
+                "Deny",
+                "This sends or publishes something outside this computer.\ngit push",
+            ),
+        ] {
+            crate::ui::i18n::apply_preference(Some(locale));
+            assert_eq!(
+                crate::ui::chat::transcript::question_option_label(entry, 0).as_ref(),
+                allow
+            );
+            assert_eq!(
+                crate::ui::chat::transcript::question_option_label(entry, 1).as_ref(),
+                deny
+            );
+            assert_eq!(
+                crate::ui::chat::transcript::permission_notification_body(prompt),
+                body
+            );
+            assert_eq!(
+                entry.options[0].label, "Allow once",
+                "the answer never changes"
+            );
+        }
+    }
+
+    /// The answer stays the label the runtime gave, whatever language the
+    /// card shows it in.
+    #[gpui::test]
+    fn test_a_permission_answer_keeps_the_runtime_label(cx: &mut TestAppContext) {
+        cx.executor().allow_parking();
+        let screen = screen(cx);
+        screen.update(cx, |this, cx| {
+            this.selected_session = Some("s1".to_string());
+            this.handle_service_event(permission_event("p2"), cx);
+            this.select_question_option(0, 0, cx);
+            let answer = this.composed_question_answer(cx);
+            let parsed: serde_json::Value = serde_json::from_str(&answer).unwrap();
+            assert_eq!(parsed["answers"]["permission"]["answers"][0], "Allow once");
+        });
+    }
+
+    /// Clicking a new task's mode chip keeps the pick for the task and for
+    /// the next new task; a task's own chip changes only that task.
+    #[gpui::test]
+    fn test_a_new_task_starts_in_the_mode_last_picked_for_one(cx: &mut TestAppContext) {
+        use maple_agent::agent::AgentPermissionMode;
+        cx.executor().allow_parking();
+        let screen = screen(cx);
+        screen.update(cx, |this, cx| {
+            this.selected_session = None;
+            this.draft = true;
+            this.permission_mode = AgentPermissionMode::default();
+            this.new_task_permission_mode = AgentPermissionMode::default();
+            assert_eq!(this.permission_mode, AgentPermissionMode::Auto);
+
+            this.set_permission_mode(AgentPermissionMode::ReadOnly, cx);
+            assert_eq!(this.permission_mode, AgentPermissionMode::ReadOnly);
+            assert_eq!(this.new_task_permission_mode, AgentPermissionMode::ReadOnly);
+            let created = summary("new", "New");
+            assert_eq!(
+                this.new_session_changes(&created, &[]).mode,
+                Some(AgentPermissionMode::ReadOnly),
+                "the new task is told the chip's mode"
+            );
+
+            this.selected_session = Some("task".to_string());
+            this.set_permission_mode(AgentPermissionMode::FullAccess, cx);
+            assert_eq!(this.permission_mode, AgentPermissionMode::FullAccess);
+            assert_eq!(
+                this.new_task_permission_mode,
+                AgentPermissionMode::ReadOnly,
+                "an existing task's chip leaves the default alone"
+            );
         });
     }
 
@@ -1955,6 +2271,7 @@ mod state_tests {
                         description: "Second".to_string(),
                     },
                 ],
+                permission: None,
             }],
         };
         screen.update(cx, |this, cx| {
@@ -1987,6 +2304,7 @@ mod state_tests {
                             description: String::new(),
                         })
                         .collect(),
+                    permission: None,
                 }],
             };
             this.handle_service_event(question("first"), cx);
@@ -2025,6 +2343,7 @@ mod state_tests {
                         description: String::new(),
                     })
                     .collect(),
+                permission: None,
             };
             this.handle_service_event(
                 AgentServiceEvent::Question {
@@ -2154,6 +2473,7 @@ mod state_tests {
                                                     }
                                                 })
                                                 .collect(),
+                                                permission: None,
                                             }
                                         })
                                         .collect(),
@@ -2191,6 +2511,7 @@ mod state_tests {
                     label: "A".to_string(),
                     description: "First".to_string(),
                 }],
+                permission: None,
             }],
         };
         screen.update(cx, |this, cx| {
@@ -2223,6 +2544,7 @@ mod state_tests {
                     label: "A".to_string(),
                     description: "First".to_string(),
                 }],
+                permission: None,
             }],
         };
         screen.update(cx, |this, cx| {
@@ -2367,6 +2689,7 @@ mod state_tests {
                         label: "Yes".to_string(),
                         description: String::new(),
                     }],
+                    permission: None,
                 },
                 maple_agent::agent::AgentQuestion {
                     multi_select: false,
@@ -2377,6 +2700,7 @@ mod state_tests {
                         label: "No".to_string(),
                         description: String::new(),
                     }],
+                    permission: None,
                 },
             ],
         };
@@ -2410,6 +2734,7 @@ mod state_tests {
                 header: "Question".to_string(),
                 question: format!("Question {id}"),
                 options: Vec::new(),
+                permission: None,
             }],
         };
         screen.update(cx, |this, cx| {
@@ -2484,6 +2809,7 @@ mod state_tests {
                         header: "Question".to_string(),
                         question: "What should Maple do?".to_string(),
                         options: Vec::new(),
+                        permission: None,
                     }],
                 },
                 cx,
@@ -2537,11 +2863,12 @@ mod state_tests {
                     header: "Question".to_string(),
                     question: "Paused?".to_string(),
                     options: Vec::new(),
+                    permission: None,
                 }],
             }];
             this.send_text("a stray reply".to_string(), cx);
             assert_eq!(
-                this.notice.as_ref().map(SharedString::as_ref),
+                this.notice.as_ref().map(UiText::resolve).as_deref(),
                 Some("Answer the question above first")
             );
             assert!(this.question_focus_pending);
@@ -2671,7 +2998,7 @@ mod state_tests {
             }];
             assert!(this.try_command(Some("s1"), "/deploy staging", cx));
             assert_eq!(
-                this.notice.as_ref().map(SharedString::as_ref),
+                this.notice.as_ref().map(UiText::resolve).as_deref(),
                 Some("Loading skill…")
             );
         });
@@ -2991,7 +3318,7 @@ mod state_tests {
             this.booting = false;
             this.send_text("next".to_string(), cx);
             assert_ne!(
-                this.notice.as_ref().map(SharedString::as_ref),
+                this.notice.as_ref().map(UiText::resolve).as_deref(),
                 Some("Answer the question above first")
             );
         });
@@ -3010,6 +3337,7 @@ mod state_tests {
                 header: "Question".to_string(),
                 question: "From another task".to_string(),
                 options: Vec::new(),
+                permission: None,
             }],
         };
         screen.update(cx, |this, cx| {
@@ -3023,7 +3351,7 @@ mod state_tests {
             this.booting = false;
             this.send_text("still typing here".to_string(), cx);
             assert_ne!(
-                this.notice.as_ref().map(SharedString::as_ref),
+                this.notice.as_ref().map(UiText::resolve).as_deref(),
                 Some("Answer the question above first")
             );
             // Escape must not cancel the other session's run.
@@ -3073,7 +3401,7 @@ mod state_tests {
             this.select_project_root("relative".to_string(), cx);
             assert!(!this.root_selecting);
             assert_eq!(
-                this.notice.as_ref().map(SharedString::as_ref),
+                this.notice.as_ref().map(UiText::resolve).as_deref(),
                 Some("Enter an absolute directory path")
             );
         });
@@ -3537,6 +3865,7 @@ mod state_tests {
             assert_eq!(
                 this.new_session_changes(&created, &task_mcp),
                 NewSessionChanges {
+                    mode: None,
                     web: Some(false),
                     mcp: vec![
                         DraftMcpChange {
@@ -3602,7 +3931,7 @@ mod state_tests {
 
             this.fail_new_session_setup(
                 summary_at("created", "New Task", &absolute_fixture_root("work")),
-                "Could not change web access: boom".to_string(),
+                "Could not change web access: boom".into(),
                 generation,
                 cx,
             );
@@ -3613,7 +3942,7 @@ mod state_tests {
             assert!(!this.draft);
             assert!(!this.awaiting_first_token, "nothing was sent");
             assert_eq!(
-                this.notice.as_ref().map(SharedString::as_ref),
+                this.notice.as_ref().map(UiText::resolve).as_deref(),
                 Some("Could not change web access: boom")
             );
             assert_eq!(this.composer.clone().unwrap().read(cx).text(), "hello");
@@ -3621,6 +3950,92 @@ mod state_tests {
                 this.sessions.iter().any(|session| session.id == "created"),
                 "the task stays in the list"
             );
+        });
+    }
+
+    /// A paired computer released before remote mode changes refuses them.
+    /// Changing an open task's chip puts it back. A new task opens in the
+    /// mode that computer gave it, with the text kept and nothing sent, so
+    /// it never runs in a mode the user did not see. Both say why in the
+    /// interface's language.
+    #[gpui::test]
+    fn test_an_older_paired_computer_refuses_a_mode_change_in_the_interface_language(
+        cx: &mut TestAppContext,
+    ) {
+        use maple_agent::agent::AgentPermissionMode;
+        let _locale = crate::ui::i18n::TestLocalizationGuard::enable();
+        let root = absolute_fixture_root("work");
+        let (chat, cx) = chat_window(cx, |this, _| {
+            this.project_root = Some(root.clone());
+        });
+        let refusal = || {
+            crate::ui::task::Failure::Host(crate::backend::HostFailure::new(
+                "remote-permissions-unsupported",
+                "Update Maple on the remote computer to change permissions from here.",
+            ))
+        };
+        let reads = |notice: Option<&UiText>| {
+            [
+                (
+                    "en",
+                    "Could not change the mode: Update Maple on the remote computer first.",
+                ),
+                (
+                    "es",
+                    "No se pudo cambiar el modo: Primero actualiza Maple en la computadora remota.",
+                ),
+            ]
+            .into_iter()
+            .all(|(locale, text)| {
+                crate::ui::i18n::apply_preference(Some(locale));
+                notice.map(UiText::resolve).as_deref() == Some(text)
+            })
+        };
+        chat.update(cx, |this, cx| {
+            this.selected_session = Some("s1".into());
+            this.permission_mode = AgentPermissionMode::Auto;
+            this.finish_permission_mode_change(
+                "s1",
+                AgentPermissionMode::ReadOnly,
+                Err(refusal()),
+                cx,
+            );
+            assert_eq!(
+                this.permission_mode,
+                AgentPermissionMode::ReadOnly,
+                "the chip goes back"
+            );
+            assert!(reads(this.notice.as_ref()));
+            crate::ui::i18n::apply_preference(Some("en"));
+
+            this.notice = None;
+            this.selected_session = None;
+            this.new_session(cx);
+            this.permission_mode = AgentPermissionMode::ReadOnly;
+            this.session_setup_pending = true;
+            this.pending_first_send = Some(FirstSend::Message {
+                text: "hello".to_string(),
+                steer: false,
+            });
+            let generation = this.selection_generation;
+            let mut created = summary_at("created", "New Task", &root);
+            created.permission_mode = AgentPermissionMode::FullAccess;
+            let failure = refusal().with_context(
+                "chat-mode-change-error",
+                vec![],
+                Some("Could not change the mode: update the remote computer".into()),
+            );
+            this.fail_new_session_setup(created, failure.into(), generation, cx);
+            assert!(!this.awaiting_first_token, "nothing was sent");
+            assert_eq!(this.selected_session.as_deref(), Some("created"));
+            assert_eq!(
+                this.permission_mode,
+                AgentPermissionMode::FullAccess,
+                "the chip shows the mode the computer gave the task"
+            );
+            assert_eq!(this.composer.clone().unwrap().read(cx).text(), "hello");
+            assert!(reads(this.notice.as_ref()));
+            crate::ui::i18n::apply_preference(Some("en"));
         });
     }
 
@@ -3677,7 +4092,7 @@ mod state_tests {
             );
 
             // The create fails: the text stays, and the history has it.
-            this.fail_new_session("no runtime".to_string(), cx);
+            this.fail_new_session("no runtime".into(), cx);
             assert_eq!(this.composer_text(cx).as_deref(), Some("hello"));
             assert!(this.prompt_history.contains(&"hello".to_string()));
             assert!(this.draft);
@@ -3730,7 +4145,7 @@ mod state_tests {
             assert!(
                 this.notice
                     .as_ref()
-                    .is_some_and(|notice| notice.contains("back in the composer")),
+                    .is_some_and(|notice| notice.resolve().contains("back in the composer")),
                 "{:?}",
                 this.notice
             );
@@ -3749,7 +4164,7 @@ mod state_tests {
             assert!(
                 this.notice
                     .as_ref()
-                    .is_some_and(|notice| notice.contains("Press Up")),
+                    .is_some_and(|notice| notice.resolve().contains("Press Up")),
                 "{:?}",
                 this.notice
             );
@@ -3878,7 +4293,7 @@ mod state_tests {
             let generation = this.selection_generation;
             this.finish_new_session(summary_at("created", "New Task", &root), generation, cx);
             assert_eq!(
-                this.notice.as_ref().map(SharedString::as_ref),
+                this.notice.as_ref().map(UiText::resolve).as_deref(),
                 Some("Loading skill…")
             );
             assert!(!this.awaiting_first_token, "no plain message went out");
@@ -3919,7 +4334,7 @@ mod state_tests {
             assert!(
                 this.notice
                     .as_ref()
-                    .is_some_and(|notice| notice.starts_with("Message not sent")),
+                    .is_some_and(|notice| notice.resolve().starts_with("Message not sent")),
                 "{:?}",
                 this.notice
             );
@@ -3959,7 +4374,7 @@ mod state_tests {
             assert!(!this.root_selecting, "the switch did not start");
             assert_eq!(this.project_root.as_deref(), Some("/work/alpha"));
             assert_eq!(
-                this.notice.as_ref().map(SharedString::as_ref),
+                this.notice.as_ref().map(UiText::resolve).as_deref(),
                 Some("Wait for the new task to be created, then switch projects")
             );
 
@@ -3982,13 +4397,13 @@ mod state_tests {
             this.send_text("hello".to_string(), cx);
             assert!(this.session_setup_pending);
 
-            this.fail_new_session("no runtime".to_string(), cx);
+            this.fail_new_session("no runtime".into(), cx);
 
             assert!(!this.session_setup_pending);
             assert!(this.pending_first_send.is_none());
             assert_eq!(this.selected_session, None);
             assert_eq!(
-                this.notice.as_ref().map(SharedString::as_ref),
+                this.notice.as_ref().map(UiText::resolve).as_deref(),
                 Some("no runtime")
             );
         });
@@ -4017,7 +4432,7 @@ mod state_tests {
                 this.pending_first_send,
                 Some(FirstSend::SideQuestion("what is this".to_string()))
             );
-            this.fail_new_session("no runtime".to_string(), cx);
+            this.fail_new_session("no runtime".into(), cx);
 
             this.slash_commands = vec![AgentSlashCommand {
                 name: "deploy".to_string(),
@@ -4030,7 +4445,7 @@ mod state_tests {
                 Some(FirstSend::Command("/deploy staging".to_string()))
             );
             // Unknown commands still fall through to a normal send.
-            this.fail_new_session("no runtime".to_string(), cx);
+            this.fail_new_session("no runtime".into(), cx);
             assert!(!this.try_command(None, "/definitely-not-a-command", cx));
         });
     }
@@ -5119,7 +5534,7 @@ mod state_tests {
         cx.executor().allow_parking();
         let backend = Arc::new(AgentBackend::for_remote_test("peer").unwrap());
         cx.new(|cx| {
-            let mut screen = ChatScreen::new_inner(backend, "user".into(), cx);
+            let mut screen = ChatScreen::new_inner_for_test(backend, "user".into(), cx);
             screen.selected_session = Some("s1".into());
             screen
         })
@@ -6207,7 +6622,10 @@ mod state_tests {
                 .update(cx, |sidebar, cx| sidebar.set_archived_expanded(true, cx));
             let sidebar = this.sidebar.read(cx);
 
-            assert_eq!(sidebar.row_step_label_for_test("s1"), Some("Settle"));
+            assert_eq!(
+                sidebar.row_step_label_for_test("s1").as_deref(),
+                Some("Settle")
+            );
             assert_eq!(
                 sidebar.task_menu_labels_for_test("s1"),
                 vec![
@@ -6219,13 +6637,19 @@ mod state_tests {
                 ]
             );
 
-            assert_eq!(sidebar.row_step_label_for_test("s2"), Some("Archive"));
+            assert_eq!(
+                sidebar.row_step_label_for_test("s2").as_deref(),
+                Some("Archive")
+            );
             assert_eq!(
                 sidebar.task_menu_labels_for_test("s2"),
                 vec!["Rename task", "Reopen task", "Archive task", "Delete task"]
             );
 
-            assert_eq!(sidebar.row_step_label_for_test("s3"), Some("Delete"));
+            assert_eq!(
+                sidebar.row_step_label_for_test("s3").as_deref(),
+                Some("Delete")
+            );
             assert_eq!(
                 sidebar.task_menu_labels_for_test("s3"),
                 vec!["Rename task", "Reopen task", "Delete task"]
@@ -6415,7 +6839,10 @@ mod state_tests {
                 .update(cx, |sidebar, cx| sidebar.toggle_task_pin("s1", cx));
             assert_eq!(this.sidebar_pinned(cx), vec![0]);
             assert_eq!(
-                this.sidebar.read(cx).row_step_label_for_test("s1"),
+                this.sidebar
+                    .read(cx)
+                    .row_step_label_for_test("s1")
+                    .as_deref(),
                 Some("Settle")
             );
 
@@ -6430,7 +6857,10 @@ mod state_tests {
             assert_eq!(this.sidebar_settled(cx), vec![0]);
             assert_eq!(this.sidebar_active(cx), vec![1]);
             assert_eq!(
-                this.sidebar.read(cx).row_step_label_for_test("s1"),
+                this.sidebar
+                    .read(cx)
+                    .row_step_label_for_test("s1")
+                    .as_deref(),
                 Some("Archive")
             );
 
@@ -6490,6 +6920,39 @@ mod state_tests {
             // Removing a task the list no longer has is a no-op.
             this.remove_session("s1", cx);
             assert_eq!(this.sessions.len(), 1);
+        });
+    }
+
+    /// The clicked row lights up at once, before its snapshot lands, and gives
+    /// the highlight back if that open fails or is superseded.
+    #[gpui::test]
+    fn test_opening_a_task_moves_the_sidebar_highlight_at_once(cx: &mut TestAppContext) {
+        cx.executor().allow_parking();
+        let screen = screen(cx);
+        screen.update(cx, |this, cx| {
+            this.sessions = vec![summary("s1", "One"), summary("s2", "Two")];
+            this.selected_session = Some("s1".to_string());
+            this.sync_sidebar(cx);
+            let highlighted = |this: &ChatScreen, cx: &gpui::App| {
+                this.sidebar.read(cx).selected_for_test().map(str::to_owned)
+            };
+            assert_eq!(highlighted(this, cx).as_deref(), Some("s1"));
+
+            this.select_session("s2", cx);
+            assert_eq!(this.selected_session.as_deref(), Some("s1"));
+            assert_eq!(highlighted(this, cx).as_deref(), Some("s2"));
+            // An unrelated sidebar update while it opens keeps the highlight.
+            this.sync_sidebar(cx);
+            assert_eq!(highlighted(this, cx).as_deref(), Some("s2"));
+
+            this.begin_navigation();
+            this.sync_sidebar(cx);
+            assert_eq!(highlighted(this, cx).as_deref(), Some("s1"));
+
+            this.select_session("s2", cx);
+            this.finish_loading("s2");
+            this.sync_sidebar_selection(cx);
+            assert_eq!(highlighted(this, cx).as_deref(), Some("s1"));
         });
     }
 
@@ -6679,6 +7142,15 @@ mod state_tests {
         press(cx, "sort-manual");
         assert_eq!(view(cx).sort, SidebarSort::Manual);
         closed(cx);
+        // Manual sort saves its order to this fixture's dead backend. Let the
+        // refusal land here, not while a later menu is open.
+        wait_until(&chat, cx, "refused order save", |this| {
+            this.notice.is_some()
+        });
+        chat.update(cx, |this, cx| {
+            this.notice = None;
+            cx.notify();
+        });
         for (selector, group) in [
             ("group-project", SidebarGroup::Project),
             ("group-status", SidebarGroup::Status),
@@ -7867,6 +8339,8 @@ mod state_tests {
         for plan in [
             None,
             Some(crate::billing::PlanUsage {
+                product_name: None,
+                reset_at: None,
                 plan_label: "Pro".into(),
                 percent_used: 42,
                 resets_label: "tomorrow".into(),
@@ -8384,6 +8858,54 @@ mod state_tests {
         });
     }
 
+    /// A frame that reuses a cached view leaves its nodes out of the tree
+    /// update, so an accessibility client must see the view render every
+    /// frame. `Window::is_a11y_active` stays false on the test platform, so
+    /// both branches are chosen here directly.
+    #[gpui::test]
+    fn cached_views_render_every_frame_for_accessibility(cx: &mut TestAppContext) {
+        use std::{cell::Cell, rc::Rc};
+
+        struct Counted(Rc<Cell<usize>>);
+        impl Render for Counted {
+            fn render(&mut self, _: &mut Window, _: &mut Context<Self>) -> impl IntoElement {
+                self.0.set(self.0.get() + 1);
+                div().size_full()
+            }
+        }
+        struct Host {
+            view: Entity<Counted>,
+            a11y_active: bool,
+        }
+        impl Render for Host {
+            fn render(&mut self, _: &mut Window, _: &mut Context<Self>) -> impl IntoElement {
+                div().size_full().child(crate::ui::chat::embed_cached_view(
+                    self.view.clone(),
+                    gpui::StyleRefinement::default().size_full(),
+                    self.a11y_active,
+                ))
+            }
+        }
+
+        for (a11y_active, extra_renders) in [(false, 0), (true, 2)] {
+            let renders = Rc::new(Cell::new(0));
+            let view = cx.new(|_| Counted(renders.clone()));
+            let (host, window) = cx.add_window_view(|_, _| Host { view, a11y_active });
+            window.run_until_parked();
+            let first_frame = renders.get();
+            assert!(first_frame > 0);
+            for _ in 0..2 {
+                host.update(window, |_, cx| cx.notify());
+                window.run_until_parked();
+            }
+            assert_eq!(
+                renders.get(),
+                first_frame + extra_renders,
+                "a11y_active = {a11y_active}"
+            );
+        }
+    }
+
     /// The native accessibility builder rejects two focused nodes in one
     /// frame. A cached modal must acquire focus before the background starts
     /// prepainting, not later when its cached subtree first renders.
@@ -8772,21 +9294,20 @@ mod state_tests {
                     path: "/shared".into(),
                 };
                 let labels = sidebar.project_menu_labels_for_test(&target);
-                assert_eq!(labels.first(), Some(&"Rename project"));
-                assert!(
-                    labels
-                        .iter()
-                        .all(|label| matches!(*label, "Rename project" | "Move up" | "Move down"))
-                );
+                assert_eq!(labels.first().map(String::as_str), Some("Rename project"));
+                assert!(labels.iter().all(|label| matches!(
+                    label.as_str(),
+                    "Rename project" | "Move up" | "Move down"
+                )));
             }
             let local = ProjectTarget {
                 computer: None,
                 path: "/shared".into(),
             };
             let own_menu = sidebar.project_menu_labels_for_test(&local);
-            assert!(own_menu.contains(&"Rename project"));
-            assert!(own_menu.contains(&"Open folder"));
-            assert!(own_menu.contains(&"Remove project"));
+            assert!(own_menu.contains(&"Rename project".to_string()));
+            assert!(own_menu.contains(&"Open folder".to_string()));
+            assert!(own_menu.contains(&"Remove project".to_string()));
         });
         cx.update(|window, _| window.refresh());
         cx.run_until_parked();
@@ -8985,7 +9506,7 @@ mod state_tests {
                 .iter()
                 .any(|event| matches!(event, SidebarEvent::Navigate(_) | SidebarEvent::Select(_)))
         );
-        assert!(events.iter().any(|event| matches!(event, SidebarEvent::Notice(message) if message.as_ref() == "East is unavailable")));
+        assert!(events.iter().any(|event| matches!(event, SidebarEvent::Notice(message) if message.resolve().as_ref() == "East is unavailable")));
     }
 
     /// A task's rename ends when its field loses focus or the pointer
@@ -9419,8 +9940,8 @@ mod state_tests {
         });
         wait_until(&chat, cx, "invalid rename rejected", |this| {
             this.notice
-                .as_deref()
-                .is_some_and(|notice| notice.contains("128"))
+                .as_ref()
+                .is_some_and(|notice| notice.resolve().contains("128"))
         });
         chat.update(cx, |this, cx| {
             assert!(!this.sidebar.read(cx).project_rename_pending(&root));
@@ -10230,8 +10751,8 @@ mod state_tests {
             assert!(this.draft_attachments.is_empty());
             assert!(
                 this.notice
-                    .as_deref()
-                    .is_some_and(|notice| notice.contains("not a PNG, JPEG, or WebP"))
+                    .as_ref()
+                    .is_some_and(|notice| notice.resolve().contains("not a PNG, JPEG, or WebP"))
             );
         });
     }
@@ -10248,8 +10769,8 @@ mod state_tests {
             assert_eq!(this.draft_attachments.len(), MAX_DRAFT_ATTACHMENTS);
             assert!(
                 this.notice
-                    .as_deref()
-                    .is_some_and(|notice| notice.contains("at most"))
+                    .as_ref()
+                    .is_some_and(|notice| notice.resolve().contains("at most"))
             );
         });
     }
@@ -10286,7 +10807,7 @@ mod state_tests {
                 )
                 .expect("backend"),
             );
-            let mut this = ChatScreen::new_inner(backend, "user".to_string(), cx);
+            let mut this = ChatScreen::new_inner_for_test(backend, "user".to_string(), cx);
             this.selected_session = Some("s1".to_string());
             this.sessions = (0..200)
                 .map(|n| summary(&format!("s{n}"), &format!("Task {n}")))
@@ -10614,6 +11135,7 @@ mod state_tests {
                     header: "Question".to_string(),
                     question: "Which one?".to_string(),
                     options: Vec::new(),
+                    permission: None,
                 }],
             }];
         });
@@ -10684,7 +11206,7 @@ mod state_tests {
                 )
                 .expect("backend"),
             );
-            let mut this = ChatScreen::new_inner(backend, "user".to_string(), cx);
+            let mut this = ChatScreen::new_inner_for_test(backend, "user".to_string(), cx);
             this.selected_session = Some("s1".to_string());
             this.application_vim_enabled = application_vim_enabled;
             this.application_focus = application_vim_enabled.then(|| cx.focus_handle());
@@ -10925,7 +11447,7 @@ mod state_tests {
                 .expect("backend"),
             );
             crate::desktop::register_key_bindings(cx);
-            let mut chat = ChatScreen::new_inner(backend, "user".to_string(), cx);
+            let mut chat = ChatScreen::new_inner_for_test(backend, "user".to_string(), cx);
             chat.selected_session = Some("s1".to_string());
             chat.application_vim_enabled = true;
             chat.application_focus = Some(cx.focus_handle());
@@ -11236,12 +11758,12 @@ mod state_tests {
 
         // A counted `l` walks right; Enter presses the web toggle.
         let web = cx.update(|_window, app| chat.read(app).web_enabled);
-        cx.simulate_keystrokes("3 l");
+        cx.simulate_keystrokes("4 l");
         assert_eq!(row(cx).1, Some(ComposerControl::Web));
         cx.simulate_keystrokes("enter");
         assert_eq!(cx.update(|_window, app| chat.read(app).web_enabled), !web);
         cx.simulate_keystrokes("h");
-        assert_eq!(row(cx).1, Some(ComposerControl::Integrations));
+        assert_eq!(row(cx).1, Some(ComposerControl::Mode));
 
         // Enter opens a menu on the current choice; closing it returns to
         // the row on the same control.
@@ -11627,18 +12149,9 @@ mod state_tests {
 
         let card = cx.debug_bounds("tool-card").expect("the tool card renders");
         assert!(
-            cx.debug_bounds("shell-execution-status").is_some(),
-            "shell status remains visible on a collapsed card"
+            cx.debug_bounds("shell-execution-status").is_none(),
+            "a running shell card keeps a fixed height while progress arrives"
         );
-        chat.read_with(cx, |chat, _| {
-            let status =
-                super::super::transcript::shell_execution_status(&chat.timeline[0]).unwrap();
-            assert!(status.contains("/fixture/worktree"));
-            assert!(status.contains("Running 65s"));
-            assert!(status.contains("no output for 60s"));
-            assert!(status.contains("deadline 120s"));
-            assert!(status.contains("Stop cancels command"));
-        });
         let tool_title = cx
             .debug_bounds("tool-title")
             .expect("the tool card title renders");
@@ -11769,6 +12282,196 @@ mod state_tests {
     }
 
     #[gpui::test]
+    fn local_error_text_switches_locale_without_mutating_raw_rows_or_receipts(
+        cx: &mut TestAppContext,
+    ) {
+        use crate::host::receipts::Outcome;
+        use crate::ui::i18n::{TestLocalizationGuard, apply_preference};
+        let _locale = TestLocalizationGuard::enable();
+        let chat = screen(cx);
+        chat.update(cx, |chat, cx| {
+            chat.selected_session = Some("s1".into());
+            let composer = cx.new(|cx| TextInput::new("Message", cx));
+            composer.update(cx, |input, cx| input.set_text("newer draft", cx));
+            chat.composer = Some(composer);
+            chat.host_recovery.unavailable = true;
+            chat.finish_send(
+                "failure".into(),
+                UnresolvedSend {
+                    backend: chat.backend.clone(),
+                    outcome: None,
+                    session: "s1".into(),
+                    text: "original draft".into(),
+                    attachments: vec![],
+                    from_composer: true,
+                },
+                Err(crate::backend::HostFailure::new(
+                    "host-disconnected",
+                    "untouched host diagnostic",
+                )
+                .into()),
+                cx,
+            );
+            let item = chat.timeline.last().unwrap().clone();
+            let raw_row = serde_json::to_value(&item).unwrap();
+            let receipt = Some(Outcome::Finished(Err("untouched host diagnostic".into())));
+            for locale in ["en", "es", "en"] {
+                apply_preference(Some(locale));
+                chat.refresh_locale(cx);
+                let (title, body) =
+                    transcript::error_presentation(&item, &chat.local_error_text, &chat.messages);
+                assert_eq!(
+                    title.unwrap(),
+                    crate::ui::i18n::tr("chat-send-failed-heading")
+                );
+                assert_eq!(
+                    body.unwrap(),
+                    crate::ui::i18n::tr("runtime-error-host-disconnected")
+                );
+                assert_eq!(
+                    serde_json::to_value(chat.timeline.last().unwrap()).unwrap(),
+                    raw_row
+                );
+                assert_eq!(chat.unresolved_sends["failure"].outcome, receipt);
+                assert_eq!(chat.composer_text(cx).as_deref(), Some("newer draft"));
+            }
+            let mut replacement = item.clone();
+            replacement.text = Some("replacement raw content".into());
+            chat.apply_timeline_item("s1", replacement);
+            assert!(!chat.local_error_text.contains_key(&item.id));
+            assert_eq!(
+                transcript::error_presentation(
+                    &chat.timeline[0],
+                    &chat.local_error_text,
+                    &chat.messages
+                )
+                .1
+                .unwrap()
+                .as_ref(),
+                "replacement raw content"
+            );
+            chat.push_local_error("Send failed", "raw", UiText::key("chat-task-cancelled"), cx);
+            assert_eq!(chat.local_error_text.len(), 1);
+            for index in 0..2000 {
+                chat.timeline
+                    .push(user_item(&format!("evict-{index}"), "user content"));
+            }
+            chat.bound_transcript_window(true);
+            chat.rebuild_window(None);
+            assert!(
+                chat.local_error_text.is_empty(),
+                "eviction drops semantic state"
+            );
+            chat.push_local_error("Send failed", "raw", UiText::key("chat-task-cancelled"), cx);
+            assert_eq!(chat.local_error_text.len(), 1);
+            chat.set_active_session(
+                summary("other", "Another task"),
+                Vec::new(),
+                HashMap::new(),
+                cx,
+            );
+            assert!(
+                chat.local_error_text.is_empty(),
+                "task replacement drops semantic state"
+            );
+            assert_eq!(chat.unresolved_sends["failure"].outcome, receipt);
+        });
+    }
+
+    #[gpui::test]
+    fn typed_send_failures_preserve_receipt_authority_and_task_fences(cx: &mut TestAppContext) {
+        use crate::host::receipts::Outcome;
+        let chat = screen(cx);
+        chat.update(cx, |chat, cx| {
+            let composer = cx.new(|cx| TextInput::new("Message", cx));
+            chat.composer = Some(composer.clone());
+            chat.host_recovery.unavailable = true;
+            for selected in ["s1", "other"] {
+                for kind in 0..4 {
+                    chat.unresolved_sends.clear();
+                    chat.selected_session = Some(selected.into());
+                    chat.replace_timeline(Vec::new());
+                    chat.awaiting_first_token = true;
+                    composer.update(cx, |input, cx| input.set_text("newer draft", cx));
+                    let (failure, diagnostic) = match kind {
+                        0 => (
+                            UiFailure::from(crate::backend::HostFailure::new(
+                                "host-disconnected",
+                                "original host diagnostic",
+                            )),
+                            Some("original host diagnostic"),
+                        ),
+                        1 => (
+                            UiFailure::Local(
+                                "chat-upload-cancelled-unsent",
+                                "Upload cancelled. No message was sent.",
+                            ),
+                            Some("Upload cancelled. No message was sent."),
+                        ),
+                        2 => (UiFailure::Cancelled("chat-agent-task-cancelled"), None),
+                        _ => (
+                            UiFailure::Local(
+                                "chat-upload-preparing",
+                                "Attachment is still being prepared",
+                            )
+                            .with_context(
+                                "chat-upload-confirm-failed",
+                                vec![],
+                                None,
+                            ),
+                            None,
+                        ),
+                    };
+                    chat.finish_send(
+                        "typed-send".into(),
+                        UnresolvedSend {
+                            backend: chat.backend.clone(),
+                            outcome: None,
+                            session: "s1".into(),
+                            text: "original draft".into(),
+                            attachments: vec![],
+                            from_composer: true,
+                        },
+                        Err(failure),
+                        cx,
+                    );
+                    let send = &chat.unresolved_sends["typed-send"];
+                    assert_eq!(send.session, "s1");
+                    assert_eq!(send.text, "original draft");
+                    assert_eq!(
+                        send.outcome,
+                        diagnostic.map(|raw| Outcome::Finished(Err(raw.into())))
+                    );
+                    assert_eq!(send.awaiting_receipt(), diagnostic.is_none());
+                    assert_eq!(composer.read(cx).text_ref(), "newer draft");
+                    assert!(chat.active_runs.is_empty());
+                    if selected == "other" {
+                        assert!(
+                            chat.timeline.is_empty(),
+                            "failure must not enter the newly selected task"
+                        );
+                        assert!(chat.awaiting_first_token);
+                    } else {
+                        assert!(!chat.awaiting_first_token);
+                        assert_eq!(chat.timeline.len(), usize::from(diagnostic.is_some()));
+                    }
+                    if diagnostic.is_none() {
+                        assert_eq!(
+                            chat.notice.as_ref().unwrap(),
+                            &UiText::key("chat-send-uncertain")
+                        );
+                    } else {
+                        assert_eq!(
+                            chat.notice.as_ref().unwrap(),
+                            &UiText::key("chat-send-failed-retained")
+                        );
+                    }
+                }
+            }
+        });
+    }
+
+    #[gpui::test]
     fn receipt_completion_uncertainty_never_restores_or_replays_the_original_draft(
         cx: &mut TestAppContext,
     ) {
@@ -11791,7 +12494,7 @@ mod state_tests {
                     text: "already admitted original message".into(),
                     from_composer: true,
                     attachments: vec![DraftAttachment::for_test(50, "image.png", true)],
-                }, Err(format!("Send outcome unknown ({id}). Reload this task before sending again; it may already be running.")), cx);
+                }, Err(format!("Send outcome unknown ({id}). Reload this task before sending again; it may already be running.").into()), cx);
                 assert_eq!(composer.read(cx).text_ref(), draft);
                 assert!(chat.draft_attachments.is_empty());
                 assert_eq!(chat.unresolved_sends[&id].attachments.len(), 1);
@@ -11956,6 +12659,7 @@ mod state_tests {
                         chat.notice
                             .as_ref()
                             .unwrap()
+                            .resolve()
                             .contains("may have taken effect")
                     );
                 }
@@ -12425,8 +13129,9 @@ mod state_tests {
                     assert_eq!(this.timeline.len(), 1, "no invented history");
                     assert!(
                         this.notice
-                            .as_deref()
+                            .as_ref()
                             .unwrap()
+                            .resolve()
                             .starts_with("Skill not sent")
                     );
                 }
@@ -12649,7 +13354,8 @@ mod state_tests {
             // The isolated backend deliberately has no running agent. Wait
             // for that exact outcome rather than racing its fast callback.
             wait_until(&chat, cx, "first create rejection", |this| {
-                this.notice.as_deref() == Some("Agent runtime is not running")
+                this.notice.as_ref().map(UiText::resolve).as_deref()
+                    == Some("Agent runtime is not running")
             });
             chat.update(cx, |this, cx| {
                 assert!(this.pending_first_send.is_none());

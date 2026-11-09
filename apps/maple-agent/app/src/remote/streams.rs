@@ -31,6 +31,9 @@ const DISCOVERY_TIMEOUT: Duration = Duration::from_secs(5);
 const FOLDERS_UNCONFIRMED: &str =
     "Could not confirm folder browsing support. Try again, or update Maple on the remote computer.";
 const FOLDERS_UNSUPPORTED: &str = "Update Maple on the remote computer to browse or create folders. Existing projects and chats remain available.";
+const PERMISSIONS_UNCONFIRMED: &str = "Could not confirm that the remote computer can change permissions. Try again, or update Maple there.";
+const PERMISSIONS_UNSUPPORTED: &str =
+    "Update Maple on the remote computer to change permissions from here.";
 // Attachments may take longer than control traffic on a slow link, but cannot
 // retain an admitted stream indefinitely.
 const TRANSFER_TIMEOUT: Duration = Duration::from_secs(60);
@@ -130,6 +133,7 @@ impl Capacity {
 pub struct Client {
     connection: Connection,
     project_folders: OnceCell<bool>,
+    permission_modes: OnceCell<bool>,
     discovery_timeout: Duration,
 }
 
@@ -138,8 +142,33 @@ impl Client {
         Self {
             connection,
             project_folders: OnceCell::new(),
+            permission_modes: OnceCell::new(),
             discovery_timeout: DISCOVERY_TIMEOUT,
         }
+    }
+
+    /// Whether the host advertises an optional feature, or `None` when that
+    /// could not be read. Bound waiting for another caller's discovery as
+    /// well as this caller's probe. Failed probes leave the cell
+    /// uninitialized, so a temporary failure cannot disable the feature.
+    async fn supports(
+        &self,
+        cell: &OnceCell<bool>,
+        check: fn(&super::update::PeerInfo) -> bool,
+    ) -> Option<bool> {
+        tokio::time::timeout(
+            self.discovery_timeout,
+            cell.get_or_try_init(|| async {
+                peer_info(&self.connection)
+                    .await
+                    .map(|info| check(&info))
+                    .ok_or(())
+            }),
+        )
+        .await
+        .ok()?
+        .ok()
+        .copied()
     }
 
     pub(super) async fn upload(
@@ -155,32 +184,56 @@ impl Client {
     pub async fn call(
         &self,
         command: Command,
-        authorize_folders: impl std::future::Future<Output = Result<(), String>>,
+        authorize: impl std::future::Future<Output = Result<(), String>>,
     ) -> Result<Message, String> {
         if matches!(
             command.method,
             Method::BrowseProjectFolders | Method::CreateProjectFolder
         ) {
-            // Bound waiting for another caller's discovery as well as this
-            // caller's probe. Failed probes leave the cell uninitialized, so
-            // a temporary failure cannot permanently disable the picker.
-            let supported = tokio::time::timeout(
-                self.discovery_timeout,
-                self.project_folders.get_or_try_init(|| async {
-                    peer_info(&self.connection)
-                        .await
-                        .map(|info| info.supports_project_folders())
-                        .ok_or_else(|| FOLDERS_UNCONFIRMED.to_owned())
-                }),
-            )
-            .await
-            .map_err(|_| FOLDERS_UNCONFIRMED.to_owned())??;
-            if !supported {
-                return Err(FOLDERS_UNSUPPORTED.into());
+            match self
+                .supports(
+                    &self.project_folders,
+                    super::update::PeerInfo::supports_project_folders,
+                )
+                .await
+            {
+                None => return Err(FOLDERS_UNCONFIRMED.into()),
+                Some(false) => return Err(FOLDERS_UNSUPPORTED.into()),
+                Some(true) => {}
             }
             // Discovery may have waited on the network. Cached support is
             // never authority: recheck account and grant before dispatch.
-            authorize_folders.await?;
+            authorize.await?;
+        } else if command.method == Method::SetSessionPermissionMode {
+            // An older host would drop the stream of a method it does not
+            // know. Coded refusals let the viewer word them in its language.
+            let refusal = |code: &str, message: &str| Message::Response {
+                id: command.id,
+                result: Err(message.into()),
+                failure: Some(crate::backend::HostFailure::new(code, message)),
+            };
+            match self
+                .supports(
+                    &self.permission_modes,
+                    super::update::PeerInfo::supports_permission_modes,
+                )
+                .await
+            {
+                None => {
+                    return Ok(refusal(
+                        "remote-permissions-unconfirmed",
+                        PERMISSIONS_UNCONFIRMED,
+                    ));
+                }
+                Some(false) => {
+                    return Ok(refusal(
+                        "remote-permissions-unsupported",
+                        PERMISSIONS_UNSUPPORTED,
+                    ));
+                }
+                Some(true) => {}
+            }
+            authorize.await?;
         }
         call(&self.connection, command).await
     }
@@ -307,6 +360,7 @@ pub async fn reply_with_limit(
         Err(error) => match message {
             Message::Response { id, .. } => wire::encode(
                 &Message::Response {
+                    failure: None,
                     id: *id,
                     result: Err("Remote reply is too large to transfer".into()),
                 },
@@ -336,6 +390,7 @@ pub async fn call(connection: &Connection, command: Command) -> Result<Message, 
     // uncertain and must disconnect/query the receipt, never report not-sent.
     let Ok(body) = wire::encode(&command.params, body_limit(command.method)) else {
         return Ok(Message::Response {
+            failure: None,
             id,
             result: Err("Remote request is too large. Try a smaller message.".into()),
         });
@@ -431,3 +486,6 @@ pub(super) mod tests;
 
 #[cfg(test)]
 mod folder_tests;
+
+#[cfg(test)]
+mod permission_tests;

@@ -5,6 +5,7 @@
 
 use std::path::{Path, PathBuf};
 
+use crate::ui::i18n::{MessageCache, tr};
 use gpui::{Context, Div, SharedString, div, prelude::*};
 
 use super::{
@@ -45,34 +46,45 @@ impl AcpExample {
         }
     }
 
-    fn copy_label(self) -> &'static str {
+    fn copy_label(self) -> SharedString {
         match self {
-            Self::T3Code => "Copy executable path",
-            Self::Zed | Self::JetBrains | Self::Paseo => "Copy configuration",
+            Self::T3Code => tr("settings-acp-copy-path"),
+            Self::Zed | Self::JetBrains | Self::Paseo => tr("settings-acp-copy-config"),
         }
     }
 
-    fn steps(self, name: &str) -> [String; 3] {
+    fn steps(self, name: &str, messages: &MessageCache) -> [String; 3] {
         match self {
             Self::Zed => [
-                "Open Agent Settings, go to External Agents, click Add Agent and choose Add Custom Agent.".into(),
-                "In the file Zed opens, replace the example under agent_servers with the entry below.".into(),
-                format!("Start a new thread with {name}."),
+                tr("settings-acp-zed-open").to_string(),
+                tr("settings-acp-zed-config").to_string(),
+                messages
+                    .get("settings-acp-zed-start", [("name", name.to_owned().into())])
+                    .to_string(),
             ],
             Self::JetBrains => [
-                "In the AI Chat tool window, open the … menu and choose Add Custom Agent.".into(),
-                "Add the entry below under agent_servers in the file that opens.".into(),
-                format!("Select {name} in AI Chat."),
+                tr("settings-acp-jb-open").to_string(),
+                tr("settings-acp-jb-config").to_string(),
+                messages
+                    .get("settings-acp-jb-select", [("name", name.to_owned().into())])
+                    .to_string(),
             ],
             Self::Paseo => [
-                "Open ~/.paseo/config.json.".into(),
-                "Add the entry below under agents.providers.".into(),
-                format!("Run paseo reload, then start an agent with {name}."),
+                tr("settings-acp-paseo-open").to_string(),
+                tr("settings-acp-paseo-config").to_string(),
+                messages
+                    .get(
+                        "settings-acp-paseo-start",
+                        [("name", name.to_owned().into())],
+                    )
+                    .to_string(),
             ],
             Self::T3Code => [
-                "Open Settings → Providers → Add provider, then choose Show more and Local ACP command.".into(),
-                "Paste the path below as the executable and add acp as its only argument.".into(),
-                format!("Name it {name}, then select it in a new thread."),
+                tr("settings-acp-t3-open").to_string(),
+                tr("settings-acp-t3-config").to_string(),
+                messages
+                    .get("settings-acp-t3-start", [("name", name.to_owned().into())])
+                    .to_string(),
             ],
         }
     }
@@ -159,7 +171,7 @@ impl SettingsScreen {
     fn render_acp_snippet(
         &self,
         id: &'static str,
-        label: &'static str,
+        label: SharedString,
         text: SharedString,
         target: AcpTarget,
         tab_index: isize,
@@ -253,7 +265,7 @@ impl SettingsScreen {
                 div()
                     .id("acp-examples")
                     .role(gpui::Role::TabList)
-                    .aria_label("ACP examples")
+                    .aria_label(tr("settings-acp-examples"))
                     .flex()
                     .flex_wrap()
                     .gap_1()
@@ -270,7 +282,7 @@ impl SettingsScreen {
                     .text_color(gpui::rgb(theme::text_secondary()))
                     .children(
                         example
-                            .steps(crate::profile::DISPLAY_NAME)
+                            .steps(crate::profile::DISPLAY_NAME, &self.messages)
                             .into_iter()
                             .zip(1..)
                             .map(|(step, number)| format!("{number}. {step}")),
@@ -292,17 +304,20 @@ impl SettingsScreen {
             .flex()
             .flex_col()
             .gap_4()
-            .child(section_title("ACP"))
+            .child(section_title(&tr("settings-acp-title")))
             .child(
                 div()
                     .text_sm()
                     .text_color(gpui::rgb(theme::text_secondary()))
-                    .child("Apps that support the Agent Client Protocol can run Maple as their agent, from editors like Zed and JetBrains IDEs to agent harnesses like Paseo and T3 Code. They use this computer's sign-in, tasks and history, and start Maple themselves, so this window doesn't need to be open."),
+                    .child(tr("settings-acp-intro")),
             )
             .when(self.acp.temporary_location, |pane| {
-                pane.child(widgets::banner(theme::status_warning()).child(format!(
-                    "{name} is running from a temporary location. Move it to your Applications folder and reopen it before connecting an ACP client."
-                )))
+                pane.child(
+                    widgets::banner(theme::status_warning()).child(
+                        self.messages
+                            .get("settings-acp-temporary", [("name", name.into())]),
+                    ),
+                )
             })
             .child(
                 widgets::card_row()
@@ -310,19 +325,19 @@ impl SettingsScreen {
                     .flex_col()
                     .gap_3()
                     .child(setting_copy(
-                        "Command",
-                        "Point any ACP client at this command. It talks to the client over standard input and output.",
+                        tr("settings-acp-command"),
+                        tr("settings-acp-command-hint"),
                     ))
                     .child(self.render_acp_snippet(
                         "acp-copy-command",
-                        "Copy command",
+                        tr("settings-acp-copy-command"),
                         self.acp.command.clone(),
                         AcpTarget::Command,
                         COMMAND_TAB_INDEX,
                         cx,
                     )),
             )
-            .child(subsection_title("Examples"))
+            .child(subsection_title(&tr("settings-acp-examples-heading")))
             .child(self.render_acp_examples(cx))
             .child(
                 div()
@@ -331,10 +346,10 @@ impl SettingsScreen {
                     .gap_2()
                     .text_sm()
                     .text_color(gpui::rgb(theme::text_secondary()))
-                    .child("Maple works in the folder the client has open. The first time you use a folder, the client asks whether to trust it.")
-                    .child("As in this app, Maple runs tools without asking each time.")
-                    .child("Computer use and handing work to Codex or Claude Code only work in this app.")
-                    .child("If a client can't start Maple, open this app and check that you're signed in."),
+                    .child(tr("settings-acp-folder"))
+                    .child(tr("settings-acp-tools"))
+                    .child(tr("settings-acp-desktop-only"))
+                    .child(tr("settings-acp-troubleshoot")),
             )
     }
 }

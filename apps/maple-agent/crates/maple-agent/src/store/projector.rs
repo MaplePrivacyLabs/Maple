@@ -26,7 +26,7 @@ mod stored;
 use stored::StoredItem;
 
 /// Bump whenever the shared timeline builders or their merge rules change.
-pub(crate) const TIMELINE_FORMAT: i64 = 2;
+pub(crate) const TIMELINE_FORMAT: i64 = 4;
 const CHUNK_ENTRIES: usize = 1_000;
 const CHUNK_ROWS: usize = 1_000;
 const CHUNK_BYTES: usize = 1024 * 1024;
@@ -187,8 +187,9 @@ fn operations(
         EntryKind::Message {
             message: SessionMessage::Custom(custom),
         } if custom.display => {
-            vec![insert(timeline::notice_item(
+            vec![insert(timeline::labeled_notice_item(
                 format!("custom{}", custom.timestamp),
+                "notice",
                 "Agent notice",
                 &content_text(&custom.content),
                 custom.timestamp,
@@ -202,10 +203,10 @@ fn operations(
                 data.get("id").and_then(serde_json::Value::as_str),
                 data.get("text").and_then(serde_json::Value::as_str),
             ) {
-                (Some(id), Some(text)) => vec![insert(timeline::notice_item(
+                (Some(id), Some(text)) => vec![insert(timeline::stored_notice_item(
                     id.into(),
-                    "Agent notice",
                     text,
+                    data,
                     entry.timestamp,
                 ))],
                 _ => Vec::new(),
@@ -224,15 +225,17 @@ fn operations(
                 .into_iter()
                 .collect()
         }
-        EntryKind::Compaction { .. } => vec![insert(timeline::notice_item(
+        EntryKind::Compaction { .. } => vec![insert(timeline::labeled_notice_item(
             format!("compaction-{}", entry.id),
+            "compacted",
             "Context compacted",
             "Earlier messages were summarized to make room in the context.",
             entry.timestamp,
         ))],
         EntryKind::BranchSummary { summary, .. } if !summary.is_empty() => {
-            vec![insert(timeline::notice_item(
+            vec![insert(timeline::labeled_notice_item(
                 format!("branch-summary-{}", entry.id),
+                "branch-summary",
                 "Branch summary",
                 summary,
                 entry.timestamp,
@@ -574,6 +577,30 @@ fn schedule_rebuild(tx: &Transaction<'_>, task: TaskKey, current_epoch: i64) -> 
     Ok(epoch)
 }
 
+/// Join the pending epoch, or schedule the next one.
+fn rebuild_ticket(
+    tx: &Transaction<'_>,
+    account: AccountId,
+    uuid: &str,
+    task: TaskKey,
+) -> StoreResult<RebuildTicket> {
+    let (current, pending): (i64, Option<i64>) = tx.query_row(
+        "SELECT rows_epoch,rebuild_epoch FROM tasks WHERE id=?1",
+        [task.0],
+        |row| Ok((row.get(0)?, row.get(1)?)),
+    )?;
+    let epoch = match pending {
+        Some(epoch) => epoch,
+        None => schedule_rebuild(tx, task, current)?,
+    };
+    Ok(RebuildTicket {
+        task,
+        account,
+        uuid: uuid.to_owned(),
+        epoch,
+    })
+}
+
 struct BuiltRow {
     stored: StoredItem,
     origin: RowOrigin,
@@ -867,21 +894,31 @@ impl Store {
         self.write_idle(|tx| {
             tasks::writable_account(tx, account)?;
             let task = tasks::task_key_tx(tx, account, uuid)?;
-            let (current, pending): (i64, Option<i64>) = tx.query_row(
-                "SELECT rows_epoch,rebuild_epoch FROM tasks WHERE id=?1",
-                [task.0],
-                |row| Ok((row.get(0)?, row.get(1)?)),
+            rebuild_ticket(tx, account, uuid, task)
+        })
+    }
+
+    /// Background discovery reads `timeline_rebuild_queue` outside run
+    /// admission, so a foreground open can finish the rebuild before this
+    /// write. Only a task that still matches the queue gets a ticket: a new
+    /// epoch for a finished task would replace history a reader just loaded.
+    pub(crate) fn begin_queued_timeline_rebuild(
+        &self,
+        account: AccountId,
+        uuid: &str,
+    ) -> StoreResult<Option<RebuildTicket>> {
+        self.write_idle(|tx| {
+            tasks::writable_account(tx, account)?;
+            let task = tasks::task_key_tx(tx, account, uuid)?;
+            let queued: bool = tx.query_row(
+                "SELECT last_seq>0 AND (rebuild_epoch IS NOT NULL OR timeline_format<>?2) FROM tasks WHERE id=?1",
+                params![task.0, TIMELINE_FORMAT],
+                |row| row.get(0),
             )?;
-            let epoch = match pending {
-                Some(epoch) => epoch,
-                None => schedule_rebuild(tx, task, current)?,
-            };
-            Ok(RebuildTicket {
-                task,
-                account,
-                uuid: uuid.to_owned(),
-                epoch,
-            })
+            if !queued {
+                return Ok(None);
+            }
+            rebuild_ticket(tx, account, uuid, task).map(Some)
         })
     }
 

@@ -2,7 +2,8 @@
 
 use super::{
     compaction::context::{
-        CheckpointPayload, ContextItem, ContextItemKey, ContextItemKind, ContextSnapshot,
+        ActiveContext, CheckpointPayload, ContextItem, ContextItemKey, ContextItemKind,
+        ContextSnapshot,
     },
     compaction::telemetry,
     constants::{ROLE_ASSISTANT, ROLE_SYSTEM, ROLE_USER},
@@ -138,6 +139,7 @@ pub fn load_instruction_messages<D: DBConnection + ?Sized>(
 /// Covered rows are identity-only placeholders; they cannot be replayed without
 /// their validated checkpoint. The root appends not-yet-stored current input
 /// using its prepared UUID before planning.
+#[cfg(test)]
 #[allow(clippy::too_many_arguments)]
 pub fn snapshot_from_raw(
     instructions: Vec<Value>,
@@ -251,9 +253,11 @@ fn replay_reasoning(policy: ReasoningReplay, index: usize, current_position: usi
 /// Select only ciphertext that can appear in the final provider projection.
 /// Non-replayed reasoning remains a canonical identity for atomic checkpoint
 /// coverage, but neither its ciphertext nor its private text is needed here.
+/// Archived history is not read at all.
 pub fn prompt_source_keys(
     metadata: &[CompactionSourceMetadata],
     checkpoint: &Option<CheckpointPayload>,
+    active: &ActiveContext,
     current_user: ContextItemKey,
     reasoning_replay: ReasoningReplay,
 ) -> Vec<ContextItemKey> {
@@ -271,6 +275,7 @@ pub fn prompt_source_keys(
         .enumerate()
         .filter(|(index, source)| {
             !covered.contains(&source.key)
+                && !active.is_archived(&source.key)
                 && (source.key.kind != ContextItemKind::Reasoning
                     || replay_reasoning(reasoning_replay, *index, current_position))
         })
@@ -864,6 +869,7 @@ mod tests {
     fn test_prompt_budget_uses_model_context_window() {
         assert_eq!(prompt_token_budget("llama3-3-70b"), 131_072);
         assert_eq!(prompt_token_budget("glm-5-3"), 262_144);
+        assert_eq!(prompt_token_budget("kimi-k3-1-pro"), 262_144);
         assert_eq!(prompt_token_budget("glm-5-3-flash"), 1_048_576);
         assert_eq!(prompt_token_budget("deepseek-v4-1-flash"), 1_048_576);
     }
@@ -1191,6 +1197,7 @@ mod tests {
                 anchor: None,
             }),
             active: None,
+            active_start: None,
         });
         let logs = telemetry::capture_logs(|| {
             let snapshot = snapshot_from_raw(
@@ -1252,12 +1259,16 @@ mod tests {
         )
         .unwrap();
         assert!(planning.items.iter().all(|item| !item.payload_loaded));
-        assert_eq!(context::estimate_tokens(&planning, &None).unwrap(), 20);
-        assert!(context::project(&planning, &None).is_err());
+        assert_eq!(
+            context::estimate_tokens(&planning, &None, &ActiveContext::default()).unwrap(),
+            20
+        );
+        assert!(context::project(&planning, &None, &ActiveContext::default()).is_err());
 
         let mut policy = CompactionPolicy::from_context_window(20_000, 0, 0);
         policy.keep_recent_tokens = 0;
-        let plan = context::plan_batch(&planning, &None, &policy, true, 10).unwrap();
+        let plan =
+            context::plan(&planning, &None, &ActiveContext::default(), &policy, true).unwrap();
         assert_eq!(plan.summary_work[0].items.len(), 1);
         assert_eq!(plan.summary_work[0].items[0].key, prior.key);
         assert!(context::hydrate_plan(&plan, &planning).is_err());
@@ -1282,7 +1293,7 @@ mod tests {
             hydrated.summary_work[0].items[0].summary_messages[0]["content"],
             "prior"
         );
-        assert!(context::project(&partial, &None).is_err());
+        assert!(context::project(&partial, &None, &ActiveContext::default()).is_err());
         assert!(snapshot_from_raw(
             Vec::new(),
             0,
@@ -1351,8 +1362,11 @@ mod tests {
             .unwrap();
             // This also crosses the free-plan token gate. It is a conservative
             // planning estimate, rather than evidence that the prompt fails.
-            assert!(context::estimate_tokens(&planning, &None).unwrap() > 20_000);
-            assert!(context::project(&planning, &None).is_err());
+            assert!(
+                context::estimate_tokens(&planning, &None, &ActiveContext::default()).unwrap()
+                    > 20_000
+            );
+            assert!(context::project(&planning, &None, &ActiveContext::default()).is_err());
             assert!(snapshot_from_raw(
                 Vec::new(),
                 0,
@@ -1381,7 +1395,8 @@ mod tests {
                 &None,
             )
             .unwrap();
-            let (messages, tokens) = context::project(&complete, &None).unwrap();
+            let (messages, tokens) =
+                context::project(&complete, &None, &ActiveContext::default()).unwrap();
             assert!(tokens < 20_000);
             assert_eq!(
                 tokens,
@@ -1513,7 +1528,13 @@ mod tests {
                     raw.push(row);
                 }
                 let current_user = metadata[3].key;
-                let selected = prompt_source_keys(&metadata, &None, current_user, replay);
+                let selected = prompt_source_keys(
+                    &metadata,
+                    &None,
+                    &ActiveContext::default(),
+                    current_user,
+                    replay,
+                );
                 assert_eq!(selected.contains(&metadata[1].key), replay_old);
                 assert_eq!(selected.contains(&metadata[4].key), replay_current);
                 let raw = raw
@@ -1545,7 +1566,8 @@ mod tests {
                 }
                 let snapshot = snapshot.unwrap();
                 assert!(snapshot.items.iter().all(|item| item.payload_loaded));
-                let (messages, tokens) = context::project(&snapshot, &None).unwrap();
+                let (messages, tokens) =
+                    context::project(&snapshot, &None, &ActiveContext::default()).unwrap();
                 assert_eq!(tokens, expected_tokens);
                 assert_eq!(messages.len(), 4);
                 assert_eq!(messages[1].get("reasoning").is_some(), replay_old);
@@ -1561,11 +1583,15 @@ mod tests {
                     }),
                     ..CheckpointPayload::default()
                 });
-                assert!(
-                    prompt_source_keys(&metadata, &checkpoint, current_user, replay)
-                        .iter()
-                        .all(|key| !metadata[..3].iter().any(|source| source.key == *key))
-                );
+                assert!(prompt_source_keys(
+                    &metadata,
+                    &checkpoint,
+                    &ActiveContext::default(),
+                    current_user,
+                    replay,
+                )
+                .iter()
+                .all(|key| !metadata[..3].iter().any(|source| source.key == *key)));
             }
         }
     }
@@ -1616,6 +1642,7 @@ mod tests {
                 anchor: None,
             }),
             active: None,
+            active_start: None,
         });
         let snapshot = snapshot_from_raw(
             Vec::new(),
@@ -1633,9 +1660,13 @@ mod tests {
         .unwrap();
         assert!(snapshot.items[0].prompt_messages.is_empty());
         assert_eq!(snapshot.items[0].key, prior.key);
-        let projected = super::super::compaction::context::project(&snapshot, &checkpoint)
-            .unwrap()
-            .0;
+        let projected = super::super::compaction::context::project(
+            &snapshot,
+            &checkpoint,
+            &ActiveContext::default(),
+        )
+        .unwrap()
+        .0;
         assert_eq!(projected.len(), 2);
         assert!(projected[0]["content"]
             .as_str()
@@ -1730,6 +1761,7 @@ mod tests {
                 covered: vec![call.key, output.key],
                 anchor: Some(prior.key),
             }),
+            active_start: None,
         });
         let snapshot = snapshot_from_raw(
             Vec::new(),
@@ -1748,9 +1780,13 @@ mod tests {
         assert!(snapshot.items[1].settled);
         assert!(snapshot.items[2].settled);
         assert!(!snapshot.items[0].settled);
-        let projected = super::super::compaction::context::project(&snapshot, &checkpoint)
-            .unwrap()
-            .0;
+        let projected = super::super::compaction::context::project(
+            &snapshot,
+            &checkpoint,
+            &ActiveContext::default(),
+        )
+        .unwrap()
+        .0;
         assert_eq!(projected[0]["content"], "prior question");
         assert!(projected[1]["content"]
             .as_str()
@@ -1809,9 +1845,10 @@ mod tests {
             true,
             None,
         ));
-        let projected = super::super::compaction::context::project(&snapshot, &None)
-            .unwrap()
-            .0;
+        let projected =
+            super::super::compaction::context::project(&snapshot, &None, &ActiveContext::default())
+                .unwrap()
+                .0;
         assert_eq!(projected.last().unwrap()["content"], "new question");
     }
 
@@ -1925,9 +1962,10 @@ mod tests {
         assert!(snapshot.items[4].prompt_messages[0]
             .get("reasoning_content")
             .is_none());
-        let messages = super::super::compaction::context::project(&snapshot, &None)
-            .unwrap()
-            .0;
+        let messages =
+            super::super::compaction::context::project(&snapshot, &None, &ActiveContext::default())
+                .unwrap()
+                .0;
         assert_eq!(messages.len(), 3);
         assert_eq!(messages[0]["content"], "prior question");
         assert_eq!(messages[1]["content"], "later visible answer");
@@ -2022,9 +2060,10 @@ mod tests {
             input_budget: 100,
             trigger_tokens: 1,
             keep_recent_tokens: 0,
-            summary_input_budget: 80,
+            summary_input_budget: 10_000,
         };
-        let plan = context::plan_batch(&snapshot, &None, &policy, true, 100).unwrap();
+        let plan =
+            context::plan(&snapshot, &None, &ActiveContext::default(), &policy, true).unwrap();
         assert_eq!(
             plan.summary_work[0].covered,
             metadata[..4]
@@ -2040,7 +2079,9 @@ mod tests {
             )
             .unwrap(),
         );
-        let messages = context::project(&snapshot, &checkpoint).unwrap().0;
+        let messages = context::project(&snapshot, &checkpoint, &ActiveContext::default())
+            .unwrap()
+            .0;
         assert_eq!(messages.len(), 2);
         assert_eq!(messages[1]["content"], "continue");
     }
@@ -2095,16 +2136,19 @@ mod tests {
             input_budget: 100,
             trigger_tokens: 1,
             keep_recent_tokens: 0,
-            summary_input_budget: 80,
+            summary_input_budget: 10_000,
         };
-        let plan = context::plan_batch(&snapshot, &None, &policy, true, 100).unwrap();
+        let plan =
+            context::plan(&snapshot, &None, &ActiveContext::default(), &policy, true).unwrap();
         assert_eq!(
             plan.summary_work[0].covered,
             vec![metadata[3].key, metadata[4].key]
         );
         let checkpoint =
             Some(context::complete_plan(&None, &plan, &["search memory".into()]).unwrap());
-        let messages = context::project(&snapshot, &checkpoint).unwrap().0;
+        let messages = context::project(&snapshot, &checkpoint, &ActiveContext::default())
+            .unwrap()
+            .0;
         assert_eq!(messages[0]["content"], "inspect image and search");
         assert_eq!(messages[2]["content"], "exact image description");
         assert!(messages[3]["content"]

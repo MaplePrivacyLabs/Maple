@@ -40,8 +40,15 @@ impl Sidebar {
         self.order_loading = true;
         let backend = self.backend.clone();
         let user = self.user_id.clone();
-        self.call(
-            async move { backend.get_sidebar_order(&user).await },
+        let request = crate::ui::task::call_semantic(
+            &self.backend,
+            async move {
+                backend
+                    .call_presented::<crate::settings::SidebarOrder>("get_sidebar_order", (&user,))
+                    .await
+                    .map_err(UiFailure::from)
+            },
+            "chat-task-cancelled",
             cx,
             |this, result, cx| {
                 this.order_loading = false;
@@ -59,22 +66,30 @@ impl Sidebar {
                 cx.notify();
             },
         );
+        // At most one is in flight: `order_loading` guards the next call.
+        self.order_request = Some(request);
     }
 
     pub(super) fn save_order(&self, cx: &mut Context<Self>) {
         if !self.order_loaded {
             return;
         }
-        let saved = crate::settings::save_sidebar_order(
+        let saved = crate::settings::save_sidebar_order_presented(
             self.backend.clone(),
             self.user_id.clone(),
             self.order.clone(),
         );
-        self.call(
+        self.call_semantic(
             async move {
                 saved
                     .await
-                    .map_err(|_| "Could not save sidebar order".to_string())?
+                    .map_err(|_| {
+                        crate::backend::HostFailure::new(
+                            "settings-sync-stopped",
+                            "Could not save sidebar order",
+                        )
+                    })?
+                    .map_err(UiFailure::from)
             },
             cx,
             |_, result, cx| {
@@ -320,9 +335,9 @@ impl Sidebar {
             if !order_fits(&self.order) {
                 self.order = previous;
                 self.rebuild_order_ranks();
-                cx.emit(SidebarEvent::Notice(
-                    "This sidebar order is too large to save".into(),
-                ));
+                cx.emit(SidebarEvent::Notice(UiText::key(
+                    "chat-sidebar-order-too-large",
+                )));
                 return;
             }
             self.save_order(cx);
@@ -815,9 +830,9 @@ impl Sidebar {
             self.order = previous_order;
             self.view = previous_view;
             self.rebuild_order_ranks();
-            cx.emit(SidebarEvent::Notice(
-                "This sidebar order is too large to save".into(),
-            ));
+            cx.emit(SidebarEvent::Notice(UiText::key(
+                "chat-sidebar-order-too-large",
+            )));
             return;
         }
         // Every accepted move refreshes the display indexes, including project
@@ -956,6 +971,7 @@ mod tests {
             message_count: 1,
             model: None,
             web_enabled: true,
+            permission_mode: Default::default(),
             state: AgentTaskState::Active,
             acp: false,
         }

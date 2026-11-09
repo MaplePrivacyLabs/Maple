@@ -5,6 +5,8 @@
 // there by design.
 #![cfg_attr(not(feature = "desktop"), allow(dead_code))]
 
+use crate::backend::HostFailure;
+
 #[derive(Debug, Clone, Default, serde::Serialize, serde::Deserialize)]
 pub struct RemoteSidebarSettings {
     #[serde(default)]
@@ -81,6 +83,10 @@ pub struct AppSettings {
     /// Whether new tasks can use the web tools.
     #[serde(default = "default_web_enabled")]
     pub default_web_enabled: bool,
+    /// The mode last picked for a new task, which the next one starts in.
+    /// It stays in saved settings while unset: host patches name known keys.
+    #[serde(default)]
+    pub new_task_permission_mode: Option<maple_agent::agent::AgentPermissionMode>,
     /// Whether completed tool calls get a one-line model summary.
     #[serde(default = "default_tool_summaries")]
     pub tool_summaries: bool,
@@ -135,6 +141,9 @@ pub struct AppSettings {
     /// Window size and state from the last run.
     #[serde(default)]
     pub window: Option<WindowState>,
+    /// UI language override; None follows the operating system.
+    #[serde(default, deserialize_with = "view_preference_or_default")]
+    pub locale: Option<String>,
     /// Color theme: "system", "dark", or "light".
     #[serde(default = "default_theme")]
     pub theme: String,
@@ -182,15 +191,6 @@ pub const TTS_VOICES: [(&str, &str); 20] = [
 pub const TTS_SPEEDS: [f32; 6] = [0.8, 1.0, 1.2, 1.5, 1.8, 2.0];
 const DEFAULT_TTS_VOICE: &str = "casual_female";
 const DEFAULT_TTS_SPEED: f32 = 1.0;
-
-/// Label for a voice id; the id itself when it is unknown.
-pub fn tts_voice_label(voice: &str) -> &str {
-    TTS_VOICES
-        .iter()
-        .find(|(id, _)| *id == voice)
-        .map(|(_, label)| *label)
-        .unwrap_or(voice)
-}
 
 fn default_tts_voice() -> String {
     DEFAULT_TTS_VOICE.to_string()
@@ -302,6 +302,7 @@ impl Default for AppSettings {
         Self {
             tool_details: default_tool_details(),
             default_web_enabled: default_web_enabled(),
+            new_task_permission_mode: None,
             tool_summaries: default_tool_summaries(),
             composer_vim_enabled: false,
             application_vim_enabled: false,
@@ -318,6 +319,7 @@ impl Default for AppSettings {
             reduce_motion: false,
             harness_instructions: String::new(),
             window: None,
+            locale: None,
             theme: default_theme(),
             chat_font_family: default_chat_font_family(),
             chat_font_size: default_chat_font_size(),
@@ -520,19 +522,38 @@ pub(crate) fn retire_sidebar_account(user: &str) {
 
 /// Queue account-owned ordering through the same Quit barrier as
 /// ordinary settings. The captured account/backend are never rebound on retry.
-pub(crate) fn save_sidebar_order(
+fn queue_sidebar_order(
     backend: std::sync::Arc<crate::backend::AgentBackend>,
     user: String,
     order: SidebarOrder,
-) -> tokio::sync::oneshot::Receiver<Result<(), String>> {
+) {
     let mut cache = CACHE.lock().unwrap_or_else(|e| e.into_inner());
     cache.sidebar_orders.insert(user.clone(), order.clone());
     cache
         .pending_sidebar_orders
         .insert(user, PendingSidebarOrder { backend, order });
     drop(cache);
+}
+
+pub(crate) fn save_sidebar_order(
+    backend: std::sync::Arc<crate::backend::AgentBackend>,
+    user: String,
+    order: SidebarOrder,
+) -> tokio::sync::oneshot::Receiver<Result<(), String>> {
+    queue_sidebar_order(backend, user, order);
     let (sender, receiver) = tokio::sync::oneshot::channel();
     queue_flush(Some(SettingsAck::Async(sender)));
+    receiver
+}
+
+pub(crate) fn save_sidebar_order_presented(
+    backend: std::sync::Arc<crate::backend::AgentBackend>,
+    user: String,
+    order: SidebarOrder,
+) -> tokio::sync::oneshot::Receiver<Result<(), HostFailure>> {
+    queue_sidebar_order(backend, user, order);
+    let (sender, receiver) = tokio::sync::oneshot::channel();
+    queue_flush(Some(SettingsAck::Presented(sender)));
     receiver
 }
 
@@ -581,6 +602,7 @@ enum SettingsAck {
     #[cfg(test)]
     Sync(std::sync::mpsc::Sender<Result<(), String>>),
     Async(tokio::sync::oneshot::Sender<Result<(), String>>),
+    Presented(tokio::sync::oneshot::Sender<Result<(), HostFailure>>),
 }
 
 fn queue_flush(ack: Option<SettingsAck>) {
@@ -606,9 +628,14 @@ fn queue_flush(ack: Option<SettingsAck>) {
                         match ack {
                             #[cfg(test)]
                             SettingsAck::Sync(sender) => {
-                                let _ = sender.send(result.clone());
+                                let _ =
+                                    sender.send(result.clone().map_err(|failure| failure.message));
                             }
                             SettingsAck::Async(sender) => {
+                                let _ =
+                                    sender.send(result.clone().map_err(|failure| failure.message));
+                            }
+                            SettingsAck::Presented(sender) => {
                                 let _ = sender.send(result.clone());
                             }
                         }
@@ -623,7 +650,7 @@ fn queue_flush(ack: Option<SettingsAck>) {
     }
 }
 
-fn synchronize_once() -> Result<(), String> {
+fn synchronize_once() -> Result<(), HostFailure> {
     let (generation, sink, patch, words, sidebar_orders) = {
         let cache = CACHE.lock().unwrap_or_else(|e| e.into_inner());
         if cache.pending.is_empty()
@@ -640,11 +667,19 @@ fn synchronize_once() -> Result<(), String> {
             cache.pending_sidebar_orders.clone(),
         )
     };
-    match sink.ok_or("Maple host is unavailable; settings edits remain pending")? {
+    match sink.ok_or_else(|| {
+        HostFailure::new(
+            "settings-sync-unavailable",
+            "Maple host is unavailable; settings edits remain pending",
+        )
+    })? {
         SettingsSink::Host(backend) => {
-            let backend = backend
-                .upgrade()
-                .ok_or("Maple host is unavailable; settings edits remain pending")?;
+            let backend = backend.upgrade().ok_or_else(|| {
+                HostFailure::new(
+                    "settings-sync-unavailable",
+                    "Maple host is unavailable; settings edits remain pending",
+                )
+            })?;
             backend.runtime_handle().block_on(async {
                 tokio::time::timeout(std::time::Duration::from_secs(5), async {
                     if !patch.is_empty() {
@@ -658,7 +693,13 @@ fn synchronize_once() -> Result<(), String> {
                     backend.flush_ui_settings().await
                 })
                 .await
-                .map_err(|_| "Maple settings synchronization timed out".to_string())?
+                .map_err(|_| {
+                    HostFailure::new(
+                        "settings-sync-timeout",
+                        "Maple settings synchronization timed out",
+                    )
+                })?
+                .map_err(HostFailure::from)
             })?;
         }
         #[cfg(test)]
@@ -675,7 +716,10 @@ fn synchronize_once() -> Result<(), String> {
             return if sidebar_orders.is_empty() {
                 Ok(())
             } else {
-                Err("Maple settings state changed; sidebar order edits remain pending".into())
+                Err(HostFailure::new(
+                    "sidebar-sync-state-changed",
+                    "Maple settings state changed; sidebar order edits remain pending",
+                ))
             };
         }
         for (key, value) in patch {
@@ -693,7 +737,10 @@ fn synchronize_once() -> Result<(), String> {
             let cache = CACHE.lock().unwrap_or_else(|e| e.into_inner());
             if cache.generation != generation || cache.sink.is_none() {
                 first_error.get_or_insert_with(|| {
-                    "Maple settings state changed; sidebar order edits remain pending".to_string()
+                    HostFailure::new(
+                        "sidebar-sync-state-changed",
+                        "Maple settings state changed; sidebar order edits remain pending",
+                    )
                 });
                 break;
             }
@@ -703,32 +750,43 @@ fn synchronize_once() -> Result<(), String> {
                 std::time::Duration::from_secs(5),
                 pending
                     .backend
-                    .set_sidebar_order(&user, pending.order.clone()),
+                    .call_presented::<()>("set_sidebar_order", (&user, pending.order.clone())),
             )
             .await
-            .map_err(|_| "Maple sidebar order synchronization timed out".to_string())?
+            .map_err(|_| {
+                HostFailure::new(
+                    "sidebar-sync-timeout",
+                    "Maple sidebar order synchronization timed out",
+                )
+            })?
         });
-        match result {
-            Ok(()) => {
-                let mut cache = CACHE.lock().unwrap_or_else(|e| e.into_inner());
-                if cache.generation == generation
-                    && cache
-                        .pending_sidebar_orders
-                        .get(&user)
-                        .is_some_and(|current| {
-                            current.order == pending.order
-                                && std::sync::Arc::ptr_eq(&current.backend, &pending.backend)
-                        })
-                {
-                    cache.pending_sidebar_orders.remove(&user);
-                }
-            }
-            Err(error) => {
-                first_error.get_or_insert(error);
-            }
+        if let Err(error) = complete_sidebar_order(generation, &user, &pending, result) {
+            first_error.get_or_insert(error);
         }
     }
     first_error.map_or(Ok(()), Err)
+}
+
+fn complete_sidebar_order(
+    generation: u64,
+    user: &str,
+    pending: &PendingSidebarOrder,
+    result: Result<(), HostFailure>,
+) -> Result<(), HostFailure> {
+    result?;
+    let mut cache = CACHE.lock().unwrap_or_else(|e| e.into_inner());
+    if cache.generation == generation
+        && cache
+            .pending_sidebar_orders
+            .get(user)
+            .is_some_and(|current| {
+                current.order == pending.order
+                    && std::sync::Arc::ptr_eq(&current.backend, &pending.backend)
+            })
+    {
+        cache.pending_sidebar_orders.remove(user);
+    }
+    Ok(())
 }
 
 fn merge_patch(target: &mut serde_json::Value, patch: &serde_json::Value) {
@@ -986,6 +1044,49 @@ pub(crate) fn install_test_store(store: std::sync::Arc<maple_agent::store::Store
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn locale_preferences_are_optional_and_survive_host_patches() {
+        for value in [serde_json::json!({}), serde_json::json!({"locale": 7})] {
+            let settings: AppSettings = serde_json::from_value(value).unwrap();
+            assert_eq!(settings.locale, None);
+        }
+        let root = tempfile::tempdir().unwrap();
+        let store =
+            maple_agent::store::Store::open(maple_agent::store::StorePaths::new(root.path()))
+                .unwrap();
+        for locale in [Some("en"), Some("future-locale"), None] {
+            apply_host_patch(&store, None, &serde_json::json!({"locale": locale})).unwrap();
+            apply_host_patch(&store, None, &serde_json::json!({"reduce_motion": true})).unwrap();
+            assert_eq!(
+                load_host_settings(&store, None).unwrap().locale.as_deref(),
+                locale
+            );
+            assert_eq!(
+                store.app_setting("ui").unwrap().unwrap()["locale"],
+                serde_json::json!(locale)
+            );
+        }
+    }
+
+    #[test]
+    fn the_new_task_mode_saves_from_unset_and_reads_back() {
+        use maple_agent::agent::AgentPermissionMode;
+        let settings: AppSettings = serde_json::from_str("{}").unwrap();
+        assert_eq!(settings.new_task_permission_mode, None);
+        let root = tempfile::tempdir().unwrap();
+        let store =
+            maple_agent::store::Store::open(maple_agent::store::StorePaths::new(root.path()))
+                .unwrap();
+        let patch = serde_json::json!({"new_task_permission_mode": "readOnly"});
+        apply_host_patch(&store, None, &patch).unwrap();
+        assert_eq!(
+            load_host_settings(&store, None)
+                .unwrap()
+                .new_task_permission_mode,
+            Some(AgentPermissionMode::ReadOnly)
+        );
+    }
 
     #[test]
     fn the_sidebar_layout_round_trips_and_defaults_to_projects() {
@@ -1259,6 +1360,48 @@ mod tests {
                 .root()
                 .join("staging/config/settings.json")
                 .exists()
+        );
+    }
+
+    #[test]
+    fn typed_sidebar_failure_preserves_newer_edit_and_original_backend() {
+        let _guard = SETTINGS_IO_LOCK.lock();
+        install_test_settings(AppSettings::default());
+        let backend = std::sync::Arc::new(
+            crate::backend::AgentBackend::for_test("http://127.0.0.1:9".into(), String::new())
+                .unwrap(),
+        );
+        let old = PendingSidebarOrder {
+            backend: backend.clone(),
+            order: SidebarOrder::default(),
+        };
+        let mut newer = old.order.clone();
+        newer.created_before_ms = 10;
+        queue_sidebar_order(backend.clone(), "account".into(), newer.clone());
+        let generation = CACHE.lock().unwrap().generation;
+        let failure = HostFailure::new("sidebar-sync-timeout", "original timeout diagnostic");
+        let result = complete_sidebar_order(generation, "account", &old, Err(failure.clone()));
+        assert_eq!(result, Err(failure));
+        {
+            let cache = CACHE.lock().unwrap();
+            let pending = &cache.pending_sidebar_orders["account"];
+            assert_eq!(pending.order, newer);
+            assert!(std::sync::Arc::ptr_eq(&pending.backend, &backend));
+        }
+        // Even a late success for the old value cannot acknowledge the newer edit.
+        complete_sidebar_order(generation, "account", &old, Ok(())).unwrap();
+        assert_eq!(
+            CACHE.lock().unwrap().pending_sidebar_orders["account"].order,
+            newer
+        );
+        let current = CACHE.lock().unwrap().pending_sidebar_orders["account"].clone();
+        complete_sidebar_order(generation, "account", &current, Ok(())).unwrap();
+        assert!(
+            !CACHE
+                .lock()
+                .unwrap()
+                .pending_sidebar_orders
+                .contains_key("account")
         );
     }
 

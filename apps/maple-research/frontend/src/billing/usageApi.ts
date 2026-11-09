@@ -43,7 +43,8 @@ export type UsageMonthRow = UsageCounts & {
 export type UsageCurrentPeriod = {
   start: string;
   end: string;
-  days: Array<{ date: string; plan_credits: number }>;
+  /** `extra_credits` is absent from billing versions that report only the plan pool. */
+  days: Array<{ date: string; plan_credits: number; extra_credits?: number }>;
 };
 
 export type UsageResponse = {

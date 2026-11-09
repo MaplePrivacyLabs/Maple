@@ -22,8 +22,8 @@ use super::store::{TaskKind, TaskRow};
 use super::timeline::{MAX_AGENT_SESSION_TITLE_CHARS, merge_into};
 use super::{
     AgentCreateSessionRequest, AgentRenameSessionRequest, AgentRuntimeHandle, AgentServiceEvent,
-    AgentSessionDetail, AgentSessionSummary, AgentSetSessionWebRequest, AgentTaskState,
-    emit_agent_event,
+    AgentSessionDetail, AgentSessionSummary, AgentSetSessionPermissionModeRequest,
+    AgentSetSessionWebRequest, AgentTaskState, emit_agent_event,
 };
 use crate::maple_api::MapleApiSession;
 
@@ -781,7 +781,45 @@ impl AgentRuntimeHandle {
             .store()?
             .update(&session_id, |row| row.web_enabled = request.enabled)?
             .ok_or_else(|| format!("Failed to load Agent task: {session_id} was not found"))?;
-        Ok(row.summary())
+        // Every window showing the task follows, here and on paired computers.
+        let summary = row.summary();
+        emit_agent_event(
+            &self.service.host.events,
+            AgentServiceEvent::SessionUpdated {
+                session_id,
+                run_id: None,
+                session: summary.clone(),
+            },
+        );
+        Ok(summary)
+    }
+
+    /// Set what a task may do without asking, from its next tool call.
+    pub async fn set_session_permission_mode(
+        &self,
+        request: AgentSetSessionPermissionModeRequest,
+    ) -> Result<AgentSessionSummary, String> {
+        self.verify_generation().await?;
+        self.ensure_accepting_new_work()?;
+        let session_id = session_id_argument(&request.session_id)?;
+        let row = self
+            .store()?
+            .update(&session_id, |row| row.set_permission_mode(request.mode))?
+            .ok_or_else(|| format!("Failed to load Agent task: {session_id} was not found"))?;
+        if let Some(runtime) = self.current_runtime().await? {
+            runtime.set_permission_mode(&session_id, request.mode).await;
+        }
+        // Every window showing the task follows, here and on paired computers.
+        let summary = row.summary();
+        emit_agent_event(
+            &self.service.host.events,
+            AgentServiceEvent::SessionUpdated {
+                session_id,
+                run_id: None,
+                session: summary.clone(),
+            },
+        );
+        Ok(summary)
     }
 
     /// Delete a task, its history and its attachments. Refused while it runs.

@@ -41,7 +41,7 @@ pub(crate) const MAPLE_API: &str = "maple";
 const MAPLE_BASE_URL: &str = "/v1";
 const CHAT_COMPLETIONS_PATH: &str = "/v1/chat/completions";
 /// Where Pi's System One classifier posts: `{base_url}/systemone`.
-const SYSTEM_ONE_PATH: &str = "/v1/systemone";
+pub(super) const SYSTEM_ONE_PATH: &str = "/v1/systemone";
 /// The model System One answers with by default.
 pub(crate) const SYSTEM_ONE_MODEL_ID: &str = "glm-5-3-flash";
 /// The decision models Maple's System One API also serves (Tinfoil's), with
@@ -183,7 +183,7 @@ pub(crate) fn system_one_model() -> ClassifierModel {
 }
 
 /// The decision models as Pi classifier models: they judge text only.
-fn system_one_decision_models() -> impl Iterator<Item = ClassifierModel> {
+pub(super) fn system_one_decision_models() -> impl Iterator<Item = ClassifierModel> {
     SYSTEM_ONE_DECISION_MODELS
         .into_iter()
         .map(|(id, name)| ClassifierModel {
@@ -200,7 +200,7 @@ fn system_one_decision_models() -> impl Iterator<Item = ClassifierModel> {
 }
 
 /// OpenSecret authenticates the account itself; Pi passes no key.
-struct NoKeys;
+pub(super) struct NoKeys;
 
 #[async_trait]
 impl ApiKeySource for NoKeys {
@@ -611,7 +611,11 @@ impl HttpTransport for MapleTransport {
     }
 }
 
-fn inference_request(path: &'static str, accept: &'static str, body: Vec<u8>) -> InferenceRequest {
+pub(super) fn inference_request(
+    path: &'static str,
+    accept: &'static str,
+    body: Vec<u8>,
+) -> InferenceRequest {
     let mut request = InferenceRequest::new(body.into());
     *request.method_mut() = http::Method::POST;
     *request.uri_mut() = http::Uri::from_static(path);
@@ -627,7 +631,7 @@ fn inference_request(path: &'static str, accept: &'static str, body: Vec<u8>) ->
 
 /// A successful response streams on; a failed one becomes its fixed Maple
 /// message, which Pi reports after the status.
-async fn into_http_response(
+pub(super) async fn into_http_response(
     response: InferenceResponse,
     cancel: CancellationToken,
 ) -> Result<HttpResponse, String> {
@@ -1037,3 +1041,54 @@ pub(crate) fn opensecret_error_category(error: &maple_sdk::Error) -> &'static st
 
 #[cfg(test)]
 mod tests;
+
+/// Source-owned presentation codes for our diagnostics, including Pi wrappers.
+/// The original diagnostic remains unchanged for retry/overflow classifiers.
+pub(crate) fn error_presentation(message: &str) -> Option<&'static str> {
+    if message.contains(DEVICE_CLOCK_ERROR_MESSAGE) {
+        return Some("clock");
+    }
+    if message.contains(AUTHENTICATION_ERROR_MESSAGE) {
+        return Some("authentication");
+    }
+    if message.contains(CREDITS_EXHAUSTED_MESSAGE) {
+        return Some("credits");
+    }
+    if message.contains(CONTEXT_OVERFLOW_MESSAGE) {
+        return Some("context");
+    }
+    if message.contains(RATE_LIMIT_MESSAGE) {
+        return Some("rate-limit");
+    }
+    if message.contains(ENDPOINT_NOT_FOUND_MESSAGE) {
+        return Some("endpoint");
+    }
+    if message.contains(REQUEST_TIMEOUT_MESSAGE) {
+        return Some("timeout");
+    }
+    if message.contains(CONNECT_ERROR_MESSAGE) {
+        return Some("connect");
+    }
+    if message.contains(NETWORK_ERROR_MESSAGE) {
+        return Some("network");
+    }
+    if message.contains(STREAM_TIMEOUT_MESSAGE) {
+        return Some("stream-timeout");
+    }
+    if message.contains(STREAM_ERROR_MESSAGE) {
+        return Some("stream");
+    }
+    if message.contains(ATTESTATION_VERIFICATION_ERROR_MESSAGE) {
+        return Some("attestation");
+    }
+    if message.contains(SECURE_CONNECTION_ERROR_MESSAGE) {
+        return Some("secure-connection");
+    }
+    if message.contains(PREPARE_ERROR_MESSAGE) {
+        return Some("prepare");
+    }
+    if message.contains(CANCELLED_MESSAGE) {
+        return Some("cancelled");
+    }
+    None
+}

@@ -1,5 +1,6 @@
 //! Device setup and explicitly targeted remote update controls. Pairing codes
 //! and local account settings never traverse the remote task protocol.
+use crate::ui::i18n::{UiText, tr, tr_args};
 use crate::{
     backend::AgentBackend,
     remote::{
@@ -28,6 +29,7 @@ use std::{
     time::{Duration, Instant},
 };
 
+mod presentation;
 #[cfg(test)]
 mod tests;
 
@@ -41,7 +43,14 @@ pub(crate) fn computer_name(key: &str, advertised: &str, alias: &str) -> String 
     if !alias.trim().is_empty() {
         alias.to_string()
     } else if advertised == "Maple computer" {
-        format!("Computer {}", key.chars().take(8).collect::<String>())
+        tr_args(
+            "settings-computer-name",
+            [(
+                "id",
+                (key.chars().take(8).collect::<String>()).to_string().into(),
+            )],
+        )
+        .to_string()
     } else {
         advertised.to_string()
     }
@@ -93,13 +102,13 @@ where
         PeerInfoQuery::Read => serde_json::from_value(value),
         PeerInfoQuery::Check => serde_json::from_value(value).map(Some),
     }
-    .map_err(|_| "Could not read remote update status".to_owned())
+    .map_err(|_| "Could not read remote update status".to_string())
 }
 
 struct InstallAttempt {
     request: InstallRequest,
     phase: InstallPhase,
-    label: String,
+    label: UiText,
     /// Recovered from the host's receipt rather than sent from this view.
     from_receipt: bool,
 }
@@ -175,8 +184,9 @@ struct InstallIntent {
 }
 
 /// A lost reply may already have taken effect: never resend it blindly.
-const UNCONFIRMED_INSTALL: &str = "Not confirmed. Don’t resend; check again first.";
-const PROTOCOL_UPDATE_REQUIRED: &str = "Update Maple on both computers to reconnect.";
+const UNCONFIRMED_INSTALL: &str = "settings-remote-not-confirmed-don-t-resend-check-again-first";
+const PROTOCOL_UPDATE_REQUIRED: &str =
+    "settings-remote-update-maple-on-both-computers-to-reconnect";
 const CLIENT_VERSION: &str = env!("CARGO_PKG_VERSION");
 
 /// A quiet note when the two computers run different app versions. Equal
@@ -184,31 +194,37 @@ const CLIENT_VERSION: &str = env!("CARGO_PKG_VERSION");
 fn version_note(info: &PeerInfo, client_version: &str) -> Option<String> {
     let client = semver::Version::parse(client_version).ok()?;
     let remote = semver::Version::parse(&info.running.version).ok()?;
-    (client != remote).then(|| format!("This computer runs v{client}."))
+    (client != remote).then(|| {
+        tr_args(
+            "settings-remote-client-version",
+            [("client", (client).to_string().into())],
+        )
+        .to_string()
+    })
 }
 
 fn install_blocked(info: &PeerInfo) -> Option<String> {
     if !info.supports_remote_updates() {
-        return Some("This version can’t be updated remotely.".into());
+        return Some(tr("settings-remote-this-version-can-t-be-updated-remotely").into());
     }
     // An older host reports an offer it has not downloaded as not ready. It
     // is still asked: it refuses before admitting work, and the reply says so.
     if let Some(reason) = &info.update.blocked
         && !info.install_requestable()
     {
-        return Some(reason.message().into());
+        return Some(presentation::blocked(*reason).to_string());
     }
     if operation_pending(info) {
-        return Some("An update request is already in progress there.".into());
+        return Some(tr("settings-remote-an-update-request-is-already-in-progress-there").into());
     }
     if !info.install_requestable() {
-        return Some("The update isn’t ready there yet.".into());
+        return Some(tr("settings-remote-the-update-isn-t-ready-there-yet").into());
     }
     let Some(target) = &info.update.offered else {
-        return Some("No update is offered there.".into());
+        return Some(tr("settings-remote-no-update-is-offered-there").into());
     };
     if info.running.matches_release(target) {
-        return Some("It already runs this version.".into());
+        return Some(tr("settings-remote-it-already-runs-this-version").into());
     }
     None
 }
@@ -239,22 +255,24 @@ impl ComputerUpdate {
         let checking = self.query == PeerInfoQuery::Check;
         let Some(info) = &self.info else {
             self.status_line = match self.phase {
-                PeerInfoPhase::Loading if checking => "Checking for updates…",
-                PeerInfoPhase::Loading => "Checking status…",
-                PeerInfoPhase::Unsupported | PeerInfoPhase::Unchecked => "Version unknown",
-                PeerInfoPhase::Unreachable => "Version unknown",
-                PeerInfoPhase::Incompatible => "Different remote protocol",
-                PeerInfoPhase::Loaded => "Version unknown",
+                PeerInfoPhase::Loading if checking => tr("settings-remote-checking-for-updates"),
+                PeerInfoPhase::Loading => tr("settings-remote-checking-status"),
+                PeerInfoPhase::Unsupported | PeerInfoPhase::Unchecked => {
+                    tr("settings-remote-version-unknown")
+                }
+                PeerInfoPhase::Unreachable => tr("settings-remote-version-unknown"),
+                PeerInfoPhase::Incompatible => tr("settings-remote-different-remote-protocol"),
+                PeerInfoPhase::Loaded => tr("settings-remote-version-unknown"),
             }
             .into();
             match self.phase {
                 PeerInfoPhase::Unreachable => {
-                    self.badge = Some(("Not reachable", Tone::Muted));
+                    self.badge = Some(("settings-remote-not-reachable", Tone::Muted));
                     self.action = CardAction::CheckAgain;
                 }
                 PeerInfoPhase::Incompatible => {
-                    self.badge = Some(("Update needed", Tone::Warning));
-                    self.note = Some((PROTOCOL_UPDATE_REQUIRED.into(), Tone::Muted));
+                    self.badge = Some(("settings-remote-update-needed", Tone::Warning));
+                    self.note = Some((tr(PROTOCOL_UPDATE_REQUIRED).to_string(), Tone::Muted));
                 }
                 _ => {}
             }
@@ -263,25 +281,39 @@ impl ComputerUpdate {
         let running = version_label(&info.running.version);
         let offered = info.update.offered.as_ref();
         if loading {
-            self.status_line = format!(
-                "{running} · {}",
-                if checking {
-                    "checking for updates…"
-                } else {
-                    "checking status…"
-                }
-            );
+            self.status_line = tr_args(
+                "settings-remote-checking",
+                [
+                    ("running", (running).to_string().into()),
+                    (
+                        "activity",
+                        (if checking {
+                            tr("settings-remote-checking-for-updates-more")
+                        } else {
+                            tr("settings-remote-checking-status-more")
+                        })
+                        .to_string()
+                        .into(),
+                    ),
+                ],
+            )
+            .to_string();
             return;
         }
         // Cached observations stay as history only: they never look like a
         // current offer, policy decision or version comparison.
         match self.phase {
             PeerInfoPhase::Unreachable => {
-                self.status_line = format!("{running} when last seen");
-                self.badge = Some(("Not reachable", Tone::Muted));
+                self.status_line = tr_args(
+                    "settings-remote-last-seen",
+                    [("running", (running).to_string().into())],
+                )
+                .to_string();
+                self.badge = Some(("settings-remote-not-reachable", Tone::Muted));
                 if checking && !info.supports_remote_refresh() {
                     self.note = Some((
-                        "This version checks for updates only on that computer.".into(),
+                        tr("settings-remote-this-version-checks-for-updates-only-on-that-computer")
+                            .into(),
                         Tone::Muted,
                     ));
                 }
@@ -290,13 +322,17 @@ impl ComputerUpdate {
             }
             PeerInfoPhase::Incompatible => {
                 self.status_line = running;
-                self.badge = Some(("Update needed", Tone::Warning));
-                self.note = Some((PROTOCOL_UPDATE_REQUIRED.into(), Tone::Muted));
+                self.badge = Some(("settings-remote-update-needed", Tone::Warning));
+                self.note = Some((tr(PROTOCOL_UPDATE_REQUIRED).to_string(), Tone::Muted));
                 return;
             }
             PeerInfoPhase::Loaded => {}
             _ => {
-                self.status_line = format!("{running} when last seen");
+                self.status_line = tr_args(
+                    "settings-remote-last-seen",
+                    [("running", (running).to_string().into())],
+                )
+                .to_string();
                 return;
             }
         }
@@ -305,29 +341,68 @@ impl ComputerUpdate {
             && matches!(info.update.state, UpdateState::Current | UpdateState::Idle);
         let target = offered.map(|target| version_label(&target.version));
         let (status_line, badge) = match (info.update.state, target.as_deref()) {
-            _ if up_to_date && info.update.state == UpdateState::Current => {
-                (running.clone(), Some(("Up to date", Tone::Success)))
-            }
+            _ if up_to_date && info.update.state == UpdateState::Current => (
+                running.clone(),
+                Some(("settings-remote-up-to-date", Tone::Success)),
+            ),
             // The Update button already says so; the line names the versions.
-            (UpdateState::Available | UpdateState::Ready, Some(target)) => {
-                (format!("{running} · {target} available"), None)
-            }
-            (UpdateState::Downloading, Some(target)) => {
-                (format!("{running} · downloading {target}…"), None)
-            }
-            (UpdateState::Downloading, None) => (format!("{running} · downloading…"), None),
-            (UpdateState::Checking, _) => (format!("{running} · checking for updates…"), None),
+            (UpdateState::Available | UpdateState::Ready, Some(target)) => (
+                tr_args(
+                    "settings-remote-update-available",
+                    [
+                        ("running", (running).to_string().into()),
+                        ("target", (target).to_string().into()),
+                    ],
+                )
+                .to_string(),
+                None,
+            ),
+            (UpdateState::Downloading, Some(target)) => (
+                tr_args(
+                    "settings-remote-downloading-version",
+                    [
+                        ("running", (running).to_string().into()),
+                        ("target", (target).to_string().into()),
+                    ],
+                )
+                .to_string(),
+                None,
+            ),
+            (UpdateState::Downloading, None) => (
+                tr_args(
+                    "settings-remote-downloading",
+                    [("running", (running).to_string().into())],
+                )
+                .to_string(),
+                None,
+            ),
+            (UpdateState::Checking, _) => (
+                tr_args(
+                    "settings-remote-checking-updates",
+                    [("running", (running).to_string().into())],
+                )
+                .to_string(),
+                None,
+            ),
             (UpdateState::Installing, _) => (
-                format!("{running} · updating…"),
-                Some(("Updating", Tone::Accent)),
+                tr_args(
+                    "settings-remote-updating-status",
+                    [("running", (running).to_string().into())],
+                )
+                .to_string(),
+                Some(("settings-remote-updating", Tone::Accent)),
             ),
             (UpdateState::RestartRequired, _) => (
-                format!("{running} · restart needed there"),
-                Some(("Restart needed", Tone::Warning)),
+                tr_args(
+                    "settings-remote-restart-needed-status",
+                    [("running", (running).to_string().into())],
+                )
+                .to_string(),
+                Some(("settings-remote-restart-needed", Tone::Warning)),
             ),
             (UpdateState::Error, _) => (
                 running.clone(),
-                Some(("Updater needs attention", Tone::Warning)),
+                Some(("settings-remote-updater-needs-attention", Tone::Warning)),
             ),
             _ => (running.clone(), None),
         };
@@ -358,17 +433,28 @@ impl ComputerUpdate {
             let target = version_label(&attempt.request.target.version);
             match attempt.phase {
                 InstallPhase::Sending => {
-                    self.status_line = format!("{running} · sending update…");
-                    self.badge = Some(("Updating", Tone::Accent));
+                    self.status_line = tr_args(
+                        "settings-remote-sending-update",
+                        [("running", (running).to_string().into())],
+                    )
+                    .to_string();
+                    self.badge = Some(("settings-remote-updating", Tone::Accent));
                 }
                 InstallPhase::Accepted => {
-                    self.status_line = format!("{running} · updating to {target}…");
-                    self.badge = Some(("Updating", Tone::Accent));
-                    self.note = Some((attempt.label.clone(), Tone::Muted));
+                    self.status_line = tr_args(
+                        "settings-remote-updating-version",
+                        [
+                            ("running", (running).to_string().into()),
+                            ("target", (target).to_string().into()),
+                        ],
+                    )
+                    .to_string();
+                    self.badge = Some(("settings-remote-updating", Tone::Accent));
+                    self.note = Some((attempt.label.to_string(), Tone::Muted));
                 }
                 InstallPhase::Uncertain => {
-                    self.badge = Some(("Unconfirmed", Tone::Warning));
-                    self.note = Some((attempt.label.clone(), Tone::Warning));
+                    self.badge = Some(("settings-remote-unconfirmed", Tone::Warning));
+                    self.note = Some((attempt.label.to_string(), Tone::Warning));
                     self.action = CardAction::CheckAgain;
                 }
                 // This view's own declined request explains itself until a
@@ -379,7 +465,7 @@ impl ComputerUpdate {
                         || (offered == Some(&attempt.request.target)
                             && !info.running.matches_release(&attempt.request.target)) =>
                 {
-                    self.note = Some((attempt.label.clone(), Tone::Error));
+                    self.note = Some((attempt.label.to_string(), Tone::Error));
                 }
                 // A past success is history once its target runs: say nothing.
                 InstallPhase::Succeeded | InstallPhase::Failed => {}
@@ -406,7 +492,9 @@ impl ComputerUpdate {
         // together: an offered update or one in progress says enough.
         if self.note.is_none()
             && self.action == CardAction::None
-            && self.badge.is_none_or(|(label, _)| label == "Up to date")
+            && self
+                .badge
+                .is_none_or(|(label, _)| label == "settings-remote-up-to-date")
             && offered.is_none()
             && let Some(note) = version_note(info, CLIENT_VERSION)
         {
@@ -429,7 +517,7 @@ impl ComputerUpdate {
                     target: operation.target.clone(),
                 },
                 phase: InstallPhase::Uncertain,
-                label: UNCONFIRMED_INSTALL.into(),
+                label: UiText::key(UNCONFIRMED_INSTALL),
                 from_receipt: true,
             });
         }
@@ -459,28 +547,38 @@ impl ComputerUpdate {
         match operation.state {
             OperationState::PendingAck => {
                 attempt.phase = InstallPhase::Accepted;
-                attempt.label = "Waiting for it to acknowledge. Nothing has started.".into();
+                attempt.label = UiText::key(
+                    "settings-remote-waiting-for-it-to-acknowledge-nothing-has-started",
+                );
             }
             OperationState::Queued | OperationState::Installing => {
                 attempt.phase = InstallPhase::Accepted;
-                attempt.label = ACCEPTED_INSTALL.into();
+                attempt.label = UiText::key(ACCEPTED_INSTALL);
             }
             OperationState::Succeeded => {
                 attempt.phase = InstallPhase::Succeeded;
-                attempt.label = format!("Updated to {target}.");
+                attempt.label = UiText::message(
+                    "settings-remote-updated",
+                    [("target", (target).to_string().into())],
+                );
             }
             OperationState::Failed => {
                 attempt.phase = InstallPhase::Failed;
-                attempt.label = format!("The update to {target} didn’t finish.");
+                attempt.label = UiText::message(
+                    "settings-remote-update-incomplete",
+                    [("target", (target).to_string().into())],
+                );
             }
             OperationState::Unknown => {}
         }
     }
 }
 
-const ACCEPTED_INSTALL: &str = "It restarts when done. Check again once it’s back.";
+const ACCEPTED_INSTALL: &str = "settings-remote-it-restarts-when-done-check-again-once-it-s-back";
 
 pub struct RemoteScreen {
+    locale: fluent_templates::LanguageIdentifier,
+    messages: crate::ui::i18n::MessageCache,
     backend: Arc<AgentBackend>,
     account: String,
     active: bool,
@@ -493,7 +591,7 @@ pub struct RemoteScreen {
     local_name_input: Option<Entity<TextInput>>,
     local_code: Option<(String, Instant)>,
     error: Option<String>,
-    notice: Option<String>,
+    notice: Option<UiText>,
     busy: Option<&'static str>,
     computer_updates: HashMap<String, ComputerUpdate>,
     next_update_generation: u64,
@@ -506,6 +604,19 @@ impl EventEmitter<ComputersChanged> for RemoteScreen {}
 impl EventEmitter<ComputerNamed> for RemoteScreen {}
 
 impl RemoteScreen {
+    fn display_name(&self, key: &str, advertised: &str, alias: &str) -> String {
+        if alias.trim().is_empty() && advertised == "Maple computer" {
+            self.messages
+                .get(
+                    "settings-computer-name",
+                    [("id", key.chars().take(8).collect::<String>().into())],
+                )
+                .to_string()
+        } else {
+            computer_name(key, advertised, alias)
+        }
+    }
+
     pub fn new(
         backend: Arc<AgentBackend>,
         account: String,
@@ -515,7 +626,7 @@ impl RemoteScreen {
     ) -> Self {
         let weak = cx.entity().downgrade();
         let code_input = cx.new(|cx| {
-            TextInput::new("Eight-character pairing code", cx)
+            TextInput::localized("settings-remote-eight-character-pairing-code", cx)
                 .pairing_code()
                 .on_enter(move |_, _, cx| {
                     let weak = weak.clone();
@@ -526,6 +637,8 @@ impl RemoteScreen {
                 })
         });
         let mut screen = Self {
+            locale: crate::ui::i18n::current_locale(),
+            messages: Default::default(),
             backend,
             account,
             active,
@@ -813,11 +926,28 @@ impl RemoteScreen {
             peer,
             grant,
             generation: update.generation,
-            title: format!("Update {name} to {version}?"),
-            action_label: format!("Update {name}"),
-            detail: format!(
-                "{name} stops its running tasks, installs {version} and restarts. Remote access may not return; if it doesn’t, open Maple on {name} directly. This computer stays on v{CLIENT_VERSION} and won’t restart."
-            ),
+            title: tr_args(
+                "settings-remote-update-confirm-title",
+                [
+                    ("name", (name).to_string().into()),
+                    ("version", (version).to_string().into()),
+                ],
+            )
+            .to_string(),
+            action_label: tr_args(
+                "settings-remote-update-action",
+                [("name", (name).to_string().into())],
+            )
+            .to_string(),
+            detail: tr_args(
+                "settings-remote-update-confirm-detail",
+                [
+                    ("name", (name).to_string().into()),
+                    ("version", (version).to_string().into()),
+                    ("client-version", (CLIENT_VERSION).to_string().into()),
+                ],
+            )
+            .to_string(),
             request: InstallRequest {
                 operation_id: uuid::Uuid::new_v4().to_string(),
                 target,
@@ -841,7 +971,9 @@ impl RemoteScreen {
     fn take_install_intent(&mut self) -> Option<InstallIntent> {
         let confirmation = self.install_confirmation.take()?;
         if !self.confirmation_is_current(&confirmation) {
-            self.notice = Some("This computer’s update or pairing changed. Refresh its status before trying again.".into());
+            self.notice = Some(UiText::key(
+                "settings-remote-this-computer-s-update-or-pairing-changed-refresh-its-status-befo",
+            ));
             return None;
         }
         Some(InstallIntent {
@@ -874,7 +1006,7 @@ impl RemoteScreen {
         update.attempt = Some(InstallAttempt {
             request: request.clone(),
             phase: InstallPhase::Sending,
-            label: "Sending the update request…".into(),
+            label: UiText::key("settings-remote-sending-the-update-request"),
             from_receipt: false,
         });
         update.refresh_presentation();
@@ -924,16 +1056,16 @@ impl RemoteScreen {
                     && receipt.target == request.target =>
             {
                 attempt.phase = InstallPhase::Accepted;
-                attempt.label = ACCEPTED_INSTALL.into();
+                attempt.label = UiText::key(ACCEPTED_INSTALL);
             }
             Ok(InstallReply::Refused { reason }) => {
                 attempt.phase = InstallPhase::Failed;
-                attempt.label = format!("Not updated. {}", reason.message());
+                attempt.label = presentation::refused(reason);
                 update.check_required = true;
             }
             _ => {
                 attempt.phase = InstallPhase::Uncertain;
-                attempt.label = UNCONFIRMED_INSTALL.into();
+                attempt.label = UiText::key(UNCONFIRMED_INSTALL);
             }
         }
         update.refresh_presentation();
@@ -970,8 +1102,9 @@ impl RemoteScreen {
             self.clear_local_code();
         }
         if paired_controller {
-            self.notice =
-                Some("Computer paired. It can now use this computer’s projects and tools.".into());
+            self.notice = Some(UiText::key(
+                "settings-remote-computer-paired-it-can-now-use-this-computer-s-projects-and-tools",
+            ));
         }
         if self
             .selected_device
@@ -1007,7 +1140,7 @@ impl RemoteScreen {
             });
             if outgoing_changed && attempt.phase == InstallPhase::Sending {
                 attempt.phase = InstallPhase::Uncertain;
-                attempt.label = UNCONFIRMED_INSTALL.into();
+                attempt.label = UiText::key(UNCONFIRMED_INSTALL);
             }
             update.generation = update.generation.wrapping_add(1);
             update.phase = PeerInfoPhase::Unchecked;
@@ -1049,7 +1182,10 @@ impl RemoteScreen {
         let code =
             zeroize::Zeroizing::new(self.code_input.read(cx).text().trim().to_ascii_uppercase());
         if code.len() != 8 {
-            self.error = Some("Enter all eight characters shown on the selected computer.".into());
+            self.error = Some(
+                tr("settings-remote-enter-all-eight-characters-shown-on-the-selected-computer")
+                    .into(),
+            );
             cx.notify();
             return;
         }
@@ -1064,12 +1200,14 @@ impl RemoteScreen {
     fn rename(&mut self, key: String, current: String, cx: &mut Context<Self>) {
         let weak = cx.entity().downgrade();
         let input = cx.new(|cx| {
-            let mut input = TextInput::new("Computer name", cx).on_enter(move |_, _, cx| {
-                let weak = weak.clone();
-                cx.defer(move |cx| {
-                    weak.update(cx, |screen, cx| screen.save_name(cx)).ok();
-                });
-            });
+            let mut input = TextInput::localized("settings-remote-computer-name", cx).on_enter(
+                move |_, _, cx| {
+                    let weak = weak.clone();
+                    cx.defer(move |cx| {
+                        weak.update(cx, |screen, cx| screen.save_name(cx)).ok();
+                    });
+                },
+            );
             input.set_text(&current, cx);
             input
         });
@@ -1084,13 +1222,15 @@ impl RemoteScreen {
         let current = status.name.clone();
         let weak = cx.entity().downgrade();
         let input = cx.new(|cx| {
-            let mut input = TextInput::new("Computer name", cx).on_enter(move |_, _, cx| {
-                let weak = weak.clone();
-                cx.defer(move |cx| {
-                    weak.update(cx, |screen, cx| screen.save_this_computer_name(cx))
-                        .ok();
-                });
-            });
+            let mut input = TextInput::localized("settings-remote-computer-name", cx).on_enter(
+                move |_, _, cx| {
+                    let weak = weak.clone();
+                    cx.defer(move |cx| {
+                        weak.update(cx, |screen, cx| screen.save_this_computer_name(cx))
+                            .ok();
+                    });
+                },
+            );
             input.set_text(&current, cx);
             input
         });
@@ -1119,20 +1259,24 @@ impl RemoteScreen {
         };
         let name = input.read(cx).text().trim().to_string();
         if name.is_empty() || name.chars().count() > 64 || name.chars().any(char::is_control) {
-            self.error = Some("Use a computer name between 1 and 64 characters.".into());
+            self.error =
+                Some(tr("settings-remote-use-a-computer-name-between-1-and-64-characters").into());
             cx.notify();
             return;
         }
+        let Some(user) = self.backend.saved_user_id() else {
+            self.error = Some(tr("settings-remote-sign-in-before-naming-a-remote-computer").into());
+            cx.notify();
+            return;
+        };
         let key = key.clone();
         self.names.insert(key.clone(), name.clone());
         self.renaming = None;
         self.error = None;
         let backend = self.backend.clone();
-        let user = backend.saved_user_id();
         let saved_key = key.clone();
         let saved_name = name.clone();
         let request = self.backend.spawn(async move {
-            let user = user.ok_or("Sign in before naming a remote computer")?;
             backend
                 .set_remote_sidebar(
                     &user,
@@ -1142,9 +1286,9 @@ impl RemoteScreen {
                 .await
         });
         let bridge = cx.spawn(async move |this, cx| {
-            let result = request
-                .await
-                .unwrap_or_else(|_| Err("Could not save the computer name".into()));
+            let result = request.await.unwrap_or_else(|_| {
+                Err(tr("settings-remote-could-not-save-the-computer-name").into())
+            });
             if let Err(error) = result {
                 this.update(cx, |screen, cx| {
                     screen.error = Some(error);
@@ -1162,9 +1306,9 @@ impl RemoteScreen {
             return;
         }
         self.busy = Some(if discover {
-            "Finding computers…"
+            "settings-remote-finding-computers"
         } else {
-            "Updating remote settings…"
+            "settings-remote-updating-remote-settings"
         });
         if discover {
             self.clear_selection(cx);
@@ -1218,10 +1362,10 @@ impl RemoteScreen {
             return;
         }
         self.busy = Some(match method {
-            "remote_begin_pairing" => "Preparing pairing code…",
-            "remote_pair" | "remote_reconcile" => "Pairing computer…",
-            "remote_revoke" => "Unpairing computer…",
-            _ => "Updating remote settings…",
+            "remote_begin_pairing" => "settings-remote-preparing-pairing-code",
+            "remote_pair" | "remote_reconcile" => "settings-remote-pairing-computer",
+            "remote_revoke" => "settings-remote-unpairing-computer",
+            _ => "settings-remote-updating-remote-settings",
         });
         self.error = None;
         self.notice = None;
@@ -1248,7 +1392,10 @@ impl RemoteScreen {
                                     ))
                                 }
                                 Err(_) => {
-                                    screen.error = Some("Could not read the pairing window".into());
+                                    screen.error = Some(
+                                        tr("settings-remote-could-not-read-the-pairing-window")
+                                            .into(),
+                                    );
                                     cx.notify();
                                     return;
                                 }
@@ -1257,15 +1404,16 @@ impl RemoteScreen {
                             screen.clear_local_code();
                         } else if method == "remote_pair" || method == "remote_reconcile" {
                             screen.clear_selection(cx);
-                            screen.notice = Some(
-                                "Computer paired. Its projects are now available in the sidebar."
-                                    .into(),
-                            );
+                            screen.notice = Some(UiText::key(
+                                "settings-remote-computer-paired-its-projects-are-now-available-in-the-sidebar",
+                            ));
                         } else if method == "remote_revoke" {
-                            screen.notice = Some("Computer unpaired.".into());
+                            screen.notice = Some(UiText::key("settings-remote-computer-unpaired"));
                         } else if method == "remote_set_name" {
                             screen.local_name_input = None;
-                            screen.notice = Some("Computer name saved. Other computers pick it up when they refresh devices or reconnect.".into());
+                            screen.notice = Some(UiText::key(
+                                "settings-remote-computer-name-saved-other-computers-pick-it-up-when-they-refresh",
+                            ));
                         }
                         screen.refresh(false, cx);
                     }
@@ -1285,6 +1433,13 @@ impl Drop for RemoteScreen {
 }
 impl Render for RemoteScreen {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        let locale = crate::ui::i18n::current_locale();
+        if self.locale != locale {
+            self.locale = locale;
+            for update in self.computer_updates.values_mut() {
+                update.refresh_presentation();
+            }
+        }
         self.popup.sync_focus(window, cx);
         div()
             .id("remote-devices")
@@ -1292,13 +1447,14 @@ impl Render for RemoteScreen {
             .flex()
             .flex_col()
             .gap_4()
-            .child(div().text_lg().child("Remote computers"))
+            .child(div().text_lg().child(tr("settings-remote-remote-computers")))
             .child(
                 div().text_color(gpui::rgb(theme::text_secondary())).child(
-                    "Work on another computer, or allow a paired computer to work on this one.",
+                    tr("settings-remote-work-on-another-computer-or-allow-a-paired-computer-to-work-on-th"),
                 ),
             )
-            .when_some(self.busy, |view, message| {
+            .when_some(self.busy, |view, key| {
+                let message = tr(key);
                 view.child(div().text_sm().child(message))
             })
             .when_some(self.error.as_ref(), |view, error| {
@@ -1328,13 +1484,13 @@ impl RemoteScreen {
     fn render_this_computer(&self, cx: &mut Context<Self>) -> Div {
         let enabled = self.status.as_ref().is_some_and(|s| s.enabled);
         let access = if self.status.is_none() {
-            "Loading…"
+            tr("settings-remote-loading")
         } else if enabled && !self.status.as_ref().is_some_and(|s| s.ready) {
-            "Starting. Waiting for a connection…"
+            tr("settings-remote-starting-waiting-for-a-connection")
         } else if enabled {
-            "On. Only paired computers can connect."
+            tr("settings-remote-on-only-paired-computers-can-connect")
         } else {
-            "Off. Other computers can’t connect here."
+            tr("settings-remote-off-other-computers-can-t-connect-here")
         };
         div()
             .flex()
@@ -1346,14 +1502,14 @@ impl RemoteScreen {
                     .items_center()
                     .justify_between()
                     .gap_4()
-                    .child(setting_copy("Remote access", access))
+                    .child(setting_copy(tr("settings-remote-remote-access"), access))
                     .when(self.status.is_some(), |row| {
                         row.child(
                             widgets::switch("remote-enable", enabled)
                                 .aria_label(if enabled {
-                                    "Turn off remote access"
+                                    tr("settings-remote-turn-off-remote-access")
                                 } else {
-                                    "Enable remote access"
+                                    tr("settings-remote-enable-remote-access")
                                 })
                                 .on_click(cx.listener(move |screen, _, _, cx| {
                                     screen.action("remote_enable", serde_json::json!([!enabled]), cx)
@@ -1368,11 +1524,11 @@ impl RemoteScreen {
                         .items_center()
                         .justify_between()
                         .gap_4()
-                        .child(setting_copy(&status.name, "This computer’s name on your other computers."))
+                        .child(setting_copy(&status.name, tr("settings-remote-this-computer-s-name-on-your-other-computers")))
                         .child(
                             widgets::ghost_button("rename-this-computer")
-                                .aria_label("Rename this computer")
-                                .child("Rename")
+                                .aria_label(tr("settings-remote-rename-this-computer"))
+                                .child(tr("settings-remote-rename"))
                                 .debug_selector(|| "rename-this-computer".to_string())
                                 .on_click(cx.listener(|screen, _, window, cx| {
                                     screen.rename_this_computer(window, cx)
@@ -1393,16 +1549,16 @@ impl RemoteScreen {
                                     .child(widgets::input_frame().flex_1().min_w_0().child(input.clone()))
                                     .child(
                                         widgets::secondary_button("save-this-computer-name")
-                                            .aria_label("Save computer name")
-                                            .child("Save")
+                                            .aria_label(tr("settings-remote-save-computer-name"))
+                                            .child(tr("settings-remote-save"))
                                             .on_click(cx.listener(|screen, _, _, cx| {
                                                 screen.save_this_computer_name(cx)
                                             })),
                                     )
                                     .child(
                                         widgets::ghost_button("cancel-this-computer-name")
-                                            .aria_label("Cancel rename")
-                                            .child("Cancel")
+                                            .aria_label(tr("settings-remote-cancel-rename"))
+                                            .child(tr("settings-remote-cancel"))
                                             .debug_selector(|| "cancel-this-computer-name".to_string())
                                             .on_click(cx.listener(|screen, _, _, cx| {
                                                 screen.local_name_input = None;
@@ -1415,7 +1571,7 @@ impl RemoteScreen {
                                 div()
                                     .text_xs()
                                     .text_color(gpui::rgb(theme::text_muted()))
-                                    .child("Shown to your other computers. This doesn’t change the system hostname."),
+                                    .child(tr("settings-remote-shown-to-your-other-computers-this-doesn-t-change-the-system-host")),
                             ),
                     ),
                 })
@@ -1428,13 +1584,13 @@ impl RemoteScreen {
                         .justify_between()
                         .gap_4()
                         .child(setting_copy(
-                            "Pair a new computer",
-                            "Show a one-time code here, then enter it on the other computer.",
+                            tr("settings-remote-pair-a-new-computer"),
+                            tr("settings-remote-show-a-one-time-code-here-then-enter-it-on-the-other-computer"),
                         ))
                         .child(
                             widgets::primary_button("pairing-window")
-                                .aria_label("Show pairing code")
-                                .child("Show pairing code")
+                                .aria_label(tr("settings-remote-show-pairing-code"))
+                                .child(tr("settings-remote-show-pairing-code"))
                                 .on_click(cx.listener(|screen, _, _, cx| {
                                     screen.action("remote_begin_pairing", serde_json::json!([]), cx)
                                 })),
@@ -1446,8 +1602,8 @@ impl RemoteScreen {
                             .flex_col()
                             .gap_3()
                             .child(setting_copy(
-                                "Pair a new computer",
-                                "On the other computer, choose Find computers, select this one, and enter this code.",
+                                tr("settings-remote-pair-a-new-computer"),
+                                tr("settings-remote-on-the-other-computer-choose-find-computers-select-this-one-and-e"),
                             ))
                             .child(pairing_code_boxes(code))
                             .child(
@@ -1460,16 +1616,12 @@ impl RemoteScreen {
                                         div()
                                             .text_xs()
                                             .text_color(gpui::rgb(theme::text_muted()))
-                                            .child(format!(
-                                                "One attempt · expires in {}:{:02}",
-                                                left / 60,
-                                                left % 60
-                                            )),
+                                            .child(self.messages.get("settings-pairing-expiry", [("minutes", (left / 60).to_string().into()), ("seconds", (format!("{:02}", left % 60)).to_string().into())]).to_string()),
                                     )
                                     .child(
                                         widgets::secondary_button("cancel-window")
-                                            .aria_label("Cancel pairing")
-                                            .child("Cancel pairing")
+                                            .aria_label(tr("settings-remote-cancel-pairing"))
+                                            .child(tr("settings-remote-cancel-pairing"))
                                             .on_click(cx.listener(|screen, _, _, cx| {
                                                 screen.action("remote_cancel_pairing", serde_json::json!([]), cx)
                                             })),
@@ -1498,13 +1650,13 @@ impl RemoteScreen {
                     .justify_between()
                     .gap_4()
                     .child(setting_copy(
-                        "Connect to another computer",
-                        "Find computers signed in to your account. Turn on remote access there and show a pairing code.",
+                        tr("settings-remote-connect-to-another-computer"),
+                        tr("settings-remote-find-computers-signed-in-to-your-account-turn-on-remote-access-th"),
                     ))
                     .child(
                         widgets::secondary_button("discover")
-                            .aria_label(if searched { "Refresh devices" } else { "Find computers" })
-                            .child(if searched { "Search again" } else { "Find computers" })
+                            .aria_label(if searched { tr("settings-remote-refresh-devices") } else { tr("settings-remote-find-computers") })
+                            .child(if searched { tr("settings-remote-search-again") } else { tr("settings-remote-find-computers") })
                             .on_click(cx.listener(|screen, _, _, cx| screen.refresh(true, cx))),
                     ),
             )
@@ -1513,7 +1665,7 @@ impl RemoteScreen {
                     div()
                         .text_xs()
                         .text_color(gpui::rgb(theme::text_muted()))
-                        .child("No new computers found. Check it’s online and signed in, then search again."),
+                        .child(tr("settings-remote-no-new-computers-found-check-it-s-online-and-signed-in-then-searc")),
                 )
             })
             .children(
@@ -1549,7 +1701,7 @@ impl RemoteScreen {
                             .flex()
                             .flex_col()
                             .gap_1()
-                            .child(computer_name(
+                            .child(self.display_name(
                                 &endpoint,
                                 &device.name,
                                 self.names.get(&endpoint).map_or("", String::as_str),
@@ -1559,9 +1711,9 @@ impl RemoteScreen {
                                     .text_sm()
                                     .text_color(gpui::rgb(theme::text_secondary()))
                                     .child(if ready {
-                                        "Ready to pair"
+                                        tr("settings-remote-ready-to-pair")
                                     } else {
-                                        "Show a pairing code on this computer, then refresh."
+                                        tr("settings-remote-show-a-pairing-code-on-this-computer-then-refresh")
                                     }),
                             ),
                     )
@@ -1572,8 +1724,8 @@ impl RemoteScreen {
                                     let endpoint = endpoint.clone();
                                     move || format!("select-{endpoint}")
                                 })
-                                .aria_label("Enter code")
-                                .child("Enter code")
+                                .aria_label(tr("settings-remote-enter-code"))
+                                .child(tr("settings-remote-enter-code"))
                                 .on_click(cx.listener(move |screen, _, window, cx| {
                                     screen.select_device(endpoint.clone(), window, cx)
                                 })),
@@ -1583,8 +1735,8 @@ impl RemoteScreen {
                         row.child(
                             widgets::ghost_button("cancel-code")
                                 .debug_selector(|| "cancel-code".to_string())
-                                .aria_label("Cancel code entry")
-                                .child("Cancel")
+                                .aria_label(tr("settings-remote-cancel-code-entry"))
+                                .child(tr("settings-remote-cancel"))
                                 .on_click(cx.listener(|screen, _, _, cx| {
                                     if screen.busy.is_none() {
                                         screen.clear_selection(cx);
@@ -1601,7 +1753,7 @@ impl RemoteScreen {
                         .flex()
                         .flex_col()
                         .gap_2()
-                        .child(div().text_sm().child("Pairing code from this computer"))
+                        .child(div().text_sm().child(tr("settings-remote-pairing-code-from-this-computer")))
                         .child(
                             div()
                                 .flex()
@@ -1617,8 +1769,8 @@ impl RemoteScreen {
                                 )
                                 .child(
                                     widgets::primary_button("pair-selected")
-                                        .aria_label("Pair computer")
-                                        .child("Pair computer")
+                                        .aria_label(tr("settings-remote-pair-computer"))
+                                        .child(tr("settings-remote-pair-computer"))
                                         .on_click(
                                             cx.listener(|screen, _, _, cx| {
                                                 screen.pair_selected(cx)
@@ -1631,7 +1783,7 @@ impl RemoteScreen {
                                 .text_sm()
                                 .text_color(gpui::rgb(theme::text_muted()))
                                 .child(
-                                    "Type or paste its eight-character code. The dash is optional.",
+                                    tr("settings-remote-type-or-paste-its-eight-character-code-the-dash-is-optional"),
                                 ),
                         ),
                 )
@@ -1643,7 +1795,13 @@ impl RemoteScreen {
             .flex()
             .flex_col()
             .gap_2()
-            .child(div().pt_2().pb_1().text_lg().child("Paired computers"))
+            .child(
+                div()
+                    .pt_2()
+                    .pb_1()
+                    .text_lg()
+                    .child(tr("settings-remote-paired-computers")),
+            )
             .children(
                 self.status
                     .iter()
@@ -1662,7 +1820,7 @@ impl RemoteScreen {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) -> gpui::Stateful<Div> {
-        let name = computer_name(
+        let name = self.display_name(
             key,
             &peer.name,
             self.names.get(key).map_or("", String::as_str),
@@ -1681,17 +1839,20 @@ impl RemoteScreen {
                 update.note.clone(),
                 update.action,
             ),
-            None if peer.can_connect => {
-                (None, "Version unknown".to_owned(), None, CardAction::None)
-            }
+            None if peer.can_connect => (
+                None,
+                tr("settings-remote-version-unknown").to_string(),
+                None,
+                CardAction::None,
+            ),
             None => (
                 None,
                 if peer.controls_this_computer {
-                    "Can use this computer’s projects and tools"
+                    tr("settings-remote-can-use-this-computer-s-projects-and-tools")
                 } else {
-                    "Pairing needs confirmation"
+                    tr("settings-remote-pairing-needs-confirmation")
                 }
-                .to_owned(),
+                .to_string(),
                 None,
                 CardAction::None,
             ),
@@ -1708,9 +1869,10 @@ impl RemoteScreen {
             })
         {
             note = Some((
-                crate::remote::update::BlockedReason::PairingConfirmationRequired
-                    .message()
-                    .to_owned(),
+                presentation::blocked(
+                    crate::remote::update::BlockedReason::PairingConfirmationRequired,
+                )
+                .to_string(),
                 Tone::Muted,
             ));
         }
@@ -1729,14 +1891,14 @@ impl RemoteScreen {
                 .child(widgets::input_frame().flex_1().min_w_0().child(input))
                 .child(
                     widgets::secondary_button(SharedString::from(format!("save-name-{key}")))
-                        .aria_label("Save name")
-                        .child("Save")
+                        .aria_label(tr("settings-remote-save-name"))
+                        .child(tr("settings-remote-save"))
                         .on_click(cx.listener(|screen, _, _, cx| screen.save_name(cx))),
                 )
                 .child(
                     widgets::ghost_button(SharedString::from(format!("cancel-name-{key}")))
-                        .aria_label("Cancel rename")
-                        .child("Cancel")
+                        .aria_label(tr("settings-remote-cancel-rename"))
+                        .child(tr("settings-remote-cancel"))
                         .on_click(cx.listener(|screen, _, _, cx| {
                             screen.renaming = None;
                             screen.error = None;
@@ -1759,7 +1921,7 @@ impl RemoteScreen {
                         .child(name.clone()),
                 )
                 .when_some(badge, |row, (label, tone)| {
-                    row.child(widgets::status_badge(label, tone.color()))
+                    row.child(widgets::status_badge(tr(label), tone.color()))
                 }),
         };
         let details = div()
@@ -1819,8 +1981,15 @@ impl RemoteScreen {
                                 let key = key.to_owned();
                                 move || format!("update-remote-{key}")
                             })
-                            .aria_label(format!("Update {name}"))
-                            .child("Update")
+                            .aria_label(
+                                self.messages
+                                    .get(
+                                        "settings-remote-update-action",
+                                        [("name", (name).to_string().into())],
+                                    )
+                                    .to_string(),
+                            )
+                            .child(tr("settings-remote-update"))
                             .on_click(cx.listener(
                                 move |screen, _, window, cx| {
                                     screen.ask_remote_install(install.clone(), window, cx)
@@ -1836,8 +2005,8 @@ impl RemoteScreen {
                                 let key = key.to_owned();
                                 move || format!("check-again-{key}")
                             })
-                            .aria_label("Check this computer for updates again")
-                            .child("Check again")
+                            .aria_label(tr("settings-remote-check-this-computer-for-updates-again"))
+                            .child(tr("settings-remote-check-again"))
                             .on_click(cx.listener(move |screen, _, _, cx| {
                                 screen.check_peer_update(check.clone(), cx)
                             })),
@@ -1846,8 +2015,8 @@ impl RemoteScreen {
                 .when(peer.pending_confirmation.is_some(), |row| {
                     row.child(
                         widgets::secondary_button(SharedString::from(format!("confirm-{key}")))
-                            .aria_label("Confirm previous pairing")
-                            .child("Confirm pairing")
+                            .aria_label(tr("settings-remote-confirm-previous-pairing"))
+                            .child(tr("settings-remote-confirm-pairing"))
                             .on_click(cx.listener(move |screen, _, _, cx| {
                                 screen.action("remote_reconcile", serde_json::json!([confirm]), cx)
                             })),
@@ -1906,13 +2075,20 @@ impl RemoteScreen {
             let rename = key.to_owned();
             let rename_name = name.to_owned();
             let revoke = key.to_owned();
-            let mut menu = Menu::new(SharedString::from(format!("computer-menu-{key}")), px(200.))
-                .label(format!("{name} options"));
+            let mut menu = Menu::new(SharedString::from(format!("computer-menu-{key}")), px(240.))
+                .label(
+                    self.messages
+                        .get(
+                            "settings-computer-options",
+                            [("name", (name).to_string().into())],
+                        )
+                        .to_string(),
+                );
             if can_connect {
                 menu = menu.item(
                     MenuItem::new(
                         SharedString::from(format!("refresh-update-{key}")),
-                        "Check for updates",
+                        tr("settings-remote-check-for-updates"),
                         move |screen: &mut Self, _, cx| screen.check_peer_update(check.clone(), cx),
                     )
                     .icon("download")
@@ -1923,7 +2099,7 @@ impl RemoteScreen {
                 .item(
                     MenuItem::new(
                         SharedString::from(format!("rename-{key}")),
-                        "Rename…",
+                        tr("settings-remote-rename-more"),
                         move |screen: &mut Self, window, cx| {
                             screen.rename(rename.clone(), rename_name.clone(), cx);
                             if let Some((_, input)) = &screen.renaming {
@@ -1937,7 +2113,7 @@ impl RemoteScreen {
                 .item(
                     MenuItem::new(
                         SharedString::from(format!("revoke-{key}")),
-                        "Unpair",
+                        tr("settings-remote-unpair"),
                         move |screen: &mut Self, _, cx| {
                             screen.action("remote_revoke", serde_json::json!([revoke]), cx)
                         },
@@ -1956,7 +2132,7 @@ impl RemoteScreen {
                     widgets::icon_button(
                         SharedString::from(format!("computer-more-{key}")),
                         "ellipsis",
-                        "More",
+                        tr("settings-remote-more"),
                         px(16.),
                         theme::text_secondary(),
                     )
@@ -1982,7 +2158,7 @@ impl RemoteScreen {
             .id("remote-update-confirmation")
             .debug_selector(|| "remote-update-confirmation".into())
             .role(gpui::Role::Dialog)
-            .aria_label("Experimental remote update")
+            .aria_label(tr("settings-remote-experimental-remote-update"))
             .key_context("Dialog")
             .w_full()
             .min_w_0()
@@ -2039,7 +2215,7 @@ impl RemoteScreen {
                             .child(confirmation.title.clone()),
                     )
                     .child(widgets::status_badge(
-                        "Experimental",
+                        tr("settings-remote-experimental"),
                         theme::status_warning(),
                     )),
             )
@@ -2064,7 +2240,7 @@ impl RemoteScreen {
                             .debug_selector(|| "cancel-remote-update".into())
                             .track_focus(&confirmation.cancel_focus)
                             .focus_visible(widgets::focus_ring)
-                            .child("Cancel")
+                            .child(gpui::text!(tr("settings-remote-cancel")))
                             .on_click(cx.listener(|screen, _, window, cx| {
                                 screen.cancel_remote_install(window, cx)
                             })),
@@ -2075,7 +2251,7 @@ impl RemoteScreen {
                             .aria_label(confirmation.action_label.clone())
                             .track_focus(&confirmation.install_focus)
                             .focus_visible(widgets::focus_ring)
-                            .child("Update")
+                            .child(tr("settings-remote-update"))
                             .on_click(cx.listener(|screen, _, window, cx| {
                                 screen.confirm_remote_install(window, cx)
                             })),

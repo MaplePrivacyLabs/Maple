@@ -93,6 +93,13 @@ contained host. The `claude_native_*` tests re-execute the
 Rust test binary as a CLI fixture and need no Claude account or inference
 request. Keep fixture launch and environment setup shared with the Codex tests.
 
+## Remote parity
+
+Chat and agent features are remote-first. Before calling task work done, follow
+[adding task features](../../../apps/maple-agent/docs/remote-access.md#adding-task-features):
+the remote method, its capability, a translated refusal for older hosts, and
+tests of both sides.
+
 ## Security and publication
 
 Apply `$review-maple-security`'s trust-boundary and evidence methodology to the
@@ -108,3 +115,13 @@ platform ([Agent updates](../../../apps/maple-agent/docs/updates.md)). Releasing
 is a production action, so run it only when the owner asks. Installed clients
 parse the feed strictly; keep the wire contract in that doc unchanged. See
 [desktop builds](../../../apps/maple-agent/docs/desktop-builds.md) for packaging.
+
+## Localization
+
+New Agent UI labels use `ui::i18n` and the embedded Fluent catalogs; follow
+[the localization contract](../../../apps/maple-agent/docs/localization.md).
+Plain labels are cached; parameterized messages are formatted on state changes.
+Language changes apply live; invalidate cached translated text when the locale changes. Preserve machine identifiers, model-facing
+text, user content and persisted timeline text. Do not translate host/ACP errors
+in place. Expand the converted-module guard with each extraction, and require
+platform/font/packaging evidence before enabling another locale.

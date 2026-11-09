@@ -162,6 +162,8 @@ pub enum Method {
     SetIntegrationEnabled,
     SaveMcpServers,
     SetSessionWebEnabled,
+    /// Only sent to a host advertising `permission_modes_v1`.
+    SetSessionPermissionMode,
     CompactSession,
     SessionSubagents,
     CancelExternalAgent,
@@ -485,6 +487,7 @@ mod tests {
             "send_outcome",
             "cancel_run",
             "answer_question",
+            "set_session_permission_mode",
             "set_thinking_level",
             "rename_project_root",
             "browse_project_folders",

@@ -23,16 +23,16 @@ use crate::{
     web::responses::{
         context_builder::{
             load_instruction_messages, normalize_tool_call_ids_for_model, prompt_source_keys,
-            snapshot_from_metadata, snapshot_from_raw, snapshot_from_selected,
+            snapshot_from_metadata, snapshot_from_selected,
         },
         context_observability::ContextMetrics,
         handlers::ResponsesCreateRequest,
     },
     ApiError,
 };
-use attempt::{AttemptKey, SourceRaceAction, SourceRevision, StagedCheckpoint};
+use attempt::{AttemptKey, SourceRaceAction};
 use base64::{engine::general_purpose::STANDARD, Engine};
-use context::{CheckpointPayload, ContextItem, ContextItemKey, ContextItemKind};
+use context::{ActiveContext, CheckpointPayload, ContextItem, ContextItemKey, ContextItemKind};
 use executor::SummaryExecutionError;
 pub(super) use executor::{is_context_rejection, SummaryExecutor};
 use policy::CompactionPolicy;
@@ -53,8 +53,15 @@ use uuid::Uuid;
 const MAX_SUMMARY_CALLS_PER_RESPONSE: usize = 32;
 const MAX_PUBLICATION_CONFLICTS: usize = 2;
 const MAX_SOURCE_RACE_RETRIES: usize = 2;
-const MAX_PREPARATION_STEPS: usize =
-    MAX_SUMMARY_CALLS_PER_RESPONSE + MAX_PUBLICATION_CONFLICTS + MAX_SOURCE_RACE_RETRIES + 2;
+/// A provider measures with its own tokenizer, so it can reject a selection that
+/// our estimate fit. Each retry narrows the selection; the summary stays one call.
+const MAX_SUMMARY_INPUT_REDUCTIONS: usize = 2;
+const MAX_SUMMARY_SECTIONS: usize = 2;
+const MAX_PREPARATION_STEPS: usize = MAX_SUMMARY_SECTIONS
+    + MAX_SUMMARY_INPUT_REDUCTIONS
+    + MAX_PUBLICATION_CONFLICTS
+    + MAX_SOURCE_RACE_RETRIES
+    + 2;
 const ENVELOPE_VERSION: u32 = 1;
 
 /// One allowance for the entire logical Response, including all tool turns and
@@ -152,8 +159,8 @@ impl CompactionBudget {
             .non_reducing
             .lock()
             .map_err(|_| ApiError::InternalServerError)?;
-        // Each entry requires at least one paid helper call. Keep the memory
-        // bound explicit even if execution policy changes independently later.
+        // Each entry requires a paid helper call. Keep the memory bound explicit
+        // even if execution policy changes independently later.
         if attempts.len() < MAX_SUMMARY_CALLS_PER_RESPONSE {
             attempts.insert(key);
         }
@@ -447,12 +454,11 @@ fn validate_forced_progress(
 
 struct CandidateCheckpoint {
     payload: CheckpointPayload,
-    source_tokens: Vec<(ContextItemKey, usize)>,
     attempt: AttemptKey,
 }
 
-/// Summarize one bounded prefix. A non-reducing candidate may be carried only
-/// in memory into the next bounded batch; it is never published on its own.
+/// Summarize one selection. A candidate that does not reduce the prompt is never
+/// published, and its selection is not retried within this Response.
 async fn summarize_checkpoint(
     executor: &SummaryExecutor<'_>,
     checkpoint: &Option<CheckpointPayload>,
@@ -477,7 +483,7 @@ async fn summarize_checkpoint(
         has_previous_summary = work.previous_summary.is_some(),
         "Responses compaction candidate started"
     );
-    // The identity remains stable over non-reducing batches and publication
+    // The identity remains stable over narrowed retries and publication
     // conflicts. Only a successfully published checkpoint completes the item.
     executor.budget.progress.begin().await;
     let summary = executor.summarize(&work, policy).await?;
@@ -490,21 +496,12 @@ fn complete_candidate(
     summary: String,
     attempt: AttemptKey,
 ) -> Result<CandidateCheckpoint, SummaryExecutionError> {
-    let source_tokens = work
-        .items
-        .iter()
-        .map(|item| (item.key, item.estimated_tokens))
-        .collect();
     let one = context::ContextPlan {
         summary_work: vec![work],
     };
     let payload = context::complete_plan(checkpoint, &one, &[summary])
         .map_err(|_| SummaryExecutionError::Unsafe(ApiError::InternalServerError))?;
-    Ok(CandidateCheckpoint {
-        payload,
-        source_tokens,
-        attempt,
-    })
+    Ok(CandidateCheckpoint { payload, attempt })
 }
 
 fn attempt_key(
@@ -521,27 +518,6 @@ fn attempt_key(
         model,
         replay,
     ))
-}
-
-fn candidate_urls(
-    snapshot: &context::ContextSnapshot,
-    opened: Option<&CheckpointEnvelope>,
-    covered: &[ContextItemKey],
-    staged: Option<&StagedCheckpoint>,
-) -> Vec<String> {
-    let mut urls = staged
-        .map(|draft| draft.allowed_urls.clone())
-        .unwrap_or_default();
-    let mut seen: HashSet<_> = urls.iter().cloned().collect();
-    for url in durable_urls(snapshot, opened, covered) {
-        if urls.len() >= super::tools::MAX_PROMPT_ALLOWED_URLS {
-            break;
-        }
-        if seen.insert(url.clone()) {
-            urls.push(url);
-        }
-    }
-    urls
 }
 
 fn finish_prompt(
@@ -569,8 +545,8 @@ fn finish_prompt(
     })
 }
 
-/// Metadata and request-owned input remain available while individual batches
-/// are hydrated. Only `complete=true` can produce a provider-ready projection.
+/// Metadata and request-owned input remain available while selected rows are
+/// hydrated. Only `project` can certify a view as a provider-ready prompt.
 struct PromptSource<'a> {
     source: &'a CompactionSnapshot,
     user_key: &'a SecretKey,
@@ -588,10 +564,9 @@ impl PromptSource<'_> {
         &self,
         raw: Vec<crate::models::responses::RawThreadMessage>,
         checkpoint: &Option<CheckpointPayload>,
-        complete: bool,
     ) -> Result<context::ContextSnapshot, ApiError> {
-        if !complete && raw.is_empty() {
-            let mut snapshot = snapshot_from_metadata(
+        let mut snapshot = if raw.is_empty() {
+            snapshot_from_metadata(
                 self.instructions.clone(),
                 self.instruction_tokens,
                 &self.source.items,
@@ -601,28 +576,22 @@ impl PromptSource<'_> {
                 self.current_response,
                 &self.source.active_response_uuids,
                 checkpoint,
-            )?;
-            snapshot.items.extend(self.incoming.iter().cloned());
-            return Ok(snapshot);
-        }
-        let builder = if complete {
-            snapshot_from_raw
+            )?
         } else {
-            snapshot_from_selected
+            snapshot_from_selected(
+                self.instructions.clone(),
+                self.instruction_tokens,
+                &self.source.items,
+                raw,
+                self.user_key,
+                self.model,
+                self.reasoning_replay,
+                self.current_user,
+                self.current_response,
+                &self.source.active_response_uuids,
+                checkpoint,
+            )?
         };
-        let mut snapshot = builder(
-            self.instructions.clone(),
-            self.instruction_tokens,
-            &self.source.items,
-            raw,
-            self.user_key,
-            self.model,
-            self.reasoning_replay,
-            self.current_user,
-            self.current_response,
-            &self.source.active_response_uuids,
-            checkpoint,
-        )?;
         snapshot.items.extend(self.incoming.iter().cloned());
         Ok(snapshot)
     }
@@ -731,6 +700,8 @@ async fn prepare_prompt_inner(
     if force {
         policy.keep_recent_tokens = 0;
     }
+    // `context_management: []` asks for an overflow rather than a shorter prompt.
+    let window = enabled.then_some(policy.input_budget);
     tracing::debug!(
         event = "responses.compaction.policy",
         enabled,
@@ -742,8 +713,8 @@ async fn prepare_prompt_inner(
     );
     let mut publication_conflicts = 0;
     let mut source_races = 0;
+    let mut input_reductions = 0;
     let mut non_reducing = false;
-    let mut staged: Option<StagedCheckpoint> = None;
     let mut fallback_only = false;
     let mut made_progress = false;
     for preparation_step in 0..MAX_PREPARATION_STEPS {
@@ -788,18 +759,7 @@ async fn prepare_prompt_inner(
         );
         let checkpoint_started = std::time::Instant::now();
         let opened = open_checkpoint(&source, user_key)?;
-        let durable_checkpoint = opened.as_ref().map(|envelope| envelope.payload.clone());
-        let revision = SourceRevision::new(&source);
-        if staged
-            .as_ref()
-            .is_some_and(|draft| !draft.matches(&revision))
-        {
-            staged = None;
-        }
-        let checkpoint = staged
-            .as_ref()
-            .map(|draft| draft.payload.clone())
-            .or_else(|| durable_checkpoint.clone());
+        let checkpoint = opened.as_ref().map(|envelope| envelope.payload.clone());
         let covered: HashSet<_> = checkpoint
             .as_ref()
             .map(covered_keys)
@@ -858,20 +818,20 @@ async fn prepare_prompt_inner(
             loader.retain(&source, &uncovered);
             loader.cached(&source)
         };
-        let mut snapshot = input.build(cached, &checkpoint, false)?;
-        if let Some(draft) = &staged {
-            draft.restore_source_tokens(&mut snapshot);
-        }
-        let planning_tokens = context::estimate_tokens(&snapshot, &checkpoint).ok();
+        let mut snapshot = input.build(cached, &checkpoint)?;
+        let active = ActiveContext::select(&snapshot, &checkpoint, window)
+            .map_err(|_| ApiError::InternalServerError)?;
+        tracing::debug!(
+            event = "responses.compaction.active_context",
+            source_items = snapshot.items.len(),
+            archived_items = active.archived_items(),
+            truncated = active.is_truncated(),
+            "Responses active context selected"
+        );
+        let planning_tokens = context::estimate_tokens(&snapshot, &checkpoint, &active).ok();
         let plan = if enabled && !fallback_only && executor.budget.optional_work_enabled(force) {
-            context::plan_batch(
-                &snapshot,
-                &checkpoint,
-                &policy,
-                force,
-                policy.summary_input_budget,
-            )
-            .map_err(|_| ApiError::InternalServerError)?
+            context::plan(&snapshot, &checkpoint, &active, &policy, force)
+                .map_err(|_| ApiError::InternalServerError)?
         } else {
             context::ContextPlan {
                 summary_work: Vec::new(),
@@ -894,8 +854,8 @@ async fn prepare_prompt_inner(
             if !needs_history_fold && executor.budget.may_retry_candidate(&key, force)? {
                 selected_attempt = Some(key);
                 planned_work.push(work);
-                // Hydrate only this bounded batch, never both a historical
-                // image batch and an active batch at the same time.
+                // Hydrate one section at a time, so a helper reads only its own
+                // selection and each section's checkpoint is durable on its own.
                 break;
             }
         }
@@ -912,6 +872,12 @@ async fn prepare_prompt_inner(
             .iter()
             .flat_map(|work| &work.items)
             .map(|item| item.source_bytes)
+            .fold(0usize, usize::saturating_add);
+        let planned_input_tokens = plan
+            .summary_work
+            .iter()
+            .flat_map(|work| &work.items)
+            .map(|item| item.estimated_tokens)
             .fold(0usize, usize::saturating_add);
         if plan.summary_work.is_empty() {
             tracing::debug!(
@@ -932,6 +898,7 @@ async fn prepare_prompt_inner(
                 trigger_tokens = policy.trigger_tokens,
                 input_budget = policy.input_budget,
                 source_items = snapshot.items.len(),
+                archived_items = active.archived_items(),
                 "Responses compaction plan requires no helper work"
             );
         } else {
@@ -942,15 +909,17 @@ async fn prepare_prompt_inner(
                 trigger_tokens = policy.trigger_tokens,
                 input_budget = policy.input_budget,
                 summary_input_budget = policy.summary_input_budget,
-                planned_batches = plan.summary_work.len(),
+                archived_items = active.archived_items(),
+                truncated = active.is_truncated(),
                 planned_items,
                 planned_source_bytes,
+                planned_input_tokens,
                 forced = force,
                 preparation_step,
                 "Responses compaction plan ready"
             );
         }
-        // Fetch only the planned batches and required current input. The raw
+        // Fetch only the planned selection and required current input. The raw
         // suffix is loaded only once we have a complete fitting main prompt.
         let selected: HashSet<_> = plan
             .summary_work
@@ -990,15 +959,12 @@ async fn prepare_prompt_inner(
                     fallback_only,
                 ) {
                     SourceRaceAction::Replan => {}
-                    SourceRaceAction::FreshFallback => {
-                        fallback_only = true;
-                        staged = None;
-                    }
+                    SourceRaceAction::FreshFallback => fallback_only = true,
                     SourceRaceAction::Fail => return Err(ApiError::InternalServerError),
                 }
                 tracing::warn!(
                     event = "responses.compaction.source_replan",
-                    phase = "planned_batch",
+                    phase = "planned_selection",
                     source_races,
                     "Responses source changed during payload read; replanning"
                 );
@@ -1019,14 +985,11 @@ async fn prepare_prompt_inner(
         for row in raw {
             raw_by_key.insert((row.message_type.clone(), row.uuid), row);
         }
-        snapshot = input.build(raw_by_key.into_values().collect(), &checkpoint, false)?;
-        if let Some(draft) = &staged {
-            draft.restore_source_tokens(&mut snapshot);
-        }
+        snapshot = input.build(raw_by_key.into_values().collect(), &checkpoint)?;
         if !plan.summary_work.is_empty() {
             validate_required_input(&snapshot, &policy)?;
         }
-        let mut original_tokens = context::estimate_tokens(&snapshot, &durable_checkpoint)
+        let mut original_tokens = context::estimate_tokens(&snapshot, &checkpoint, &active)
             .map_err(|_| ApiError::InternalServerError)?;
         if !plan.summary_work.is_empty() {
             match validate_billing_before_helpers(billing_access, original_tokens) {
@@ -1038,7 +1001,8 @@ async fn prepare_prompt_inner(
                     // complete projection before starting paid helper work.
                     let keys = prompt_source_keys(
                         &source.items,
-                        &durable_checkpoint,
+                        &checkpoint,
+                        &active,
                         input.current_user,
                         reasoning_replay,
                     );
@@ -1052,10 +1016,7 @@ async fn prepare_prompt_inner(
                                 fallback_only,
                             ) {
                                 SourceRaceAction::Replan => {}
-                                SourceRaceAction::FreshFallback => {
-                                    fallback_only = true;
-                                    staged = None;
-                                }
+                                SourceRaceAction::FreshFallback => fallback_only = true,
                                 SourceRaceAction::Fail => {
                                     return Err(ApiError::InternalServerError)
                                 }
@@ -1070,8 +1031,8 @@ async fn prepare_prompt_inner(
                         }
                         Err(_) => return Err(ApiError::InternalServerError),
                     };
-                    snapshot = input.build(raw, &durable_checkpoint, true)?;
-                    original_tokens = context::estimate_tokens(&snapshot, &durable_checkpoint)
+                    snapshot = input.build(raw, &checkpoint)?;
+                    original_tokens = context::estimate_tokens(&snapshot, &checkpoint, &active)
                         .map_err(|_| ApiError::InternalServerError)?;
                     validate_billing_before_helpers(billing_access, original_tokens)?;
                 }
@@ -1081,15 +1042,32 @@ async fn prepare_prompt_inner(
         let plan =
             context::hydrate_plan(&plan, &snapshot).map_err(|_| ApiError::InternalServerError)?;
         let mut advisory_failure = None;
-        let mut final_checkpoint = durable_checkpoint.clone();
+        let mut final_checkpoint = checkpoint.clone();
         let mut published = false;
         let mut published_urls = Vec::new();
-        // Publish each complete section/prefix before beginning another. A later
-        // helper failure retains this progress for the next request.
+        // Publish each complete section before beginning another. A later helper
+        // failure retains this progress for the next request.
         let candidate = if enabled {
             match summarize_checkpoint(executor, &checkpoint, &policy, plan, selected_attempt).await
             {
                 Ok(candidate) => candidate,
+                Err(SummaryExecutionError::InputLimit)
+                    if input_reductions < MAX_SUMMARY_INPUT_REDUCTIONS =>
+                {
+                    input_reductions += 1;
+                    policy.summary_input_budget = policy
+                        .summary_input_budget
+                        .min(planned_input_tokens)
+                        .saturating_mul(3)
+                        / 4;
+                    tracing::warn!(
+                        event = "responses.compaction.selection_narrowed",
+                        input_reductions,
+                        summary_input_budget = policy.summary_input_budget,
+                        "Responses compaction selection narrowed after an input rejection"
+                    );
+                    continue;
+                }
                 Err(error)
                     if may_attempt_uncompacted_fallback(
                         &error,
@@ -1103,11 +1081,10 @@ async fn prepare_prompt_inner(
                         error_category = error.category(),
                         original_tokens,
                         input_budget = policy.input_budget,
-                        "Responses advisory compaction failed; checking complete prompt fallback"
+                        "Responses advisory compaction failed; checking windowed prompt fallback"
                     );
-                    // Materialize and recheck the complete original prompt
-                    // before using an advisory fallback. Metadata estimates do
-                    // not authorize omitting unhydrated history.
+                    // Materialize and recheck the windowed prompt before using an
+                    // advisory fallback: an estimate alone does not prove a fit.
                     advisory_failure = Some(error);
                     None
                 }
@@ -1125,11 +1102,14 @@ async fn prepare_prompt_inner(
             None
         };
         if let Some(candidate) = candidate {
-            let next = candidate.payload;
-            let next_tokens = context::estimate_tokens(&snapshot, &Some(next.clone()))
+            let next = Some(candidate.payload);
+            let next_active = ActiveContext::select(&snapshot, &next, window)
                 .map_err(|_| ApiError::InternalServerError)?;
+            let next_tokens = context::estimate_tokens(&snapshot, &next, &next_active)
+                .map_err(|_| ApiError::InternalServerError)?;
+            let next = next.ok_or(ApiError::InternalServerError)?;
             let covered_items = covered_keys(&next);
-            let urls = candidate_urls(&snapshot, opened.as_ref(), &covered_items, staged.as_ref());
+            let urls = durable_urls(&snapshot, opened.as_ref(), &covered_items);
             if next_tokens >= original_tokens {
                 executor.budget.remember_non_reducing(candidate.attempt)?;
                 non_reducing = true;
@@ -1137,154 +1117,146 @@ async fn prepare_prompt_inner(
                     event = "responses.compaction.candidate_non_reducing",
                     original_tokens,
                     projected_tokens = next_tokens,
-                    "Responses provisional prefix needs a later bounded batch"
+                    "Responses summary would not reduce the prompt; keeping the current one"
                 );
-                if let Some(draft) = staged.as_mut() {
-                    draft.advance(next, candidate.source_tokens, urls);
-                } else {
-                    staged = Some(StagedCheckpoint::new(
-                        revision,
-                        next,
-                        candidate.source_tokens,
-                        urls,
-                    ));
-                }
-                continue;
-            }
-            tracing::info!(
-                event = "responses.compaction.candidate_reduced",
-                original_tokens,
-                projected_tokens = next_tokens,
-                saved_tokens = original_tokens.saturating_sub(next_tokens),
-                "Responses combined candidate reduces the durable projection"
-            );
-            let digest = source
-                .coverage_fingerprint(&covered_items)
-                .map_err(|_| ApiError::InternalServerError)?;
-            let uuid = executor
-                .budget
-                .progress
-                .item_id()
-                .ok_or(ApiError::InternalServerError)?;
-            let after_item_uuid = source
-                .items
-                .iter()
-                .rev()
-                .find(|item| item.response_uuid == Some(current_response_uuid))
-                .map(|item| item.key.uuid);
-            let summary_tokens = next
-                .history
-                .iter()
-                .chain(next.active.iter())
-                .map(|section| count_tokens(&section.summary))
-                .sum::<usize>();
-            let envelope = CheckpointEnvelope {
-                version: ENVELOPE_VERSION,
-                checkpoint_uuid: uuid,
-                user_id: executor.user.uuid,
-                conversation_uuid: source.conversation_uuid,
-                origin_response_uuid: current_response_uuid,
-                after_item_uuid,
-                source_fingerprint: digest,
-                allowed_urls: urls,
-                payload: next.clone(),
-            };
-            let bytes = serde_json::to_vec(&envelope).map_err(|_| ApiError::InternalServerError)?;
-            let key = derive_key(&user_key.secret_bytes(), b"responses-compaction-v1")
-                .map_err(|_| ApiError::InternalServerError)?;
-            let content_enc = encrypt_aead_v1(
-                &key,
-                &bytes,
-                &checkpoint_aad(executor.user.uuid, source.conversation_uuid, uuid),
-            )
-            .map_err(|_| ApiError::InternalServerError)?;
-            let publication_started = std::time::Instant::now();
-            let publication = executor
-                .state
-                .db
-                .publish_compaction_checkpoint(NewCompactionCheckpoint {
-                    uuid,
-                    conversation_id,
+            } else {
+                tracing::info!(
+                    event = "responses.compaction.candidate_reduced",
+                    original_tokens,
+                    projected_tokens = next_tokens,
+                    saved_tokens = original_tokens.saturating_sub(next_tokens),
+                    "Responses candidate reduces the durable projection"
+                );
+                let digest = source
+                    .coverage_fingerprint(&covered_items)
+                    .map_err(|_| ApiError::InternalServerError)?;
+                let uuid = executor
+                    .budget
+                    .progress
+                    .item_id()
+                    .ok_or(ApiError::InternalServerError)?;
+                let after_item_uuid = source
+                    .items
+                    .iter()
+                    .rev()
+                    .find(|item| item.response_uuid == Some(current_response_uuid))
+                    .map(|item| item.key.uuid);
+                let summary_tokens = next
+                    .history
+                    .iter()
+                    .chain(next.active.iter())
+                    .map(|section| count_tokens(&section.summary))
+                    .sum::<usize>();
+                let envelope = CheckpointEnvelope {
+                    version: ENVELOPE_VERSION,
+                    checkpoint_uuid: uuid,
                     user_id: executor.user.uuid,
-                    content_enc,
-                    content_tokens: i32::try_from(summary_tokens)
-                        .map_err(|_| ApiError::InternalServerError)?,
-                    expected_head_uuid: source.checkpoint.as_ref().map(|record| record.uuid),
-                    covered_items,
-                    previous_covered_items: durable_checkpoint
-                        .as_ref()
-                        .map(covered_keys)
-                        .unwrap_or_default(),
-                    source_fingerprint: digest,
-                    current_response_uuid: Some(current_response_uuid),
+                    conversation_uuid: source.conversation_uuid,
                     origin_response_uuid: current_response_uuid,
                     after_item_uuid,
-                })
-                .map_err(|error| {
-                    tracing::warn!(
-                        event = "responses.compaction.publication_failed",
-                        checkpoint_uuid = %uuid,
-                        error_category = telemetry::db_error_category(&error),
-                        elapsed_ms = telemetry::elapsed_ms(publication_started),
-                        "Responses compaction checkpoint publication failed"
-                    );
-                    ApiError::InternalServerError
-                })?;
-            match publication {
-                CompactionPublishResult::Conflict => {
-                    publication_conflicts += 1;
-                    tracing::warn!(
-                        event = "responses.compaction.publication_conflict",
-                        checkpoint_uuid = %uuid,
-                        publication_conflicts,
-                        max_publication_conflicts = MAX_PUBLICATION_CONFLICTS,
-                        elapsed_ms = telemetry::elapsed_ms(publication_started),
-                        "Responses compaction checkpoint publication conflicted"
-                    );
-                    if publication_conflicts > MAX_PUBLICATION_CONFLICTS {
-                        if force || fallback_only {
-                            return Err(ApiError::ServiceUnavailable);
+                    source_fingerprint: digest,
+                    allowed_urls: urls,
+                    payload: next.clone(),
+                };
+                let bytes =
+                    serde_json::to_vec(&envelope).map_err(|_| ApiError::InternalServerError)?;
+                let key = derive_key(&user_key.secret_bytes(), b"responses-compaction-v1")
+                    .map_err(|_| ApiError::InternalServerError)?;
+                let content_enc = encrypt_aead_v1(
+                    &key,
+                    &bytes,
+                    &checkpoint_aad(executor.user.uuid, source.conversation_uuid, uuid),
+                )
+                .map_err(|_| ApiError::InternalServerError)?;
+                let publication_started = std::time::Instant::now();
+                let publication = executor
+                    .state
+                    .db
+                    .publish_compaction_checkpoint(NewCompactionCheckpoint {
+                        uuid,
+                        conversation_id,
+                        user_id: executor.user.uuid,
+                        content_enc,
+                        content_tokens: i32::try_from(summary_tokens)
+                            .map_err(|_| ApiError::InternalServerError)?,
+                        expected_head_uuid: source.checkpoint.as_ref().map(|record| record.uuid),
+                        covered_items,
+                        previous_covered_items: checkpoint
+                            .as_ref()
+                            .map(covered_keys)
+                            .unwrap_or_default(),
+                        source_fingerprint: digest,
+                        current_response_uuid: Some(current_response_uuid),
+                        origin_response_uuid: current_response_uuid,
+                        after_item_uuid,
+                    })
+                    .map_err(|error| {
+                        tracing::warn!(
+                            event = "responses.compaction.publication_failed",
+                            checkpoint_uuid = %uuid,
+                            error_category = telemetry::db_error_category(&error),
+                            elapsed_ms = telemetry::elapsed_ms(publication_started),
+                            "Responses compaction checkpoint publication failed"
+                        );
+                        ApiError::InternalServerError
+                    })?;
+                match publication {
+                    CompactionPublishResult::Conflict => {
+                        publication_conflicts += 1;
+                        tracing::warn!(
+                            event = "responses.compaction.publication_conflict",
+                            checkpoint_uuid = %uuid,
+                            publication_conflicts,
+                            max_publication_conflicts = MAX_PUBLICATION_CONFLICTS,
+                            elapsed_ms = telemetry::elapsed_ms(publication_started),
+                            "Responses compaction checkpoint publication conflicted"
+                        );
+                        if publication_conflicts > MAX_PUBLICATION_CONFLICTS {
+                            if force || fallback_only {
+                                return Err(ApiError::ServiceUnavailable);
+                            }
+                            fallback_only = true;
                         }
-                        fallback_only = true;
+                        continue;
                     }
-                    staged = None;
-                    continue;
-                }
-                CompactionPublishResult::Published(record) => {
-                    executor
-                        .budget
-                        .progress
-                        .finish(CompactionOutput::from(&record))
-                        .await;
-                    executor.budget.metrics.checkpoint_published();
-                    tracing::info!(event = "responses.compaction.checkpoint_published", checkpoint_uuid = %record.uuid,
+                    CompactionPublishResult::Published(record) => {
+                        executor
+                            .budget
+                            .progress
+                            .finish(CompactionOutput::from(&record))
+                            .await;
+                        executor.budget.metrics.checkpoint_published();
+                        tracing::info!(event = "responses.compaction.checkpoint_published", checkpoint_uuid = %record.uuid,
                         generation = record.generation, covered_items = covered_keys(&next).len(),
                         summary_tokens, forced = force, elapsed_ms = telemetry::elapsed_ms(publication_started),
                         "Responses compaction checkpoint published");
-                    final_checkpoint = Some(next);
-                    published_urls = envelope.allowed_urls.clone();
-                    published = true;
-                    made_progress = true;
-                    staged = None;
+                        final_checkpoint = Some(next);
+                        published_urls = envelope.allowed_urls.clone();
+                        published = true;
+                        made_progress = true;
+                    }
                 }
             }
         }
-        let estimated_tokens = context::estimate_tokens(&snapshot, &final_checkpoint)
+        let final_active = ActiveContext::select(&snapshot, &final_checkpoint, window)
             .map_err(|_| ApiError::InternalServerError)?;
+        let estimated_tokens =
+            context::estimate_tokens(&snapshot, &final_checkpoint, &final_active)
+                .map_err(|_| ApiError::InternalServerError)?;
         if published && force {
             // A provider rejection can reveal tokenizer undercount even when our
-            // estimate fits. Finish the eligible forced prefixes before the one
-            // main retry rather than trusting that estimate after a single batch.
+            // estimate fits. Finish the eligible forced sections before the one
+            // main retry rather than trusting that estimate after a single one.
             tracing::debug!(
                 event = "responses.compaction.progress_continues",
-                reason = "forced_prefixes",
+                reason = "forced_sections",
                 estimated_tokens,
                 "Responses compaction continues after durable progress"
             );
             continue;
         }
         if published && estimated_tokens > policy.input_budget {
-            // This prefix is durable even if the next bounded batch fails.
+            // This section is durable even if the next one fails.
             tracing::debug!(
                 event = "responses.compaction.progress_continues",
                 reason = "remaining_overflow",
@@ -1306,6 +1278,7 @@ async fn prepare_prompt_inner(
         let keys = prompt_source_keys(
             &source.items,
             &final_checkpoint,
+            &final_active,
             input.current_user,
             reasoning_replay,
         );
@@ -1319,10 +1292,7 @@ async fn prepare_prompt_inner(
                     fallback_only,
                 ) {
                     SourceRaceAction::Replan => {}
-                    SourceRaceAction::FreshFallback => {
-                        fallback_only = true;
-                        staged = None;
-                    }
+                    SourceRaceAction::FreshFallback => fallback_only = true,
                     SourceRaceAction::Fail => return Err(ApiError::InternalServerError),
                 }
                 tracing::warn!(
@@ -1335,10 +1305,14 @@ async fn prepare_prompt_inner(
             }
             Err(_) => return Err(ApiError::InternalServerError),
         };
-        let complete = input.build(raw, &final_checkpoint, true)?;
+        let complete = input.build(raw, &final_checkpoint)?;
         validate_required_input(&complete, &policy)?;
-        let (messages, estimated_tokens) = context::project(&complete, &final_checkpoint)
+        let final_active = final_active
+            .refit(&complete, &final_checkpoint, window)
             .map_err(|_| ApiError::InternalServerError)?;
+        let (messages, estimated_tokens) =
+            context::project(&complete, &final_checkpoint, &final_active)
+                .map_err(|_| ApiError::InternalServerError)?;
         if estimated_tokens > policy.input_budget {
             if fallback_only {
                 return Err(ApiError::ServiceUnavailable);
@@ -1354,7 +1328,6 @@ async fn prepare_prompt_inner(
                     input_budget = policy.input_budget,
                     "Responses complete prompt requires forced compaction"
                 );
-                staged = None;
                 policy.keep_recent_tokens = 0;
                 policy.trigger_tokens = 0;
                 executor.budget.metrics.record_forced_preparation();
@@ -1384,7 +1357,7 @@ async fn prepare_prompt_inner(
                 error_category = error.category(),
                 estimated_tokens,
                 input_budget = policy.input_budget,
-                "Advisory compaction unavailable; retaining complete fitting prompt"
+                "Advisory compaction unavailable; retaining the windowed prompt"
             );
             executor.budget.suppress_optional_work();
         }
@@ -1416,7 +1389,7 @@ async fn prepare_prompt_inner(
             estimated_tokens,
             allowed_urls,
         )?;
-        if durable_checkpoint.is_some() && !made_progress {
+        if checkpoint.is_some() && !made_progress {
             executor.budget.metrics.checkpoint_reused();
         }
         if used_advisory_fallback {
@@ -1679,12 +1652,13 @@ mod tests {
                 .collect::<Vec<_>>()
         };
         let original_items = canonical(&first);
-        let original_projection = context::project(&first, &None).unwrap();
+        let original_projection =
+            context::project(&first, &None, &ActiveContext::default()).unwrap();
         let policy = CompactionPolicy {
             input_budget: 2_000,
             trigger_tokens: 800,
             keep_recent_tokens: 100,
-            summary_input_budget: 1_000,
+            summary_input_budget: 10_000,
         };
         let body: ResponsesCreateRequest = serde_json::from_value(json!({
             "model":"gpt-oss-120b","input":"Continue the synthetic lookup.",
@@ -1692,7 +1666,8 @@ mod tests {
         }))
         .unwrap();
         let original_request = serde_json::to_value(&body).unwrap();
-        let first_plan = context::plan(&first, &None, &policy, false).unwrap();
+        let all_visible = ActiveContext::default();
+        let first_plan = context::plan(&first, &None, &all_visible, &policy, false).unwrap();
         assert_eq!(first_plan.summary_work.len(), 2);
         assert_eq!(
             first_plan.summary_work[0].kind,
@@ -1734,7 +1709,7 @@ mod tests {
             false,
         ));
         assert_eq!(
-            context::project(&first, &None).unwrap(),
+            context::project(&first, &None, &ActiveContext::default()).unwrap(),
             original_projection
         );
         assert_eq!(canonical(&first), original_items);
@@ -1756,7 +1731,7 @@ mod tests {
         ));
         next.items.extend(tool_pair(9, 10, next_response, 50));
         let next_items = canonical(&next);
-        let retry_plan = context::plan(&next, &None, &policy, false).unwrap();
+        let retry_plan = context::plan(&next, &None, &all_visible, &policy, false).unwrap();
         assert_eq!(retry_plan.summary_work.len(), 1);
         assert!(first_plan.summary_work[0]
             .covered
@@ -1778,7 +1753,7 @@ mod tests {
         assert_eq!(serde_json::to_value(&body).unwrap(), original_request);
 
         let checkpoint = context::complete_plan(&None, &retry_plan, &[completed_summary]).unwrap();
-        let projected = context::project(&next, &Some(checkpoint.clone())).unwrap();
+        let projected = context::project(&next, &Some(checkpoint.clone()), &all_visible).unwrap();
         assert!(projected.1 < original_projection.1);
         assert_eq!(
             &projected.0[projected.0.len() - 3..],
@@ -1790,7 +1765,10 @@ mod tests {
         );
         let reloaded: CheckpointPayload =
             serde_json::from_slice(&serde_json::to_vec(&checkpoint).unwrap()).unwrap();
-        assert_eq!(context::project(&next, &Some(reloaded)).unwrap(), projected);
+        assert_eq!(
+            context::project(&next, &Some(reloaded), &all_visible).unwrap(),
+            projected
+        );
         assert_eq!(canonical(&next), next_items);
         assert_eq!(canonical(&first), original_items);
         assert_eq!(body.max_output_tokens, Some(128));
@@ -1911,6 +1889,7 @@ mod tests {
                     anchor: None,
                 }),
                 active: None,
+                active_start: None,
             },
         };
         let encryption_key = derive_key(&key.secret_bytes(), b"responses-compaction-v1").unwrap();
@@ -2151,6 +2130,7 @@ mod tests {
                     anchor: None,
                 }),
                 active: None,
+                active_start: None,
             },
         };
         let urls = authoritative_urls(&snapshot, Some(&envelope));
@@ -2200,7 +2180,7 @@ mod tests {
         budget.begin_call().unwrap();
         budget.remember_non_reducing(key.clone()).unwrap();
         assert!(!budget.may_retry_candidate(&key, false).unwrap());
-        // The rejected prefix does not suppress changed source/model work.
+        // The rejected selection does not suppress changed source/model work.
         let changed = AttemptKey::new(None, [2; 32], "model", ReasoningReplay::None);
         assert!(budget.may_retry_candidate(&changed, false).unwrap());
         assert!(budget.may_retry_candidate(&key, true).unwrap());
@@ -2252,14 +2232,8 @@ mod tests {
             keep_recent_tokens: 0,
             summary_input_budget: 5_000,
         };
-        let plan = context::plan_batch(
-            &snapshot,
-            &checkpoint,
-            &policy,
-            false,
-            policy.summary_input_budget,
-        )
-        .unwrap();
+        let active = ActiveContext::default();
+        let plan = context::plan(&snapshot, &checkpoint, &active, &policy, false).unwrap();
         // This fixture deliberately keeps a historical suffix outside the
         // durable checkpoint too. Select the completed active work explicitly:
         // its attempt identity must not acquire unrelated history coverage.
@@ -2279,8 +2253,8 @@ mod tests {
         let candidate =
             complete_candidate(&checkpoint, work, "Done.".into(), selected_key.clone()).unwrap();
         assert!(
-            context::estimate_tokens(&snapshot, &Some(candidate.payload.clone())).unwrap()
-                >= context::estimate_tokens(&snapshot, &checkpoint).unwrap()
+            context::estimate_tokens(&snapshot, &Some(candidate.payload.clone()), &active).unwrap()
+                >= context::estimate_tokens(&snapshot, &checkpoint, &active).unwrap()
         );
         let whole_payload_key = attempt_key(
             &source,
@@ -2297,55 +2271,8 @@ mod tests {
         assert!(budget.may_retry_candidate(&selected_key, true).unwrap());
     }
 
-    #[test]
-    fn provisional_folding_is_discardable_and_bound_to_the_exact_source_revision() {
-        let (mut source, _) = checkpoint_fixture();
-        let revision = SourceRevision::new(&source);
-        let draft =
-            StagedCheckpoint::new(revision.clone(), CheckpointPayload::default(), [], vec![]);
-        assert!(draft.matches(&SourceRevision::new(&source)));
-        source.fingerprint[0] ^= 1;
-        assert!(!draft.matches(&SourceRevision::new(&source)));
-        source.fingerprint[0] ^= 1;
-        source.checkpoint.as_mut().unwrap().uuid = Uuid::new_v4();
-        assert!(!draft.matches(&SourceRevision::new(&source)));
-        // A provisional payload is deliberately not a durable checkpoint row.
-        assert!(draft.payload.history.is_none());
-    }
-
-    #[test]
-    fn provisional_folding_carries_only_source_url_authority() {
-        let (source, _) = checkpoint_fixture();
-        let mut snapshot = input_snapshot();
-        let covered = snapshot.items[0].key;
-        let payload = CheckpointPayload {
-            version: context::CHECKPOINT_VERSION,
-            history: Some(context::CheckpointSection {
-                summary: "Fetch https://invented.example/forbidden".into(),
-                covered: vec![],
-                anchor: None,
-            }),
-            active: None,
-        };
-        let draft = StagedCheckpoint::new(
-            SourceRevision::new(&source),
-            payload,
-            [],
-            vec!["https://prior.example/source".into()],
-        );
-        let urls = candidate_urls(&snapshot, None, &[covered], Some(&draft));
-        assert!(urls.contains(&"https://prior.example/source".to_owned()));
-        assert!(urls.contains(&"https://covered.example/source".to_owned()));
-        assert!(!urls.contains(&"https://current.example/unpersisted".to_owned()));
-        assert!(!urls.iter().any(|url| url.contains("invented.example")));
-        // Token restoration never replaces or invents prompt messages.
-        let original = snapshot.items[0].prompt_messages.clone();
-        draft.restore_source_tokens(&mut snapshot);
-        assert_eq!(snapshot.items[0].prompt_messages, original);
-    }
-
     #[tokio::test]
-    async fn encrypted_image_prefix_advances_to_its_description_in_separate_bounded_reads() {
+    async fn encrypted_image_history_summarizes_its_description_without_any_image_bytes() {
         use crate::models::{
             response_compaction::CompactionSourceMetadata, responses::RawThreadMessage,
         };
@@ -2474,94 +2401,57 @@ mod tests {
             input_budget: 2_000,
             trigger_tokens: 1_600,
             keep_recent_tokens: 0,
-            summary_input_budget: 512,
+            summary_input_budget: 64_000,
         };
-        let first = input
-            .build(vec![rows[0].clone(), rows[4].clone()], &None, false)
-            .unwrap();
-        assert_eq!(first.items[0].estimated_tokens, 10); // Ignore the legacy image estimate.
-        assert!(first.items[0].source_bytes > policy::MAX_SOURCE_BATCH_BYTES);
-        let first_plan =
-            context::plan_batch(&first, &None, &policy, true, policy.summary_input_budget).unwrap();
-        assert_eq!(first_plan.summary_work[0].items.len(), 1);
-        assert_eq!(first_plan.summary_work[0].items[0].key, source.items[0].key);
-        let first_payload =
-            context::complete_plan(&None, &first_plan, &["Image uploaded.".into()]).unwrap();
-        let original_tokens = context::estimate_tokens(&first, &None).unwrap();
-        assert!(
-            context::estimate_tokens(&first, &Some(first_payload.clone())).unwrap()
-                >= original_tokens
-        );
-        let draft = StagedCheckpoint::new(
-            SourceRevision::new(&source),
-            first_payload.clone(),
-            [(first.items[0].key, first.items[0].estimated_tokens)],
-            vec![],
-        );
-
-        // The next materialization has only the tool pair and required input;
-        // the 9 MiB image row is neither selected again nor held in the draft.
-        let mut second = input
-            .build(
-                vec![rows[1].clone(), rows[2].clone(), rows[4].clone()],
-                &Some(first_payload.clone()),
-                false,
-            )
-            .unwrap();
-        draft.restore_source_tokens(&mut second);
-        let second_plan = context::plan_batch(
-            &second,
-            &Some(first_payload.clone()),
-            &policy,
-            true,
-            policy.summary_input_budget,
-        )
-        .unwrap();
+        let active = ActiveContext::default();
+        let snapshot = input.build(rows.clone(), &None).unwrap();
+        assert_eq!(snapshot.items[0].estimated_tokens, 10); // Ignore the legacy image estimate.
+        let plan = context::plan(&snapshot, &None, &active, &policy, true).unwrap();
+        assert_eq!(plan.summary_work.len(), 1);
+        let work = &plan.summary_work[0];
         assert_eq!(
-            second_plan.summary_work[0]
-                .items
+            work.items.iter().map(|item| item.key).collect::<Vec<_>>(),
+            source.items[..4]
                 .iter()
                 .map(|item| item.key)
-                .collect::<Vec<_>>(),
-            vec![source.items[1].key, source.items[2].key]
+                .collect::<Vec<_>>()
         );
-        assert!(
-            second_plan.summary_work[0]
+        assert!(work.items[1].summary_messages[0]["tool_calls"].is_array());
+        assert!(work.items[2].summary_messages[0]["content"]
+            .as_str()
+            .unwrap()
+            .contains("7319"));
+        // The helper reads the stored description, never the ciphertext's image.
+        let transcript = summary::serialize_transcript(
+            &work
                 .items
                 .iter()
-                .map(|item| item.source_bytes)
-                .sum::<usize>()
-                < policy::MAX_SOURCE_BATCH_BYTES
-        );
-        assert!(second_plan.summary_work[0].items[0].summary_messages[0]["tool_calls"].is_array());
-        assert!(
-            second_plan.summary_work[0].items[1].summary_messages[0]["content"]
-                .as_str()
-                .unwrap()
-                .contains("7319")
-        );
-        let combined = context::complete_plan(
-            &Some(first_payload),
-            &second_plan,
+                .flat_map(|item| item.summary_messages.iter().cloned())
+                .collect::<Vec<_>>(),
+        )
+        .unwrap();
+        assert!(serde_json::to_string(&transcript).unwrap().len() < 1024 * 1024);
+        let payload = context::complete_plan(
+            &None,
+            &plan,
             &["The uploaded image depicts an amber lighthouse numbered 7319.".into()],
         )
         .unwrap();
         assert!(
-            context::estimate_tokens(&second, &Some(combined.clone())).unwrap()
-                < context::estimate_tokens(&second, &None).unwrap()
+            context::estimate_tokens(&snapshot, &Some(payload.clone()), &active).unwrap()
+                < context::estimate_tokens(&snapshot, &None, &active).unwrap()
         );
         assert_eq!(
-            covered_keys(&combined),
-            vec![
-                source.items[0].key,
-                source.items[1].key,
-                source.items[2].key
-            ]
+            covered_keys(&payload),
+            source.items[..4]
+                .iter()
+                .map(|item| item.key)
+                .collect::<Vec<_>>()
         );
-        // Discarding the unpublished draft still reconstructs every original row.
-        let full = input.build(rows.clone(), &None, true).unwrap();
-        assert_eq!(context::project(&full, &None).unwrap().0.len(), 5);
-        assert_eq!(source.items.len(), 5);
+        assert_eq!(
+            context::project(&snapshot, &None, &active).unwrap().0.len(),
+            5
+        );
         assert!(rows[0].content_enc.as_ref().unwrap().len() > 9 * 1024 * 1024);
     }
 }

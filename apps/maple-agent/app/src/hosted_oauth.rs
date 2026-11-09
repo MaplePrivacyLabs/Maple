@@ -19,10 +19,16 @@ pub(crate) struct HandoffListener {
     listener: TcpListener,
     port: u16,
     state: String,
+    locale: CompletionLocale,
 }
 
 impl HandoffListener {
+    #[cfg(test)]
     pub(crate) fn bind() -> Result<Self, String> {
+        Self::bind_localized("en")
+    }
+
+    pub(crate) fn bind_localized(locale: &str) -> Result<Self, String> {
         let socket = TcpSocket::new_v4().map_err(|_| RETURN_ERROR.to_string())?;
         // Do not enable address/port reuse. Windows additionally needs an
         // exclusive bind so another local process cannot take this endpoint.
@@ -45,6 +51,7 @@ impl HandoffListener {
             listener,
             port,
             state,
+            locale: CompletionLocale::from_requested(locale),
         })
     }
 
@@ -93,7 +100,7 @@ impl HandoffListener {
                 .ok()
                 .flatten();
             if let Some(grant) = grant.filter(|grant| matches_target(grant)) {
-                return Ok((grant, CompletionResponse(stream)));
+                return Ok((grant, CompletionResponse(stream, self.locale)));
             }
             // A stray navigation, favicon, malformed request or wrong state
             // must not consume the SDK's one permitted redemption request.
@@ -196,21 +203,51 @@ fn exclusive_bind(socket: &TcpSocket) -> std::io::Result<()> {
     }
 }
 
-pub(crate) struct CompletionResponse(TcpStream);
+/// Only supported catalog identifiers can enter the response. This value belongs
+/// to one listener, never to an HTTP header, callback query, or mutable global.
+#[derive(Clone, Copy)]
+enum CompletionLocale {
+    English,
+    #[cfg(feature = "desktop")]
+    Spanish,
+}
+
+impl CompletionLocale {
+    fn from_requested(locale: &str) -> Self {
+        #[cfg(feature = "desktop")]
+        if locale == "es" {
+            return Self::Spanish;
+        }
+        let _ = locale;
+        Self::English
+    }
+
+    fn tag(self) -> &'static str {
+        match self {
+            Self::English => "en",
+            #[cfg(feature = "desktop")]
+            Self::Spanish => "es",
+        }
+    }
+}
+
+pub(crate) struct CompletionResponse(TcpStream, CompletionLocale);
 
 impl CompletionResponse {
     /// Native publication decides the message. Delivery failure cannot undo a
     /// committed session, and never causes another redemption or redirect.
     pub(crate) fn finish(self, outcome: Result<bool, ()>) {
         tokio::spawn(async move {
-            let response = completion_response(outcome);
+            let response = completion_response(outcome, self.1);
             let mut stream = self.0;
             let _ = tokio::time::timeout(READ_TIMEOUT, stream.write_all(response.as_bytes())).await;
         });
     }
 }
 
-fn completion_response(outcome: Result<bool, ()>) -> String {
+fn completion_response(outcome: Result<bool, ()>, locale: CompletionLocale) -> String {
+    // Only fixed outcome text enters the document, never request or account data.
+    #[cfg(not(feature = "desktop"))]
     let (title, message) = match outcome {
         Ok(true) => ("Signed in", "You can close this tab."),
         Ok(false) => (
@@ -222,7 +259,37 @@ fn completion_response(outcome: Result<bool, ()>) -> String {
             "Return to Maple Work and start again. You can close this tab.",
         ),
     };
-    maple_agent::sign_in_page::sign_in_page_response("200 OK", title, message)
+    #[cfg(not(feature = "desktop"))]
+    let (title, message) = (title.to_owned(), message.to_owned());
+    #[cfg(feature = "desktop")]
+    let (title, message) = {
+        use crate::ui::i18n::oauth_completion_text;
+        let (title, message) = match outcome {
+            Ok(true) => ("flows-oauth-signed-in", "flows-oauth-close"),
+            Ok(false) => ("flows-oauth-signed-in-maple", "flows-oauth-not-saved"),
+            Err(()) => ("flows-oauth-failed", "flows-oauth-retry"),
+        };
+        (
+            oauth_completion_text(locale.tag(), title),
+            oauth_completion_text(locale.tag(), message),
+        )
+    };
+    // Catalog text is trusted release content, escaped for its HTML text context.
+    let title = escape_html(&title);
+    let message = escape_html(&message);
+    let body = include_str!("../../crates/maple-agent/src/sign_in_page.html")
+        .replace("{{locale}}", locale.tag())
+        .replace("{{title}}", &title)
+        .replace("{{message}}", &message);
+    maple_agent::sign_in_page::page_response("200 OK", &body)
+}
+
+fn escape_html(text: &str) -> String {
+    text.replace('&', "&amp;")
+        .replace('<', "&lt;")
+        .replace('>', "&gt;")
+        .replace('"', "&quot;")
+        .replace('\'', "&#39;")
 }
 
 #[cfg(test)]
@@ -236,6 +303,45 @@ mod tests {
         format!(
             "GET /auth/callback?handoff_grant={GRANT}&return_state={state} HTTP/1.1\r\nHost: 127.0.0.1:{port}\r\n\r\n"
         )
+    }
+
+    #[cfg(feature = "desktop")]
+    #[tokio::test]
+    async fn completion_uses_listener_locale_not_browser_headers_or_other_attempts() {
+        let spanish = HandoffListener::bind_localized("es").unwrap();
+        let english = HandoffListener::bind_localized("en").unwrap();
+        let address = spanish.listener.local_addr().unwrap();
+        let valid = request(spanish.port, &spanish.state)
+            .replace("\r\n\r\n", "\r\nAccept-Language: en\r\n\r\n");
+        let task = tokio::spawn(async move {
+            let (_, response) = spanish.receive_matching(|_| true).await.unwrap();
+            response.finish(Ok(true));
+        });
+        let mut browser = TcpStream::connect(address).await.unwrap();
+        browser.write_all(valid.as_bytes()).await.unwrap();
+        let mut response = String::new();
+        browser.read_to_string(&mut response).await.unwrap();
+        task.await.unwrap();
+        assert!(response.contains("<html lang=\"es\">"));
+        assert!(response.contains("Sesión iniciada"));
+        assert!(response.contains("Puedes cerrar esta pestaña."));
+        assert!(!response.contains(GRANT));
+        assert!(completion_response(Ok(true), english.locale).contains("<html lang=\"en\">"));
+        let (headers, body) = response.split_once("\r\n\r\n").unwrap();
+        assert!(headers.contains(&format!("Content-Length: {}", body.len())));
+        for outcome in [Ok(true), Ok(false), Err(())] {
+            let response = completion_response(outcome, CompletionLocale::Spanish);
+            assert!(!response.contains("{{"));
+            assert!(!response.contains("flows-oauth-"));
+        }
+    }
+
+    #[test]
+    fn completion_locale_is_bounded_and_html_text_is_escaped() {
+        for untrusted in ["es-MX", "fr", "<script>", "es\" onload=\"bad"] {
+            assert_eq!(CompletionLocale::from_requested(untrusted).tag(), "en");
+        }
+        assert_eq!(escape_html("<&>\"'"), "&lt;&amp;&gt;&quot;&#39;");
     }
 
     #[test]

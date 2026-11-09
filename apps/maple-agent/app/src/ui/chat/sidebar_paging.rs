@@ -33,6 +33,7 @@ mod tests {
             message_count: 1,
             model: None,
             web_enabled: true,
+            permission_mode: Default::default(),
             state,
             acp: false,
         }
@@ -49,6 +50,7 @@ mod tests {
             kind: "desktop".into(),
             pinned_ms: None,
             web_enabled: summary.web_enabled,
+            permission_mode: None,
             model: summary.model,
             message_count: summary.message_count as u64,
             created_ms: summary.created_ms,
@@ -1133,13 +1135,28 @@ impl Sidebar {
             .my_1()
             .text_xs()
             .on_click(cx.listener(move |this, _event, _window, cx| this.load_page(kind, cx)))
-            .child(if loading {
-                format!("Loading {}…", kind.label())
-            } else if self.pages.failed.contains(&kind) {
-                format!("Retry {}", kind.label())
-            } else {
-                format!("Load more {}", kind.label())
-            })
+            .child(gpui::text!(tr(
+                match (kind, loading, self.pages.failed.contains(&kind)) {
+                    (PageKind::Pinned, true, _) => "chat-page-pinned-loading",
+                    (PageKind::Pinned, false, true) => "chat-page-pinned-retry",
+                    (PageKind::Pinned, false, false) => "chat-page-pinned-more",
+                    (PageKind::Active, true, _) => "chat-page-active-loading",
+                    (PageKind::Active, false, true) => "chat-page-active-retry",
+                    (PageKind::Active, false, false) => "chat-page-active-more",
+                    (PageKind::Settled, true, _) => "chat-page-settled-loading",
+                    (PageKind::Settled, false, true) => "chat-page-settled-retry",
+                    (PageKind::Settled, false, false) => "chat-page-settled-more",
+                    (PageKind::Archived, true, _) => "chat-page-archived-loading",
+                    (PageKind::Archived, false, true) => "chat-page-archived-retry",
+                    (PageKind::Archived, false, false) => "chat-page-archived-more",
+                    (PageKind::Search, true, _) => "chat-page-search-loading",
+                    (PageKind::Search, false, true) => "chat-page-search-retry",
+                    (PageKind::Search, false, false) => "chat-page-search-more",
+                    (PageKind::Projects, true, _) => "chat-page-projects-loading",
+                    (PageKind::Projects, false, true) => "chat-page-projects-retry",
+                    (PageKind::Projects, false, false) => "chat-page-projects-more",
+                },
+            )))
             .into_any_element()
     }
 
@@ -1258,10 +1275,13 @@ impl Sidebar {
         } else {
             PinFilter::Exclude
         };
-        self.call(
+        self.call_semantic(
             async move {
                 let query = if kind == PageKind::Search {
-                    catalog::TaskQuery::Search(search.ok_or("Search is unavailable")?)
+                    catalog::TaskQuery::Search(search.ok_or(UiFailure::Local(
+                        "chat-search-unavailable",
+                        "Search is unavailable",
+                    ))?)
                 } else if kind == PageKind::Pinned {
                     catalog::TaskQuery::Pinned(crate::backend::PinnedTasksRequest {
                         project,
@@ -1286,13 +1306,27 @@ impl Sidebar {
                     reader.page(backend, user, query, order).await
                 } else {
                     match query {
-                        catalog::TaskQuery::Search(query) => {
-                            backend.search_tasks(&user, query).await
-                        }
-                        catalog::TaskQuery::Pinned(query) => {
-                            backend.pinned_tasks(&user, query).await
-                        }
-                        catalog::TaskQuery::Tasks(query) => backend.list_tasks(&user, query).await,
+                        catalog::TaskQuery::Search(query) => backend
+                            .call_presented::<maple_agent::store::NavigationTaskPage>(
+                                "search_tasks",
+                                (&user, query),
+                            )
+                            .await
+                            .map_err(UiFailure::from),
+                        catalog::TaskQuery::Pinned(query) => backend
+                            .call_presented::<maple_agent::store::NavigationTaskPage>(
+                                "pinned_tasks",
+                                (&user, query),
+                            )
+                            .await
+                            .map_err(UiFailure::from),
+                        catalog::TaskQuery::Tasks(query) => backend
+                            .call_presented::<maple_agent::store::NavigationTaskPage>(
+                                "list_tasks",
+                                (&user, query),
+                            )
+                            .await
+                            .map_err(UiFailure::from),
                     }
                 }
             },
@@ -1316,7 +1350,7 @@ impl Sidebar {
                             this.load_page(kind, cx);
                         }
                     }
-                    Err(message) if message == catalog::CANCELLED => {
+                    Err(UiFailure::Local(catalog::CANCELLED, _)) => {
                         if !this.pages.next.contains_key(&kind) {
                             this.pages.started.remove(&kind);
                         }
@@ -1433,11 +1467,10 @@ impl Sidebar {
         let user = self.user_id.clone();
         let computer = self.backend.remote_host().unwrap_or_default().to_owned();
         let generation = self.pages.generation;
-        self.call(
+        self.call_semantic(
             async move {
                 backend
-                    .get_remote_sidebars(&user)
-                    .await
+                    .call_presented::<std::collections::HashMap<String, crate::settings::RemoteSidebarSettings>>("get_remote_sidebars", (&user,)).await.map_err(UiFailure::from)
                     .map(|mut settings| settings.remove(&computer).unwrap_or_default())
             },
             cx,
@@ -1494,11 +1527,15 @@ impl Sidebar {
         let generation = self.pages.generation;
         let retry_ids = ids.clone();
         self.pages.loading.insert(PageKind::Pinned);
-        self.call(
+        self.call_semantic(
             async move {
                 backend
-                    .get_tasks(&user, crate::backend::GetTasksRequest { tasks: ids })
+                    .call_presented::<maple_agent::store::NavigationGetTasksReply>(
+                        "get_tasks",
+                        (&user, crate::backend::GetTasksRequest { tasks: ids }),
+                    )
                     .await
+                    .map_err(UiFailure::from)
             },
             cx,
             move |this, result, cx| {
@@ -1538,14 +1575,18 @@ impl Sidebar {
         self.pages.loading.insert(PageKind::Projects);
         self.pages.started.insert(PageKind::Projects);
         self.pages.failed.remove(&PageKind::Projects);
-        self.call(
+        self.call_semantic(
             async move {
                 backend
-                    .list_projects(
-                        &user,
-                        crate::backend::ProjectPageRequest { cursor, limit: 50 },
+                    .call_presented::<maple_agent::store::NavigationProjectPage>(
+                        "list_projects",
+                        (
+                            &user,
+                            crate::backend::ProjectPageRequest { cursor, limit: 50 },
+                        ),
                     )
                     .await
+                    .map_err(UiFailure::from)
             },
             cx,
             move |this, result, cx| {
@@ -1661,6 +1702,7 @@ mod merged_prefix_tests {
             kind: "desktop".into(),
             pinned_ms: None,
             web_enabled: false,
+            permission_mode: None,
             model: None,
             message_count: 1,
             created_ms: updated,

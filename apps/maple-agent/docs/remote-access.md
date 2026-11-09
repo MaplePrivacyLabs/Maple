@@ -287,6 +287,13 @@ offers and installation readiness are always read afresh.
 Input-only tool summaries require `tool_summary_start_v1`; without it, the
 controller summarizes that call from its output once it finishes, as earlier
 versions did, and the next call checks support again.
+Changing a task's [permission mode](permissions.md) requires
+`permission_modes_v1`. Agent 0.0.19 has the modes but not this capability, and
+earlier hosts have no modes, so a controller refuses the change itself and asks
+for the remote computer to be updated; their tasks keep the mode they have.
+Answering a permission request needs no capability, since it is an ordinary
+question. A controller rechecks account and grant authority after this
+discovery, as it does for folders.
 
 Four pre-admission handshakes and eight paired control connections have capacity
 separate from local IPC. Each control connection bounds ordinary calls and keeps
@@ -331,6 +338,37 @@ while the view remains attached. Known revocation and incompatible/unknown wire
 messages terminate recovery. Recent validated address hints can be reused during
 a discovery outage, but a daemon restart or new relay admission can still require
 OpenSecret. No offline history replica or migration of workspaces is provided.
+
+## Adding task features
+
+Chat and agent features are remote-first. What a user does with a task, such as
+sending, stopping, choosing its model, web access, integrations or permission
+mode, and answering its questions and approvals, works the same from a paired
+computer, in the same change. Three kinds of operation stay off the remote
+protocol on purpose:
+
+- Preferences of the viewing desktop: account, appearance, language, store
+  password, local API, pins and sidebar order.
+- Anything that opens a browser, starts a sign-in or credential flow, or asks
+  for operating-system permissions on the execution computer: MCP and app
+  sign-in, and integration permission setup. Those happen at that computer.
+- Account operations and whole-host administration, as
+  [remote security](remote-security.md) describes.
+
+A new backend operation is not remotely callable until it is added to `Method`
+in `app/src/remote/wire.rs`. A released host fails to decode a request whose
+method it does not know and drops that stream, so every new method also gets a
+capability in `app/src/remote/update.rs` that the controller checks before
+sending. Give an older host a coded refusal that the viewer translates, as
+permission modes do, rather than a raw string. Prefer a capability to a wire
+version bump, which makes both computers update before they can pair. A setter
+whose result other windows show emits `SessionUpdated`. Test the controller
+against a host with the capability, one without it, a failed probe, and
+authority that changes after discovery, as `remote/streams/folder_tests.rs` and
+`remote/streams/permission_tests.rs` do. Test the host's remote dispatch too,
+and check the change live with two isolated profiles where possible (see
+[configuration](#configuration-and-release-boundary)). Leaving a task feature
+local-only needs the owner's explicit agreement, stated in the PR.
 
 ## Configuration and release boundary
 

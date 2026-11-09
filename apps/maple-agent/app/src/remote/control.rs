@@ -221,6 +221,7 @@ async fn serve_request(
             return streams::reply(
                 &mut tx,
                 &Message::Response {
+                    failure: None,
                     id: header.id,
                     result: Err(error),
                 },
@@ -246,6 +247,7 @@ async fn serve_request(
             return streams::reply(
                 &mut tx,
                 &Message::Response {
+                    failure: None,
                     id,
                     result: Err(reason),
                 },
@@ -262,6 +264,7 @@ async fn serve_request(
         return serve_install(node, peer, &mut tx, request).await;
     }
     let id = request.id;
+    let mut failure = None;
     let result = if matches!(
         request.method,
         wire::Method::PeerInfo | wire::Method::RemoteUpdateRefresh
@@ -320,12 +323,21 @@ async fn serve_request(
             &node.account,
         )
         .await
+        .map_err(|error| {
+            let message = error.message.clone();
+            failure = (error.code != "unknown").then_some(error);
+            message
+        })
     };
     if node.valid().await && node.store.read().unwrap().permits(peer) {
         let result = streams::encode_result(method, result);
         streams::reply_with_limit(
             &mut tx,
-            &Message::Response { id, result },
+            &Message::Response {
+                failure,
+                id,
+                result,
+            },
             method.reply_limit(),
         )
         .await?;
@@ -387,6 +399,7 @@ async fn serve_install(
             return streams::reply_with_limit(
                 tx,
                 &Message::Response {
+                    failure: None,
                     id,
                     result: Err("Invalid remote update request".into()),
                 },
@@ -447,7 +460,11 @@ async fn serve_install(
     };
     streams::reply_with_limit(
         tx,
-        &Message::Response { id, result },
+        &Message::Response {
+            failure: None,
+            id,
+            result,
+        },
         wire::MAX_MANAGEMENT_REPLY,
     )
     .await?;
@@ -470,6 +487,7 @@ async fn install_refused(
     streams::reply_with_limit(
         tx,
         &Message::Response {
+            failure: None,
             id,
             result: Err(message.to_owned()),
         },
@@ -622,7 +640,7 @@ pub async fn bridge(
     connection: crate::host::ipc::Connection,
     mut link: Link,
 ) -> Result<bool, String> {
-    let folder_grant = link
+    let connected_grant = link
         .node
         .store
         .read()
@@ -697,7 +715,7 @@ pub async fn bridge(
                 request = request_rx.recv() => {
                     let Some(request) = request else { return Ok(true); };
                     if request.method == "detach" {
-                        local_send(&mut local_tx, &Message::Response { id: request.id, result: Ok(serde_json::Value::Null) }).await?;
+                        local_send(&mut local_tx, &Message::Response { failure: None, id: request.id, result: Ok(serde_json::Value::Null) }).await?;
                         return Ok(true);
                     }
                     let selected = match request.method.as_str() {
@@ -710,13 +728,13 @@ pub async fn bridge(
                     };
                     let method = match selected {
                         Ok(method) => method,
-                        Err(error) => { local_send(&mut local_tx, &Message::Response { id: request.id, result: Err(error) }).await?; continue; }
+                        Err(error) => { local_send(&mut local_tx, &Message::Response { failure: None, id: request.id, result: Err(error) }).await?; continue; }
                     };
                     link.node.ensure_valid().await?;
                     let slot = match capacity.acquire(method) {
                         Ok(slot) => slot,
                         Err(error) => {
-                            local_send(&mut local_tx, &Message::Response { id: request.id, result: Err(error) }).await?;
+                            local_send(&mut local_tx, &Message::Response { failure: None, id: request.id, result: Err(error) }).await?;
                             continue;
                         }
                     };
@@ -727,11 +745,11 @@ pub async fn bridge(
                         let _slot = slot;
                         let id = request.id;
                         let send_id = request.send_id.clone();
-                        let authorize_folders = async {
+                        let authorize = async {
                             node.ensure_valid().await?;
                             if !node.store.read().map_err(|_| "Remote grant unavailable")?.peers()
                                 .get(&peer.to_string())
-                                .is_some_and(|current| current.can_connect && current.grant == folder_grant) {
+                                .is_some_and(|current| current.can_connect && current.grant == connected_grant) {
                                 return Err("Remote access changed. Reopen this computer.".into());
                             }
                             Ok(())
@@ -742,18 +760,18 @@ pub async fn bridge(
                                     .map_err(|_| "Invalid attachment import parameters")?;
                                 if user != node.account { return Err("Remote request account mismatch".into()); }
                                 node.backend.authorize_account(&user)?;
-                                let prepared = crate::backend::attachments::prepare(&import).await?;
-                                authorize_folders.await?;
-                                client.upload(id, user, import, prepared).await
+                                let prepared = crate::backend::attachments::prepare_presented(&import).await?;
+                                authorize.await?;
+                                Ok::<_, crate::backend::HostFailure>(client.upload(id, user, import, prepared).await?)
                             }.await;
                             return match result {
                                 Ok(frame) => frame,
-                                Err(error) => Message::Response { id, result: Err(error) },
+                                Err(error) => Message::Response { id, result: Err(error.message.clone()), failure: Some(error) },
                             };
                         }
-                        match client.call(wire::Command { id, method, send_id: request.send_id, params: request.params }, authorize_folders).await {
+                        match client.call(wire::Command { id, method, send_id: request.send_id, params: request.params }, authorize).await {
                             Ok(frame) => streams::decode_result(method, frame),
-                            Err(error) => Message::Response { id, result: Err(match send_id {
+                            Err(error) => Message::Response { failure: None, id, result: Err(match send_id {
                                 Some(id) => format!("Send outcome unknown ({id}). {error}. Checking the host receipt is safe; resending is not."),
                                 None => error,
                             }) },

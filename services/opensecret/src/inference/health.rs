@@ -490,7 +490,12 @@ impl ShadowHealthState {
                     }
                 }
             } else if failure.kind == AttemptFailureKind::HttpStatus {
-                if status.is_some_and(|status| (500..=599).contains(&status)) {
+                // A request the proxy refused for size never reached a route.
+                let refused_for_size = failure
+                    .upstream_diagnostic
+                    .as_deref()
+                    .is_some_and(|diagnostic| diagnostic.is_proxy_context_overflow());
+                if !refused_for_size && status.is_some_and(|status| (500..=599).contains(&status)) {
                     signal = ShadowSignal::RouteFailure {
                         kind: failure.kind,
                         status,
@@ -1130,6 +1135,34 @@ mod tests {
                 now,
             );
         }
+    }
+
+    #[tokio::test]
+    async fn a_request_the_proxy_refused_for_size_is_not_a_route_failure() {
+        let refusal = serde_json::json!({"error": {
+            "message": "mutating request: applying endpoint-specific mutator: mutating request: generating shard key: context too large: ~1062098 tokens",
+            "type": "",
+        }});
+        let response = axum::http::Response::builder()
+            .status(500)
+            .body(reqwest::Body::from(refusal.to_string()))
+            .unwrap()
+            .into();
+        let diagnostic = crate::provider_client::ProviderResponse::Standard(response)
+            .error_diagnostic()
+            .await;
+        let flash = route(ProviderId::Continuum, "glm-5-3-flash", "glm-5.3-flash");
+        let mut terminal = failed(flash, AttemptFailureKind::HttpStatus, Some(500), None);
+        let AttemptTerminal::Failed { failure, .. } = &mut terminal else {
+            unreachable!();
+        };
+        failure.upstream_diagnostic = Some(Box::new(diagnostic));
+
+        let state = ShadowHealthState::with_policy(test_policy());
+        let report =
+            state.observe_terminal_at(&terminal, ShadowObservationMode::Update, Instant::now());
+        assert!(matches!(report.signal, ShadowSignal::Neutral { .. }));
+        assert!(!report.mutated);
     }
 
     #[test]

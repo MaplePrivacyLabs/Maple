@@ -18,6 +18,7 @@ pub use paging::*;
 mod local_api_tests;
 mod mcp;
 
+pub use crate::host::failure::HostFailure;
 use crate::host::{RemoteClient, protocol::Request};
 use maple_agent::agent::*;
 use serde::{Serialize, de::DeserializeOwned};
@@ -119,6 +120,16 @@ impl AgentBackend {
         method: &str,
         params: impl Serialize,
     ) -> Result<R, String> {
+        self.local_control_presented(method, params)
+            .await
+            .map_err(|failure| failure.message)
+    }
+
+    pub async fn local_control_presented<R: DeserializeOwned>(
+        &self,
+        method: &str,
+        params: impl Serialize,
+    ) -> Result<R, HostFailure> {
         if self.remote_host.is_some()
             || !matches!(
                 method,
@@ -148,9 +159,12 @@ impl AgentBackend {
                     | "salvage_store"
             )
         {
-            return Err("Store lifecycle commands require the local desktop".into());
+            return Err(HostFailure::new(
+                "local-desktop-required",
+                "Store lifecycle commands require the local desktop",
+            ));
         }
-        self.call(method, params).await
+        self.call_presented(method, params).await
     }
 
     pub fn store_state(&self) -> maple_agent::store::StoreState {
@@ -183,27 +197,39 @@ macro_rules! local_arg {
 }
 macro_rules! authorize_arg {
     ($backend:ident, user_id, $value:ident) => {
-        $backend.authorize_account(&$value)?;
+        $backend.authorize_account_presented(&$value)?;
     };
     ($backend:ident, $name:ident, $value:ident) => {};
 }
-macro_rules! operations {
-    ($( $name:ident ( $( $arg:ident : $ty:tt ),* ) -> $result:ty; )*) => {
-        impl AgentBackend {
-            $(pub async fn $name(&self, $($arg: unpack_type!($ty)),*) -> Result<$result, String> {
-                self.call(stringify!($name), ($($arg,)* )).await
-            })*
+// Some operations are consumed through call_presented; keep their wire dispatch
+// entries without generating an unused legacy String client wrapper.
+macro_rules! operation_client {
+    (dispatch_only; $name:ident ($( $arg:ident : $ty:tt ),*) -> $result:ty) => {};
+    (test_only; $name:ident ($( $arg:ident : $ty:tt ),*) -> $result:ty) => {
+        #[cfg(test)]
+        operation_client!(; $name($($arg: $ty),*) -> $result);
+    };
+    (; $name:ident ($( $arg:ident : $ty:tt ),*) -> $result:ty) => {
+        pub async fn $name(&self, $($arg: unpack_type!($ty)),*) -> Result<$result, String> {
+            self.call(stringify!($name), ($($arg,)* )).await
         }
-        pub(crate) async fn dispatch_inner(backend: &LocalBackend, request: Request) -> Result<serde_json::Value, String> {
+    };
+}
+macro_rules! operations {
+    ($( $([$mode:ident])? $name:ident ( $( $arg:ident : $ty:tt ),* ) -> $result:ty; )*) => {
+        impl AgentBackend {
+            $(operation_client!($($mode)?; $name($($arg: $ty),*) -> $result);)*
+        }
+        pub(crate) async fn dispatch_inner(backend: &LocalBackend, request: Request) -> Result<serde_json::Value, HostFailure> {
             match request.method.as_str() {
                 $(stringify!($name) => {
                     let ($($arg,)*): ($(wire_type!($ty),)*) = serde_json::from_value(request.params)
-                        .map_err(|_| "Invalid host request parameters".to_string())?;
+                        .map_err(|_| HostFailure::new("request-parameters", "Invalid host request parameters"))?;
                     $(authorize_arg!(backend, $arg, $arg);)*
                     let value = backend.$name($(local_arg!($arg, $ty)),*).await?;
-                    serde_json::to_value(value).map_err(|_| "Could not encode host response".to_string())
+                    serde_json::to_value(value).map_err(|_| HostFailure::new("response-encoding", "Could not encode host response"))
                 })*
-                _ => dispatch_special(backend, request).await,
+                _ => dispatch_special(backend, request).await.map_err(HostFailure::from),
             }
         }
     }
@@ -222,48 +248,48 @@ operations! {
     add_word(word: (String)) -> bool;
     get_remote_sidebars(user_id: (&str)) -> HashMap<String, crate::settings::RemoteSidebarSettings>;
     set_remote_sidebar(user_id: (&str), computer: (String), patch: (serde_json::Value)) -> ();
-    get_sidebar_order(user_id: (&str)) -> crate::settings::SidebarOrder;
-    set_sidebar_order(user_id: (&str), order: (crate::settings::SidebarOrder)) -> ();
-    set_task_pinned(user_id: (&str), task: (&str), pinned: (bool)) -> ();
+    [dispatch_only] get_sidebar_order(user_id: (&str)) -> crate::settings::SidebarOrder;
+    [dispatch_only] set_sidebar_order(user_id: (&str), order: (crate::settings::SidebarOrder)) -> ();
+    [dispatch_only] set_task_pinned(user_id: (&str), task: (&str), pinned: (bool)) -> ();
     login(email: (String), password: (String)) -> AuthSession;
     login_guest(account_id: (String), password: (String)) -> AuthSession;
     logout_and_clear(account_user: (&str)) -> ();
-    oauth_start(provider: (OAuthProvider)) -> String;
-    oauth_wait_for_handoff(provider: (OAuthProvider)) -> AuthSession;
-    oauth_complete(provider: (OAuthProvider), redirected_url: (String)) -> AuthSession;
+    [dispatch_only] oauth_start(provider: (OAuthProvider)) -> String;
+    [dispatch_only] oauth_wait_for_handoff(provider: (OAuthProvider)) -> AuthSession;
+    [dispatch_only] oauth_complete(provider: (OAuthProvider), redirected_url: (String)) -> AuthSession;
     account(user_id: (&str)) -> MapleAccount;
-    request_verification_email(user_id: (&str)) -> ();
-    change_password(user_id: (&str), current_password: (String), new_password: (String)) -> ();
-    request_account_deletion(user_id: (&str)) -> String;
-    account_deletion_status() -> Option<AccountDeletionStatus>;
-    confirm_account_deletion(account_user: (&str), confirmation_code: (String), plaintext_secret: (String)) -> ();
-    list_api_keys(user_id: (&str)) -> Vec<MapleApiKey>;
-    create_api_key(user_id: (&str), name: (String)) -> MapleApiKeyCreated;
-    delete_api_key(user_id: (&str), name: (&str)) -> ();
+    [dispatch_only] request_verification_email(user_id: (&str)) -> ();
+    [dispatch_only] change_password(user_id: (&str), current_password: (String), new_password: (String)) -> ();
+    [dispatch_only] request_account_deletion(user_id: (&str)) -> String;
+    [dispatch_only] account_deletion_status() -> Option<AccountDeletionStatus>;
+    [dispatch_only] confirm_account_deletion(account_user: (&str), confirmation_code: (String), plaintext_secret: (String)) -> ();
+    [dispatch_only] list_api_keys(user_id: (&str)) -> Vec<MapleApiKey>;
+    [dispatch_only] create_api_key(user_id: (&str), name: (String)) -> MapleApiKeyCreated;
+    [dispatch_only] delete_api_key(user_id: (&str), name: (&str)) -> ();
     plan_usage(user_id: (&str)) -> Option<crate::billing::PlanUsage>;
     billing_status(user_id: (&str)) -> crate::billing::BillingStatus;
-    billing_products() -> Vec<crate::billing::Product>;
-    open_billing_portal(user_id: (&str)) -> ();
-    start_checkout(user_id: (&str), product_id: (String)) -> ();
-    api_credit_balance(user_id: (&str)) -> i64;
-    purchase_api_credits(user_id: (&str), method: (crate::billing::PaymentMethod), credits: (u64)) -> ();
-    start_runtime(user_id: (&str), request: (Option<AgentStartRequest>)) -> AgentRuntimeStatus;
+    [dispatch_only] billing_products() -> Vec<crate::billing::Product>;
+    [dispatch_only] open_billing_portal(user_id: (&str)) -> ();
+    [dispatch_only] start_checkout(user_id: (&str), product_id: (String)) -> ();
+    [dispatch_only] api_credit_balance(user_id: (&str)) -> i64;
+    [dispatch_only] purchase_api_credits(user_id: (&str), method: (crate::billing::PaymentMethod), credits: (u64)) -> ();
+    [dispatch_only] start_runtime(user_id: (&str), request: (Option<AgentStartRequest>)) -> AgentRuntimeStatus;
     stop_runtime(user_id: (&str)) -> AgentRuntimeStatus;
     select_project_root(user_id: (&str), path: (String)) -> SelectedProject;
     browse_project_folders(user_id: (&str), request: (ProjectFolderRequest)) -> ProjectFolderPage;
     create_project_folder(user_id: (&str), parent_path: (String), name: (String)) -> String;
     rename_project_root(user_id: (&str), path: (String), name: (String)) -> RecentProjectRoot;
     archive_project_root(user_id: (&str), path: (String), fallback: (Option<String>)) -> ();
-    create_session(user_id: (&str), request: (Option<AgentCreateSessionRequest>)) -> AgentSessionDetail;
+    [dispatch_only] create_session(user_id: (&str), request: (Option<AgentCreateSessionRequest>)) -> AgentSessionDetail;
     set_session_state(user_id: (&str), session_id: (&str), state: (AgentTaskState)) -> AgentSessionSummary;
     delete_session(user_id: (&str), session_id: (&str)) -> ();
     rename_session(user_id: (&str), session_id: (&str), title: (String)) -> AgentSessionSummary;
     project_trust(user_id: (&str), path: (String)) -> AgentProjectTrustStatus;
     set_project_trust(user_id: (&str), path: (String), trusted: (bool)) -> AgentProjectTrustStatus;
-    cancel_queued_message(user_id: (&str), session_id: (&str), queue_id: (&str)) -> AgentDesktopQueueSnapshot;
-    begin_queued_message_edit(user_id: (&str), session_id: (&str), queue_id: (&str)) -> ();
-    end_queued_message_edit(user_id: (&str), session_id: (&str), queue_id: (&str)) -> ();
-    cancel_run(user_id: (&str), run_id: (&str)) -> ();
+    [dispatch_only] cancel_queued_message(user_id: (&str), session_id: (&str), queue_id: (&str)) -> AgentDesktopQueueSnapshot;
+    [dispatch_only] begin_queued_message_edit(user_id: (&str), session_id: (&str), queue_id: (&str)) -> ();
+    [dispatch_only] end_queued_message_edit(user_id: (&str), session_id: (&str), queue_id: (&str)) -> ();
+    [dispatch_only] cancel_run(user_id: (&str), run_id: (&str)) -> ();
     available_model_ids(user_id: (&str)) -> Vec<String>;
     model_catalog(user_id: (&str)) -> maple_sdk::ModelCatalogResponse;
     model_catalog_entry(user_id: (&str), model: (&str)) -> Option<maple_agent::agent::CatalogEntry>;
@@ -271,26 +297,27 @@ operations! {
     synthesize_speech(user_id: (&str), text: (String), voice: (String), speed: (f32)) -> Vec<u8>;
     transcribe_audio(user_id: (&str), wav: (Vec<u8>)) -> String;
     list_session_mcp_servers(user_id: (&str), session_id: (&str)) -> Vec<maple_agent::agent::AgentSessionMcpServer>;
-    set_session_mcp_server_enabled(user_id: (&str), session_id: (&str), name: (&str), kind: (maple_agent::agent::AgentSessionIntegrationKind), enabled: (bool)) -> Vec<maple_agent::agent::AgentSessionMcpServer>;
+    [dispatch_only] set_session_mcp_server_enabled(user_id: (&str), session_id: (&str), name: (&str), kind: (maple_agent::agent::AgentSessionIntegrationKind), enabled: (bool)) -> Vec<maple_agent::agent::AgentSessionMcpServer>;
     list_mcp_servers(user_id: (&str)) -> Vec<maple_agent::agent::AgentMcpServer>;
     list_mcp_definitions(user_id: (&str)) -> Vec<maple_agent::store::records::McpDefinition>;
     list_project_mcp_servers(user_id: (&str), project_root: (&str)) -> Vec<maple_agent::agent::AgentMcpServer>;
-    set_project_mcp_server_enabled(user_id: (&str), project_root: (&str), name: (&str), enabled: (bool)) -> ();
+    [test_only] set_project_mcp_server_enabled(user_id: (&str), project_root: (&str), name: (&str), enabled: (bool)) -> ();
     list_integrations(user_id: (&str)) -> Vec<AgentIntegration>;
     set_integration_enabled(user_id: (&str), id: (&str), enabled: (bool)) -> Vec<AgentIntegration>;
     setup_integration(user_id: (&str), id: (&str), permissions: (AgentIntegrationPermissions)) -> Vec<AgentIntegration>;
-    set_session_web_enabled(user_id: (&str), session_id: (&str), enabled: (bool)) -> AgentSessionSummary;
-    compact_session(user_id: (&str), session_id: (&str)) -> ();
+    [dispatch_only] set_session_web_enabled(user_id: (&str), session_id: (&str), enabled: (bool)) -> AgentSessionSummary;
+    [dispatch_only] set_session_permission_mode(user_id: (&str), session_id: (&str), mode: (maple_agent::agent::AgentPermissionMode)) -> AgentSessionSummary;
+    [dispatch_only] compact_session(user_id: (&str), session_id: (&str)) -> ();
     session_subagents(user_id: (&str), session_id: (&str)) -> Vec<AgentSubagent>;
-    cancel_external_agent(user_id: (&str), session_id: (&str), agent_id: (&str)) -> ();
+    [dispatch_only] cancel_external_agent(user_id: (&str), session_id: (&str), agent_id: (&str)) -> ();
     list_slash_commands(user_id: (&str), working_dir: (Option<String>)) -> Vec<AgentSlashCommand>;
-    resolve_slash_command(user_id: (&str), working_dir: (Option<String>), command: (String), args: (String)) -> Option<String>;
+    [dispatch_only] resolve_slash_command(user_id: (&str), working_dir: (Option<String>), command: (String), args: (String)) -> Option<String>;
     summarize_tool_call(user_id: (&str), session_id: (&str), tool_name: (String), input: (Option<serde_json::Value>), output_text: (String)) -> Option<String>;
     summarize_tool_call_start(user_id: (&str), session_id: (&str), tool_name: (String), input: (Option<serde_json::Value>)) -> Option<String>;
     summarize_thinking(user_id: (&str), session_id: (&str), thinking_text: (String)) -> Option<String>;
     ask_side_question(user_id: (&str), session_id: (&str), request_id: (String), prior: (Vec<maple_agent::agent::SideQuestionTurn>), question: (String)) -> ();
     context_usage(user_id: (&str), session_id: (&str), model: (Option<&str>)) -> Option<(i64, i64)>;
-    answer_question(user_id: (&str), request_id: (&str), answer: (String)) -> bool;
+    [dispatch_only] answer_question(user_id: (&str), request_id: (&str), answer: (String)) -> bool;
     thinking_state(user_id: (&str), session_id: (Option<&str>), model: (&str)) -> maple_agent::agent::AgentThinkingState;
     set_thinking_level(user_id: (&str), session_id: (Option<&str>), model: (&str), level: (maple_agent::agent::ThinkingLevel)) -> maple_agent::agent::AgentThinkingState;
     save_default_model(user_id: (&str), model: (String)) -> ();
@@ -339,6 +366,16 @@ impl AgentBackend {
             retired_after_update: Arc::new(AtomicBool::new(false)),
             subscription_sequence: AtomicU64::new(0),
             tool_summary_start: std::sync::OnceLock::new(),
+        }
+    }
+
+    /// Host calls sent and not yet answered. A fixture host records each
+    /// request before it replies, so at zero it has seen every call sent.
+    #[cfg(all(test, feature = "desktop"))]
+    pub(crate) fn host_calls_in_flight_for_test(&self) -> usize {
+        match &self.client {
+            BackendClient::Host(client) => client.calls_in_flight_for_test(),
+            BackendClient::InProcess(_) => 0,
         }
     }
 
@@ -486,7 +523,18 @@ impl AgentBackend {
         method: &str,
         params: impl Serialize,
     ) -> Result<R, String> {
-        self.ensure_active()?;
+        self.call_presented(method, params)
+            .await
+            .map_err(|failure| failure.message)
+    }
+
+    pub async fn call_presented<R: DeserializeOwned>(
+        &self,
+        method: &str,
+        params: impl Serialize,
+    ) -> Result<R, HostFailure> {
+        self.ensure_active()
+            .map_err(|message| HostFailure::new("host-updated", message))?;
         // Catalog presentation, speech, account UI and remote-sidebar preferences
         // belong to the controller.
         // All task operations use the selected host's separate connection.
@@ -509,10 +557,10 @@ impl AgentBackend {
             &self.client
         };
         match client {
-            BackendClient::Host(client) => client.call(method, params).await,
+            BackendClient::Host(client) => client.call_presented(method, params).await,
             #[cfg(test)]
             BackendClient::InProcess(backend) => {
-                let value = dispatch_inner(
+                let value = dispatch_inner_presented(
                     backend,
                     Request {
                         id: 0,
@@ -522,29 +570,45 @@ impl AgentBackend {
                     },
                 )
                 .await?;
-                serde_json::from_value(value).map_err(|e| e.to_string())
+                serde_json::from_value(value).map_err(|e| HostFailure::from(e.to_string()))
             }
         }
     }
     /// The composer retains this ID through uncertain delivery. Only receipt
     /// queries, never another send, use it after a connection loss.
+    #[cfg(test)]
     pub async fn send_message_identified(
         &self,
         user: &str,
         request: AgentSendMessageRequest,
         id: String,
     ) -> Result<String, String> {
-        self.ensure_active()?;
+        self.send_message_identified_presented(user, request, id)
+            .await
+            .map_err(|failure| failure.message)
+    }
+    pub async fn send_message_identified_presented(
+        &self,
+        user: &str,
+        request: AgentSendMessageRequest,
+        id: String,
+    ) -> Result<String, HostFailure> {
+        self.ensure_active()
+            .map_err(|message| HostFailure::new("host-updated", message))?;
         match &self.client {
             BackendClient::Host(client) => {
                 client
-                    .call_identified("send_message", (user, request), Some(id))
+                    .call_identified_presented("send_message", (user, request), Some(id))
                     .await
             }
             #[cfg(test)]
-            BackendClient::InProcess(backend) => backend.send_message(user, request).await,
+            BackendClient::InProcess(backend) => backend
+                .send_message(user, request)
+                .await
+                .map_err(HostFailure::from),
         }
     }
+    #[cfg(test)]
     pub async fn send_outcome(&self, id: String) -> Result<crate::host::receipts::Outcome, String> {
         self.call("send_outcome", id).await
     }
@@ -668,17 +732,17 @@ async fn dispatch_special(
         serde_json::to_value(value).map_err(|_| "Could not encode host response".to_string())
     }
     match request.method.as_str() {
-        "sign_in_mcp_server" => {
-            let (user, sign_in): (String, maple_agent::agent::McpSignIn) =
-                serde_json::from_value(request.params).map_err(invalid)?;
-            backend.authorize_account(&user)?;
-            encode(backend.sign_in_mcp_server(&user, sign_in).await?)
-        }
         "cancel_mcp_sign_in" => {
             let (user, name): (String, String) =
                 serde_json::from_value(request.params).map_err(invalid)?;
             backend.authorize_account(&user)?;
             encode(backend.cancel_mcp_sign_in(&user, &name).await?)
+        }
+        "connect_mcp_app" => {
+            let (user, id): (String, String) =
+                serde_json::from_value(request.params).map_err(invalid)?;
+            backend.authorize_account(&user)?;
+            encode(backend.connect_mcp_app(&user, &id).await?)
         }
         "save_mcp_servers" => {
             let (user, servers): (String, Vec<AgentMcpServer>) =
@@ -781,12 +845,285 @@ pub(crate) async fn dispatch(
     backend: &LocalBackend,
     request: Request,
 ) -> Result<serde_json::Value, String> {
+    dispatch_presented(backend, request)
+        .await
+        .map_err(|failure| failure.message)
+}
+
+async fn dispatch_inner_presented(
+    backend: &LocalBackend,
+    request: Request,
+) -> Result<serde_json::Value, HostFailure> {
+    if request.method == "oauth_start_localized" {
+        let (provider, locale): (OAuthProvider, String) = serde_json::from_value(request.params)
+            .map_err(|_| {
+                HostFailure::new("request-parameters", "Invalid host request parameters")
+            })?;
+        let value = backend
+            .oauth_start_localized_presented(provider, locale)
+            .await?;
+        return serde_json::to_value(value)
+            .map_err(|_| HostFailure::new("response-encoding", "Could not encode host response"));
+    }
+    match request.method.as_str() {
+        "account" => {
+            let (user_id,): (String,) = serde_json::from_value(request.params).map_err(|_| {
+                HostFailure::new("request-parameters", "Invalid host request parameters")
+            })?;
+            backend.authorize_account_presented(&user_id)?;
+            return serde_json::to_value(backend.account_presented(&user_id).await?).map_err(
+                |_| HostFailure::new("response-encoding", "Could not encode host response"),
+            );
+        }
+        "request_verification_email" => {
+            let (user_id,): (String,) = serde_json::from_value(request.params).map_err(|_| {
+                HostFailure::new("request-parameters", "Invalid host request parameters")
+            })?;
+            backend.authorize_account_presented(&user_id)?;
+            return serde_json::to_value(
+                backend
+                    .request_verification_email_presented(&user_id)
+                    .await?,
+            )
+            .map_err(|_| HostFailure::new("response-encoding", "Could not encode host response"));
+        }
+        "change_password" => {
+            let (user_id, current_password, new_password): (String, String, String) =
+                serde_json::from_value(request.params).map_err(|_| {
+                    HostFailure::new("request-parameters", "Invalid host request parameters")
+                })?;
+            backend.authorize_account_presented(&user_id)?;
+            return serde_json::to_value(
+                backend
+                    .change_password_presented(&user_id, current_password, new_password)
+                    .await?,
+            )
+            .map_err(|_| HostFailure::new("response-encoding", "Could not encode host response"));
+        }
+        "request_account_deletion" => {
+            let (user_id,): (String,) = serde_json::from_value(request.params).map_err(|_| {
+                HostFailure::new("request-parameters", "Invalid host request parameters")
+            })?;
+            backend.authorize_account_presented(&user_id)?;
+            return serde_json::to_value(
+                backend.request_account_deletion_presented(&user_id).await?,
+            )
+            .map_err(|_| HostFailure::new("response-encoding", "Could not encode host response"));
+        }
+        "list_api_keys" => {
+            let (user_id,): (String,) = serde_json::from_value(request.params).map_err(|_| {
+                HostFailure::new("request-parameters", "Invalid host request parameters")
+            })?;
+            backend.authorize_account_presented(&user_id)?;
+            return serde_json::to_value(backend.list_api_keys_presented(&user_id).await?).map_err(
+                |_| HostFailure::new("response-encoding", "Could not encode host response"),
+            );
+        }
+        "create_api_key" => {
+            let (user_id, name): (String, String) = serde_json::from_value(request.params)
+                .map_err(|_| {
+                    HostFailure::new("request-parameters", "Invalid host request parameters")
+                })?;
+            backend.authorize_account_presented(&user_id)?;
+            return serde_json::to_value(backend.create_api_key_presented(&user_id, name).await?)
+                .map_err(|_| {
+                    HostFailure::new("response-encoding", "Could not encode host response")
+                });
+        }
+        "delete_api_key" => {
+            let (user_id, name): (String, String) = serde_json::from_value(request.params)
+                .map_err(|_| {
+                    HostFailure::new("request-parameters", "Invalid host request parameters")
+                })?;
+            backend.authorize_account_presented(&user_id)?;
+            return serde_json::to_value(backend.delete_api_key_presented(&user_id, &name).await?)
+                .map_err(|_| {
+                    HostFailure::new("response-encoding", "Could not encode host response")
+                });
+        }
+        "plan_usage" => {
+            let (user_id,): (String,) = serde_json::from_value(request.params).map_err(|_| {
+                HostFailure::new("request-parameters", "Invalid host request parameters")
+            })?;
+            backend.authorize_account_presented(&user_id)?;
+            return serde_json::to_value(backend.plan_usage_presented(&user_id).await?).map_err(
+                |_| HostFailure::new("response-encoding", "Could not encode host response"),
+            );
+        }
+        "billing_status" => {
+            let (user_id,): (String,) = serde_json::from_value(request.params).map_err(|_| {
+                HostFailure::new("request-parameters", "Invalid host request parameters")
+            })?;
+            backend.authorize_account_presented(&user_id)?;
+            return serde_json::to_value(backend.billing_status_presented(&user_id).await?)
+                .map_err(|_| {
+                    HostFailure::new("response-encoding", "Could not encode host response")
+                });
+        }
+        "billing_products" => {
+            let (): () = serde_json::from_value(request.params).map_err(|_| {
+                HostFailure::new("request-parameters", "Invalid host request parameters")
+            })?;
+            return serde_json::to_value(backend.billing_products_presented().await?).map_err(
+                |_| HostFailure::new("response-encoding", "Could not encode host response"),
+            );
+        }
+        "open_billing_portal" => {
+            let (user_id,): (String,) = serde_json::from_value(request.params).map_err(|_| {
+                HostFailure::new("request-parameters", "Invalid host request parameters")
+            })?;
+            backend.authorize_account_presented(&user_id)?;
+            return serde_json::to_value(backend.open_billing_portal_presented(&user_id).await?)
+                .map_err(|_| {
+                    HostFailure::new("response-encoding", "Could not encode host response")
+                });
+        }
+        "start_checkout" => {
+            let (user_id, product_id): (String, String) = serde_json::from_value(request.params)
+                .map_err(|_| {
+                    HostFailure::new("request-parameters", "Invalid host request parameters")
+                })?;
+            backend.authorize_account_presented(&user_id)?;
+            return serde_json::to_value(
+                backend
+                    .start_checkout_presented(&user_id, product_id)
+                    .await?,
+            )
+            .map_err(|_| HostFailure::new("response-encoding", "Could not encode host response"));
+        }
+        "api_credit_balance" => {
+            let (user_id,): (String,) = serde_json::from_value(request.params).map_err(|_| {
+                HostFailure::new("request-parameters", "Invalid host request parameters")
+            })?;
+            backend.authorize_account_presented(&user_id)?;
+            return serde_json::to_value(backend.api_credit_balance_presented(&user_id).await?)
+                .map_err(|_| {
+                    HostFailure::new("response-encoding", "Could not encode host response")
+                });
+        }
+        "purchase_api_credits" => {
+            let (user_id, method, credits): (String, crate::billing::PaymentMethod, u64) =
+                serde_json::from_value(request.params).map_err(|_| {
+                    HostFailure::new("request-parameters", "Invalid host request parameters")
+                })?;
+            backend.authorize_account_presented(&user_id)?;
+            return serde_json::to_value(
+                backend
+                    .purchase_api_credits_presented(&user_id, method, credits)
+                    .await?,
+            )
+            .map_err(|_| HostFailure::new("response-encoding", "Could not encode host response"));
+        }
+        _ => {}
+    }
+    if matches!(
+        request.method.as_str(),
+        "oauth_start" | "oauth_wait_for_handoff"
+    ) {
+        let (provider,): (OAuthProvider,) =
+            serde_json::from_value(request.params).map_err(|_| {
+                HostFailure::new("request-parameters", "Invalid host request parameters")
+            })?;
+        return if request.method == "oauth_start" {
+            serde_json::to_value(backend.oauth_start_presented(provider).await?)
+        } else {
+            serde_json::to_value(backend.oauth_wait_for_handoff_presented(provider).await?)
+        }
+        .map_err(|_| HostFailure::new("response-encoding", "Could not encode host response"));
+    }
+    if request.method == "oauth_complete" {
+        let (provider, url): (OAuthProvider, String) = serde_json::from_value(request.params)
+            .map_err(|_| {
+                HostFailure::new("request-parameters", "Invalid host request parameters")
+            })?;
+        return serde_json::to_value(backend.oauth_complete_presented(provider, url).await?)
+            .map_err(|_| HostFailure::new("response-encoding", "Could not encode host response"));
+    }
+    if request.method == "account_deletion_status" {
+        let (): () = serde_json::from_value(request.params).map_err(|_| {
+            HostFailure::new("request-parameters", "Invalid host request parameters")
+        })?;
+        return serde_json::to_value(backend.account_deletion_status_presented().await?)
+            .map_err(|_| HostFailure::new("response-encoding", "Could not encode host response"));
+    }
+    if request.method == "confirm_account_deletion" {
+        let (user, code, secret): (String, String, String) = serde_json::from_value(request.params)
+            .map_err(|_| {
+                HostFailure::new("request-parameters", "Invalid host request parameters")
+            })?;
+        backend
+            .confirm_account_deletion_presented(&user, code, secret)
+            .await?;
+        return Ok(serde_json::Value::Null);
+    }
+    if attachments::handles(&request.method) {
+        return attachments::dispatch_presented(backend, request).await;
+    }
+    if paging::is_paging(&request.method) {
+        return paging::dispatch_presented(
+            backend,
+            request,
+            maple_agent::store::PageTransport::Local,
+        )
+        .await;
+    }
+    if request.method == "browse_project_folders" {
+        let (user, query): (String, ProjectFolderRequest) = serde_json::from_value(request.params)
+            .map_err(|_| {
+                HostFailure::new("request-parameters", "Invalid host request parameters")
+            })?;
+        let result = backend
+            .browse_project_folders_presented(&user, query)
+            .await?;
+        return serde_json::to_value(result)
+            .map_err(|_| HostFailure::new("response-encoding", "Could not encode host response"));
+    }
+    if request.method == "create_project_folder" {
+        let (user, path, name): (String, String, String) = serde_json::from_value(request.params)
+            .map_err(|_| {
+            HostFailure::new("request-parameters", "Invalid host request parameters")
+        })?;
+        let result = backend
+            .create_project_folder_presented(&user, path, name)
+            .await?;
+        return serde_json::to_value(result)
+            .map_err(|_| HostFailure::new("response-encoding", "Could not encode host response"));
+    }
+    if request.method == "sign_in_mcp_server" {
+        let (user, sign_in): (String, maple_agent::agent::McpSignIn) =
+            serde_json::from_value(request.params).map_err(|_| {
+                HostFailure::new("request-parameters", "Invalid host request parameters")
+            })?;
+        backend.authorize_account_presented(&user)?;
+        return serde_json::to_value(backend.sign_in_mcp_server_presented(&user, sign_in).await?)
+            .map_err(|_| HostFailure::new("response-encoding", "Could not encode host response"));
+    }
+    if matches!(request.method.as_str(), "login" | "login_guest") {
+        let (identity, password): (String, String) = serde_json::from_value(request.params)
+            .map_err(|_| {
+                HostFailure::new("request-parameters", "Invalid host request parameters")
+            })?;
+        let value = if request.method == "login" {
+            backend.login_presented(identity, password).await?
+        } else {
+            backend.login_guest_presented(identity, password).await?
+        };
+        return serde_json::to_value(value)
+            .map_err(|_| HostFailure::new("response-encoding", "Could not encode host response"));
+    }
+    dispatch_inner(backend, request).await
+}
+
+pub(crate) async fn dispatch_presented(
+    backend: &LocalBackend,
+    request: Request,
+) -> Result<serde_json::Value, HostFailure> {
     #[cfg(feature = "proxy")]
     if matches!(
         request.method.as_str(),
         "get_local_api_status" | "stop_local_api"
     ) {
-        return dispatch_inner(backend, request).await;
+        return dispatch_inner_presented(backend, request).await;
     }
     // Account switches cannot interleave with an operation admitted for the
     // previous account. Restoring that same account is a reader: its network
@@ -797,7 +1134,7 @@ pub(crate) async fn dispatch(
         request.method.as_str(),
         "cancel_oauth" | "import_attachment"
     ) {
-        return dispatch_inner(backend, request).await;
+        return dispatch_inner_presented(backend, request).await;
     }
     if matches!(
         request.method.as_str(),
@@ -815,7 +1152,7 @@ pub(crate) async fn dispatch(
         backend.local_api.stop().await;
         #[cfg(feature = "proxy")]
         let generation = backend.local_api.generation();
-        let result = dispatch_inner(backend, request).await;
+        let result = dispatch_inner_presented(backend, request).await;
         #[cfg(feature = "proxy")]
         if result.is_ok() {
             let _ = backend.resume_local_api(generation).await;
@@ -825,7 +1162,7 @@ pub(crate) async fn dispatch(
         let _account = backend.account_gate.read().await;
         #[cfg(feature = "proxy")]
         let resume = (request.method == "restore_auth").then(|| backend.local_api.generation());
-        let result = dispatch_inner(backend, request).await;
+        let result = dispatch_inner_presented(backend, request).await;
         #[cfg(feature = "proxy")]
         if result.is_ok()
             && let Some(generation) = resume
@@ -842,24 +1179,40 @@ pub(crate) async fn dispatch_remote_inner(
     backend: &LocalBackend,
     request: Request,
 ) -> Result<serde_json::Value, String> {
+    dispatch_remote_inner_presented(backend, request)
+        .await
+        .map_err(|failure| failure.message)
+}
+
+pub(crate) async fn dispatch_remote_inner_presented(
+    backend: &LocalBackend,
+    request: Request,
+) -> Result<serde_json::Value, HostFailure> {
     // An authenticated remote request must not open a browser on this
     // computer, even with malformed params.
     if matches!(
         request.method.as_str(),
-        "sign_in_mcp_server" | "cancel_mcp_sign_in"
+        "sign_in_mcp_server" | "cancel_mcp_sign_in" | "connect_mcp_app"
     ) {
         return Err("Signing in to an MCP server requires the local desktop.".into());
     }
     if paging::is_paging(&request.method) {
-        return paging::dispatch(backend, request, maple_agent::store::PageTransport::Remote).await;
+        return paging::dispatch_presented(
+            backend,
+            request,
+            maple_agent::store::PageTransport::Remote,
+        )
+        .await;
     }
     if matches!(
         request.method.as_str(),
         "save_mcp_servers" | "save_mcp_definition_edits"
     ) {
-        return dispatch_remote_mcp(backend, request).await;
+        return dispatch_remote_mcp(backend, request)
+            .await
+            .map_err(HostFailure::from);
     }
-    dispatch_inner(backend, request).await
+    dispatch_inner_presented(backend, request).await
 }
 
 #[cfg(test)]
@@ -1156,5 +1509,77 @@ mod tests {
         })
         .await
         .expect("frontend shutdown must not panic on a runtime worker");
+    }
+}
+
+#[cfg(test)]
+mod presented_failure_tests {
+    #[tokio::test]
+    async fn oauth_and_account_admission_emit_codes_before_network_or_filesystem_work() {
+        let root = tempfile::tempdir().unwrap();
+        let backend = super::LocalBackend::isolated_for_test(root.path());
+        for (method, params, expected) in [
+            (
+                "oauth_complete",
+                serde_json::json!([super::OAuthProvider::Google, "not a callback"]),
+                "oauth-url",
+            ),
+            (
+                "oauth_wait_for_handoff",
+                serde_json::json!([super::OAuthProvider::Google]),
+                "oauth-cancelled",
+            ),
+            (
+                "browse_project_folders",
+                serde_json::json!(["foreign-account", {"path":"/", "limit":1}]),
+                "deletion-account-changed",
+            ),
+        ] {
+            let failure = super::dispatch_presented(
+                &backend,
+                super::Request {
+                    id: 1,
+                    method: method.into(),
+                    params,
+                    send_id: None,
+                },
+            )
+            .await
+            .unwrap_err();
+            assert_eq!(failure.code, expected);
+            assert!(backend.saved_user_id().is_none());
+        }
+    }
+
+    use super::*;
+
+    #[tokio::test]
+    async fn login_validation_preserves_codes_through_account_dispatch() {
+        let backend = LocalBackend::new("http://127.0.0.1:1".into(), String::new()).unwrap();
+        for (method, identity, password, code) in [
+            ("login", "", "synthetic", "email-required"),
+            ("login", "person@example.test", "", "password-required"),
+            (
+                "login_guest",
+                "not-an-id",
+                "synthetic",
+                "account-id-invalid",
+            ),
+        ] {
+            let failure = dispatch_presented(
+                &backend,
+                Request {
+                    id: 1,
+                    method: method.into(),
+                    send_id: None,
+                    params: serde_json::json!([identity, password]),
+                },
+            )
+            .await
+            .unwrap_err();
+            assert_eq!(failure.code, code);
+            assert!(!failure.message.is_empty());
+        }
+        assert!(backend.saved_user_id().is_none());
     }
 }

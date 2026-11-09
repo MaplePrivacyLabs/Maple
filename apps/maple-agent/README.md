@@ -68,8 +68,10 @@ agent runtime; its desktop Agent page points users to Maple Work.
   for the next launch; only a refusal from the server signs the user out.
 - Agent chat with streaming Markdown, tool calls, agent questions, image
   attachments (picker, paste, or drag and drop), a per-message Copy button,
-  and a context-window indicator. Every tool call runs without asking for
-  approval.
+  and a context-window indicator.
+- Each task has a permission mode, on the composer's chip: Read only, Auto or
+  Full access. A System One classifier judges each tool call, and what it does
+  not clear asks the user. See [permission modes](docs/permissions.md).
 - A task can switch models between messages: its model menu offers every
   model, a pick applies from the next message, and the transcript notes the
   switch. When the new model's context window is smaller, the model that
@@ -83,9 +85,10 @@ agent runtime; its desktop Agent page points users to Maple Work.
   `timeout` explicitly. Search guidance asks for a short timeout (normally
   30 seconds) and a narrower scope if it expires; that shorter limit applies
   only when the call requests it.
-  Quiet commands report their starting folder, elapsed time, time since output and
-  deadline every five seconds, including on collapsed tool cards. Stop and
-  deadlines use Pi's process-group cleanup on Unix (process-tree cleanup on Windows).
+  Quiet commands refresh their timeline row every five seconds with their
+  starting folder, elapsed time, time since output and deadline. Tool cards do
+  not display these details. Stop and deadlines use Pi's process-group cleanup
+  on Unix (process-tree cleanup on Windows).
   Maple bounds the whole operation, including setup and stdin delivery, and allows
   up to one second for cooperative cancellation before dropping a stuck operation.
   The execution policy and progress reporting live in Maple; the Pi crates are unchanged.
@@ -246,10 +249,24 @@ Settings > Integrations also lists well-known apps from the bundled
 `server.json`, so adding an app needs no code. Connecting one, or choosing
 **Sign in with browser** for a custom HTTP server, signs in on this computer: the
 browser returns to a loopback listener, Maple registers itself with the server
-(Dynamic Client Registration), and tokens stay in this computer's store. A new
-connection is on for new tasks until someone turns it off. A server that only
-accepts registered apps cannot be signed in to yet, and neither can a paired
-computer from its controller.
+(Dynamic Client Registration) or, where a server says it knows clients by their
+address, names itself by the callback's origin, and tokens stay in this computer's
+store. A new connection is on for new tasks until someone turns it off. A server
+that only accepts registered apps cannot be signed in to yet, and neither can a
+paired computer from its controller.
+
+Some apps run at an address that depends on the person's setup, such as Vana
+Desktop and Home Assistant. Their entry gives the usual address, which Connect
+tries first, and a pop-up asks for another only if nothing is there.
+Sign-in takes any `http://` or `https://` address. Over plain HTTP every sign-in
+request stays on the address given, and tokens can be read on the way.
+
+Some catalog apps run on this computer, such as Playwright and, on macOS, Xcode.
+An entry names a pinned package or a command, what must be installed first, and
+which platforms it runs on, so these need no code either. Connect checks the
+requirements, starts the app, lists its tools and saves it as an ordinary stdio
+server. Node.js and uv come from the login shell's PATH. If one is missing, the
+card says what is needed and links to it.
 
 HTTP servers use the stateless `2026-07-28` revision of MCP when they offer it,
 and the `initialize` handshake otherwise. Stdio servers keep the handshake, since
@@ -551,8 +568,9 @@ adapters: it injects into an active run at Pi's next steering opportunity.
 Ordinary overlapping `session/prompt` calls retain ACP's busy response; clients
 should use the advertised steering extension. Questions use negotiated form
 elicitation or a connected desktop; with neither, the tool asks the agent to use
-plain text. Project trust remains an explicit choice; tools do not ask for
-individual approval and there are no session modes.
+plain text. Project trust remains an explicit choice. ACP tasks run with Full
+access and there are no session modes; a desktop task loaded over ACP keeps its
+permission mode, and its approvals use the same questions.
 
 Client-supplied HTTP MCP bindings are temporary and become unavailable on
 disconnect. Conflicting server names are refused. Transient stdio MCP injection
@@ -623,6 +641,11 @@ ignored. See [build profiles](docs/release-profiles.md).
 | `MAPLE_SHELL` | The bash the agent's `bash` tool runs. | `/bin/bash`, else `bash` on PATH (Windows: Git Bash; without it, the `powershell` tool) |
 | `MAPLE_DISABLE_UPDATE_CHECK` | `1` turns Agent update checks off. | unset |
 | `RUST_LOG` | Log filter. | `info` |
+
+`MAPLE_ENABLE_LOCALIZATION=1` enables the localization preview in **all** build
+profiles, including Dev and Prod. It defaults off: Language settings are hidden
+and UI text uses English. Restart to change the gate; saved locale preferences
+are preserved. See [localization](docs/localization.md).
 
 ### File locations
 

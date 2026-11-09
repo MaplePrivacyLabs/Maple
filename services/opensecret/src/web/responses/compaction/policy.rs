@@ -1,8 +1,9 @@
 //! Pure compaction budgets. These budgets never change a caller's output cap.
 
-/// A helper batch bounds database payload transfer as well as token work. One
-/// indivisible source group may exceed this target; no history is truncated.
-pub const MAX_SOURCE_BATCH_BYTES: usize = 8 * 1024 * 1024;
+/// Room a helper needs to generate its checkpoint, matching Pi's reserve. The
+/// summary has no output cap of its own, so this is what keeps a completed
+/// answer possible once reasoning has also spent from the same window.
+const MIN_SUMMARY_GENERATION_TOKENS: usize = 16_384;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct CompactionPolicy {
@@ -12,8 +13,9 @@ pub struct CompactionPolicy {
     pub trigger_tokens: usize,
     /// Target verbatim suffix. Atomic exchanges may make it larger.
     pub keep_recent_tokens: usize,
-    /// Bound helper input work independently of the main response allowance.
-    /// Summary output uses the selected model's ordinary native allowance.
+    /// Bound one helper request, instructions and previous summary included, to
+    /// what the model can read while still generating. This is independent of
+    /// the main response allowance: summary output keeps its native allowance.
     pub summary_input_budget: usize,
 }
 
@@ -29,11 +31,13 @@ impl CompactionPolicy {
             input_budget,
             trigger_tokens: trigger_budget.saturating_mul(4) / 5,
             keep_recent_tokens: 20_000.min(input_budget / 3),
-            // Large model windows are not a reason to put hundreds of thousands
-            // of input tokens through a single non-streaming summary request.
-            // Half of a small window also leaves room for native generation;
-            // this is not an exact model-tokenizer fit guarantee.
-            summary_input_budget: 64_000.min(context_window / 2),
+            // A proportional share scales with the output a large window allows.
+            // This is an estimate, not an exact model-tokenizer fit guarantee.
+            summary_input_budget: context_window.saturating_sub(
+                MIN_SUMMARY_GENERATION_TOKENS
+                    .max(context_window / 8)
+                    .min(context_window / 2),
+            ),
         }
     }
 }
@@ -48,7 +52,7 @@ mod tests {
         assert_eq!(policy.input_budget, 82_877);
         assert_eq!(policy.trigger_tokens, 59_901);
         assert_eq!(policy.keep_recent_tokens, 20_000);
-        assert_eq!(policy.summary_input_budget, 50_000);
+        assert_eq!(policy.summary_input_budget, 83_616);
     }
 
     #[test]
@@ -57,7 +61,6 @@ mod tests {
         assert_eq!(policy.input_budget, 16_000);
         assert_eq!(policy.keep_recent_tokens, 5_333);
         assert_eq!(policy.trigger_tokens, 11_200);
-        assert!(policy.summary_input_budget < 20_000);
         assert_eq!(policy.summary_input_budget, 10_000);
         let impossible = CompactionPolicy::from_context_window(20_000, 30_000, 2_000);
         assert_eq!(impossible.input_budget, 0);
@@ -65,11 +68,19 @@ mod tests {
     }
 
     #[test]
-    fn helper_input_work_does_not_grow_with_large_model_windows() {
-        for window in [131_072, 262_144, 1_048_576] {
+    fn helper_input_scales_with_the_model_window_and_leaves_room_to_generate() {
+        for (window, input) in [(131_072, 114_688), (262_144, 229_376), (1_048_576, 917_504)] {
             let policy = CompactionPolicy::from_context_window(window, 0, 2_048);
-            assert_eq!(policy.summary_input_budget, 64_000);
+            assert_eq!(policy.summary_input_budget, input);
             assert_eq!(policy.input_budget, window);
+        }
+    }
+
+    #[test]
+    fn helper_input_is_independent_of_the_caller_output_reservation() {
+        for output in [0, 8_192, 64_000] {
+            let policy = CompactionPolicy::from_context_window(262_144, output, 2_048);
+            assert_eq!(policy.summary_input_budget, 229_376);
         }
     }
 }

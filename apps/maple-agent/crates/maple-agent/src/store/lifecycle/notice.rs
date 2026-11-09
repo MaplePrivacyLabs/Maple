@@ -11,6 +11,11 @@ pub struct StoreModeNotice {
     pub store_id: String,
     pub notice_id: String,
     pub message: String,
+    /// Additive presentation metadata; unknown kinds remain readable via message.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub kind: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub at_ms: Option<i64>,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -161,6 +166,16 @@ fn make_notice(generation: &[u8; 16], value: &str) -> StoreResult<StoreModeNotic
         store_id: encode_id(generation),
         notice_id,
         message: record.kind.message(record.at_ms)?,
+        kind: Some(
+            match record.kind {
+                NoticeKind::Set => "password_set",
+                NoticeKind::Changed => "password_changed",
+                NoticeKind::Rotated => "password_rotated",
+                NoticeKind::Removed => "password_removed",
+            }
+            .into(),
+        ),
+        at_ms: Some(record.at_ms),
     })
 }
 
@@ -179,6 +194,40 @@ mod tests {
             tx.execute("INSERT INTO app_settings(key,value,updated_ms) VALUES ('store.mode_notice',?1,1) ON CONFLICT(key) DO UPDATE SET value=excluded.value", [value])?;
             Ok(())
         }).unwrap();
+    }
+
+    #[test]
+    fn semantic_metadata_preserves_legacy_record_bytes_and_ack_identity() {
+        let directory = tempfile::tempdir().unwrap();
+        let store = opened(directory.path());
+        let record = r#"{"kind":"password_rotated","at_ms":0}"#;
+        install(&store, record);
+        let notice = store.mode_change_notice().unwrap().unwrap();
+        assert_eq!(notice.kind.as_deref(), Some("password_rotated"));
+        assert_eq!(notice.at_ms, Some(0));
+        store
+            .read(|tx| {
+                assert_eq!(stored_value(tx)?.as_deref(), Some(record));
+                let mut hash = Sha256::new();
+                hash.update(b"maple-store-mode-notice/1\0");
+                hash.update(notice_generation(tx)?);
+                hash.update(record.as_bytes());
+                assert_eq!(notice.notice_id, format!("{:x}", hash.finalize()));
+                Ok(())
+            })
+            .unwrap();
+        let legacy: StoreModeNotice = serde_json::from_value(serde_json::json!({
+            "store_id":notice.store_id, "notice_id":notice.notice_id, "message":notice.message
+        }))
+        .unwrap();
+        assert!(legacy.kind.is_none());
+        assert!(legacy.at_ms.is_none());
+        assert!(
+            store
+                .acknowledge_mode_change_notice(&legacy.store_id, &legacy.notice_id)
+                .unwrap()
+        );
+        assert!(store.mode_change_notice().unwrap().is_none());
     }
 
     #[test]

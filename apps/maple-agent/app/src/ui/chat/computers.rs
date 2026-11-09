@@ -156,8 +156,8 @@ impl ChatScreen {
         cx.notify();
     }
 
-    pub(crate) fn sidebar_task_action_notice(&mut self, message: String, cx: &mut Context<Self>) {
-        self.notice = Some(message.into());
+    pub(crate) fn sidebar_task_action_notice(&mut self, message: UiText, cx: &mut Context<Self>) {
+        self.notice = Some(message);
         cx.notify();
     }
 
@@ -180,7 +180,7 @@ impl ChatScreen {
     pub(crate) fn finish_project_rename(
         &mut self,
         target: ProjectTarget,
-        result: Result<(), String>,
+        result: Result<(), UiText>,
         cx: &mut Context<Self>,
     ) {
         self.sidebar.update(cx, |sidebar, cx| {
@@ -308,18 +308,17 @@ impl ChatScreen {
                 || {
                     if self.host_recovery.ended {
                         if self
-                            .runtime_error
+                            .runtime_error_reason
                             .as_deref()
                             .is_some_and(crate::remote::wire::is_protocol_incompatibility_refusal)
                         {
-                            "Update required — select to retry after updating"
+                            tr("chat-computer-update-required")
                         } else {
-                            "Offline — select to reconnect"
+                            tr("chat-computer-reconnect")
                         }
                     } else {
-                        "Connecting…"
+                        tr("chat-connecting")
                     }
-                    .into()
                 },
             ),
         }
@@ -327,6 +326,15 @@ impl ChatScreen {
 
     pub(crate) fn set_computers(&mut self, computers: Arc<Vec<Computer>>, cx: &mut Context<Self>) {
         self.computers = computers.clone();
+        if let Some(dialog) = &self.project_folder_dialog
+            && let Some(computer) = computers
+                .iter()
+                .find(|computer| computer.key.as_deref() == self.backend.remote_host())
+        {
+            dialog.update(cx, |dialog, cx| {
+                dialog.set_computer_label(computer.label.to_string().into(), cx)
+            });
+        }
         self.refresh_project_caption(cx);
         if self.visible {
             self.sidebar
@@ -343,8 +351,8 @@ impl ChatScreen {
                     .computers
                     .iter()
                     .find(|c| c.key.as_deref() == Some(host))
-                    .map(|c| c.label.as_ref())
-                    .unwrap_or("Remote computer");
+                    .map(|c| c.label.clone())
+                    .unwrap_or_else(|| tr("chat-remote-computer"));
                 format!("{name} · {project}").into()
             }
             None => project.into(),
@@ -428,14 +436,14 @@ impl ChatScreen {
         }
     }
 
-    pub(crate) fn navigation_notice(&mut self, message: String, cx: &mut Context<Self>) {
-        self.notice = Some(message.into());
+    pub(crate) fn navigation_notice(&mut self, message: UiText, cx: &mut Context<Self>) {
+        self.notice = Some(message);
         cx.notify();
     }
 
     pub(super) fn computers_project_menu(&self) -> Menu<Self> {
         let mut menu = Menu::new("computer-project-menu", px(440.))
-            .label("Projects")
+            .label(tr("chat-projects"))
             .max_height(px(440.))
             .application_vim(self.application_vim_enabled);
         for (index, computer) in self.computers.iter().enumerate() {
@@ -493,7 +501,7 @@ impl ChatScreen {
             menu = menu.item(
                 MenuItem::new(
                     SharedString::from(format!("computer-{index}-new-project")),
-                    "New project…",
+                    tr("chat-new-project"),
                     move |_: &mut Self, _, cx| cx.emit(request.clone()),
                 )
                 .icon("folder-plus"),
@@ -502,7 +510,7 @@ impl ChatScreen {
         menu.separator().item(
             MenuItem::new(
                 "manage-computers",
-                "Remote computer settings…",
+                tr("chat-remote-computer-settings"),
                 |_: &mut Self, _, cx| {
                     cx.emit(OpenSettingsSection(Section::Remote));
                 },
@@ -524,19 +532,19 @@ mod tests {
         let cases = [
             (
                 Refusal::terminal(Error::Incompatible.to_string()).into_error(),
-                "Update required — select to retry after updating",
+                tr("chat-computer-update-required"),
             ),
             (
                 Refusal::terminal("This computer is no longer paired").into_error(),
-                "Offline — select to reconnect",
+                tr("chat-computer-reconnect"),
             ),
             (
                 Refusal::terminal(Error::InvalidFrame.to_string()).into_error(),
-                "Offline — select to reconnect",
+                tr("chat-computer-reconnect"),
             ),
             (
                 Error::Disconnected.to_string(),
-                "Offline — select to reconnect",
+                tr("chat-computer-reconnect"),
             ),
         ];
         for (reason, expected) in cases {
@@ -545,19 +553,19 @@ mod tests {
                 let backend = Arc::new(
                     AgentBackend::for_test("http://127.0.0.1:9".into(), String::new()).unwrap(),
                 );
-                cx.new(|cx| ChatScreen::new_inner(backend, "account".into(), cx))
+                cx.new(|cx| ChatScreen::new_inner_for_test(backend, "account".into(), cx))
             };
             chat.update(cx, |chat, cx| {
                 chat.handle_service_event(AgentServiceEvent::RemoteAccessEnded(reason), cx);
                 let snapshot = chat.computer_snapshot("Office".into(), cx);
-                assert_eq!(snapshot.error.as_deref(), Some(expected));
+                assert_eq!(snapshot.error.as_deref(), Some(expected.as_ref()));
                 assert!(!snapshot.loading);
                 // The generic disconnect following a terminal refusal must
                 // not hide the reason the authenticated connection ended.
                 chat.handle_service_event(AgentServiceEvent::HostDisconnected, cx);
                 assert_eq!(
                     chat.computer_snapshot("Office".into(), cx).error.as_deref(),
-                    Some(expected)
+                    Some(expected.as_ref())
                 );
             });
         }

@@ -6,6 +6,8 @@
 use gpui::{Context, Div, div, prelude::*, px};
 use maple_agent::agent::{AgentProjectTrustStatus, AgentTaskState};
 
+use crate::ui::i18n::{UiText, tr};
+
 use super::ChatScreen;
 use super::computers::{TaskAction, TaskActionRequest};
 use crate::settings::SidebarItemKey;
@@ -28,11 +30,11 @@ pub(super) enum ConfirmDialog {
 
 /// The words a confirmation shows.
 struct ConfirmCopy {
-    title: String,
-    body: &'static str,
+    title: gpui::SharedString,
+    body: gpui::SharedString,
     /// The path or title shown in monospace under the body.
     detail: String,
-    confirm_label: &'static str,
+    confirm_label: gpui::SharedString,
 }
 
 impl ChatScreen {
@@ -90,14 +92,11 @@ impl ChatScreen {
                         if this.trust_prompt.as_ref().map(|p| &p.path) == Some(&status.path) {
                             this.trust_prompt = None;
                         }
-                        this.notice = Some(
-                            if trusted {
-                                "Project trusted: its skills and guidance are available to new tasks"
-                            } else {
-                                "Project kept untrusted"
-                            }
-                            .into(),
-                        );
+                        this.notice = Some(if trusted {
+                            UiText::key("chat-trust-saved")
+                        } else {
+                            UiText::key("chat-trust-denied")
+                        });
                     }
                     Err(message) => this.notice = Some(message.into()),
                 }
@@ -114,7 +113,7 @@ impl ChatScreen {
     ) -> gpui::Stateful<Div> {
         let name = self.sidebar.read(cx).root_name(&status.path);
         let saving = self.trust_saving;
-        let button = |id: &'static str, label: &'static str, primary: bool| {
+        let button = |id: &'static str, label: gpui::SharedString, primary: bool| {
             if primary {
                 widgets::primary_button(id)
             } else {
@@ -122,7 +121,7 @@ impl ChatScreen {
             }
             .py_1p5()
             .when(saving, |button| button.opacity(0.6))
-            .child(label)
+            .child(gpui::text!(label))
         };
         let keep_path = status.path.clone();
         let trust_path = status.path.clone();
@@ -143,7 +142,10 @@ impl ChatScreen {
                 div()
                     .id("trust-card")
                     .role(gpui::Role::Dialog)
-                    .aria_label(format!("Trust {name}?"))
+                    .aria_label(
+                        self.messages
+                            .get("chat-trust-title", [("name", name.clone().into())]),
+                    )
                     .when_some(self.dialog_focus.clone(), |card, focus| {
                         card.track_focus(&focus)
                     })
@@ -181,18 +183,16 @@ impl ChatScreen {
                             .text_lg()
                             .font_weight(gpui::FontWeight::SEMIBOLD)
                             .text_color(gpui::rgb(theme::text_primary()))
-                            .child(format!("Trust {name}?")),
+                            .child(
+                                self.messages
+                                    .get("chat-trust-title", [("name", name.clone().into())]),
+                            ),
                     )
                     .child(
                         div()
                             .text_sm()
                             .text_color(gpui::rgb(theme::text_secondary()))
-                            .child(
-                                "Trusting a project lets Maple use project-provided guidance, \
-                                 including agent skills. These instructions can influence how \
-                                 agents work and use tools. You can change this choice later \
-                                 from the project's menu.",
-                            ),
+                            .child(tr("chat-trust-description")),
                     )
                     .child(
                         div()
@@ -206,16 +206,18 @@ impl ChatScreen {
                             .flex()
                             .justify_end()
                             .gap_2()
-                            .child(button("trust-keep", "Keep untrusted", false).on_click(
+                            .child(button("trust-keep", tr("chat-trust-keep"), false).on_click(
                                 cx.listener(move |this, _event, _window, cx| {
                                     this.set_project_trust(keep_path.clone(), false, cx);
                                 }),
                             ))
-                            .child(button("trust-allow", "Trust project", true).on_click(
-                                cx.listener(move |this, _event, _window, cx| {
-                                    this.set_project_trust(trust_path.clone(), true, cx);
-                                }),
-                            )),
+                            .child(
+                                button("trust-allow", tr("chat-trust-allow"), true).on_click(
+                                    cx.listener(move |this, _event, _window, cx| {
+                                        this.set_project_trust(trust_path.clone(), true, cx);
+                                    }),
+                                ),
+                            ),
                     ),
             )
     }
@@ -267,11 +269,12 @@ impl ChatScreen {
             ConfirmDialog::RemoveRoot(root) => {
                 let name = self.sidebar.read(cx).root_name(root);
                 ConfirmCopy {
-                    title: format!("Remove {name}?"),
-                    body: "The project leaves the sidebar and its tasks move to \
-                           Archived, where you can restore them. No files are deleted.",
+                    title: self
+                        .messages
+                        .get("chat-remove-title", [("name", name.into())]),
+                    body: tr("chat-remove-description"),
                     detail: root.clone(),
-                    confirm_label: "Remove",
+                    confirm_label: tr("chat-remove"),
                 }
             }
             ConfirmDialog::DeleteTask(session_id) => {
@@ -282,19 +285,17 @@ impl ChatScreen {
                     .map(|session| session.title.clone())
                     .unwrap_or_else(|| session_id.clone());
                 ConfirmCopy {
-                    title: "Delete this task?".to_string(),
-                    body: "The task and its transcript are deleted for good. Files the \
-                           agent wrote in the project stay where they are.",
+                    title: tr("chat-delete-title"),
+                    body: tr("chat-delete-description"),
                     detail: title,
-                    confirm_label: "Delete",
+                    confirm_label: tr("chat-delete"),
                 }
             }
             ConfirmDialog::DeleteComputerTask { title, .. } => ConfirmCopy {
-                title: "Delete this task?".to_string(),
-                body: "The task and its transcript are deleted for good. Files the \
-                       agent wrote in the project stay where they are.",
+                title: tr("chat-delete-title"),
+                body: tr("chat-delete-description"),
                 detail: title.clone(),
-                confirm_label: "Delete",
+                confirm_label: tr("chat-delete"),
             },
         }
     }
@@ -306,14 +307,14 @@ impl ChatScreen {
         cx: &mut Context<Self>,
     ) -> gpui::Stateful<Div> {
         let copy = self.confirm_copy(dialog, cx);
-        let button = |id: &'static str, label: &'static str, primary: bool| {
+        let button = |id: &'static str, label: gpui::SharedString, primary: bool| {
             if primary {
                 widgets::danger_button(id)
             } else {
                 widgets::secondary_button(id)
             }
             .py_1p5()
-            .child(label)
+            .child(gpui::text!(label))
         };
         div()
             .id("confirm-backdrop")
@@ -392,15 +393,13 @@ impl ChatScreen {
                             .flex()
                             .justify_end()
                             .gap_2()
-                            .child(
-                                button("confirm-cancel", "Cancel", false).on_click(cx.listener(
-                                    |this, _event, _window, cx| {
-                                        cx.stop_propagation();
-                                        this.confirm = None;
-                                        cx.notify();
-                                    },
-                                )),
-                            )
+                            .child(button("confirm-cancel", tr("chat-cancel"), false).on_click(
+                                cx.listener(|this, _event, _window, cx| {
+                                    cx.stop_propagation();
+                                    this.confirm = None;
+                                    cx.notify();
+                                }),
+                            ))
                             .child(button("confirm-ok", copy.confirm_label, true).on_click(
                                 cx.listener(|this, _event, _window, cx| {
                                     cx.stop_propagation();
@@ -542,7 +541,7 @@ impl ChatScreen {
     /// sidebar. The UI selects the next project when this one was current.
     pub(super) fn archive_root(&mut self, root: &str, cx: &mut Context<Self>) {
         if self.root_selecting {
-            self.notice = Some("Wait for the project selection to finish, then try again".into());
+            self.notice = Some(UiText::key("chat-wait-project"));
             cx.notify();
             return;
         }

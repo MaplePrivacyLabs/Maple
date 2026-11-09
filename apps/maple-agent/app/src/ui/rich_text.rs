@@ -367,6 +367,7 @@ pub struct RenderCtx {
     /// Selection shared by every paragraph of the transcript.
     pub selection: Option<Entity<TextSelection>>,
     /// First ordinal of the message being rendered; block indexes are added.
+    /// An ordinal is also what puts a paragraph in the accessibility tree.
     pub base_ordinal: Option<u64>,
     /// Focus handle moved to the transcript when a drag starts, so the
     /// copy keybinding applies while text is selected.
@@ -497,12 +498,24 @@ impl Element for RichText {
     type RequestLayoutState = ();
     type PrepaintState = Hitbox;
 
+    /// The ordinal doubles as the accessibility identity: it is unique within
+    /// the transcript and stable across frames. Text without one stays out of
+    /// the accessibility tree.
     fn id(&self) -> Option<gpui::ElementId> {
-        None
+        self.ordinal
+            .map(|ordinal| ElementId::NamedInteger("rich-text".into(), ordinal))
     }
 
     fn source_location(&self) -> Option<&'static core::panic::Location<'static>> {
         None
+    }
+
+    fn a11y_role(&self) -> Option<gpui::Role> {
+        Some(gpui::Role::Label)
+    }
+
+    fn write_a11y_info(&self, node: &mut gpui::accesskit::Node) {
+        node.set_value(self.text.to_string());
     }
 
     fn request_layout(
@@ -741,7 +754,8 @@ pub fn open_link(url: &str) {
     });
 }
 
-/// A styled, selectable paragraph. `ordinal` enables selection when set.
+/// A styled paragraph. `ordinal` exposes it to accessibility clients, and
+/// enables selection when `ctx` carries one.
 pub fn paragraph(
     text: SharedString,
     inline: Inline,
@@ -853,6 +867,39 @@ mod tests {
 
     fn pos(ordinal: u64, index: usize) -> SelectionPos {
         SelectionPos { ordinal, index }
+    }
+
+    fn rich_text(ordinal: Option<u64>) -> RichText {
+        RichText {
+            ordinal,
+            text: "Hello from Maple".into(),
+            highlights: Highlights::default(),
+            links: Links::default(),
+            mono: Mono::default(),
+            selection: None,
+            focus: None,
+            styled: None,
+        }
+    }
+
+    #[test]
+    fn ordinal_text_reaches_the_accessibility_tree() {
+        let text = rich_text(Some(7));
+        assert_eq!(
+            text.id(),
+            Some(ElementId::NamedInteger("rich-text".into(), 7))
+        );
+        assert_eq!(text.a11y_role(), Some(gpui::Role::Label));
+        let mut node = gpui::accesskit::Node::new(gpui::Role::Label);
+        text.write_a11y_info(&mut node);
+        assert_eq!(node.value(), Some("Hello from Maple"));
+    }
+
+    /// GPUI only reports elements with an id, and two paragraphs without an
+    /// ordinal have no unique one to give.
+    #[test]
+    fn text_without_an_ordinal_has_no_identity() {
+        assert_eq!(rich_text(None).id(), None);
     }
 
     #[test]

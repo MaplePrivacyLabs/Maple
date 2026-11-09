@@ -236,7 +236,7 @@ mod tests {
             AgentBackend::for_test("http://127.0.0.1:9".to_string(), String::new())
                 .expect("backend"),
         );
-        cx.new(|cx| ChatScreen::new_inner(backend, "user".to_string(), cx))
+        cx.new(|cx| ChatScreen::new_inner_for_test(backend, "user".to_string(), cx))
     }
 
     #[gpui::test]

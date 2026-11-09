@@ -1,6 +1,7 @@
 //! The composer previews and changes the runtime's persisted thinking level.
 
 use super::*;
+use crate::ui::i18n::tr;
 
 /// A model's available levels can be reused, but its selected level belongs to
 /// a particular task (or to the new-task default). Screens themselves belong
@@ -87,19 +88,31 @@ impl ThinkingCache {
     }
 }
 
+fn thinking_label(level: ThinkingLevel) -> SharedString {
+    tr(match level {
+        ThinkingLevel::Off => "chat-thinking-off",
+        ThinkingLevel::Minimal => "chat-thinking-minimal",
+        ThinkingLevel::Low => "chat-thinking-low",
+        ThinkingLevel::Medium => "chat-thinking-medium",
+        ThinkingLevel::High => "chat-thinking-high",
+        ThinkingLevel::Xhigh => "chat-thinking-xhigh",
+        ThinkingLevel::Max => "chat-thinking-max",
+    })
+}
+
 impl ChatScreen {
     pub(super) fn thinking_menu(&self) -> Menu<Self> {
         let mut menu = Menu::new("thinking-menu", px(220.))
-            .label("Thinking")
+            .label(tr("chat-thinking-title"))
             .application_vim(self.application_vim_enabled);
         if let Some(state) = &self.thinking {
             if state.levels == [ThinkingLevel::Off] {
-                return menu.header("This model does not support thinking");
+                return menu.header(tr("chat-thinking-unsupported"));
             }
             menu = menu.items(state.levels.iter().copied().map(|level| {
                 MenuItem::new(
                     SharedString::from(format!("thinking-{}", level.as_str())),
-                    level.as_str(),
+                    thinking_label(level),
                     move |this: &mut Self, _: &mut Window, cx: &mut Context<Self>| {
                         this.pick_thinking(level, cx);
                     },
@@ -109,18 +122,18 @@ impl ChatScreen {
             }));
         } else {
             menu = menu.header(if self.thinking_loading {
-                "Loading thinking options…"
+                tr("chat-thinking-loading")
             } else if self.thinking_saving {
-                "Saving thinking level…"
+                tr("chat-thinking-saving")
             } else if self.selected_model.is_some() {
-                "Thinking options unavailable"
+                tr("chat-thinking-unavailable")
             } else {
-                "Choose a model first"
+                tr("chat-thinking-choose-model")
             });
             if self.selected_model.is_some() && !self.thinking_loading && !self.thinking_saving {
                 menu = menu.item(MenuItem::new(
                     "retry-thinking",
-                    "Retry",
+                    tr("chat-thinking-retry"),
                     |this: &mut Self, _, cx| {
                         this.refresh_thinking(cx);
                         cx.notify();
@@ -224,7 +237,7 @@ impl ChatScreen {
         let backend = self.backend.clone();
         let user_id = self.user_id.clone();
         let request = key.clone();
-        self.call(
+        self.call_semantic(
             async move {
                 backend
                     .set_thinking_level(&user_id, request.session.as_deref(), &request.model, level)
@@ -253,8 +266,7 @@ impl ChatScreen {
                     }
                     Err(error) => {
                         this.thinking_cache.finish_pick(&key, None);
-                        this.notice =
-                            Some(format!("Could not save the thinking level: {error}").into());
+                        this.notice = Some(error.context("chat-thinking-save-failed"));
                     }
                 }
                 this.refresh_thinking(cx);
@@ -378,7 +390,7 @@ mod tests {
             crate::backend::AgentBackend::for_test("http://127.0.0.1:9".into(), String::new())
                 .expect("backend"),
         );
-        let chat = cx.new(|cx| ChatScreen::new_inner(backend, "user".into(), cx));
+        let chat = cx.new(|cx| ChatScreen::new_inner_for_test(backend, "user".into(), cx));
         chat.update(cx, |this, cx| {
             this.selected_model = Some("model-a".into());
             this.thinking_cache

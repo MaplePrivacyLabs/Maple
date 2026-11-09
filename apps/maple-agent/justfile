@@ -89,10 +89,20 @@ test:
     RUSTFLAGS="-D warnings" cargo test --workspace --locked
     RUSTFLAGS="-D warnings" cargo test -p maple-agent-app --locked {{headless}}
 
+# Record that a translated catalog matches the current English, after updating
+# the messages the catalog test lists.
+translations-reviewed LOCALE:
+    MAPLE_TRANSLATION_LOCALE={{LOCALE}} RUSTFLAGS="-D warnings" cargo test -p maple-agent-app --locked --bin maple-agent ui::i18n::tests::record_reviewed_translations -- --ignored --exact
+
 # Record what Neovim does for each composer Vim case, using the Neovim this
 # flake pins. Run after adding a case to the file.
 vim-cases:
     nix shell --inputs-from . nixpkgs#neovim -c nvim --clean --headless -l scripts/record-vim-cases.lua app/src/ui/text_input/vim_neovim_cases.json
+
+# Score the permission classifier on labelled tool calls, against live
+# models, at a gentle pace. See docs/permissions.md for what it needs.
+permission-eval:
+    cargo test -p maple-agent --locked --lib agent::permissions::eval -- --ignored --nocapture
 
 # Build the debug binary.
 build:

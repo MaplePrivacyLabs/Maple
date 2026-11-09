@@ -40,7 +40,8 @@ A result has Paseo's shape: a status line, the agent ID and thread ID, the
 files changed and commands run, the agent's last message inside an
 `<agent-response>` block cut at 4,000 characters, and one line of guidance.
 
-Starting an agent is always allowed. The agent's own sandbox and approval
+Starting an agent is an ordinary tool call, judged by the task's
+[permission mode](permissions.md). The agent's own sandbox and approval
 settings decide what it may do; Maple accepts the approval requests it
 sends back.
 

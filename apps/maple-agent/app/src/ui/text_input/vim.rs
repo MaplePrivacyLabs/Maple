@@ -2322,7 +2322,7 @@ impl VimState {
         self.clear_grammar();
         self.notice = Some(VimNotice {
             kind: NoticeKind::InvalidGrammar,
-            message: "invalid Vim command",
+            message: "chat-vim-notice-1",
         });
         self.outcome(text, false, HistoryPlan::None, VimSignal::None)
     }
@@ -2346,7 +2346,7 @@ impl VimState {
             self.count = Some(MAX_COUNT);
             self.notice = Some(VimNotice {
                 kind: NoticeKind::CountCapped,
-                message: "Vim count capped at 999999",
+                message: "chat-vim-notice-2",
             });
         } else {
             self.count = Some(next);
@@ -2364,7 +2364,7 @@ impl VimState {
             _ => {
                 self.notice = Some(VimNotice {
                     kind: NoticeKind::CountCapped,
-                    message: "multiplied Vim count capped at 999999",
+                    message: "chat-vim-notice-3",
                 });
                 MAX_COUNT
             }
@@ -2587,7 +2587,7 @@ impl VimState {
         self.clear_grammar();
         self.notice = Some(VimNotice {
             kind: NoticeKind::NoChange,
-            message: "Vim motion cannot move",
+            message: "chat-vim-notice-4",
         });
         self.outcome(text, false, HistoryPlan::None, VimSignal::None)
     }
@@ -2795,7 +2795,7 @@ impl VimState {
         if text.get(range.clone()).is_none() || (range.is_empty() && operator != Operator::Change) {
             self.notice = Some(VimNotice {
                 kind: NoticeKind::NoChange,
-                message: "Vim command made no change",
+                message: "chat-vim-notice-5",
             });
             return self.outcome(text, false, HistoryPlan::None, VimSignal::None);
         }
@@ -2901,7 +2901,7 @@ impl VimState {
         if delete_range.as_ref().is_some_and(Range::is_empty) {
             self.notice = Some(VimNotice {
                 kind: NoticeKind::NoChange,
-                message: "line is already empty",
+                message: "chat-vim-notice-6",
             });
             return self.outcome(text, false, HistoryPlan::None, VimSignal::None);
         }
@@ -2966,7 +2966,7 @@ impl VimState {
             self.clear_grammar();
             self.notice = Some(VimNotice {
                 kind: NoticeKind::NoChange,
-                message: "text object is unavailable",
+                message: "chat-vim-notice-7",
             });
             return self.outcome(text, false, HistoryPlan::None, VimSignal::None);
         };
@@ -3130,7 +3130,7 @@ impl VimState {
         else {
             self.notice = Some(VimNotice {
                 kind: NoticeKind::NoChange,
-                message: "no character to change",
+                message: "chat-vim-notice-8",
             });
             return self.outcome(text, false, HistoryPlan::None, VimSignal::None);
         };
@@ -3161,7 +3161,7 @@ impl VimState {
         else {
             self.notice = Some(VimNotice {
                 kind: NoticeKind::NoChange,
-                message: "not enough characters to replace",
+                message: "chat-vim-notice-9",
             });
             return self.outcome(text, false, HistoryPlan::None, VimSignal::None);
         };
@@ -3252,7 +3252,7 @@ impl VimState {
             if count <= 2 || first == last {
                 self.notice = Some(VimNotice {
                     kind: NoticeKind::NoChange,
-                    message: "no line to join",
+                    message: "chat-vim-notice-10",
                 });
                 return self.outcome(text, false, HistoryPlan::None, VimSignal::None);
             }
@@ -3388,7 +3388,7 @@ impl VimState {
         {
             self.notice = Some(VimNotice {
                 kind: NoticeKind::InvalidGrammar,
-                message: "insert edit was not on grapheme boundaries",
+                message: "chat-vim-notice-11",
             });
             return self.outcome(text, false, HistoryPlan::None, VimSignal::None);
         }
@@ -3407,7 +3407,7 @@ impl VimState {
         {
             self.notice = Some(VimNotice {
                 kind: NoticeKind::InvalidGrammar,
-                message: "insert cursor escaped its committed replacement",
+                message: "chat-vim-notice-12",
             });
             return self.outcome(text, false, HistoryPlan::None, VimSignal::None);
         }
@@ -3421,7 +3421,7 @@ impl VimState {
             *text = old;
             self.notice = Some(VimNotice {
                 kind: NoticeKind::InvalidGrammar,
-                message: "insert cursor escaped its committed replacement",
+                message: "chat-vim-notice-12",
             });
             return self.outcome(text, false, HistoryPlan::None, VimSignal::None);
         };
@@ -3536,7 +3536,7 @@ impl VimState {
         } else if incomplete_plain_insert {
             self.notice = Some(VimNotice {
                 kind: NoticeKind::InsertDeltaIncomplete,
-                message: "insert change committed without a replayable delta",
+                message: "chat-vim-notice-13",
             });
         }
         let after = self.snapshot(text);
@@ -3565,7 +3565,7 @@ impl VimState {
         else {
             self.notice = Some(VimNotice {
                 kind: NoticeKind::NoChange,
-                message: "no grapheme to delete",
+                message: "chat-vim-notice-14",
             });
             return self.outcome(text, false, HistoryPlan::None, VimSignal::None);
         };
@@ -3596,7 +3596,7 @@ impl VimState {
         let Some(register) = self.register.clone() else {
             self.notice = Some(VimNotice {
                 kind: NoticeKind::NoChange,
-                message: "unnamed register is empty",
+                message: "chat-vim-notice-15",
             });
             self.count = None;
             return self.outcome(text, false, HistoryPlan::None, VimSignal::None);
@@ -3626,7 +3626,7 @@ impl VimState {
                 if pasted.is_empty() {
                     self.notice = Some(VimNotice {
                         kind: NoticeKind::NoChange,
-                        message: "unnamed register is empty",
+                        message: "chat-vim-notice-15",
                     });
                     return self.outcome(text, false, HistoryPlan::None, VimSignal::None);
                 }
@@ -3672,7 +3672,7 @@ impl VimState {
         if before.text == *text {
             self.notice = Some(VimNotice {
                 kind: NoticeKind::NoChange,
-                message: "paste made no change",
+                message: "chat-vim-notice-16",
             });
             return self.outcome(text, false, HistoryPlan::None, VimSignal::None);
         }
@@ -3724,7 +3724,7 @@ impl VimState {
             self.cursor = normal_cursor(text, range.start);
             self.notice = Some(VimNotice {
                 kind: NoticeKind::NoChange,
-                message: "Visual selection is empty",
+                message: "chat-vim-notice-17",
             });
             return self.outcome(text, false, HistoryPlan::None, VimSignal::None);
         }
@@ -3780,7 +3780,7 @@ impl VimState {
         let Some(saved_register) = self.register.clone() else {
             self.notice = Some(VimNotice {
                 kind: NoticeKind::NoChange,
-                message: "unnamed register is empty",
+                message: "chat-vim-notice-15",
             });
             return self.outcome(text, false, HistoryPlan::None, VimSignal::None);
         };
@@ -3795,7 +3795,7 @@ impl VimState {
             self.leave_visual();
             self.notice = Some(VimNotice {
                 kind: NoticeKind::NoChange,
-                message: "Visual selection is empty",
+                message: "chat-vim-notice-17",
             });
             return self.outcome(text, false, HistoryPlan::None, VimSignal::None);
         }
@@ -3811,7 +3811,7 @@ impl VimState {
             self.preferred_column = None;
             self.notice = Some(VimNotice {
                 kind: NoticeKind::NoChange,
-                message: "Visual paste made no change",
+                message: "chat-vim-notice-18",
             });
             return self.outcome(text, false, HistoryPlan::None, VimSignal::None);
         }
@@ -4173,7 +4173,7 @@ impl VimState {
         let Some(recipe) = self.last_change.clone() else {
             self.notice = Some(VimNotice {
                 kind: NoticeKind::RepeatUnavailable,
-                message: "no Vim change to repeat",
+                message: "chat-vim-notice-19",
             });
             return self.outcome(text, false, HistoryPlan::None, VimSignal::None);
         };
@@ -4193,7 +4193,7 @@ impl VimState {
                 *self = baseline;
                 self.notice = Some(VimNotice {
                     kind: NoticeKind::RepeatFailed,
-                    message: "Vim repeat could not apply at this position",
+                    message: "chat-vim-notice-20",
                 });
                 return self.outcome(text, false, HistoryPlan::None, VimSignal::None);
             }
@@ -4201,7 +4201,7 @@ impl VimState {
                 *self = baseline;
                 self.notice = Some(VimNotice {
                     kind: NoticeKind::CountCapped,
-                    message: "Vim repeat exceeds the safe output limit",
+                    message: "chat-vim-notice-21",
                 });
                 return self.outcome(text, false, HistoryPlan::None, VimSignal::None);
             }
@@ -4209,7 +4209,7 @@ impl VimState {
         if candidate_text == *text {
             self.notice = Some(VimNotice {
                 kind: NoticeKind::RepeatFailed,
-                message: "Vim repeat made no change",
+                message: "chat-vim-notice-22",
             });
             return self.outcome(text, false, HistoryPlan::None, VimSignal::None);
         }

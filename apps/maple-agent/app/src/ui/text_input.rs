@@ -102,6 +102,7 @@ pub struct TextInput {
     focus_handle: FocusHandle,
     content: SharedString,
     placeholder: SharedString,
+    placeholder_key: Option<&'static str>,
     selected_range: Range<usize>,
     selection_reversed: bool,
     /// A soft wrap has two visual caret positions at the same byte offset.
@@ -160,7 +161,7 @@ pub struct TextInput {
     misspelled: Vec<Range<usize>>,
     /// `spell::generation()` at the last check. Text set before the
     /// dictionary finished loading is re-checked when this falls behind.
-    spell_generation: u32,
+    spell_generation: (u32, bool),
     /// The misspelled word under the open right-click menu, with its
     /// replacement candidates.
     spell_menu: Option<(Range<usize>, Vec<String>)>,
@@ -253,10 +254,23 @@ impl TextInput {
         self
     }
 
+    /// A catalog-backed placeholder and accessibility label that follow live language changes.
+    pub fn localized(key: &'static str, cx: &mut Context<Self>) -> Self {
+        let mut input = Self::new("", cx);
+        input.placeholder_key = Some(key);
+        input
+    }
+
+    fn placeholder(&self) -> SharedString {
+        self.placeholder_key
+            .map_or_else(|| self.placeholder.clone(), super::i18n::tr)
+    }
+
     pub fn new(placeholder: &str, cx: &mut Context<Self>) -> Self {
         Self {
             focus_handle: cx.focus_handle(),
             content: "".into(),
+            placeholder_key: None,
             placeholder: SharedString::from(placeholder.to_string()),
             selected_range: 0..0,
             selection_reversed: false,
@@ -283,7 +297,7 @@ impl TextInput {
             on_key: None,
             spell_check: false,
             misspelled: Vec::new(),
-            spell_generation: 0,
+            spell_generation: (0, false),
             spell_menu: None,
             undo_stack: VecDeque::new(),
             redo_stack: Vec::new(),
@@ -366,6 +380,9 @@ impl TextInput {
     /// Recompute the misspelled ranges. Call after every content change.
     fn refresh_spelling(&mut self) {
         if self.spell_check && !self.mask {
+            if self.spell_generation != spell::generation() {
+                self.spell_menu = None;
+            }
             self.spell_generation = spell::generation();
             self.misspelled = spell::misspelled_ranges(&self.content);
         }
@@ -394,6 +411,12 @@ impl TextInput {
     pub fn masked(mut self) -> Self {
         self.mask = true;
         self
+    }
+
+    /// The text assistive technology may read. A masked field never exposes
+    /// its content, matching what it draws.
+    fn accessible_value(&self) -> Option<SharedString> {
+        (!self.mask).then(|| self.content.clone())
     }
 
     /// Wrap text and grow with the content, up to `max_lines` rows.
@@ -446,7 +469,14 @@ impl TextInput {
         &self.content
     }
 
+    /// Change a translated placeholder without replacing the draft or selection.
+    pub fn set_placeholder_key(&mut self, key: &'static str, cx: &mut Context<Self>) {
+        self.placeholder_key = Some(key);
+        cx.notify();
+    }
+
     pub fn set_placeholder(&mut self, text: &str, cx: &mut Context<Self>) {
+        self.placeholder_key = None;
         self.placeholder = SharedString::from(text.to_string());
         cx.notify();
     }
@@ -1861,6 +1891,7 @@ impl TextInput {
         self.finish_vim_lifecycle(LifecycleEvent::PopupTakeover, cx);
         window.focus(&self.focus_handle, cx);
         let index = self.index_for_mouse_position(event.position);
+        self.refresh_spelling();
         self.spell_menu = self
             .misspelled
             .iter()
@@ -1882,8 +1913,8 @@ impl TextInput {
     ) -> Option<gpui::AnyElement> {
         let position = *self.popup.open_key()?;
         let has_selection = !self.selected_range.is_empty();
-        let mut menu = Menu::new("text-input-menu", px(160.))
-            .label("Edit")
+        let mut menu = Menu::new("text-input-menu", px(240.))
+            .label(super::i18n::tr("native-edit"))
             .application_vim(self.application_vim);
         if let Some((range, suggestions)) = &self.spell_menu {
             for (i, suggestion) in suggestions.iter().enumerate() {
@@ -1902,7 +1933,7 @@ impl TextInput {
             menu = menu
                 .item(MenuItem::new(
                     "text-input-add-word",
-                    "Add to dictionary",
+                    super::i18n::tr("native-add-dictionary"),
                     move |this: &mut Self, _: &mut Window, cx: &mut Context<Self>| {
                         this.spell_menu = None;
                         if let Some(word) = this.content.get(range.clone()) {
@@ -1915,7 +1946,7 @@ impl TextInput {
                 .separator();
         }
         let edit = |id: &'static str,
-                    label: &'static str,
+                    label: SharedString,
                     enabled: bool,
                     action: fn(&mut Self, &mut Window, &mut Context<Self>)| {
             MenuItem::new(
@@ -1932,25 +1963,25 @@ impl TextInput {
         let menu = menu
             .item(edit(
                 "text-input-cut",
-                "Cut",
+                super::i18n::tr("native-cut"),
                 has_selection,
                 |this, window, cx| this.cut(&Cut, window, cx),
             ))
             .item(edit(
                 "text-input-copy",
-                "Copy",
+                super::i18n::tr("native-copy"),
                 has_selection,
                 |this, window, cx| this.copy(&Copy, window, cx),
             ))
             .item(edit(
                 "text-input-paste",
-                "Paste",
+                super::i18n::tr("native-paste"),
                 true,
                 |this, window, cx| this.paste(&Paste, window, cx),
             ))
             .item(edit(
                 "text-input-select-all",
-                "Select all",
+                super::i18n::tr("native-select-all"),
                 !self.content.is_empty(),
                 |this, window, cx| this.select_all(&SelectAll, window, cx),
             ));
@@ -2723,7 +2754,7 @@ impl Element for TextElement {
         let layout = window.request_measured_layout(style, move |known, available, window, cx| {
             let input = entity.read(cx);
             let text = if input.content.is_empty() {
-                input.placeholder.clone()
+                input.placeholder()
             } else {
                 input.display_text()
             };
@@ -2810,7 +2841,7 @@ impl Element for TextElement {
         // surrounding element happens to set: an input inside a caption
         // row or an unstyled container still reads in both themes.
         let (display_text, text_color) = if content.is_empty() {
-            (input.placeholder.clone(), theme::placeholder())
+            (input.placeholder(), theme::placeholder())
         } else {
             (input.display_text(), rgb(theme::text_primary()).into())
         };
@@ -3208,8 +3239,11 @@ impl Render for TextInput {
             } else {
                 gpui::Role::TextInput
             })
-            .aria_label(self.placeholder.clone())
-            .aria_placeholder(self.placeholder.clone())
+            .aria_label(self.placeholder())
+            .aria_placeholder(self.placeholder())
+            .when_some(self.accessible_value(), |input, value| {
+                input.aria_value(value)
+            })
             .flex()
             .key_context(key_context)
             .track_focus(&self.focus_handle(cx))
@@ -3382,6 +3416,21 @@ mod tests {
         rc::Rc,
     };
 
+    #[gpui::test]
+    fn assistive_technology_reads_plain_fields_but_never_masked_ones(cx: &mut TestAppContext) {
+        let plain = cx.new(|cx| TextInput::new("Message", cx));
+        let masked = cx.new(|cx| TextInput::new("Password", cx).masked());
+        for input in [&plain, &masked] {
+            input.update(cx, |input, cx| input.set_text("draft", cx));
+        }
+        plain.read_with(cx, |input, _| {
+            assert_eq!(input.accessible_value().as_deref(), Some("draft"));
+        });
+        masked.read_with(cx, |input, _| {
+            assert_eq!(input.accessible_value(), None);
+        });
+    }
+
     struct InputHost {
         input: Entity<TextInput>,
     }
@@ -3450,6 +3499,23 @@ mod tests {
             px(14.),
             &[run(2, None), run(3, Some(wavy))]
         ));
+    }
+
+    #[gpui::test]
+    fn localized_placeholder_setter_keeps_draft_and_selection(cx: &mut gpui::TestAppContext) {
+        let _locale = super::super::i18n::TestLocalizationGuard::enable();
+        let input = cx.new(|cx| TextInput::localized("flows-store-type-start-fresh", cx));
+        input.update(cx, |input, cx| {
+            input.set_text("ERASE draft", cx);
+            let selection = input.selected_range.clone();
+            input.set_placeholder_key("flows-store-type-erase", cx);
+            for (locale, expected) in [("en", "Type ERASE"), ("es", "Escribe ERASE")] {
+                super::super::i18n::apply_preference(Some(locale));
+                assert_eq!(input.placeholder().as_ref(), expected);
+                assert_eq!(input.text(), "ERASE draft");
+                assert_eq!(input.selected_range, selection);
+            }
+        });
     }
 
     #[gpui::test]
@@ -4582,5 +4648,53 @@ mod tests {
             cases.len(),
             failures.join("\n")
         );
+    }
+}
+
+#[cfg(test)]
+#[gpui::test]
+fn localized_placeholder_follows_language_without_replacing_text(cx: &mut gpui::TestAppContext) {
+    let _locale = super::i18n::TestLocalizationGuard::enable();
+    let input = cx.new(|cx| TextInput::localized("settings-account-current-password", cx));
+    input.update(cx, |input, cx| input.set_text("typed value", cx));
+    for (locale, expected) in [
+        ("en", "Current password"),
+        ("es", "Contraseña actual"),
+        ("en", "Current password"),
+    ] {
+        super::i18n::apply_preference(Some(locale));
+        input.update(cx, |input, _| {
+            assert_eq!(input.placeholder().as_ref(), expected);
+            assert_eq!(input.text(), "typed value");
+        });
+    }
+}
+
+#[cfg(test)]
+#[gpui::test]
+fn native_edit_menu_locale_switch_keeps_selection_and_clipboard_actions(
+    cx: &mut gpui::TestAppContext,
+) {
+    let _locale = super::i18n::TestLocalizationGuard::enable();
+    let (input, cx) = cx.add_window_view(|_, cx| TextInput::new("", cx));
+    input.update(cx, |input, cx| {
+        input.set_text("user-owned text", cx);
+        input.selected_range = 0..10;
+    });
+    for locale in ["es", "en", "es"] {
+        super::i18n::apply_preference(Some(locale));
+        cx.update(|window, app| {
+            input.update(app, |input, cx| {
+                input.popup.open(gpui::point(px(20.), px(20.)), cx);
+                assert!(input.render_context_menu(window, cx).is_some());
+                assert_eq!(input.text_ref(), "user-owned text");
+                assert_eq!(input.selected_range, 0..10);
+                input.copy(&Copy, window, cx);
+                assert_eq!(
+                    cx.read_from_clipboard().unwrap().text().as_deref(),
+                    Some("user-owned")
+                );
+            })
+        });
     }
 }

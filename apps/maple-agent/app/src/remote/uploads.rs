@@ -3,7 +3,7 @@
 use super::{manager::Node, streams, wire};
 use crate::{
     backend::{
-        LocalBackend,
+        HostFailure, LocalBackend,
         attachments::{self, ImportAttachmentRequest, PreparedImport},
     },
     host::protocol::Message,
@@ -92,6 +92,7 @@ pub(super) async fn call(
                 tx.finish().map_err(|_| "Attachment stream closed")?;
                 streams::finish_reply(&mut rx, streams::IO_TIMEOUT).await?;
                 return Ok(Message::Response {
+                    failure: None,
                     id,
                     result: serde_json::to_value(attachment)
                         .map_err(|_| "Could not encode attachment".into()),
@@ -265,7 +266,8 @@ async fn serve_receiver<R: UploadReceiver>(
         // Slow file sync owns no policy guard. The sealed partial keeps its
         // upload lease and still cannot be consumed as a committed attachment.
         let prepare_store = store.clone();
-        let prepared = attachments::blocking(move || writer.prepare(&prepare_store)).await?;
+        let prepared =
+            attachments::blocking_presented(move || writer.prepare(&prepare_store)).await?;
         let account_guard = node.backend().account_gate.clone().read_owned().await;
         node.ensure_valid().await?;
         node.backend().authorize_account(node.account())?;
@@ -294,12 +296,23 @@ async fn serve_receiver<R: UploadReceiver>(
     // As with ordinary RPC replies, a completed effect does not authorize
     // exposing its receipt to a peer whose account/grant ended while it ran.
     check_receiver(node.as_ref(), peer, grant_id).await?;
-    let result = result.and_then(|attachment| {
-        serde_json::to_value(attachment).map_err(|_| "Could not encode attachment".into())
+    let result: Result<_, HostFailure> = result.and_then(|attachment| {
+        serde_json::to_value(attachment)
+            .map_err(|_| HostFailure::new("attachment-encode", "Could not encode attachment"))
     });
+    let failure = result
+        .as_ref()
+        .err()
+        .filter(|failure| failure.code != "unknown")
+        .cloned();
+    let result = result.map_err(|failure| failure.message);
     streams::reply_with_limit(
         tx,
-        &Message::Response { id, result },
+        &Message::Response {
+            failure,
+            id,
+            result,
+        },
         wire::MAX_MANAGEMENT_REPLY,
     )
     .await
@@ -334,7 +347,7 @@ fn finish_authorized(
     peer: EndpointId,
     admitted_grant: [u8; 16],
     stopped: bool,
-) -> Result<StoredAttachment, String> {
+) -> Result<StoredAttachment, HostFailure> {
     if stopped
         || !policy.permits(peer)
         || !policy
@@ -344,7 +357,7 @@ fn finish_authorized(
     {
         return Err("Remote access revoked".into());
     }
-    prepared.publish(store).map_err(|error| error.to_string())
+    prepared.publish(store).map_err(HostFailure::from)
 }
 
 pub(super) async fn refuse(tx: &mut SendStream, error: String) -> Result<(), String> {

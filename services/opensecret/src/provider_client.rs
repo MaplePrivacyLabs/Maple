@@ -1717,6 +1717,126 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn maple_measurement_mismatch_retries_same_policy_without_retaining_requests() {
+        let (request_tx, mut request_rx) = mpsc::channel(1);
+        let app = Router::new().fallback(any(move |body: Bytes| {
+            let request_tx = request_tx.clone();
+            async move {
+                request_tx.send(body).await.unwrap();
+                StatusCode::OK
+            }
+        }));
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let address = listener.local_addr().unwrap();
+        let server = tokio::spawn(async move { axum::serve(listener, app).await.unwrap() });
+
+        let target = direct_target();
+        let AttestationTarget::MapleDirect {
+            instance,
+            host,
+            policy,
+        } = &target
+        else {
+            unreachable!();
+        };
+        let expected = (
+            *instance,
+            *host,
+            format!("{policy:?}"),
+            "dedicated-test-key".to_owned(),
+        );
+        let (attempt_tx, mut attempt_rx) = mpsc::unbounded_channel();
+        let calls = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let observed = Arc::clone(&calls);
+        let mut transport = SecureTinfoilTransport::new("dedicated-test-key".to_owned(), target);
+        transport.client_factory = Some(Arc::new(move |target, key| {
+            let AttestationTarget::MapleDirect {
+                instance,
+                host,
+                policy,
+            } = target
+            else {
+                panic!("direct-node recovery must never discover a shared router");
+            };
+            attempt_tx
+                .send((instance, host, format!("{policy:?}"), key))
+                .unwrap();
+            let first = observed.fetch_add(1, Ordering::SeqCst) == 0;
+            Box::pin(async move {
+                if first {
+                    Err(tinfoil::Error::MeasurementMismatch {
+                        expected: "approved-measurement".to_owned(),
+                        actual: "unapproved-measurement".to_owned(),
+                    })
+                } else {
+                    std::future::pending().await
+                }
+            })
+        }));
+        let transport = Arc::new(transport);
+        let mut client = ProviderClient::for_test(format!("http://{address}")).unwrap();
+        client.maple.insert(
+            MapleInstanceId::I01,
+            TinfoilTransport::Secure(Arc::clone(&transport)),
+        );
+        let readiness = client.maple_readiness();
+        let mut provider = maple_proxy();
+        provider.base_url = format!("http://{address}");
+
+        assert!(!readiness.is_ready(MapleInstanceId::I01));
+        let first = tokio::time::timeout(Duration::from_secs(1), attempt_rx.recv())
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(first, expected);
+        assert!(transport.snapshot().is_none());
+
+        let body_owner: Arc<[u8]> = Arc::from(b"synthetic-request-not-to-replay".as_slice());
+        let result = tokio::time::timeout(
+            Duration::from_millis(100),
+            client.send(
+                &provider,
+                ProviderRequest::new(Method::POST, "/v1/chat/completions", Duration::from_secs(5))
+                    .body(Bytes::from_owner(Arc::clone(&body_owner))),
+            ),
+        )
+        .await
+        .expect("a failed attestation must not queue an inference request");
+        assert!(matches!(
+            result,
+            Err(ProviderRequestError::MapleUnavailable)
+        ));
+        assert_eq!(
+            Arc::strong_count(&body_owner),
+            1,
+            "request body was retained"
+        );
+
+        // No new inference request drives this retry: the initializer owns it.
+        let second = tokio::time::timeout(Duration::from_secs(5), attempt_rx.recv())
+            .await
+            .expect("measurement mismatch must retry in the background")
+            .unwrap();
+        assert_eq!(
+            second, expected,
+            "recovery must keep the approved host and pins"
+        );
+        assert_eq!(calls.load(Ordering::SeqCst), 2);
+        assert!(!readiness.is_ready(MapleInstanceId::I01));
+        assert!(transport.snapshot().is_none());
+        assert!(matches!(
+            transport.try_refresh_gate(),
+            Err(ProviderRequestError::MapleUnavailable)
+        ));
+        assert_eq!(Arc::strong_count(&body_owner), 1);
+        assert!(
+            request_rx.try_recv().is_err(),
+            "unverified requests were dispatched or replayed"
+        );
+        server.abort();
+    }
+
+    #[tokio::test]
     async fn maple_dispatch_keeps_guest_selection_own_key_cache_salt_body_and_stream_bytes() {
         let expected_stream = "data: {\"choices\":[]}\n\ndata: [DONE]\n\n";
         let mut client = ProviderClient::for_test("http://127.0.0.1:9".to_owned()).unwrap();

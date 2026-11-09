@@ -23,6 +23,13 @@ original SDK prepared handle only once. Publish through the existing backend
 account authority; never log callback queries or grants. Update profile metadata
 and release verification together when changing the compiled Auth destination.
 
+## Remote computers
+
+Chat and agent features are remote-first: a paired computer can do with a task
+what this one can, in the same change. Desktop preferences, browser and
+credential flows, and host administration stay local. Before adding or changing
+a task operation, follow [adding task features](docs/remote-access.md#adding-task-features).
+
 ## Build, test, run
 
 `just` lists the recipes. `just ci` runs the checks of CI's Agent lanes
@@ -111,6 +118,21 @@ popup before a nested one). The popup handles the rest:
 A text field inside a menu that goes away calls `Popup::refocus`, so the
 menu keeps the keyboard. Menu keys live in the keymap's `Menu` context.
 
+## Accessibility
+
+GPUI only reports elements with both an id and a role, and it builds the tree
+during prepaint and paint. Screen readers and Cua read the same tree.
+
+- Plain text children (`.child("Save")`) are invisible to accessibility. Use
+  `gpui::text!` for text that carries meaning. A button takes its name from a
+  `text!` child, or from `.aria_label(...)` when it has only an icon. `text!`
+  derives its id from the call site, so give it one with
+  `text!(id = ..., text)` when a call repeats under a parent with no id.
+- Embed cached views with `embed_cached_view`. A cached view that reuses its
+  last frame adds nothing to the tree update, so its nodes would disappear on
+  the next repaint elsewhere in the window.
+- A masked `TextInput` and `SecretInput` never expose their value.
+
 ## Ordinary forms and application Vim
 
 Ordinary `TextInput` fields use `.application_vim(enabled)` and an
@@ -164,3 +186,16 @@ This app must feel instant. Treat frame time and UI-thread stalls as bugs.
   cached view. Avoid `Window::refresh`; it discards every cached view.
 - Release builds use fat LTO and one codegen unit. Use release builds
   for any performance check; the dev profile is `opt-level = 1`.
+
+## Localization
+
+Use the embedded Fluent catalog and `ui::i18n` for new UI labels, including
+accessibility text; see [localization](docs/localization.md) for extraction and
+locale enablement. Cache parameterized messages when their state changes. Keep
+element IDs, protocol values, model prompts, user content and persisted timeline
+text unchanged. Language changes apply live; invalidate cached translated text
+when the locale changes. Extend the converted-module guard as each module is
+extracted. Keep host error codes source-owned and format
+them in the UI; preserve raw diagnostics for unknown codes and recovery logic.
+When English changes, update each translation, then run
+`just translations-reviewed <locale>`.

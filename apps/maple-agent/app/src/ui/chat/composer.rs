@@ -3,8 +3,11 @@
 
 use std::sync::Arc;
 
+// Literal command token; never translate the text entered into the composer.
+const BTW_COMMAND: &str = "btw";
+
 use gpui::{Context, Div, IntoElement, SharedString, Window, div, prelude::*, px};
-use maple_agent::agent::{AgentSlashCommand, SideQuestionTurn};
+use maple_agent::agent::{AgentPermissionMode, AgentSlashCommand, SideQuestionTurn};
 
 use super::cache::MarkdownKind;
 use super::commands::ChatCommand;
@@ -13,6 +16,7 @@ use super::{
     COMPOSER_PLACEHOLDER, ChatPopup, ChatScreen, DraftAttachment, OpenSettingsSection,
     SIDE_THREAD_PLACEHOLDER, Section,
 };
+use crate::ui::i18n::{UiText, tr};
 use crate::ui::icons::{icon, spinner};
 use crate::ui::markdown;
 use crate::ui::motion;
@@ -30,20 +34,59 @@ pub(super) enum ComposerControl {
     Model,
     Thinking,
     Integrations,
+    Mode,
     Web,
     Attachments,
     Dictate,
 }
 
 impl ComposerControl {
-    const ALL: [Self; 6] = [
+    const ALL: [Self; 7] = [
         Self::Model,
         Self::Thinking,
         Self::Integrations,
+        Self::Mode,
         Self::Web,
         Self::Attachments,
         Self::Dictate,
     ];
+}
+
+fn mode_item_id(mode: AgentPermissionMode) -> SharedString {
+    SharedString::from(format!("mode-{}", mode.as_str()))
+}
+
+fn mode_icon(mode: AgentPermissionMode) -> &'static str {
+    match mode {
+        AgentPermissionMode::ReadOnly => "lock",
+        AgentPermissionMode::Auto => "shield-check",
+        AgentPermissionMode::FullAccess => "zap",
+    }
+}
+
+fn mode_label(mode: AgentPermissionMode) -> &'static str {
+    match mode {
+        AgentPermissionMode::ReadOnly => "chat-mode-read-only",
+        AgentPermissionMode::Auto => "chat-mode-auto",
+        AgentPermissionMode::FullAccess => "chat-mode-full-access",
+    }
+}
+
+/// The chip's accessible name: its mode alone does not say what it sets.
+fn mode_chip_label(mode: AgentPermissionMode) -> &'static str {
+    match mode {
+        AgentPermissionMode::ReadOnly => "chat-mode-read-only-chip",
+        AgentPermissionMode::Auto => "chat-mode-auto-chip",
+        AgentPermissionMode::FullAccess => "chat-mode-full-access-chip",
+    }
+}
+
+fn mode_note(mode: AgentPermissionMode) -> &'static str {
+    match mode {
+        AgentPermissionMode::ReadOnly => "chat-mode-read-only-note",
+        AgentPermissionMode::Auto => "chat-mode-auto-note",
+        AgentPermissionMode::FullAccess => "chat-mode-full-access-note",
+    }
 }
 
 impl ChatScreen {
@@ -96,7 +139,7 @@ impl ChatScreen {
                         (
                             "header-sidebar-toggle",
                             "panel-left",
-                            "Toggle sidebar",
+                            tr("chat-toggle-sidebar"),
                             &super::ToggleSidebar as &dyn gpui::Action,
                             ChatCommand::ToggleSidebar,
                             3,
@@ -104,7 +147,7 @@ impl ChatScreen {
                         (
                             "header-search",
                             "search",
-                            "Search",
+                            tr("chat-search"),
                             &super::FocusSearch,
                             ChatCommand::FocusSearch,
                             4,
@@ -112,7 +155,7 @@ impl ChatScreen {
                         (
                             "header-new-task",
                             "square-pen",
-                            "New task",
+                            tr("chat-new-task"),
                             &super::NewTask,
                             ChatCommand::NewTask,
                             5,
@@ -204,6 +247,8 @@ impl ChatScreen {
                     self.popup.is_open(&ChatPopup::Project),
                     false,
                 )
+                // Outside the composer box, so the standalone radius.
+                .rounded(theme::RADIUS_SM)
                 // The header is a window drag region; a press here is the
                 // chip's.
                 .on_mouse_down(gpui::MouseButton::Left, |_event, _window, cx| {
@@ -228,6 +273,23 @@ impl ChatScreen {
             )
         })
         .child(div().flex_1())
+        .when_some(self.host_reconnect_status(), |row, status| {
+            row.child(
+                // The padding is hover room: the tooltip is how to find out
+                // what is happening, so it must not take a 14 px aim. The
+                // margin keeps the spinner itself on the row's gutter.
+                div()
+                    .id("host-reconnecting")
+                    .debug_selector(|| "host-reconnecting".to_string())
+                    .flex_none()
+                    .p_1()
+                    .mr(px(-4.))
+                    .role(gpui::Role::Status)
+                    .aria_label(status.clone())
+                    .tooltip(widgets::tooltip(status, None))
+                    .child(spinner("host-reconnecting", px(14.), theme::text_muted())),
+            )
+        })
     }
 
     /// `button` as the opener of `popup`, with `menu` attached below or
@@ -302,6 +364,10 @@ impl ChatScreen {
                 self.popup.open(ChatPopup::Integrations, cx);
                 self.refresh_session_mcp(cx);
             }
+            ComposerControl::Mode => {
+                self.popup
+                    .open_highlighted(ChatPopup::Mode, mode_item_id(self.permission_mode), cx)
+            }
             ComposerControl::Web => {
                 let next = !self.web_enabled;
                 self.set_web_enabled(next, cx);
@@ -326,8 +392,8 @@ impl ChatScreen {
                     .selected_model
                     .as_deref()
                     .map(|model| self.model_label(model))
-                    .unwrap_or("Model")
-                    .to_string();
+                    .map(str::to_string)
+                    .unwrap_or_else(|| tr("chat-model").to_string());
                 self.with_menu(
                     ChatPopup::Model,
                     chip(
@@ -349,11 +415,12 @@ impl ChatScreen {
                 widgets::icon_button(
                     "thinking-picker",
                     "brain",
-                    "Thinking",
+                    tr("chat-thinking-title"),
                     px(16.),
                     theme::text_secondary(),
                 )
                 .size_8()
+                .rounded(theme::RADIUS_LG)
                 .debug_selector(|| "thinking-picker".to_string())
                 .when(self.popup.is_open(&ChatPopup::Thinking), |button| {
                     button.bg(gpui::rgb(theme::bg_sidebar_pill()))
@@ -368,10 +435,13 @@ impl ChatScreen {
                 chip(
                     "mcp-menu",
                     Some("puzzle"),
-                    match self.mcp_enabled_count {
-                        0 => "Integrations".to_string(),
-                        1 => "1 integration".to_string(),
-                        count => format!("{count} integrations"),
+                    if self.mcp_enabled_count == 0 {
+                        tr("chat-integrations")
+                    } else {
+                        self.messages.get(
+                            "chat-integration-count",
+                            [("count", self.mcp_enabled_count.into())],
+                        )
                     },
                     false,
                     self.popup.is_open(&ChatPopup::Integrations),
@@ -382,11 +452,32 @@ impl ChatScreen {
                 cx,
                 |this, _| this.integrations_menu(),
             ),
+            ComposerControl::Mode => self.with_menu(
+                ChatPopup::Mode,
+                chip(
+                    "permission-mode-menu",
+                    Some(mode_icon(self.permission_mode)),
+                    tr(mode_label(self.permission_mode)).to_string(),
+                    true,
+                    self.popup.is_open(&ChatPopup::Mode),
+                    false,
+                )
+                .aria_label(tr(mode_chip_label(self.permission_mode))),
+                Placement::AboveStart,
+                window,
+                cx,
+                |this, _| this.mode_menu(),
+            ),
             ComposerControl::Web => div().child(
                 chip(
                     "web-toggle",
                     Some("globe"),
-                    if self.web_enabled { "Web" } else { "Web off" }.to_string(),
+                    if self.web_enabled {
+                        tr("chat-web")
+                    } else {
+                        tr("chat-web-off")
+                    }
+                    .to_string(),
                     false,
                     false,
                     self.web_enabled,
@@ -402,7 +493,7 @@ impl ChatScreen {
                     .flex()
                     .items_center()
                     .justify_center()
-                    .rounded(theme::RADIUS_SM)
+                    .rounded(theme::RADIUS_LG)
                     .hover(|style| {
                         style
                             .bg(gpui::rgb(theme::accent_container()))
@@ -410,7 +501,7 @@ impl ChatScreen {
                     })
                     .active(|style| style.bg(gpui::rgb(theme::bg_sidebar_pill())))
                     .when(self.attachment_picking, |el| el.opacity(0.5))
-                    .tooltip(widgets::tooltip("Attach files or images", None))
+                    .tooltip(widgets::tooltip(tr("chat-attach"), None))
                     .on_click(cx.listener(|this, _event, _window, cx| {
                         this.activate_composer_control(ComposerControl::Attachments, cx);
                     }))
@@ -426,7 +517,7 @@ impl ChatScreen {
                         .flex()
                         .items_center()
                         .justify_center()
-                        .rounded(theme::RADIUS_SM)
+                        .rounded(theme::RADIUS_LG)
                         .when(recording, |el| el.bg(gpui::rgb(theme::status_error())))
                         .hover(|style| {
                             style
@@ -436,9 +527,9 @@ impl ChatScreen {
                         .when(transcribing, |el| el.opacity(0.5))
                         .tooltip(widgets::tooltip(
                             if recording {
-                                "Stop recording"
+                                tr("chat-stop-recording")
                             } else {
-                                "Dictate"
+                                tr("chat-dictate")
                             },
                             None,
                         ))
@@ -479,7 +570,7 @@ impl ChatScreen {
     /// shared folder chooser. A long list scrolls.
     fn project_menu(&self, cx: &mut Context<Self>) -> Menu<Self> {
         let mut menu = Menu::new("project-menu", px(480.))
-            .label("Projects")
+            .label(tr("chat-projects"))
             .max_height(px(440.))
             .application_vim(self.application_vim_enabled);
         if self.computers.len() > 1 {
@@ -512,7 +603,7 @@ impl ChatScreen {
         menu = menu.item(
             MenuItem::new(
                 "root-choose",
-                "New project…",
+                tr("chat-new-project"),
                 |this: &mut Self, _: &mut Window, cx: &mut Context<Self>| {
                     this.choose_root_dialog(cx);
                 },
@@ -526,7 +617,7 @@ impl ChatScreen {
         let selected = self.selected_model.as_deref();
         // A task offers every model; a pick applies from its next message.
         Menu::new("model-menu", px(320.))
-            .label("Model")
+            .label(tr("chat-model"))
             .max_height(px(320.))
             .application_vim(self.application_vim_enabled)
             .items(self.models.iter().map(|model| {
@@ -542,14 +633,40 @@ impl ChatScreen {
             }))
     }
 
+    /// What the task may do without asking.
+    fn mode_menu(&self) -> Menu<Self> {
+        Menu::new("mode-menu", px(320.))
+            .label(tr("chat-mode"))
+            .application_vim(self.application_vim_enabled)
+            .items(
+                [
+                    AgentPermissionMode::ReadOnly,
+                    AgentPermissionMode::Auto,
+                    AgentPermissionMode::FullAccess,
+                ]
+                .map(|mode| {
+                    MenuItem::new(
+                        mode_item_id(mode),
+                        tr(mode_label(mode)),
+                        move |this: &mut Self, _: &mut Window, cx: &mut Context<Self>| {
+                            this.set_permission_mode(mode, cx);
+                        },
+                    )
+                    .icon(mode_icon(mode))
+                    .note(tr(mode_note(mode)))
+                    .current(self.permission_mode == mode)
+                }),
+            )
+    }
+
     /// The task's integrations, each with a switch. A server that still
     /// needs setup opens Settings instead.
     fn integrations_menu(&self) -> Menu<Self> {
         let mut menu = Menu::new("integrations-menu", px(360.))
-            .label("Integrations")
+            .label(tr("chat-integrations"))
             .max_height(px(320.))
             .application_vim(self.application_vim_enabled)
-            .header("Integrations");
+            .header(tr("chat-integrations"));
         if self.session_mcp.is_empty() {
             menu = menu.child(
                 div()
@@ -557,7 +674,7 @@ impl ChatScreen {
                     .py_2()
                     .text_sm()
                     .text_color(gpui::rgb(theme::text_muted()))
-                    .child("No integrations available for this task."),
+                    .child(tr("chat-no-integrations")),
             );
         }
         for server in &self.session_mcp {
@@ -582,7 +699,19 @@ impl ChatScreen {
                             .text_xs()
                             .text_color(gpui::rgb(theme::text_muted()))
                             .line_clamp(2)
-                            .child(server.description.clone()),
+                            .child(
+                                if server.kind
+                                    == maple_agent::agent::AgentSessionIntegrationKind::Mcp
+                                    && server.name == "cua-driver"
+                                {
+                                    tr("settings-integration-cua-description")
+                                } else {
+                                    crate::ui::settings::saved_description(
+                                        &server.display_name,
+                                        &server.description,
+                                    )
+                                },
+                            ),
                     )
                 })
                 .when(!available, |column| {
@@ -590,7 +719,7 @@ impl ChatScreen {
                         div()
                             .text_xs()
                             .text_color(gpui::rgb(theme::status_warning()))
-                            .child("Set up in Settings → Integrations"),
+                            .child(tr("chat-setup-integrations")),
                     )
                 });
             let item = MenuItem::new(
@@ -614,7 +743,7 @@ impl ChatScreen {
         menu.separator().item(
             MenuItem::new(
                 "mcp-manage",
-                "Manage integrations…",
+                tr("chat-manage-integrations"),
                 |_: &mut Self, _: &mut Window, cx: &mut Context<Self>| {
                     cx.emit(OpenSettingsSection(Section::Integrations));
                 },
@@ -711,17 +840,17 @@ impl ChatScreen {
     ) {
         let question = question.trim();
         if question.is_empty() {
-            self.notice = Some("Type /btw followed by a question".into());
+            self.notice = Some(UiText::key("chat-btw-question"));
             cx.notify();
             return;
         }
         if self.booting {
-            self.notice = Some("Agent runtime is still starting".into());
+            self.notice = Some(UiText::key("chat-runtime-starting"));
             cx.notify();
             return;
         }
         if self.btw.as_ref().is_some_and(|btw| btw.pending) {
-            self.notice = Some("Wait for the current answer first".into());
+            self.notice = Some(UiText::key("chat-wait-answer"));
             cx.notify();
             return;
         }
@@ -752,7 +881,7 @@ impl ChatScreen {
             && let Some(composer) = self.composer.clone()
         {
             composer.update(cx, |input, cx| {
-                input.set_placeholder(SIDE_THREAD_PLACEHOLDER, cx)
+                input.set_placeholder_key(SIDE_THREAD_PLACEHOLDER, cx)
             });
         }
         let backend = self.backend.clone();
@@ -788,7 +917,7 @@ impl ChatScreen {
             && let Some(composer) = self.composer.clone()
         {
             composer.update(cx, |input, cx| {
-                input.set_placeholder(COMPOSER_PLACEHOLDER, cx)
+                input.set_placeholder_key(COMPOSER_PLACEHOLDER, cx)
             });
         }
         cx.notify();
@@ -808,7 +937,7 @@ impl ChatScreen {
                     .text_sm()
                     .font_weight(gpui::FontWeight::SEMIBOLD)
                     .text_color(gpui::rgb(theme::text_primary()))
-                    .child("btw"),
+                    .child(BTW_COMMAND),
             )
             .child(
                 div()
@@ -816,7 +945,7 @@ impl ChatScreen {
                     .min_w_0()
                     .text_xs()
                     .text_color(gpui::rgb(theme::text_muted()))
-                    .child("Side thread; messages stay here until Esc"),
+                    .child(tr("chat-side-thread-hint")),
             )
             .when(btw.pending, |header| {
                 header.child(icon("loader-circle", px(14.), theme::text_muted()))
@@ -875,7 +1004,7 @@ impl ChatScreen {
                 body = body.child(
                     div()
                         .text_color(gpui::rgb(theme::text_muted()))
-                        .child("Thinking…"),
+                        .child(tr("chat-thinking")),
                 );
             }
         }
@@ -920,13 +1049,16 @@ impl ChatScreen {
                     .text_sm()
                     .font_weight(gpui::FontWeight::SEMIBOLD)
                     .text_color(gpui::rgb(theme::text_primary()))
-                    .child("External agents"),
+                    .child(tr("chat-external-agents")),
             )
             .child(
                 div()
                     .text_xs()
                     .text_color(gpui::rgb(theme::text_muted()))
-                    .child(format!("{} running", self.subagents.len())),
+                    .child(self.messages.get(
+                        "chat-agents-running",
+                        [("count", self.subagents.len().into())],
+                    )),
             );
         Some(
             div()
@@ -990,7 +1122,7 @@ impl ChatScreen {
                     .text_sm()
                     .font_weight(gpui::FontWeight::SEMIBOLD)
                     .text_color(gpui::rgb(theme::text_primary()))
-                    .child("Plan"),
+                    .child(tr("chat-plan")),
             )
             .child(
                 div()
@@ -1061,13 +1193,13 @@ impl ChatScreen {
         let disabled =
             self.booting || self.loading_session.is_some() || pending_create || self.send_pending();
         let status_label = if self.booting {
-            "Starting Maple…"
+            tr("chat-starting")
         } else if self.loading_session.is_some() {
-            "Opening task…"
+            tr("chat-opening-task")
         } else if pending_create {
-            "Creating the task…"
+            tr("chat-creating-task")
         } else {
-            "Sending…"
+            tr("chat-sending")
         };
         let has_text = self.composer_has_text;
         let has_attachments = !self.draft_attachments.is_empty();
@@ -1086,10 +1218,10 @@ impl ChatScreen {
             .and_then(|input| input.read(cx).vim_status())
             .and_then(|status| {
                 let label = match status.mode {
-                    VimMode::Normal => "NORMAL",
-                    VimMode::Insert => "INSERT",
-                    VimMode::Visual if status.visual_linewise => "VISUAL LINE",
-                    VimMode::Visual => "VISUAL",
+                    VimMode::Normal => tr("chat-vim-normal"),
+                    VimMode::Insert => tr("chat-vim-insert"),
+                    VimMode::Visual if status.visual_linewise => tr("chat-vim-visual-line"),
+                    VimMode::Visual => tr("chat-vim-visual"),
                     VimMode::Disabled => return None,
                 };
                 Some((label, status.notice))
@@ -1119,7 +1251,7 @@ impl ChatScreen {
                                 .truncate()
                                 .text_xs()
                                 .text_color(gpui::rgb(theme::text_muted()))
-                                .child(notice.message),
+                                .child(tr(notice.message)),
                         )
                     })
             });
@@ -1183,7 +1315,7 @@ impl ChatScreen {
                         .child(
                             widgets::secondary_button("cancel-attachment-upload")
                                 .text_xs()
-                                .child("Cancel")
+                                .child(gpui::text!(tr("chat-cancel")))
                                 .on_click(cx.listener(move |this, _, _, cx| {
                                     this.cancel_attachment_send(&id, cx)
                                 })),
@@ -1198,7 +1330,7 @@ impl ChatScreen {
                             .relative()
                             .max_w(px(260.))
                             .h_16()
-                            .rounded(theme::RADIUS_LG)
+                            .rounded(theme::RADIUS_SM)
                             .border_1()
                             .border_color(gpui::rgb(theme::border()))
                             .bg(gpui::rgb(theme::bg_elevated()))
@@ -1210,7 +1342,7 @@ impl ChatScreen {
                                 Some(thumbnail) => div().size_16().flex_none().child(
                                     gpui::img(gpui::ImageSource::Image(Arc::clone(thumbnail)))
                                         .size_full()
-                                        .rounded(theme::RADIUS_LG),
+                                        .rounded(theme::RADIUS_SM),
                                 ),
                                 None => div()
                                     .size_12()
@@ -1241,7 +1373,7 @@ impl ChatScreen {
                                         div()
                                             .text_xs()
                                             .text_color(gpui::rgb(theme::text_muted()))
-                                            .child(attachment.detail.clone()),
+                                            .child(attachment.detail(&self.messages)),
                                     ),
                             )
                             .child(
@@ -1300,9 +1432,9 @@ impl ChatScreen {
                             })
                             .tooltip(widgets::tooltip(
                                 if expanded {
-                                    "Shrink composer"
+                                    tr("chat-shrink-composer")
                                 } else {
-                                    "Expand composer"
+                                    tr("chat-expand-composer")
                                 },
                                 None,
                             ))
@@ -1362,11 +1494,11 @@ impl ChatScreen {
                             "send-message"
                         };
                         let button_label: SharedString = if show_stop {
-                            "Stop the run".into()
+                            tr("chat-stop-run")
                         } else if running && drafting {
-                            "Queue for next turn".into()
+                            tr("chat-queue-next-turn")
                         } else {
-                            "Send".into()
+                            tr("chat-send")
                         };
                         div()
                             .id(button_id)
@@ -1382,7 +1514,7 @@ impl ChatScreen {
                                 el.bg(gpui::rgb(theme::status_error()))
                                     .hover(|style| style.opacity(0.85).cursor_pointer())
                                     .active(|style| style.opacity(0.7))
-                                    .tooltip(widgets::tooltip("Stop the run", None))
+                                    .tooltip(widgets::tooltip(tr("chat-stop-run"), None))
                                     .on_click(cx.listener(|this, _event, _window, cx| {
                                         this.stop(cx);
                                     }))
@@ -1449,18 +1581,18 @@ pub(super) struct SlashEntry {
 pub(super) fn slash_entries_for(token: &str, skills: &[AgentSlashCommand]) -> Vec<SlashEntry> {
     let query = token.to_lowercase();
     [
-        ("btw", "Ask a side question; the task does not see it"),
-        ("compact", "Summarize the conversation to free context"),
-        ("new", "Start a new task"),
-        ("pin", "Pin or unpin this project"),
-        ("web", "Toggle web tools for this task"),
-        ("model", "Pick the model; add a name to filter"),
-        ("help", "Show the available commands"),
+        ("btw", "chat-slash-btw"),
+        ("compact", "chat-slash-compact"),
+        ("new", "chat-slash-new"),
+        ("pin", "chat-slash-pin"),
+        ("web", "chat-slash-web"),
+        ("model", "chat-slash-model"),
+        ("help", "chat-slash-help"),
     ]
     .into_iter()
     .map(|(name, description)| SlashEntry {
         name: name.to_string(),
-        description: description.to_string(),
+        description: tr(description).to_string(),
     })
     .chain(skills.iter().map(|command| SlashEntry {
         name: command.name.clone(),
@@ -1500,7 +1632,8 @@ fn chip(
         .items_center()
         .gap_1()
         .px_2()
-        .rounded(theme::RADIUS_SM)
+        // Concentric with the composer box: 24px radius minus the 8px inset.
+        .rounded(theme::RADIUS_LG)
         .text_xs()
         .font_weight(gpui::FontWeight::MEDIUM)
         .text_color(gpui::rgb(color))

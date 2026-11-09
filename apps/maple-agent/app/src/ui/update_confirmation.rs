@@ -4,10 +4,15 @@
 use gpui::{App, Context, Entity, FocusHandle, Render, SharedString, Window, div, prelude::*, px};
 use tokio::sync::oneshot;
 
-use super::{theme, widgets};
+use super::{
+    i18n::{tr, tr_args},
+    theme, widgets,
+};
 
 pub(crate) struct UpdateConfirmation {
     title: SharedString,
+    version: Option<String>,
+    locale: fluent_templates::LanguageIdentifier,
     answer: Option<oneshot::Sender<usize>>,
     previous_focus: Option<FocusHandle>,
     later_focus: FocusHandle,
@@ -15,14 +20,24 @@ pub(crate) struct UpdateConfirmation {
 }
 
 pub(crate) fn open(
-    title: String,
+    version: Option<&str>,
     window: &mut Window,
     cx: &mut App,
 ) -> (Entity<UpdateConfirmation>, oneshot::Receiver<usize>) {
     let (sender, receiver) = oneshot::channel();
     let previous_focus = window.focused(cx);
     let view = cx.new(|cx| UpdateConfirmation {
-        title: title.into(),
+        title: version.map_or_else(
+            || tr("update-confirmation-title"),
+            |version| {
+                tr_args(
+                    "update-confirmation-title-version",
+                    [("version", version.into())],
+                )
+            },
+        ),
+        version: version.map(str::to_owned),
+        locale: super::i18n::current_locale(),
         answer: Some(sender),
         previous_focus,
         later_focus: cx.focus_handle(),
@@ -49,6 +64,19 @@ impl Render for UpdateConfirmation {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         if self.answer.is_none() {
             return div().into_any_element();
+        }
+        let locale = super::i18n::current_locale();
+        if self.locale != locale {
+            self.title = self.version.as_deref().map_or_else(
+                || tr("update-confirmation-title"),
+                |version| {
+                    tr_args(
+                        "update-confirmation-title-version",
+                        [("version", version.into())],
+                    )
+                },
+            );
+            self.locale = locale;
         }
         let width = (window.viewport_size().width - px(48.)).clamp(px(0.), px(480.));
         let height = (window.viewport_size().height - px(48.)).max(px(0.));
@@ -105,21 +133,21 @@ impl Render for UpdateConfirmation {
                     .text_color(gpui::rgb(theme::text_primary()))
                     .child(
                         div()
-                            .w_full()
-                            .flex_shrink_0()
-                            .text_lg()
-                            .child(self.title.clone()),
-                    )
-                    .child(
-                        div()
                             .id("update-confirmation-body")
                             .debug_selector(|| "update-confirmation-body".to_string())
                             .w_full()
                             .min_w_0()
                             .min_h_0()
                             .overflow_y_scroll()
-                            .text_sm()
-                            .child(crate::update::RESTART_DETAIL),
+                            .child(
+                                div()
+                                    .w_full()
+                                    .flex()
+                                    .flex_col()
+                                    .gap_4()
+                                    .child(div().text_lg().child(self.title.clone()))
+                                    .child(div().text_sm().child(tr("update-confirmation-detail"))),
+                            ),
                     )
                     .child(
                         div()
@@ -133,7 +161,7 @@ impl Render for UpdateConfirmation {
                                     .debug_selector(|| "update-confirmation-later".to_string())
                                     .track_focus(&self.later_focus)
                                     .focus_visible(widgets::focus_ring)
-                                    .child("Later")
+                                    .child(gpui::text!(tr("update-confirmation-later")))
                                     .on_click(cx.listener(|this, _, window, cx| {
                                         this.respond(0, window, cx)
                                     })),
@@ -143,7 +171,7 @@ impl Render for UpdateConfirmation {
                                     .debug_selector(|| "update-confirmation-restart".to_string())
                                     .track_focus(&self.restart_focus)
                                     .focus_visible(widgets::focus_ring)
-                                    .child("Restart to Update")
+                                    .child(gpui::text!(tr("update-confirmation-restart")))
                                     .on_click(cx.listener(|this, _, window, cx| {
                                         this.respond(1, window, cx)
                                     })),
@@ -169,6 +197,29 @@ mod tests {
         }
     }
 
+    #[gpui::test]
+    fn open_dialog_refreshes_its_title_on_language_change(cx: &mut gpui::TestAppContext) {
+        let _locale = crate::ui::i18n::TestLocalizationGuard::enable();
+        let (host, _answer, cx) = show(cx);
+        for (locale, prefix) in [("es", "¿Reiniciar Maple"), ("en", "Restart Maple")] {
+            cx.update(|_, app| {
+                crate::ui::i18n::apply_preference(Some(locale));
+                app.refresh_windows();
+            });
+            cx.run_until_parked();
+            host.update(cx, |host, cx| {
+                assert!(
+                    host.prompt
+                        .as_ref()
+                        .unwrap()
+                        .read(cx)
+                        .title
+                        .starts_with(prefix)
+                );
+            });
+        }
+    }
+
     fn show(
         cx: &mut gpui::TestAppContext,
     ) -> (
@@ -176,10 +227,22 @@ mod tests {
         oneshot::Receiver<usize>,
         &mut gpui::VisualTestContext,
     ) {
+        show_with_title(cx, "Restart Maple to install v0.0.14?")
+    }
+
+    fn show_with_title<'a>(
+        cx: &'a mut gpui::TestAppContext,
+        expected_title: &str,
+    ) -> (
+        Entity<PromptHost>,
+        oneshot::Receiver<usize>,
+        &'a mut gpui::VisualTestContext,
+    ) {
         let answer = Rc::new(RefCell::new(None));
         let result = answer.clone();
         let (host, cx) = cx.add_window_view(move |window, cx| {
-            let (prompt, receiver) = open(crate::update::restart_title(Some("0.0.14")), window, cx);
+            let (prompt, receiver) = open(Some("0.0.14"), window, cx);
+            assert_eq!(prompt.read(cx).title.as_ref(), expected_title);
             *result.borrow_mut() = Some(receiver);
             PromptHost {
                 prompt: Some(prompt),
@@ -190,10 +253,38 @@ mod tests {
     }
 
     #[gpui::test]
+    fn updater_confirmation_without_version_uses_generic_title(cx: &mut gpui::TestAppContext) {
+        cx.add_window_view(|window, cx| {
+            let (prompt, _answer) = open(None, window, cx);
+            assert_eq!(prompt.read(cx).title.as_ref(), "Restart Maple to update?");
+            PromptHost {
+                prompt: Some(prompt),
+            }
+        });
+    }
+
+    #[gpui::test]
     fn updater_confirmation_wraps_and_keeps_actions_inside_the_viewport(
         cx: &mut gpui::TestAppContext,
     ) {
         let (_host, _answer, cx) = show(cx);
+        assert_layout(cx);
+    }
+
+    #[gpui::test]
+    fn spanish_confirmation_wraps_and_keeps_actions_inside_the_viewport(
+        cx: &mut gpui::TestAppContext,
+    ) {
+        let _localization = crate::ui::i18n::TestLocalizationGuard::enable();
+        crate::ui::i18n::initialize_saved_preference(Some("es"));
+        let (_host, mut answer, cx) =
+            show_with_title(cx, "¿Reiniciar Maple para instalar la versión 0.0.14?");
+        assert_layout(cx);
+        cx.simulate_keystrokes("escape");
+        assert_eq!(answer.try_recv().unwrap(), 0);
+    }
+
+    fn assert_layout(cx: &mut gpui::VisualTestContext) {
         for (width, height) in [(1213., 800.), (640., 600.), (320., 480.), (640., 220.)] {
             cx.simulate_resize(gpui::size(px(width), px(height)));
             let card = cx.debug_bounds("update-confirmation").unwrap();

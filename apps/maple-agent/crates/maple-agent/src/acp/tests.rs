@@ -1170,6 +1170,7 @@ fn session_summary(id: &str) -> AgentSessionSummary {
         message_count: 0,
         model: Some("model".to_string()),
         web_enabled: false,
+        permission_mode: Default::default(),
         state: AgentTaskState::Active,
         acp: false,
     }
@@ -1218,6 +1219,7 @@ fn row(
     merge: &str,
 ) -> AgentTimelineItem {
     AgentTimelineItem {
+        label: None,
         persisted: None,
         live: None,
         truncated: None,
@@ -1238,6 +1240,7 @@ fn row(
 #[test]
 fn completed_replayed_tool_prefers_result_over_request_summary() {
     let item = AgentTimelineItem {
+        label: None,
         persisted: None,
         live: None,
         truncated: None,
@@ -1447,6 +1450,7 @@ fn available_commands_lead_with_the_built_ins_plus_skills() {
 fn failed_replayed_tool_preserves_result_and_failure_badge_message() {
     let mut projection = AcpProjection::default();
     let pending = AgentTimelineItem {
+        label: None,
         persisted: None,
         live: None,
         truncated: None,

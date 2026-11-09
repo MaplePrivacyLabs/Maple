@@ -314,6 +314,97 @@ pub struct AgentQuestion {
     pub header: String,
     pub question: String,
     pub options: Vec<AgentQuestionOption>,
+    /// Set when the question asks to let a tool call run.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub permission: Option<AgentPermissionPrompt>,
+}
+
+/// What a task may do without asking. Saved tasks from before modes existed
+/// have none, and keep the access they always had.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub enum AgentPermissionMode {
+    /// Reads, builds and tests run; anything else is asked about.
+    ReadOnly,
+    /// Everything runs but what looks dangerous, which is asked about.
+    #[default]
+    Auto,
+    /// Everything runs.
+    FullAccess,
+}
+
+impl AgentPermissionMode {
+    /// The value saved on a task.
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::ReadOnly => "readOnly",
+            Self::Auto => "auto",
+            Self::FullAccess => "fullAccess",
+        }
+    }
+
+    /// The mode saved on a task. A task from before modes existed has none
+    /// and keeps its full access; a value this build does not know is Auto.
+    pub fn from_saved(saved: Option<&str>) -> Self {
+        match saved {
+            None | Some("fullAccess") => Self::FullAccess,
+            Some("readOnly") => Self::ReadOnly,
+            Some(_) => Self::Auto,
+        }
+    }
+}
+
+/// A tool call waiting for the user's approval.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct AgentPermissionPrompt {
+    pub reason: AgentPermissionReason,
+    pub tool: String,
+    /// The command, path or arguments, as much as the card shows.
+    pub action: String,
+}
+
+/// Why a tool call needs the user. The interface words it in its language.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub enum AgentPermissionReason {
+    Secrets,
+    SecretsLeaving,
+    SendsOut,
+    RemoteCode,
+    RewritesHistory,
+    DiscardsWork,
+    DisablesSafeguards,
+    Destructive,
+    ChangesProject,
+    ChangesOutsideProject,
+    /// The classifier answered, but not clearly enough to run it.
+    Uncertain,
+    /// No classifier answered.
+    Unavailable,
+    /// The call is too long to show a classifier.
+    TooLong,
+}
+
+impl AgentPermissionReason {
+    /// The reason for interfaces with no wording of their own.
+    pub(crate) fn description(self) -> &'static str {
+        match self {
+            Self::Secrets => "This reads secrets or credentials.",
+            Self::SecretsLeaving => "This could send secrets off this computer.",
+            Self::SendsOut => "This sends or publishes something outside this computer.",
+            Self::RemoteCode => "This runs code from the network.",
+            Self::RewritesHistory => "This rewrites shared version-control history.",
+            Self::DiscardsWork => "This throws away uncommitted work.",
+            Self::DisablesSafeguards => "This turns off a safety check.",
+            Self::Destructive => "This could destroy data that can't be recovered.",
+            Self::ChangesProject => "This changes files in the project.",
+            Self::ChangesOutsideProject => "This changes something outside the project.",
+            Self::Uncertain => "Maple isn't sure this is safe to run.",
+            Self::Unavailable => "Maple couldn't check this action.",
+            Self::TooLong => "This action is too long for Maple to check.",
+        }
+    }
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -567,6 +658,13 @@ pub enum AgentRunSurface {
 pub struct AgentSetSessionWebRequest {
     pub session_id: String,
     pub enabled: bool,
+}
+
+#[derive(Debug, Clone, Deserialize, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct AgentSetSessionPermissionModeRequest {
+    pub session_id: String,
+    pub mode: AgentPermissionMode,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -850,6 +948,16 @@ pub enum AgentTaskState {
     Archived,
 }
 
+/// A summary from a host without modes describes a task with full access,
+/// so full access is what no mode on the wire means, in both directions.
+fn full_access() -> AgentPermissionMode {
+    AgentPermissionMode::FullAccess
+}
+
+fn is_full_access(mode: &AgentPermissionMode) -> bool {
+    *mode == AgentPermissionMode::FullAccess
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct AgentSessionSummary {
@@ -862,6 +970,9 @@ pub struct AgentSessionSummary {
     pub model: Option<String>,
     /// Whether the task can use `web_search` / `open_url`.
     pub web_enabled: bool,
+    /// What the task may do without asking.
+    #[serde(default = "full_access", skip_serializing_if = "is_full_access")]
+    pub permission_mode: AgentPermissionMode,
     /// Where the task sits in the sidebar ladder.
     pub state: AgentTaskState,
     /// Created by an ACP client, such as an editor, not in the desktop app.
@@ -883,6 +994,10 @@ pub struct AgentSessionDetail {
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct AgentTimelineItem {
+    /// Presentation semantics; legacy and unknown labels retain raw text fallback.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[serde(deserialize_with = "AgentTimelineLabel::deserialize_optional")]
+    pub label: Option<AgentTimelineLabel>,
     /// Durable occurrence identity; legacy `id` remains projector presentation data.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub persisted: Option<AgentPersistedRowIdentity>,
@@ -911,6 +1026,40 @@ pub struct AgentTimelineItem {
     pub output: Option<Value>,
     pub created_ms: u128,
     pub merge: String,
+}
+
+/// Semantic presentation metadata, never model or tool protocol content.
+/// An open kind preserves forward compatibility with newer hosts.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct AgentTimelineLabel {
+    pub kind: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub name: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub detail: Option<String>,
+}
+
+impl AgentTimelineLabel {
+    fn deserialize_optional<'de, D: serde::Deserializer<'de>>(
+        deserializer: D,
+    ) -> Result<Option<Self>, D::Error> {
+        let value = Value::deserialize(deserializer)?;
+        Ok(serde_json::from_value(value).ok())
+    }
+
+    /// Partial streaming updates may omit detail already supplied by this tool.
+    /// A different semantic kind or tool identity must not inherit stale data.
+    pub fn merge_from(&mut self, incoming: Self) {
+        let detail =
+            if self.kind == "tool" && incoming.kind == self.kind && incoming.name == self.name {
+                incoming.detail.clone().or_else(|| self.detail.clone())
+            } else {
+                incoming.detail.clone()
+            };
+        *self = incoming;
+        self.detail = detail;
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]

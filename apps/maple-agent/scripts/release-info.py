@@ -114,12 +114,16 @@ def write_plist(info, path, build_number):
     })
     plist.pop("LSEnvironment", None)
     Path(path).write_bytes(plistlib.dumps(plist))
-    localized = Path(path).parent / "Resources/en.lproj/InfoPlist.strings"
-    localized.parent.mkdir(parents=True, exist_ok=True)
-    localized.write_bytes(plistlib.dumps({
-        "CFBundleDisplayName": info["display_name"],
-        "CFBundleName": info["display_name"],
-    }))
+    for locale in plist["CFBundleLocalizations"]:
+        source = COMPONENT / "app/macos" / f"{locale}.lproj/InfoPlist.strings"
+        strings = plistlib.loads(source.read_bytes()) if source.exists() else {}
+        strings.update({
+            "CFBundleDisplayName": info["display_name"],
+            "CFBundleName": info["display_name"],
+        })
+        localized = Path(path).parent / "Resources" / f"{locale}.lproj/InfoPlist.strings"
+        localized.parent.mkdir(parents=True, exist_ok=True)
+        localized.write_bytes(plistlib.dumps(strings))
 
 
 def macos_bundle_name(profile):

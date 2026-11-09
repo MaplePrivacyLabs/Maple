@@ -130,6 +130,7 @@ pub(crate) fn run_restart(identity: &str, profile: &str) -> Result<(), String> {
 fn is_internal_entrypoint(arguments: &[OsString]) -> bool {
     arguments.first().is_some_and(|argument| {
         [
+            "--internal-windows-installer-install",
             "--internal-windows-installer-preflight",
             "--internal-windows-installer-prepare",
             "--internal-windows-installer-activate",
@@ -217,6 +218,11 @@ mod tests {
 
     #[test]
     fn windows_bootstrap_only_reserves_exact_internal_entrypoints() {
+        assert!(is_internal_entrypoint(&[
+            "--internal-windows-installer-install".into(),
+            "C:\\Maple transaction".into(),
+            "0.0.18-9001".into(),
+        ]));
         assert!(is_internal_entrypoint(&[
             "--internal-windows-installer-prepare".into(),
             "C:\\Maple stage & data".into(),
