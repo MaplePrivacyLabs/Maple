@@ -87,7 +87,7 @@ impl LocalBackend {
         self.authorize_account_presented(user_id)?;
         self.open_store()?;
         let parent = tokio::task::spawn_blocking(|| {
-            maple_agent::agent::default_maple_workspace_path().ok_or_else(|| {
+            scratch_parent().ok_or_else(|| {
                 HostFailure::new(
                     "folder-documents",
                     "This computer's documents folder is unavailable",
@@ -99,8 +99,8 @@ impl LocalBackend {
         self.create_scratch_project_in(user_id, parent).await
     }
 
-    // Private location seam keeps tests off the real Documents directory. The
-    // host-facing operation above always chooses this execution host's default.
+    // Private location seam keeps unit tests on their own folders. The
+    // host-facing operation above uses `scratch_parent`.
     async fn create_scratch_project_in(
         &self,
         user_id: &str,
@@ -327,6 +327,18 @@ fn scratch_worker_failure() -> HostFailure {
         "folder-scratch-worker",
         "Project creation worker did not complete",
     )
+}
+
+/// The execution host's default for new projects. App tests reach the
+/// host-facing operation through the real dispatch (UI state tests do), so
+/// they get a temporary folder and never touch the developer's Documents.
+fn scratch_parent() -> Option<PathBuf> {
+    if cfg!(test) {
+        return Some(
+            std::env::temp_dir().join(format!("maple-app-scratch-test-{}", std::process::id())),
+        );
+    }
+    maple_agent::agent::default_maple_workspace_path()
 }
 
 fn create_scratch_folder(
