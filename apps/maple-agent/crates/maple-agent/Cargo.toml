@@ -13,6 +13,7 @@ acp = ["dep:agent-client-protocol"]
 store-bench = []
 
 [dependencies]
+maple-code-mode = { path = "../maple-code-mode" }
 serde = { workspace = true }
 serde_json = { workspace = true }
 log = { workspace = true }

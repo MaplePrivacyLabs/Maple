@@ -2,7 +2,7 @@
 //! `just test` prepares it, while raw Cargo invocations only consume the fixture.
 use maple_code_mode::{
     Config, Error, LaunchSpec, MAX_SOURCE_BYTES, MAX_WORKERS, Outcome, OutcomeStatus,
-    PackagedPython, Runtime, TaskHandle,
+    PackagedPython, Runtime, TaskHandle, WorkerPhase,
 };
 use std::{path::PathBuf, time::Duration};
 use tokio_util::sync::CancellationToken;
@@ -262,6 +262,57 @@ async fn validation_and_reset_only_do_not_spawn_and_capacity_is_retained() {
     assert_eq!(runtime.snapshot().holders.len(), MAX_WORKERS);
     runtime.shutdown("test complete").await.unwrap();
     assert!(runtime.snapshot().holders.is_empty());
+}
+
+#[tokio::test]
+async fn reset_if_idle_retires_only_the_current_idle_generation() {
+    let root = tempfile::tempdir().unwrap();
+    let runtime = runtime();
+    let task = bind(&runtime, "conditional", root.path());
+    let first = cell(&task, "saved = 41").await;
+
+    // A running cell keeps running.
+    let running = task.execute(
+        "import asyncio, pathlib\npathlib.Path('started').touch()\nwhile not pathlib.Path('release').exists():\n    await asyncio.sleep(0.01)\nsaved + 1",
+        CancellationToken::new(),
+    );
+    tokio::time::timeout(Duration::from_secs(10), async {
+        while !root.path().join("started").exists() {
+            tokio::time::sleep(Duration::from_millis(5)).await;
+        }
+    })
+    .await
+    .unwrap();
+    assert_eq!(task.status().phase, WorkerPhase::Executing);
+    assert!(task.reset_if_idle(first.generation, "make room").is_none());
+    std::fs::write(root.path().join("release"), "").unwrap();
+    let finished = tokio::time::timeout(Duration::from_secs(15), running)
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(finished.status, OutcomeStatus::Ok);
+    assert_eq!(finished.value.as_deref(), Some("42"));
+    assert_eq!(finished.state_loss_reason, None);
+
+    // Idle again, the current generation retires as `reset` would retire it.
+    let cleanup = task
+        .reset_if_idle(first.generation, "make room")
+        .expect("an idle current generation retires");
+    assert_eq!(
+        cleanup.await.unwrap().retired_generation,
+        Some(first.generation)
+    );
+    let fresh = cell(&task, "'saved' in globals()").await;
+    assert_eq!(fresh.value.as_deref(), Some("False"));
+    assert_eq!(fresh.state_loss_reason.as_deref(), Some("make room"));
+
+    // An older generation leaves the current one alone.
+    cell(&task, "saved = 7").await;
+    assert!(task.reset_if_idle(first.generation, "stale").is_none());
+    assert_eq!(task.status().generation, Some(fresh.generation));
+    assert_eq!(task.status().state_loss_reason, None);
+    assert_eq!(cell(&task, "saved").await.value.as_deref(), Some("7"));
+    runtime.shutdown("test complete").await.unwrap();
 }
 
 #[tokio::test]
