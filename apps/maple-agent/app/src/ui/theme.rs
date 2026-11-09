@@ -224,10 +224,11 @@ tokens! {
     code_text: 0xe8e8ed, 0x171717;
     /// Links take the tertiary Bark scale (bark-300 / bark-500).
     link: 0xc29a8d, 0x9e7469;
-    /// Coral for short labels on a coral container, such as a badge:
-    /// maple-500 on dark, a deep maple on light, where the brand coral
-    /// reads at under 2:1. 4.5:1 or better on the container.
-    accent_text: 0xff9771, 0xa8431d;
+    /// A short label's pill, such as the Popular badge: coral on the dark
+    /// coral container on dark; on light, where coral read like an alert,
+    /// secondary grey on the pill grey. 4.5:1 or better.
+    badge_fill: 0x3a2118, 0xe8e8ed;
+    badge_text: 0xff9771, 0x525252;
 
     /// Elicitation row fill/border: the coral container and maple-300.
     permission_fill: 0x2a1a14, 0xffe8e0;
@@ -401,11 +402,9 @@ mod contrast_tests {
                     }
                 }
             }
-            let ratio = contrast(palette.accent_text, palette.accent_container);
+            let ratio = contrast(palette.badge_text, palette.badge_fill);
             if ratio < 4.5 {
-                failures.push(format!(
-                    "{name}: accent_text on accent_container is {ratio:.2}:1"
-                ));
+                failures.push(format!("{name}: badge_text on badge_fill is {ratio:.2}:1"));
             }
         }
         assert!(failures.is_empty(), "{}", failures.join("\n"));

@@ -1730,19 +1730,18 @@ fn chip(
         })
 }
 
-/// The Popular badge on a model row: deep coral on the soft coral
-/// container, which reads at 4.5:1 or better in both themes, where the
-/// brand coral on a grey pill read at under 2:1 in the light one.
+/// The Popular badge on a model row: coral on dark, grey on light (see
+/// `badge_fill`), held to 4.5:1 by the contrast test.
 fn popular_badge() -> Div {
     div()
         .flex_none()
         .px_1p5()
         .py(px(1.))
         .rounded_full()
-        .bg(gpui::rgb(theme::accent_container()))
+        .bg(gpui::rgb(theme::badge_fill()))
         .text_xs()
         .font_weight(gpui::FontWeight::SEMIBOLD)
-        .text_color(gpui::rgb(theme::accent_text()))
+        .text_color(gpui::rgb(theme::badge_text()))
         .child(tr("chat-model-popular"))
 }
 
