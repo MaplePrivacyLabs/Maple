@@ -37,18 +37,21 @@
         pkgs:
         let
           python = pkgs.python314;
+          # The tool teaches `sys.executable -m pip install --target …`;
+          # nixpkgs' bare interpreter has no pip.
+          interpreter = python.withPackages (packages: [ packages.pip ]);
           version = python.version;
           manifest = {
             protocol_version = 1;
             implementation = "cpython";
             inherit version;
             distribution = "nix-${python.name}-${builtins.baseNameOf (toString python)}";
-            executable = "${python}/bin/python3.14";
+            executable = "${interpreter}/bin/python3.14";
             worker = "worker.py";
           };
         in
         assert version == (builtins.fromJSON (builtins.readFile ./scripts/python-runtime.json)).version;
-        pkgs.runCommand "maple-python-${version}" { nativeBuildInputs = [ python ]; } ''
+        pkgs.runCommand "maple-python-${version}" { nativeBuildInputs = [ interpreter ]; } ''
           runtime="$out/share/maple-agent/python"
           mkdir -p "$runtime/licenses"
           cp ${./crates/maple-code-mode/python/worker.py} "$runtime/worker.py"
@@ -56,7 +59,7 @@
           ${builtins.toJSON manifest}
           JSON
           tar -xOf ${python.src} Python-${version}/LICENSE > "$runtime/licenses/Python-LICENSE.txt"
-          ${python}/bin/python3.14 -I -B -c 'import sys, sysconfig, ssl, sqlite3, ctypes, zlib, bz2, lzma; assert sys.version_info[:3] == tuple(map(int, "${version}".split("."))); assert not sysconfig.get_config_var("Py_GIL_DISABLED")'
+          ${interpreter}/bin/python3.14 -I -B -c 'import sys, sysconfig, ssl, sqlite3, ctypes, zlib, bz2, lzma, pip; assert sys.version_info[:3] == tuple(map(int, "${version}".split("."))); assert not sysconfig.get_config_var("Py_GIL_DISABLED")'
         '';
     in
     {
