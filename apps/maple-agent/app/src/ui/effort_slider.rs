@@ -711,11 +711,17 @@ impl Element for EffortSlider {
             track.origin,
             size((body_end - track.left()).max(TRACK_HEIGHT), TRACK_HEIGHT),
         );
+        // The fill keeps at least the lowest heat's coral, so even Off shows
+        // a sliver of it under the thumb.
+        const FILL_FLOOR: f32 = 0.15;
         let fill_end = if self.enabled {
-            heat_color(heat.max(0.15))
+            heat_color(heat.max(FILL_FLOOR))
         } else {
             gpui::rgb(theme::text_faint()).into()
         };
+        // Off has no colour of its own, so the thumb's coloured glow fades
+        // out as the thumb nears Off instead of glowing coral there.
+        let glow = (heat / FILL_FLOOR).min(1.);
         // The fill starts at the coral of the lowest heat and warms toward
         // the thumb, the same way in both themes.
         let fill_start = if self.enabled {
@@ -883,19 +889,19 @@ impl Element for EffortSlider {
                 inset: false,
             },
         ];
-        if self.enabled && snapshot.lift > 0. {
+        if self.enabled && snapshot.lift > 0. && glow > 0. {
             // A soft glow in the level's colour rather than an outline.
             shadows.push(BoxShadow {
-                color: fill_end.opacity(0.3 * snapshot.lift),
+                color: fill_end.opacity(0.3 * snapshot.lift * glow),
                 offset: point(px(0.), px(0.)),
                 blur_radius: px(12.) * snapshot.lift,
                 spread_radius: px(1.5) * snapshot.lift,
                 inset: false,
             });
         }
-        if snapshot.bloom > 0. {
+        if snapshot.bloom > 0. && glow > 0. {
             shadows.push(BoxShadow {
-                color: fill_end.opacity(0.4 * snapshot.bloom),
+                color: fill_end.opacity(0.4 * snapshot.bloom * glow),
                 offset: point(px(0.), px(0.)),
                 blur_radius: px(14.) * snapshot.bloom,
                 spread_radius: px(6.) * snapshot.bloom,
