@@ -193,9 +193,10 @@ impl ChatScreen {
     }
 
     /// Save `level` for `key`. A pick made while another saves waits for
-    /// it, and only the latest waiting pick goes out, so a slider swept
-    /// across its stops saves once more at most. It goes out for the task
-    /// and model it was made on, even when those are no longer selected.
+    /// it, and only the latest waiting pick (one for all tasks and models)
+    /// goes out, so a slider swept across its stops saves once more at
+    /// most. It goes out for the task and model it was made on, even when
+    /// those are no longer selected.
     fn save_thinking(&mut self, key: ThinkingKey, level: ThinkingLevel, cx: &mut Context<Self>) {
         if self.thinking_saving {
             self.thinking_queued = Some((key, level));
@@ -209,18 +210,23 @@ impl ChatScreen {
         } else {
             self.thinking_cache.get(&key)
         };
-        let Some(state) = state.filter(|state| state.levels.contains(&level)) else {
-            return;
-        };
-        if state.current == level {
+        if state
+            .as_ref()
+            .is_some_and(|state| state.current == level || !state.levels.contains(&level))
+        {
             return;
         }
         self.thinking_generation += 1;
         self.thinking_loading = false;
         self.thinking_saving = true;
-        self.thinking_cache.begin_pick(key.clone(), state, level);
-        if selected {
-            self.thinking = self.thinking_cache.get(&key);
+        // A pushed update may have dropped the levels a waiting pick was
+        // made against; it still goes out, without a preview, and the
+        // runtime clamps it.
+        if let Some(state) = state {
+            self.thinking_cache.begin_pick(key.clone(), state, level);
+            if selected {
+                self.thinking = self.thinking_cache.get(&key);
+            }
         }
         let backend = self.backend.clone();
         let user_id = self.user_id.clone();
@@ -420,41 +426,52 @@ mod tests {
     }
 
     /// A pick that waited behind a save still goes out for the model it
-    /// was made on after another model is selected, and the save it
+    /// was made on after another model is selected, even when a pushed
+    /// update dropped that model's levels meanwhile, and the save it
     /// replaces fails without a notice.
     #[gpui::test]
     fn a_waiting_pick_saves_for_its_own_model_after_a_switch(cx: &mut gpui::TestAppContext) {
         let _guard = crate::settings::SETTINGS_IO_LOCK.lock();
         cx.executor().allow_parking();
-        let backend = Arc::new(
-            crate::backend::AgentBackend::for_test("http://127.0.0.1:9".into(), String::new())
-                .expect("backend"),
-        );
-        let chat = cx.new(|cx| ChatScreen::new_inner_for_test(backend, "user".into(), cx));
-        chat.update(cx, |this, cx| {
-            let model_a = key(None, "model-a");
-            this.selected_session = None;
-            this.selected_model = Some("model-a".into());
-            // High saving for model A, as `save_thinking` leaves it.
-            this.thinking_cache.begin_pick(
-                model_a.clone(),
-                state(ThinkingLevel::Low),
-                ThinkingLevel::High,
+        for evicted in [false, true] {
+            let backend = Arc::new(
+                crate::backend::AgentBackend::for_test("http://127.0.0.1:9".into(), String::new())
+                    .expect("backend"),
             );
-            this.thinking = this.thinking_cache.get(&model_a);
-            this.thinking_saving = true;
-            this.pick_thinking(ThinkingLevel::Off, cx);
-            assert_eq!(this.queued_thinking(), Some(ThinkingLevel::Off));
-            this.selected_model = Some("model-b".into());
-            this.refresh_thinking(cx);
-            this.thinking_saved(model_a.clone(), Err("offline".to_string().into()), cx);
-            assert!(this.notice.is_none(), "the waiting pick replaces it");
-            assert!(this.thinking_saving, "the waiting pick goes out");
-            assert_eq!(
-                this.thinking_cache.get(&model_a).map(|state| state.current),
-                Some(ThinkingLevel::Off)
-            );
-            assert!(this.thinking.is_none(), "model B keeps its own levels");
-        });
+            let chat = cx.new(|cx| ChatScreen::new_inner_for_test(backend, "user".into(), cx));
+            chat.update(cx, |this, cx| {
+                let model_a = key(None, "model-a");
+                this.selected_session = None;
+                this.selected_model = Some("model-a".into());
+                // High saving for model A, as `save_thinking` leaves it.
+                this.thinking_cache.begin_pick(
+                    model_a.clone(),
+                    state(ThinkingLevel::Low),
+                    ThinkingLevel::High,
+                );
+                this.thinking = this.thinking_cache.get(&model_a);
+                this.thinking_saving = true;
+                this.pick_thinking(ThinkingLevel::Off, cx);
+                assert_eq!(this.queued_thinking(), Some(ThinkingLevel::Off));
+                this.selected_model = Some("model-b".into());
+                if evicted {
+                    // A pushed update for the new-task default.
+                    this.thinking_cache.invalidate_defaults();
+                }
+                this.refresh_thinking(cx);
+                this.thinking_saved(model_a.clone(), Err("offline".to_string().into()), cx);
+                assert!(this.notice.is_none(), "the waiting pick replaces it");
+                assert!(
+                    this.thinking_saving,
+                    "the waiting pick goes out ({evicted})"
+                );
+                assert_eq!(
+                    this.thinking_cache.get(&model_a).map(|state| state.current),
+                    (!evicted).then_some(ThinkingLevel::Off),
+                    "it previews where the levels are known"
+                );
+                assert!(this.thinking.is_none(), "model B keeps its own levels");
+            });
+        }
     }
 }
