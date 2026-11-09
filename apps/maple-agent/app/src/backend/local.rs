@@ -3228,8 +3228,8 @@ impl LocalBackend {
             .await
     }
 
-    /// Save a task's legacy web flag, which controllers on older builds
-    /// still set. It changes no tools; Settings → Tools has the web switch.
+    /// Refused: controllers on older builds send it, and web access is one
+    /// switch for all tasks in Settings → Tools now.
     pub async fn set_session_web_enabled(
         &self,
         user_id: &str,

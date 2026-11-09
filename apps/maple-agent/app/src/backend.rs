@@ -307,7 +307,7 @@ operations! {
     setup_integration(user_id: (&str), id: (&str), permissions: (AgentIntegrationPermissions)) -> Vec<AgentIntegration>;
     [dispatch_only] list_tools(user_id: (&str)) -> Vec<AgentToolSwitch>;
     [dispatch_only] set_tool_enabled(user_id: (&str), id: (&str), enabled: (bool)) -> Vec<AgentToolSwitch>;
-    // Only controllers on older builds send it, to set a task's legacy web flag.
+    // Only controllers on older builds send it; the host refuses it.
     [dispatch_only] set_session_web_enabled(user_id: (&str), session_id: (&str), enabled: (bool)) -> AgentSessionSummary;
     [dispatch_only] set_session_permission_mode(user_id: (&str), session_id: (&str), mode: (maple_agent::agent::AgentPermissionMode)) -> AgentSessionSummary;
     [dispatch_only] compact_session(user_id: (&str), session_id: (&str)) -> ();

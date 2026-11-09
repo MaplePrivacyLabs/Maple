@@ -597,11 +597,10 @@ async fn the_model_shows_its_plan_and_asks_the_user() {
     );
 }
 
-/// Every task follows the web switch of Settings → Tools. A task's own web
-/// flag, which a controller on an older build still sets, is saved and
-/// changes nothing: a task built with it off gets both web tools while the
-/// switch is on, and turning it back on brings neither while the switch is
-/// off.
+/// Every task follows the web switch of Settings → Tools. A task's web flag
+/// saved before the switch moved changes nothing, and the per-task setter a
+/// controller on an older build still sends is refused, so that controller
+/// never shows web access as off while the tools stay on.
 #[tokio::test]
 async fn the_web_tools_follow_the_account_switch_not_the_tasks_flag() {
     let harness = Harness::new().await;
@@ -611,12 +610,23 @@ async fn the_web_tools_follow_the_account_switch_not_the_tasks_flag() {
         let tools = pi_ai::transcript::current_tools(&request.context.messages);
         ["web_search", "open_url"].map(|name| tools.iter().any(|tool| tool.name == name))
     };
-    let flag = |enabled| AgentSetSessionWebRequest {
-        session_id: task.clone(),
-        enabled,
-    };
-    let summary = handle.set_session_web_enabled(flag(false)).await.unwrap();
-    assert!(!summary.web_enabled);
+    for enabled in [false, true] {
+        let refused = handle
+            .set_session_web_enabled(AgentSetSessionWebRequest {
+                session_id: task.clone(),
+                enabled,
+            })
+            .await
+            .unwrap_err();
+        assert_eq!(refused, super::tasks::WEB_SWITCH_MOVED);
+    }
+
+    // A flag saved off before the switch moved.
+    handle
+        .store()
+        .unwrap()
+        .update(&task, |row| row.web_enabled = false)
+        .unwrap();
     harness.faux.push_text("Found.");
     let mut run = harness.send(&task, "Look it up").await;
     assert_eq!(finished(&mut run).await, AgentRunTerminal::Completed);
@@ -629,8 +639,6 @@ async fn the_web_tools_follow_the_account_switch_not_the_tasks_flag() {
         })
         .await
         .unwrap();
-    let summary = handle.set_session_web_enabled(flag(true)).await.unwrap();
-    assert!(summary.web_enabled);
     harness.faux.push_text("Not looked up.");
     let mut run = harness.send(&task, "Look it up again").await;
     assert_eq!(finished(&mut run).await, AgentRunTerminal::Completed);
