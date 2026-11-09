@@ -1179,6 +1179,11 @@ chat-stop-run = Detener ejecución
 chat-queue-next-turn = Poner en cola para el siguiente turno
 chat-send = Enviar
 chat-model = Modelo
+chat-model-group-capable = Más capaces
+chat-model-group-uncensored = Sin censura
+chat-model-group-fast = Rápidos y económicos
+chat-model-group-more = Más modelos
+chat-model-popular = Popular
 chat-integration-count = { $count ->
     [one] 1 integración
    *[other] { $count } integraciones

@@ -149,6 +149,11 @@ chat-mode-read-only-chip b62b6d26048a5057
 chat-mode-read-only-note dcae1dab04125c66
 chat-model b4a11238c0c9b1e5
 chat-model-effort-chip 135d28e0079ffd0d
+chat-model-group-capable d87fa4070b26156c
+chat-model-group-fast c376ca3537291602
+chat-model-group-more da7bd78ff9ff2a0f
+chat-model-group-uncensored c2ff206f0e5718ad
+chat-model-popular 74e9e62ccf83bb9d
 chat-month-1 0d679143b30162c2
 chat-month-10 cc8977badd170cd3
 chat-month-11 2902ca4e3ccd8885
