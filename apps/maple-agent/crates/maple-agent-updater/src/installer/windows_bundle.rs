@@ -1737,6 +1737,9 @@ fn admit_windows_installation(
         // The parent of a new root is not Maple's: its permissions are not
         // judged, because the new app root receives an explicit protected ACL.
         if existing == root {
+            // Report the app root's own refusal as the existing installation,
+            // not as its parent, which this branch never examines.
+            operation = WindowsInstallOperation::ExistingInstallation;
             windows_fs::private_directory(existing)?;
         } else {
             windows_fs::installation_parent(existing)?;
