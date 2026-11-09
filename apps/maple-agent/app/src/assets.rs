@@ -58,6 +58,7 @@ assets!(
     "icons/cua-mark-black.svg",
     "icons/cua-mark-white.svg",
     "icons/download.svg",
+    "icons/effort-burst.svg",
     "icons/ellipsis.svg",
     "icons/folder-open.svg",
     "icons/folder-plus.svg",

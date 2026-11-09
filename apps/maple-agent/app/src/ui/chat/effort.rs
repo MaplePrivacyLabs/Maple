@@ -5,6 +5,8 @@
 //! Changes of state move rather than swap: the level's name morphs letter
 //! by letter into the next one, the brain gives a small pulse as the level
 //! lands, reset spins back, and the whole popover rises in as it opens.
+//! Arriving at the model's top level, the brain sparks: a warm flash and a
+//! burst of rays.
 
 use std::time::Duration;
 
@@ -23,6 +25,8 @@ const POPOVER_WIDTH: gpui::Pixels = px(300.);
 const PULSE: Duration = Duration::from_millis(420);
 /// Reset's spin back.
 const SPIN: Duration = Duration::from_millis(560);
+/// The brain's spark at the top stop.
+const SPARK: Duration = Duration::from_millis(560);
 
 /// A level's place on one scale shared by every model, from no thinking
 /// (0) to the most a model offers (1). The slider spreads a model's own
@@ -171,6 +175,12 @@ impl ChatScreen {
             .unwrap_or_else(|| tr("chat-model"));
 
         let landed = shown.map_or(0, |level| level as usize + 1);
+        // Arriving at the top level, while the brain's spark runs.
+        let spark = self
+            .effort_slider
+            .borrow()
+            .topped()
+            .filter(|(_, at)| at.elapsed() < SPARK);
         let header = div()
             .flex()
             .items_center()
@@ -181,9 +191,29 @@ impl ChatScreen {
                 div()
                     .size_8()
                     .flex_none()
+                    .relative()
                     .flex()
                     .items_center()
                     .justify_center()
+                    // At the top stop, a warm disc flashes behind the brain.
+                    .when_some(spark, |brain, (count, _)| {
+                        brain.child(
+                            div()
+                                .absolute()
+                                .inset_0()
+                                .flex()
+                                .items_center()
+                                .justify_center()
+                                .child(div().rounded_full().bg(title_color).with_animation(
+                                    ("effort-brain-flash", count),
+                                    Animation::new(SPARK).with_easing(gpui::ease_out_quint()),
+                                    |disc, delta| {
+                                        disc.size(px(14. + 16. * delta))
+                                            .opacity(0.32 * (1. - delta))
+                                    },
+                                )),
+                        )
+                    })
                     .child(
                         icon("brain", px(18.), theme::text_muted())
                             .text_color(title_color)
@@ -197,7 +227,38 @@ impl ChatScreen {
                                     )))
                                 },
                             ),
-                    ),
+                    )
+                    // ...and throws a burst of spark lines.
+                    .when_some(spark, |brain, (count, _)| {
+                        brain.child(
+                            div()
+                                .absolute()
+                                .inset_0()
+                                .flex()
+                                .items_center()
+                                .justify_center()
+                                .child(
+                                    icon("effort-burst", px(32.), theme::accent())
+                                        .text_color(title_color)
+                                        .with_animation(
+                                            ("effort-brain-burst", count),
+                                            Animation::new(SPARK)
+                                                .with_easing(gpui::ease_out_quint()),
+                                            |burst, delta| {
+                                                let scale = 0.65 + 0.6 * delta;
+                                                burst
+                                                    .with_transformation(Transformation::scale(
+                                                        gpui::size(scale, scale),
+                                                    ))
+                                                    .opacity(
+                                                        (delta / 0.15).min(1.)
+                                                            * (1. - delta).powf(1.5),
+                                                    )
+                                            },
+                                        ),
+                                ),
+                        )
+                    }),
             )
             .child(
                 div()

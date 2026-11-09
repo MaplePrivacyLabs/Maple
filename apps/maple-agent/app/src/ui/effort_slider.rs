@@ -20,6 +20,9 @@
 //!   level's colour when one is picked.
 //! - When the popover opens, the thumb pops in and the fill pours to it.
 //!   When the stops change (another model), the dots glide to their places.
+//! - At the model's top stop the thumb keeps a warm halo, which rises in
+//!   when the thumb arrives there. The owner hears of the arrival
+//!   ([`EffortSliderState::topped`]) to play its own part.
 //!
 //! The element asks for frames only while something moves. Reduced motion
 //! drops the springs and effects and jumps instead.
@@ -71,6 +74,10 @@ const LIFT: Tuning = Tuning(600., 0.7);
 const POP: Tuning = Tuning(380., 0.42);
 /// Where that settle starts.
 const POP_FROM: f32 = 1.12;
+/// The thumb counts as arrived at the top stop this close to the end.
+const ARRIVED: f32 = 0.985;
+/// The halo the thumb keeps at the top stop takes this long to come up.
+const HOT_IN: Duration = Duration::from_millis(300);
 
 /// What the owner hears from the slider: the stop under a drag as it
 /// changes (`None` when the drag ends), and the stop picked by a release.
@@ -302,6 +309,13 @@ pub struct EffortSliderState {
     bloom: Option<Instant>,
     last_frame: Option<Instant>,
     started: bool,
+    /// Set while the selected stop is below the top, so arriving there
+    /// starts the top's moment once; an opening at the top never does.
+    armed: bool,
+    /// When the thumb last arrived at the top stop, and how many times it
+    /// has, so the owner can key its part of the moment.
+    topped: Option<Instant>,
+    topped_count: usize,
 }
 
 impl EffortSliderState {
@@ -316,6 +330,39 @@ impl EffortSliderState {
         self.fill.snap(0.);
         self.ripples.clear();
         self.bloom = None;
+        self.armed = false;
+        self.topped = None;
+    }
+
+    /// The thumb's last arrival at the top stop since this showing began:
+    /// how many arrivals there have been, and when this one was.
+    pub fn topped(&self) -> Option<(usize, Instant)> {
+        self.topped.map(|at| (self.topped_count, at))
+    }
+
+    /// Watch for the thumb arriving at the top stop (`top`: the selected
+    /// stop is the last). Arriving from below starts the top's moment,
+    /// once; reduced motion skips the moment but not the halo.
+    fn note_top(&mut self, top: bool, now: Instant, reduce_motion: bool) {
+        if !top {
+            self.armed = true;
+        } else if self.armed && (reduce_motion || self.thumb.value >= ARRIVED) {
+            self.armed = false;
+            if !reduce_motion {
+                self.topped = Some(now);
+                self.topped_count += 1;
+            }
+        }
+    }
+
+    /// The warm halo at the top stop, from 0 to 1: full when it was there
+    /// already, rising after an arrival, none while the thumb is on its way.
+    fn hot(&self, top: bool, now: Instant) -> f32 {
+        if !top || self.armed {
+            return 0.;
+        }
+        self.topped
+            .map_or(1., |at| ease_out_cubic(elapsed(at, now, HOT_IN)))
     }
 
     /// Advance the motion to `now` toward `target`. Returns whether
@@ -473,6 +520,8 @@ impl Element for EffortSlider {
                 state.swells = vec![None; count];
                 state.preview = None;
                 state.selected = Some(self.selected);
+                // Switching models onto the top stop is not arriving there.
+                state.armed = false;
             } else if state.selected != Some(self.selected) {
                 // A level landed, from the pointer, the keyboard or reset.
                 if state.selected.is_some() && !reduce_motion {
@@ -492,7 +541,16 @@ impl Element for EffortSlider {
                 || stop_position(self.selected, count),
                 |drag| notched(drag, count),
             );
-            state.step(target, now, reduce_motion)
+            let moving = state.step(target, now, reduce_motion);
+            state.note_top(
+                self.enabled && count > 1 && self.selected + 1 == count,
+                now,
+                reduce_motion,
+            );
+            moving
+                || state
+                    .topped
+                    .is_some_and(|at| elapsed(at, now, HOT_IN) < 1.)
         };
         if moving {
             window.request_animation_frame();
@@ -562,6 +620,10 @@ impl Element for EffortSlider {
                     .map(|at| at.map_or(0., |at| swell(elapsed(at, now, DOT_SWELL))))
                     .collect(),
                 bloom: state.bloom.map_or(0., |at| swell(elapsed(at, now, BLOOM))),
+                hot: state.hot(
+                    self.enabled && count > 1 && self.selected + 1 == count,
+                    now,
+                ),
             }
         };
         let thumb_x = x_at(snapshot.thumb.value);
@@ -639,9 +701,9 @@ impl Element for EffortSlider {
                 body,
                 full,
                 &[BoxShadow {
-                    color: fill_end.opacity(0.18 + 0.32 * heat),
+                    color: fill_end.opacity(0.18 + 0.32 * heat + 0.15 * snapshot.hot),
                     offset: point(px(0.), px(2.)),
-                    blur_radius: px(10. + 10. * heat),
+                    blur_radius: px(10. + 10. * heat + 6. * snapshot.hot),
                     spread_radius: px(0.),
                     inset: false,
                 }],
@@ -828,6 +890,16 @@ impl Element for EffortSlider {
                 inset: false,
             });
         }
+        if snapshot.hot > 0. {
+            // At the top stop the thumb keeps a warm halo.
+            shadows.push(BoxShadow {
+                color: fill_end.opacity(0.45 * snapshot.hot),
+                offset: point(px(0.), px(0.)),
+                blur_radius: px(16.) * snapshot.hot,
+                spread_radius: px(2.5) * snapshot.hot,
+                inset: false,
+            });
+        }
         window.paint_drop_shadows(thumb, round, &shadows);
         window.paint_quad(quad(
             thumb,
@@ -966,6 +1038,8 @@ struct Snapshot {
     ripples: Vec<(f32, f32, f32)>,
     swells: Vec<f32>,
     bloom: f32,
+    /// The top stop's halo, from 0 to 1.
+    hot: f32,
 }
 
 #[cfg(test)]
@@ -1005,6 +1079,46 @@ mod tests {
         assert_eq!(stop_position(3, 5), 0.75);
         // A single stop sits in the middle rather than at an end.
         assert_eq!(stop_position(0, 1), 0.5);
+    }
+
+    /// The top's moment waits for the thumb to reach the end of the track,
+    /// plays once per arrival, and never for an opening already at the top.
+    #[test]
+    fn the_top_moment_plays_on_arrival_only() {
+        let now = Instant::now();
+        let count = |state: &EffortSliderState| state.topped().map(|(count, _)| count);
+
+        // Opened at the top: no moment, the halo is simply on.
+        let mut state = started();
+        state.release();
+        state.thumb.snap(1.);
+        state.note_top(true, now, false);
+        assert_eq!(count(&state), None);
+        assert_eq!(state.hot(true, now), 1.);
+
+        // Down a stop and back: nothing until the thumb reaches the end.
+        state.note_top(false, now, false);
+        state.thumb.snap(0.9);
+        state.note_top(true, now, false);
+        assert_eq!(count(&state), None);
+        assert_eq!(state.hot(true, now), 0.);
+        state.thumb.snap(1.);
+        state.note_top(true, now, false);
+        assert_eq!(count(&state), Some(1));
+        // Staying there does not play it again.
+        state.note_top(true, now + Duration::from_millis(100), false);
+        assert_eq!(count(&state), Some(1));
+        // Leaving and arriving again does.
+        state.note_top(false, now, false);
+        state.note_top(true, now, false);
+        assert_eq!(count(&state), Some(2));
+
+        // Reduced motion: no moment, the halo at once.
+        let mut still = started();
+        still.note_top(false, now, true);
+        still.note_top(true, now, true);
+        assert_eq!(count(&still), None);
+        assert_eq!(still.hot(true, now), 1.);
     }
 
     #[test]

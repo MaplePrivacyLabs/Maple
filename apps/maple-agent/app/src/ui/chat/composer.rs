@@ -403,11 +403,24 @@ impl ChatScreen {
                     None
                 }
                 .map(|menu| self.popup.render(menu, Placement::AboveStart, window, cx));
+                // At a model's top level the effort word stays warm, as the
+                // popover's slider does.
+                let detail_color: gpui::Hsla = match self.thinking.as_ref() {
+                    Some(state)
+                        if state.levels.len() > 1
+                            && state.levels.last() == Some(&state.current) =>
+                    {
+                        crate::ui::effort_slider::heat_color(super::effort::level_heat(
+                            state.current,
+                        ))
+                    }
+                    _ => gpui::rgb(theme::text_muted()).into(),
+                };
                 let mut button = chip(
                     "model-picker",
                     None,
                     label,
-                    level.clone(),
+                    level.clone().map(|level| (level, detail_color)),
                     true,
                     open,
                     false,
@@ -1635,7 +1648,7 @@ fn chip(
     id: &'static str,
     leading: Option<&'static str>,
     label: impl Into<SharedString>,
-    detail: Option<SharedString>,
+    detail: Option<(SharedString, gpui::Hsla)>,
     chevron: bool,
     active: bool,
     highlight: bool,
@@ -1680,12 +1693,11 @@ fn chip(
                 .child(label),
         )
         // The detail morphs from one value to the next (High to Maximum).
-        .children(detail.map(|detail| {
+        .children(detail.map(|(detail, color)| {
             div()
                 .flex_none()
                 .whitespace_nowrap()
-                .text_color(gpui::rgb(theme::text_muted()))
-                .child(crate::ui::morph_text::morph_text((id, 1usize), detail))
+                .child(crate::ui::morph_text::morph_text((id, 1usize), detail).color(color))
         }))
         .when(chevron, |el| {
             el.child(icon("chevron-down", px(14.), color).flex_none())
