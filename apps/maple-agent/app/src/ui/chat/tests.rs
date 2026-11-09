@@ -1241,13 +1241,9 @@ mod state_tests {
                 _cx: &mut Context<Self>,
             ) -> impl IntoElement {
                 // A column, so the screen fills the window and the sidebar
-                // list has room for its rows.
-                div()
-                    .w(px(1200.))
-                    .h(px(800.))
-                    .flex()
-                    .flex_col()
-                    .child(self.chat.clone())
+                // list has room for its rows. It follows the window, so a
+                // test can narrow it.
+                div().size_full().flex().flex_col().child(self.chat.clone())
             }
         }
         cx.executor().allow_parking();
@@ -13377,6 +13373,49 @@ mod state_tests {
                 .expect("chip after model change");
             assert_eq!(changed.size.height, initial.size.height);
             assert_eq!(changed.origin.y, initial.origin.y);
+        }
+
+        /// In a narrow window the chips wrap onto a second line. Neither the
+        /// model chip nor the row squeezes below its contents, which drew
+        /// the effort word over Integrations and the last chips under Send.
+        #[gpui::test]
+        fn narrow_windows_wrap_the_chips_instead_of_overlapping_them(cx: &mut TestAppContext) {
+            let (_chat, cx) = chat_window(cx, |this, _| {
+                this.models = vec!["model-a".to_string()];
+                this.model_labels
+                    .insert("model-a".to_string(), "DeepSeek V4.1 Flash".to_string());
+                this.selected_model = Some("model-a".into());
+                this.thinking = Some(AgentThinkingState {
+                    levels: vec![ThinkingLevel::Low, ThinkingLevel::High, ThinkingLevel::Max],
+                    current: ThinkingLevel::Max,
+                });
+            });
+            let chips = [
+                "model-picker",
+                "mcp-menu",
+                "permission-mode-menu",
+                "web-toggle",
+            ];
+            let wide = cx.debug_bounds("model-picker").expect("model chip");
+            cx.simulate_resize(gpui::size(px(760.), px(800.)));
+            cx.run_until_parked();
+            let narrow = cx.debug_bounds("model-picker").expect("model chip");
+            assert_eq!(
+                narrow.size, wide.size,
+                "the model chip keeps its name and effort"
+            );
+            let send = cx.debug_bounds("send-message").expect("Send");
+            let bounds: Vec<_> = chips
+                .iter()
+                .filter_map(|id| cx.debug_bounds(id).map(|bounds| (*id, bounds)))
+                .collect();
+            assert!(bounds.len() >= 3, "the chips render: {bounds:?}");
+            for (i, (id, chip)) in bounds.iter().enumerate() {
+                assert!(chip.right() <= send.left(), "{id} reaches under Send");
+                for (other_id, other) in &bounds[i + 1..] {
+                    assert!(!chip.intersects(other), "{id} overlaps {other_id}");
+                }
+            }
         }
 
         /// A chat whose model offers `levels`, at `current`, with a save in
