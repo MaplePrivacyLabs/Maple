@@ -303,11 +303,12 @@ fn profile_lock(profile: &str) -> Result<ProfileLock> {
     })
 }
 
-/// NSIS creates `%LOCALAPPDATA%\Maple Work Installer Staging\<run>` with a
-/// protected ACL, unpacks the payload into it and deletes it when it exits. A
-/// killed installer leaves its run behind, about 150 MB, so a later install
-/// removes runs older than an hour. Only that fixed root is touched, never this
-/// run's own folder, and never a link: `remove_dir_all` does not follow them.
+/// NSIS unpacks its plug-ins into an `ns*.tmp` folder and the payload into a
+/// protected `<run>` folder under `%LOCALAPPDATA%\Maple Work Installer Staging`
+/// and deletes both when it exits. A killed installer leaves them behind, about
+/// 150 MB, so a later install removes folders there older than an hour. Only
+/// that fixed root is touched, never this run's own folder, and never a link:
+/// `remove_dir_all` does not follow them.
 fn remove_stale_staging(payload: &Path) {
     use std::os::windows::fs::MetadataExt;
     use windows_sys::Win32::Storage::FileSystem::FILE_ATTRIBUTE_REPARSE_POINT;

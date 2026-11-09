@@ -83,21 +83,27 @@ Section "Install"
   StrCpy $NativeWin32Error 0
   StrCpy $InstallerReport ""
   StrCpy $Staging ""
-  InitPluginsDir
+  ; Plug-ins are DLLs that NSIS unpacks and loads. By default it unpacks them
+  ; under %TEMP% and locks that folder only for an elevated installer, so a
+  ; moved TEMP such as C:\Temp let other accounts replace a DLL before it
+  ; loaded. Unpack them under the profile instead, before the first plug-in
+  ; call. This root inherits the profile's entries, which name this user, so
+  ; normal and elevated runs can each use a root the other left behind.
+  StrCpy $FailureCode 21
+  StrCpy $FailureStage "creating the installer's working folder"
+  StrCpy $StagingRoot "$LOCALAPPDATA\Maple Work Installer Staging"
+  ClearErrors
+  CreateDirectory $StagingRoot
+  GetTempFileName $0 $StagingRoot
+  IfErrors refused
+  Delete $0
+  CreateDirectory $0
+  IfErrors refused
+  UnsafeStrCpy $PLUGINSDIR $0
   ; The payload is unpacked into a folder this installer creates with its own
   ; protected ACL, so the native installer's permission checks see only the
-  ; entries Maple set. Under %TEMP%, a moved TEMP such as C:\Temp or a profile
-  ; with extra entries made every payload file writable by other accounts.
-  StrCpy $FailureCode 21
-  StrCpy $StagingRoot "$LOCALAPPDATA\Maple Work Installer Staging"
-  StrCpy $0 $StagingRoot
-  Call CreatePrivateDirectory
-  StrCmp $1 0 staging_root
-  StrCmp $1 183 staging_root
-  StrCpy $FailureStage "creating a private folder for the installer files (Windows error $1)"
-  Goto refused
-staging_root:
-  ; Each run gets a new folder; an existing one is never adopted.
+  ; entries Maple set, even on a profile with extra entries. Each run gets a
+  ; new folder; an existing one is never adopted.
   System::Call 'kernel32::GetCurrentProcessId() i .r5'
   System::Call 'kernel32::GetTickCount() i .r6'
   IntFmt $6 "%u" $6
@@ -203,13 +209,13 @@ free:
 done:
 FunctionEnd
 
-; Delete this run's staging folder, and the shared root when it is empty.
+; Delete this run's staging folder. The shared root stays: NSIS deletes its
+; plug-in folder there only when the installer exits.
 Function RemoveStaging
   StrCmp $Staging "" done
   ; The output path is the process's current folder; leave it first.
   SetOutPath "$PLUGINSDIR"
   RMDir /r "$Staging"
-  RMDir "$StagingRoot"
   StrCpy $Staging ""
 done:
 FunctionEnd

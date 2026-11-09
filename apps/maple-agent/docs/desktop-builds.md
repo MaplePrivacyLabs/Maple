@@ -76,10 +76,12 @@ the access mask and whether the entry is inherited, never a name or SID. The las
 `%LOCALAPPDATA%\Maple Work Installer Logs`; logging failure does not change the
 installation result. Early NSIS extraction/launch failures still show their
 installer stage and process status. Legacy helper commands and activation exit
-codes remain compatible. New installers extract a payload into a per-run folder
-under `%LOCALAPPDATA%\Maple Work Installer Staging`, created with a protected
-ACL so a moved `TEMP` or extra profile permissions cannot reach it, and call one
-native transaction, which owns copying, registration, shortcuts and pointer activation.
+codes remain compatible. New installers never unpack into `TEMP`, which may be
+a shared folder such as `C:\Temp`: NSIS's plug-in DLLs go into a folder under
+`%LOCALAPPDATA%\Maple Work Installer Staging`, and the payload into a per-run
+folder there, created with a protected ACL so extra profile permissions cannot
+reach it either. The installer then calls one native transaction, which owns
+copying, registration, shortcuts and pointer activation.
 It records durable checkpoints before major operations so a crashed helper
 still leaves its last operation in the support log.
 Interrupted attempts retain recoverable state; failures before activation restore
