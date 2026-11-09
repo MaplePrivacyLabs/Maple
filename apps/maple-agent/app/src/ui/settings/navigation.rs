@@ -1095,6 +1095,52 @@ mod tests {
         });
     }
 
+    /// The content area below the title bar bounds the pane: General is
+    /// taller than the window, so the pane has a scroll range and a wheel
+    /// over it moves its content.
+    #[gpui::test]
+    fn the_pane_scrolls_below_the_title_bar(cx: &mut TestAppContext) {
+        let (settings, cx) = dropdown_window(cx, false);
+        let content = cx
+            .debug_bounds("settings-content")
+            .expect("settings content");
+        let range = settings.update(cx, |this, _| this.pane_scroll.max_offset().y);
+        assert!(range > px(0.), "General overflows its content area");
+        cx.simulate_event(gpui::ScrollWheelEvent {
+            // In the pane's gutter, so no row takes the wheel.
+            position: gpui::point(content.left() + px(8.), content.center().y),
+            delta: gpui::ScrollDelta::Pixels(gpui::point(px(0.), px(-200.))),
+            ..Default::default()
+        });
+        cx.run_until_parked();
+        let offset = settings.update(cx, |this, _| this.pane_scroll.offset().y);
+        assert!(offset < px(0.), "the wheel scrolls the pane");
+    }
+
+    /// Sign out lives in Account only, so it must not wait for the account:
+    /// while the profile loads, or after it fails to, the session can still
+    /// end from Settings.
+    #[gpui::test]
+    fn account_offers_sign_out_before_the_account_loads(cx: &mut TestAppContext) {
+        let (settings, cx) = dropdown_window(cx, false);
+        settings.update(cx, |this, cx| this.select_section(Section::Account, cx));
+        cx.run_until_parked();
+        assert!(settings.update(cx, |this, _| this.account.info.is_none()));
+        assert!(
+            cx.debug_bounds("account-sign-out").is_some(),
+            "while loading"
+        );
+        settings.update(cx, |this, cx| {
+            this.account.load_error = Some("offline".into());
+            cx.notify();
+        });
+        cx.run_until_parked();
+        assert!(
+            cx.debug_bounds("account-sign-out").is_some(),
+            "after a failed load"
+        );
+    }
+
     #[gpui::test]
     fn spanish_general_preserves_controls_and_saved_values(cx: &mut TestAppContext) {
         let _localization = crate::ui::i18n::TestLocalizationGuard::enable();

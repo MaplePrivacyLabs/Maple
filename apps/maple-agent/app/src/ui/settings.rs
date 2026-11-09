@@ -62,7 +62,7 @@ pub(crate) use catalog::saved_description;
 /// Emitted when the user leaves settings.
 pub struct SettingsClosed(pub AppSettings);
 
-/// Emitted when the user clicks Sign out in the settings header.
+/// Emitted when the user clicks Sign out in the Account section.
 pub struct SignOutRequested;
 
 /// Emitted after the server confirmed the account is deleted and the
@@ -1699,71 +1699,32 @@ impl Render for SettingsScreen {
             .relative()
             .size_full()
             .flex()
-            .flex_col()
+            .flex_row()
             .bg(gpui::rgb(theme::bg_app()))
-            .child(crate::ui::titlebar::drag_region(
-                div()
-                    .id("settings-header")
-                    .flex()
-                    .items_center()
-                    .gap_3()
-                    .pl(crate::ui::titlebar::top_row_inset(px(16.)))
-                    .pr_4()
-                    .py_3()
-                    .border_b_1()
-                    .border_color(gpui::rgb(theme::border()))
-                    .child(
-                        widgets::ghost_button("settings-back")
-                            .on_mouse_down(gpui::MouseButton::Left, |_event, _window, cx| {
-                                cx.stop_propagation();
-                            })
-                            .on_click(cx.listener(|this, _event, _window, cx| {
-                                this.close(cx);
-                            }))
-                            .child(super::i18n::tr("settings-back")),
-                    )
-                    .child(
-                        div()
-                            .font_weight(gpui::FontWeight::BOLD)
-                            .text_color(gpui::rgb(theme::text_primary()))
-                            .child(super::i18n::tr("settings-title")),
-                    )
-                    .child(div().flex_1())
-                    .child(
-                        div()
-                            .id("settings-sign-out")
-                            .px_2()
-                            .py_1()
-                            .rounded(theme::RADIUS_SM)
-                            .text_sm()
-                            .text_color(gpui::rgb(theme::text_muted()))
-                            .hover(|style| {
-                                style
-                                    .text_color(gpui::rgb(theme::status_error()))
-                                    .cursor_pointer()
-                            })
-                            .on_mouse_down(gpui::MouseButton::Left, |_event, _window, cx| {
-                                cx.stop_propagation();
-                            })
-                            .on_click(cx.listener(|_this, _event, _window, cx| {
-                                cx.emit(SignOutRequested);
-                            }))
-                            .child(super::i18n::tr("settings-sign-out")),
-                    ),
-            ))
+            .child(self.render_sidebar(cx))
             .child(
                 div()
                     .flex_1()
-                    .min_h_0()
+                    .min_w_0()
+                    .h_full()
                     .flex()
-                    .flex_row()
-                    .child(self.render_nav(cx))
+                    .flex_col()
+                    .bg(gpui::rgb(theme::bg_app()))
+                    // The title bar's row, on the canvas: the screen's
+                    // title heads the sidebar instead.
+                    .child(crate::ui::titlebar::drag_region(
+                        div()
+                            .id("settings-header")
+                            .flex_none()
+                            .h(crate::ui::titlebar::TITLE_BAR_HEIGHT),
+                    ))
                     .child(
                         div()
+                            .debug_selector(|| "settings-content".to_string())
                             .relative()
                             .flex_1()
-                            .min_w_0()
-                            .h_full()
+                            .min_h_0()
+                            .bg(gpui::rgb(theme::bg_app()))
                             .child(self.render_pane(window, cx))
                             .child(crate::ui::scrollbar::scrollbar(
                                 "settings-scrollbar",
@@ -1776,20 +1737,92 @@ impl Render for SettingsScreen {
 }
 
 impl SettingsScreen {
+    /// The task sidebar's column, from the window's top edge. Back sits
+    /// where the task screen's toolbar starts and the screen's title where
+    /// its wordmark sits: beside traffic lights Back joins them in the
+    /// title bar; without them it leads the title's row.
+    fn render_sidebar(&self, cx: &mut Context<Self>) -> gpui::Stateful<Div> {
+        let back_in_title_bar = crate::ui::titlebar::TRANSPARENT_TITLEBAR;
+        let back = self.render_back(cx);
+        let (row_back, bar_back) = if back_in_title_bar {
+            (None, Some(back))
+        } else {
+            (Some(back), None)
+        };
+        div()
+            .id("settings-sidebar")
+            .relative()
+            .flex_none()
+            .w(super::chat::SIDEBAR_WIDTH)
+            .h_full()
+            .flex()
+            .flex_col()
+            .bg(gpui::rgb(theme::bg_sidebar()))
+            .child(crate::ui::titlebar::drag_region(
+                div()
+                    .id("settings-sidebar-top-row")
+                    .flex_none()
+                    .px_3()
+                    .pt(crate::ui::titlebar::sidebar_row_top())
+                    .pb_2()
+                    .child(
+                        div()
+                            .h(crate::ui::titlebar::SIDEBAR_ROW_HEIGHT)
+                            .flex()
+                            .items_center()
+                            .gap_1()
+                            .children(row_back)
+                            .child(
+                                crate::ui::titlebar::title(super::i18n::tr("settings-title"))
+                                    .debug_selector(|| "settings-title".to_string())
+                                    // On the section labels' edge.
+                                    .when(back_in_title_bar, |title| title.pl_3())
+                                    .min_w_0(),
+                            ),
+                    ),
+            ))
+            .child(self.render_nav(cx))
+            .children(bar_back.map(|back| {
+                div()
+                    .absolute()
+                    .left(crate::ui::titlebar::TRAFFIC_LIGHT_TOOLBAR_LEFT)
+                    .top(crate::ui::titlebar::title_bar_row_top())
+                    .child(back)
+            }))
+    }
+
+    /// Back to the task screen: an arrow like the task screen's toolbar
+    /// buttons, named by its tooltip.
+    fn render_back(&self, cx: &mut Context<Self>) -> gpui::Stateful<Div> {
+        widgets::icon_button(
+            "settings-back",
+            "arrow-left",
+            super::i18n::tr("settings-back"),
+            px(16.),
+            theme::text_secondary(),
+        )
+        .debug_selector(|| "settings-back".to_string())
+        // In or over a drag region: a press here is a click, not a drag.
+        .on_mouse_down(gpui::MouseButton::Left, |_event, _window, cx| {
+            cx.stop_propagation();
+        })
+        .on_click(cx.listener(|this, _event, _window, cx| {
+            this.close(cx);
+        }))
+    }
+
     fn render_nav(&self, cx: &mut Context<Self>) -> gpui::Stateful<Div> {
         div()
             .id("settings-nav")
             .role(gpui::Role::TabList)
             .aria_label(super::i18n::tr("settings-sections"))
             .aria_orientation(gpui::Orientation::Vertical)
-            .w(gpui::px(220.))
-            .h_full()
+            .flex_1()
+            .min_h_0()
             .flex()
             .flex_col()
             .gap_1()
             .p_3()
-            .border_r_1()
-            .border_color(gpui::rgb(theme::border()))
             .bg(gpui::rgb(theme::bg_sidebar()))
             .children(self.visible_sections().iter().map(|section| {
                 let selected = self.section == *section;
