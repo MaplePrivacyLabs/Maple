@@ -1679,7 +1679,7 @@ mod tests {
         let _guard = crate::settings::SETTINGS_IO_LOCK.lock();
         crate::settings::install_test_settings(crate::settings::AppSettings::default());
         let (settings, cx) = dropdown_window(cx, false);
-        for expected in [Some("en"), Some("es"), None] {
+        for expected in [Some("en"), Some("es"), Some("de"), None] {
             let button = cx
                 .debug_bounds("setting-value-language")
                 .expect("language selector");
@@ -1689,10 +1689,10 @@ mod tests {
                 assert_eq!(this.settings.locale.as_deref(), expected);
                 assert_eq!(
                     crate::ui::i18n::tr("settings-language").as_ref(),
-                    if expected == Some("es") {
-                        "Idioma"
-                    } else {
-                        "Language"
+                    match expected {
+                        Some("es") => "Idioma",
+                        Some("de") => "Sprache",
+                        _ => "Language",
                     }
                 );
                 assert_eq!(this.popup.open_key(), None);
@@ -1718,7 +1718,7 @@ mod tests {
         settings.update(cx, |this, cx| {
             this.choose_theme(crate::ui::theme::Preference::Light, cx);
             this.toggle_setting_menu(SettingMenu::Language, cx);
-            this.pick_setting_option(SettingMenu::Language, 2, cx);
+            this.pick_setting_option(SettingMenu::Language, 3, cx);
         });
         crate::settings::update_settings_and_wait(|_| {});
         // Detach the writer's Arc and discard its cached value before closing
@@ -1740,7 +1740,7 @@ mod tests {
         );
         assert_eq!(
             saved.get("locale").and_then(serde_json::Value::as_str),
-            Some("es")
+            Some("de")
         );
         reopened.close().unwrap();
         cx.run_until_parked();
