@@ -52,8 +52,6 @@ const THUMB: Pixels = px(40.);
 /// The thumb while held.
 const THUMB_PRESSED: Pixels = px(44.);
 const DOT: Pixels = px(5.);
-/// The recommended stop's ring.
-const RING: Pixels = px(8.);
 /// How long the dots take to glide to a new set of stops.
 const MORPH: Duration = Duration::from_millis(320);
 const RIPPLE: Duration = Duration::from_millis(560);
@@ -99,13 +97,12 @@ pub struct EffortSlider {
     state: Rc<RefCell<EffortSliderState>>,
     heats: Vec<f32>,
     selected: usize,
-    recommended: Option<usize>,
     enabled: bool,
     on_preview: Option<OnPreview>,
     on_commit: Option<OnCommit>,
 }
 
-/// Build a slider. `selected` and `recommended` index into `heats`. The
+/// Build a slider. `selected` indexes into `heats`. The
 /// owner keeps `state` across frames and across the slider being hidden,
 /// so stops that changed meanwhile glide into place when it shows again.
 pub fn effort_slider(
@@ -119,7 +116,6 @@ pub fn effort_slider(
         state,
         selected: selected.min(heats.len().saturating_sub(1)),
         heats,
-        recommended: None,
         enabled: true,
         on_preview: None,
         on_commit: None,
@@ -127,12 +123,6 @@ pub fn effort_slider(
 }
 
 impl EffortSlider {
-    /// Mark the stop a reset returns to.
-    pub fn recommended(mut self, stop: Option<usize>) -> Self {
-        self.recommended = stop;
-        self
-    }
-
     /// A disabled slider draws its stops but takes no input.
     pub fn enabled(mut self, enabled: bool) -> Self {
         self.enabled = enabled;
@@ -810,7 +800,7 @@ impl Element for EffortSlider {
 
         // Dots, swelling as the fill flows over them and gliding from the
         // previous stops while a morph runs.
-        let dot = |window: &mut Window, position: f32, alpha: f32, ring: bool, grow: f32| {
+        let dot = |window: &mut Window, position: f32, alpha: f32, grow: f32| {
             let x = x_at(position);
             let filled = x <= far;
             let color: Hsla = if filled {
@@ -820,46 +810,31 @@ impl Element for EffortSlider {
             };
             let color = color.opacity(alpha * if filled { 0.75 + 0.25 * grow } else { 0.6 });
             let center = point(x, track.center().y);
-            if ring {
-                let ring = RING * (1. + 0.6 * grow);
-                window.paint_quad(quad(
-                    Bounds::centered_at(center, size(ring, ring)),
-                    Corners::all(ring / 2.),
-                    gpui::transparent_black(),
-                    px(1.5),
-                    color,
-                    BorderStyle::Solid,
-                ));
-            } else {
-                let dot = DOT * (1. + 1.1 * grow);
-                window.paint_quad(quad(
-                    Bounds::centered_at(center, size(dot, dot)),
-                    Corners::all(dot / 2.),
-                    color,
-                    px(0.),
-                    gpui::transparent_black(),
-                    BorderStyle::Solid,
-                ));
-            }
+            let dot = DOT * (1. + 1.1 * grow);
+            window.paint_quad(quad(
+                Bounds::centered_at(center, size(dot, dot)),
+                Corners::all(dot / 2.),
+                color,
+                px(0.),
+                gpui::transparent_black(),
+                BorderStyle::Solid,
+            ));
         };
         for (index, stop_heat) in self.heats.iter().enumerate() {
             let target = stop_position(index, count);
-            let ring = self.recommended == Some(index);
             let grow = snapshot.swells.get(index).copied().unwrap_or(0.);
             match &snapshot.morph {
                 Some((from, progress)) => match from.iter().find(|(old, _)| old == stop_heat) {
-                    Some((_, start)) => {
-                        dot(window, start + (target - start) * progress, 1., ring, grow)
-                    }
-                    None => dot(window, target, *progress, ring, grow),
+                    Some((_, start)) => dot(window, start + (target - start) * progress, 1., grow),
+                    None => dot(window, target, *progress, grow),
                 },
-                None => dot(window, target, 1., ring, grow),
+                None => dot(window, target, 1., grow),
             }
         }
         if let Some((from, progress)) = &snapshot.morph {
             for (stop_heat, start) in from {
                 if !self.heats.contains(stop_heat) {
-                    dot(window, *start, 1. - progress, false, 0.);
+                    dot(window, *start, 1. - progress, 0.);
                 }
             }
         }

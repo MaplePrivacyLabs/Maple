@@ -387,9 +387,6 @@ impl ChatScreen {
                 let selected = shown
                     .and_then(|shown| levels.iter().position(|level| *level == shown))
                     .unwrap_or(0);
-                let stop = |level: Option<ThinkingLevel>| {
-                    level.and_then(|level| levels.iter().position(|each| *each == level))
-                };
                 let slider = div()
                     .id("effort-slider")
                     .debug_selector(|| "effort-slider".to_string())
@@ -407,7 +404,6 @@ impl ChatScreen {
                             levels.iter().copied().map(level_heat).collect(),
                             selected,
                         )
-                        .recommended(stop(recommended))
                         .enabled(levels.len() > 1)
                         .on_preview(cx.listener(|this, stop: &Option<usize>, _, cx| {
                             this.preview_effort(*stop, cx);
