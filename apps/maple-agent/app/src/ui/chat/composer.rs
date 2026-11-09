@@ -1232,46 +1232,46 @@ impl ChatScreen {
     /// The selected task's latest turn ended out of usage and nothing has
     /// gone out since. A window that does not hold the tail (paged back
     /// into history, or with live rows past its budget) cannot tell.
-    /// Extra credits on the account, bought since or not yet read when the
-    /// turn ran, pay for the next one, so the offer stands down for them.
+    /// The offer stands down while the billing reading says extra credits
+    /// cover the used-up plan (bought since the refusal, say), unless the
+    /// refusal itself came while they did: then the credits did not pay.
     fn usage_limit_reached(&self) -> bool {
         !self.pages.after
             && !self.pages.live_has_more
             && !self.is_run_active()
             && !self.has_send_feedback()
-            && self
-                .sidebar_plan
-                .as_ref()
-                .and_then(crate::billing::PlanUsage::extra_credits)
-                .is_none()
-            && self
-                .timeline
-                .last()
-                .is_some_and(super::transcript::is_usage_limit)
+            && self.timeline.last().is_some_and(|row| {
+                super::transcript::is_usage_limit(row)
+                    && (self.refused_on_credits.as_deref() == Some(row.id.as_str())
+                        || !self
+                            .sidebar_plan
+                            .as_ref()
+                            .is_some_and(crate::billing::PlanUsage::on_extra_credits))
+            })
     }
 
-    /// While the plan's allowance is used up and tasks run on extra
-    /// credits: the balance by the send button, with the detail on hover.
-    /// It opens Usage settings.
+    /// While the billing reading says the plan's allowance is used up and
+    /// extra credits extend it: the balance by the send button, with the
+    /// detail on hover. It opens Usage settings. A task whose turn was
+    /// refused on credits shows the out-of-usage offer instead.
     fn render_credits_chip(&self, cx: &mut Context<Self>) -> Option<gpui::Stateful<Div>> {
         let plan = self
             .sidebar_plan
             .as_ref()
-            .filter(|plan| plan.on_extra_credits())?;
+            .filter(|plan| plan.on_extra_credits() && !self.usage_limit_reached())?;
         let credits = plan.extra_credits()?;
-        let exact: SharedString = crate::billing::format_count(credits).into();
-        let detail = self.messages.get(
-            "chat-credits-detail",
-            [
-                (
-                    "reset",
-                    crate::ui::settings::presentation::reset_date(plan, &self.messages)
-                        .to_string()
-                        .into(),
-                ),
-                ("credits", exact.to_string().into()),
-            ],
+        let left = self.messages.get(
+            "chat-usage-credits-left",
+            [("credits", crate::billing::format_count(credits).into())],
         );
+        let reset: SharedString =
+            crate::ui::settings::presentation::reset_date(plan, &self.messages);
+        let detail = [
+            tr("chat-credits-detail"),
+            left.clone(),
+            self.messages
+                .get("chat-usage-reset", [("reset", reset.to_string().into())]),
+        ];
         Some(
             div()
                 .id("composer-credits")
@@ -1279,7 +1279,10 @@ impl ChatScreen {
                 .role(gpui::Role::Button)
                 .aria_label(self.messages.get(
                     "chat-credits-label",
-                    [("credits", exact.to_string().into())],
+                    [
+                        ("left", left.to_string().into()),
+                        ("reset", reset.to_string().into()),
+                    ],
                 ))
                 .flex_none()
                 .flex()

@@ -47,8 +47,8 @@ chat-conversation a79faee049b595cd
 chat-copy fcc0d6c446691565
 chat-copy-link dddbb5b57e95b4a8
 chat-creating-task 56cf0adaaff8ab2d
-chat-credits-detail 2c2e3dfa637fa757
-chat-credits-label a49c746f17287b76
+chat-credits-detail 64ed221943ec0d7b
+chat-credits-label d498b7fe02c3ef29
 chat-credits-title c1c62a56c4769279
 chat-delete 14c763a6f81dc3bd
 chat-delete-description da3b63413276b86e
@@ -421,7 +421,7 @@ chat-usage-credits-left 31e6e1ba16c2dbe6
 chat-usage-credits-next 35bb6e70ce17dad3
 chat-usage-extra-credits 09406a43c07038fc
 chat-usage-label f46ae8f15db08139
-chat-usage-label-credits 06aa99c7f126c8f9
+chat-usage-label-credits 60771938b69c1c29
 chat-usage-limit-body 309715011813b996
 chat-usage-limit-title c5314ce324f79bfb
 chat-usage-percent 0471f820d8abbb53

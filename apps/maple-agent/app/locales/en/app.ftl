@@ -1754,22 +1754,22 @@ chat-usage-label = Usage, { $percent } percent used. { $plan }, resets { $reset 
 chat-usage-percent = { $percent }% used
 # $reset is a formatted date or a phrase such as "in 3 days".
 chat-usage-reset = Resets { $reset }
-# Screen reader label when the account has extra credits. $percent is a number from 0 to 100. $plan is the plan name. $reset is a formatted date or a phrase such as "in 3 days". $credits is the extra credit balance with thousands separators, such as "984,534".
-chat-usage-label-credits = Usage, { $percent } percent used. { $plan }, resets { $reset }. { $credits } extra credits left. Open Usage settings
-# Credits bought on top of the plan; tasks spend them once the plan's allowance is used up.
+# Screen reader label when the account has extra credits. $percent is a number from 0 to 100. $plan is the plan name. $reset is a formatted date or a phrase such as "in 3 days", "Tomorrow" or "Monthly". $credits is the extra credit balance with thousands separators, such as "984,534".
+chat-usage-label-credits = Usage, { $percent } percent used. { $plan }, resets { $reset }. Extra credits, { $credits } left. Open Usage settings
+# Credits bought on top of the plan; they extend it once its allowance is used up.
 chat-usage-extra-credits = Extra credits
 # $credits is the extra credit balance with thousands separators, such as "984,534".
 chat-usage-credits-left = { $credits } left
-# Under the balance while the plan's allowance is used up and tasks spend extra credits.
+# Under the balance while the plan's allowance is used up and extra credits extend it.
 chat-usage-credits-in-use = In use until your plan resets.
 # Under the balance while the plan still has allowance left.
 chat-usage-credits-next = Used once your plan runs out.
-# Tooltip title on the composer's credit balance while tasks spend extra credits.
+# Tooltip title on the composer's credit balance while extra credits extend a used-up plan.
 chat-credits-title = On extra credits
-# Tooltip text under that title. $reset is a formatted date or a phrase such as "in 3 days". $credits is the extra credit balance with thousands separators. The escaped non-breaking space keeps the number and the word after it on one line.
-chat-credits-detail = Your plan resets { $reset }. Until then, tasks use your { $credits }{ "\u00A0" }credits.
-# Screen reader label for the composer's credit balance. $credits is the extra credit balance with thousands separators.
-chat-credits-label = { $credits } extra credits. Open Usage settings
+# Tooltip line under that title; the balance and the reset date follow on their own lines.
+chat-credits-detail = Tasks use your extra credits until your plan resets.
+# Screen reader label for the composer's credit balance. $left is the balance with the word "left", such as "984,534 left". $reset is a formatted date or a phrase such as "in 3 days", "Tomorrow" or "Monthly".
+chat-credits-label = On extra credits, { $left }. Resets { $reset }. Open Usage settings
 
 # Shared with native desktop computer presentation.
 

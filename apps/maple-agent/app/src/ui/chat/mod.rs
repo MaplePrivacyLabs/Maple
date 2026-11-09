@@ -631,6 +631,12 @@ pub struct ChatScreen {
     sidebar_plan: Option<crate::billing::PlanUsage>,
     /// When the plan was last asked for; `None` until the first request.
     plan_requested_at: Option<std::time::Instant>,
+    /// Bumped per plan request, so a reply to an older one is dropped.
+    plan_generation: u64,
+    /// A usage refusal that arrived while the billing reading said extra
+    /// credits cover the plan: they did not pay, so it keeps its Billing
+    /// offer.
+    refused_on_credits: Option<String>,
     runtime_error: Option<UiText>,
     runtime_error_reason: Option<String>,
     persistence_status: maple_agent::store::PersistenceStatus,
@@ -1558,6 +1564,8 @@ impl ChatScreen {
             window_active: true,
             sidebar_plan: None,
             plan_requested_at: None,
+            plan_generation: 0,
+            refused_on_credits: None,
             runtime_error: None,
             runtime_error_reason: None,
             persistence_status: maple_agent::store::PersistenceStatus::default(),
@@ -6269,6 +6277,15 @@ impl ChatScreen {
         let Some(index) = self.apply_timeline_item(session_id, item) else {
             return;
         };
+        if self
+            .sidebar_plan
+            .as_ref()
+            .is_some_and(crate::billing::PlanUsage::on_extra_credits)
+            && let Some(row) = self.timeline.get(index)
+            && transcript::is_usage_limit(row)
+        {
+            self.refused_on_credits = Some(row.id.clone());
+        }
         if let Some(plan) = plan {
             self.update_live_plan(plan, cx);
         }
@@ -8129,17 +8146,30 @@ impl ChatScreen {
     /// the previous value; without one, the menu shows usage as unavailable.
     fn refresh_sidebar_plan(&mut self, cx: &mut Context<Self>) {
         self.plan_requested_at = Some(std::time::Instant::now());
+        self.plan_generation += 1;
+        let generation = self.plan_generation;
         let backend = self.backend.clone();
         let user_id = self.user_id.clone();
         self.call(
             async move { backend.plan_usage(&user_id).await },
             cx,
-            |this, result: Result<Option<crate::billing::PlanUsage>, String>, cx| match result {
-                Ok(plan) => {
-                    this.sidebar_plan = plan;
-                    cx.notify();
+            move |this, result: Result<Option<crate::billing::PlanUsage>, String>, cx| {
+                if this.plan_generation != generation {
+                    return;
                 }
-                Err(error) => log::warn!("plan usage unavailable: {error}"),
+                match result {
+                    Ok(plan) => {
+                        this.sidebar_plan = plan;
+                        cx.notify();
+                    }
+                    Err(error) => {
+                        log::warn!("plan usage unavailable: {error}");
+                        // Let the next return ask again rather than wait out
+                        // the interval on a failed read.
+                        this.plan_requested_at =
+                            std::time::Instant::now().checked_sub(PLAN_RETURN_REFRESH);
+                    }
+                }
             },
         );
     }

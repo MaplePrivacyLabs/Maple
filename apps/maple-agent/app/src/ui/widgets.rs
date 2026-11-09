@@ -562,7 +562,7 @@ pub fn tooltip(
         let label = label.clone();
         cx.new(|_| Tooltip {
             label,
-            detail: None,
+            detail: Vec::new(),
             shortcut: shortcut.map(SharedString::from),
             pointer: window.mouse_position(),
         })
@@ -586,7 +586,7 @@ pub fn tooltip_for_action(
         let pointer = window.mouse_position();
         cx.new(|_| Tooltip {
             label,
-            detail: None,
+            detail: Vec::new(),
             shortcut,
             pointer,
         })
@@ -594,19 +594,19 @@ pub fn tooltip_for_action(
     }
 }
 
-/// A tooltip with a title and a short explanation under it, for a status
-/// that needs a sentence rather than a name.
+/// A tooltip with a title and short lines of explanation under it, for a
+/// status that needs a sentence rather than a name.
 pub fn tooltip_detail(
     label: impl Into<SharedString>,
-    detail: impl Into<SharedString>,
+    detail: impl IntoIterator<Item = SharedString>,
 ) -> impl Fn(&mut Window, &mut App) -> AnyView + 'static {
     let label = label.into();
-    let detail = detail.into();
+    let detail: Vec<SharedString> = detail.into_iter().collect();
     move |window, cx| {
         let (label, detail) = (label.clone(), detail.clone());
         cx.new(|_| Tooltip {
             label,
-            detail: Some(detail),
+            detail,
             shortcut: None,
             pointer: window.mouse_position(),
         })
@@ -686,8 +686,8 @@ fn key_glyph(key: &str) -> String {
 
 struct Tooltip {
     label: SharedString,
-    /// A second line under the label, wrapped to a reading width.
-    detail: Option<SharedString>,
+    /// Lines under the label, each wrapped to a reading width.
+    detail: Vec<SharedString>,
     shortcut: Option<SharedString>,
     /// Where the pointer was when the tooltip showed, in window coordinates.
     pointer: Point<Pixels>,
@@ -725,8 +725,11 @@ impl Render for Tooltip {
             .shadow_md()
             .text_xs()
             .text_color(gpui::rgb(theme::text_primary()))
-            .map(|label| match self.detail.clone() {
-                Some(detail) => label
+            .map(|label| {
+                if self.detail.is_empty() {
+                    return label.items_center().child(self.label.clone());
+                }
+                label
                     .flex_col()
                     .gap_0p5()
                     .px_2p5()
@@ -737,12 +740,11 @@ impl Render for Tooltip {
                             .font_weight(gpui::FontWeight::MEDIUM)
                             .child(self.label.clone()),
                     )
-                    .child(
+                    .children(self.detail.iter().map(|line| {
                         div()
                             .text_color(gpui::rgb(theme::text_muted()))
-                            .child(detail),
-                    ),
-                None => label.items_center().child(self.label.clone()),
+                            .child(line.clone())
+                    }))
             })
             .children(self.shortcut.clone().map(|keys| {
                 div()

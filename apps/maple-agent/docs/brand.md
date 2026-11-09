@@ -271,16 +271,19 @@ panel docked inside the composer (`bg_composer_tray`, a coral
 `accent_container` tile) offers Billing through `default_button`; the field
 stays editable. The panel goes once a message is on its way, a run is
 active or a later row arrives, and it stays hidden while the loaded window
-does not hold the task's tail. Extra credits on the account also retire
-it, since they pay for the next turn. The transcript keeps a one-line
-marker of that turn.
+does not hold the task's tail. It also stands down while the billing
+reading says extra credits extend the used-up plan, as after buying them,
+unless the refusal itself arrived while that was already so: then the
+credits did not pay, and Billing stays on offer. The transcript keeps a
+one-line marker of that turn.
 
 Extra credits wear a coral `coins` icon on `accent_container`. The Settings
-menu shows the balance under the plan, with whether tasks spend it now or
-once the allowance runs out; once the allowance is used up, the plan bar
-turns `text_faint`, since nothing is wrong. While tasks run on credits, a
+menu shows the balance under the plan, with whether they are in use or wait
+for the allowance to run out; once the allowance is used up, the plan bar
+turns `text_faint`, since nothing is wrong. While they extend the plan, a
 chip by the send button shows the balance, rounded down ("984.5K"), with
-the reset date and exact balance on hover.
+the exact balance and the reset date on hover. The plan reads 100% only
+once it is used up; just short of that it reads 99%.
 
 ### Spacing
 

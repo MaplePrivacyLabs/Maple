@@ -288,7 +288,13 @@ impl PlanUsage {
             product_name: status.product_name.clone(),
             reset_at: status.usage_reset_date.clone(),
             plan_label: plan_name_label(status.product_name.as_deref()),
-            percent_used: percent.round() as u8,
+            // 100% means used up: just short of it reads 99%, so the
+            // credits never look in use while allowance remains.
+            percent_used: if used >= total {
+                100
+            } else {
+                (percent.round() as u8).min(99)
+            },
             resets_label: reset_label(status.usage_reset_date.as_deref(), now),
             credit_balance: status.api_credit_balance,
         })
@@ -299,7 +305,8 @@ impl PlanUsage {
         self.credit_balance.filter(|credits| *credits > 0)
     }
 
-    /// The plan's allowance is used up and tasks draw on extra credits.
+    /// The billing reading says the allowance is used up and extra credits
+    /// remain, which they extend.
     pub fn on_extra_credits(&self) -> bool {
         self.percent_used >= 100 && self.extra_credits().is_some()
     }
@@ -551,6 +558,21 @@ mod tests {
         assert_eq!(plan.plan_label, "Pro Plan");
         assert_eq!(plan.percent_used, 100);
         assert_eq!(plan.resets_label, "in 2 days");
+    }
+
+    #[test]
+    fn reads_one_hundred_percent_only_once_used_up() {
+        let percent = |used| {
+            PlanUsage::from_status(&status("Max", used, 1_000, "2026-09-06T00:00:00Z"), now())
+                .unwrap()
+                .percent_used
+        };
+        assert_eq!(percent(994), 99);
+        // Rounding alone would say 100 while allowance remains.
+        assert_eq!(percent(996), 99);
+        assert_eq!(percent(999), 99);
+        assert_eq!(percent(1_000), 100);
+        assert_eq!(percent(1_200), 100);
     }
 
     #[test]
