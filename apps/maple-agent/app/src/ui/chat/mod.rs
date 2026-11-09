@@ -570,6 +570,15 @@ pub struct ChatScreen {
     /// latest one began.
     effort_reset_spins: usize,
     effort_reset_at: Option<std::time::Instant>,
+    /// Pointer picks and resets so far, naming each brain pulse, and when
+    /// the latest began: a reopened panel must not replay it.
+    effort_pulses: usize,
+    effort_pulse_at: Option<std::time::Instant>,
+    /// The level last moved by a key step: its name swaps at once.
+    effort_keyed: bool,
+    /// What the effort footer showed last, so the slider and the status
+    /// line cross-fade when one replaces the other.
+    effort_body: std::cell::Cell<effort::EffortBody>,
     /// Desktop notifications enabled (settings).
     notify_enabled: bool,
     /// Local-store policy, independent of the selected execution computer.
@@ -1491,6 +1500,10 @@ impl ChatScreen {
             effort_slider: Default::default(),
             effort_reset_spins: 0,
             effort_reset_at: None,
+            effort_pulses: 0,
+            effort_pulse_at: None,
+            effort_keyed: false,
+            effort_body: Default::default(),
             notify_enabled: settings.desktop_notifications,
             notify_details: settings.notification_details_enabled(),
             window_active: true,

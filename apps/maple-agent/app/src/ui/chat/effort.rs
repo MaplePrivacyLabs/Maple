@@ -20,12 +20,24 @@ use crate::ui::i18n::tr;
 use crate::ui::icons::{icon, spinner};
 use crate::ui::morph_text::morph_text;
 
-/// The brain's pulse as a level lands.
+/// The brain's pulse as a level lands from the pointer.
 const PULSE: Duration = Duration::from_millis(420);
 /// Reset's spin back.
 const SPIN: Duration = Duration::from_millis(560);
 /// The brain's spark at the top stop.
 const SPARK: Duration = Duration::from_millis(560);
+/// The slider and the status line cross-fade this fast when one replaces
+/// the other (levels arriving for a new model).
+const BODY_IN: Duration = Duration::from_millis(200);
+
+/// What the effort footer's body showed last, and its latest swap between
+/// the slider and the status line.
+#[derive(Clone, Copy, Default)]
+pub(super) struct EffortBody {
+    slider: Option<bool>,
+    swaps: usize,
+    at: Option<std::time::Instant>,
+}
 
 /// A level's place on one scale shared by every model, from no thinking
 /// (0) to the most a model offers (1). The slider spreads a model's own
@@ -80,10 +92,19 @@ impl ChatScreen {
     }
 
     /// Forget a drag the panel never saw end and start from the saved
-    /// level.
+    /// level, with nothing left to replay.
     pub(super) fn reset_effort_input(&mut self) {
         self.effort_preview = None;
+        self.effort_keyed = false;
+        self.effort_pulse_at = None;
+        self.effort_body.set(EffortBody::default());
         self.effort_slider.borrow_mut().release();
+    }
+
+    /// The brain's pulse for a level landing from the pointer.
+    fn pulse_effort(&mut self) {
+        self.effort_pulses += 1;
+        self.effort_pulse_at = Some(std::time::Instant::now());
     }
 
     fn preview_effort(&mut self, stop: Option<usize>, cx: &mut Context<Self>) {
@@ -102,6 +123,8 @@ impl ChatScreen {
         {
             self.pick_thinking(level, cx);
         }
+        self.effort_keyed = false;
+        self.pulse_effort();
         cx.notify();
     }
 
@@ -120,6 +143,9 @@ impl ChatScreen {
         else {
             return;
         };
+        // A key step moves the thumb but plays no effects (the slider
+        // checks the same), and its name swaps at once.
+        self.effort_keyed = true;
         self.pick_thinking(level, cx);
     }
 
@@ -127,6 +153,8 @@ impl ChatScreen {
         if let Some(level) = self.effort_levels().and_then(recommended_level) {
             self.effort_reset_spins += 1;
             self.effort_reset_at = Some(std::time::Instant::now());
+            self.effort_keyed = false;
+            self.pulse_effort();
             self.pick_thinking(level, cx);
         }
     }
@@ -169,7 +197,12 @@ impl ChatScreen {
         } else {
             gpui::rgb(theme::text_secondary()).into()
         };
-        let landed = shown.map_or(0, |level| level as usize + 1);
+        // The brain pulses for a pick or reset from the pointer, once: not
+        // for each stop a drag crosses, a key step, or a panel reopening.
+        let pulse = self
+            .effort_pulse_at
+            .filter(|at| at.elapsed() < PULSE)
+            .map(|_| self.effort_pulses);
         // Arriving at the top level, while the brain's spark runs.
         let spark = self
             .effort_slider
@@ -209,20 +242,26 @@ impl ChatScreen {
                                 )),
                         )
                     })
-                    .child(
-                        icon("brain", px(18.), theme::text_muted())
-                            .text_color(title_color)
-                            .with_animation(
-                                ("effort-brain", landed),
-                                Animation::new(PULSE).with_easing(gpui::ease_out_quint()),
-                                |brain, delta| {
-                                    let scale = 1. + 0.16 * (std::f32::consts::PI * delta).sin();
-                                    brain.with_transformation(Transformation::scale(gpui::size(
-                                        scale, scale,
-                                    )))
-                                },
-                            ),
-                    )
+                    .child({
+                        let brain =
+                            icon("brain", px(18.), theme::text_muted()).text_color(title_color);
+                        match pulse {
+                            Some(count) => brain
+                                .with_animation(
+                                    ("effort-brain", count),
+                                    Animation::new(PULSE).with_easing(gpui::ease_out_quint()),
+                                    |brain, delta| {
+                                        let scale =
+                                            1. + 0.16 * (std::f32::consts::PI * delta).sin();
+                                        brain.with_transformation(Transformation::scale(
+                                            gpui::size(scale, scale),
+                                        ))
+                                    },
+                                )
+                                .into_any_element(),
+                            None => brain.into_any_element(),
+                        }
+                    })
                     // ...and throws a burst of spark lines.
                     .when_some(spark, |brain, (count, _)| {
                         brain.child(
@@ -265,12 +304,12 @@ impl ChatScreen {
                     .line_height(px(20.))
                     .font_weight(gpui::FontWeight::SEMIBOLD)
                     .whitespace_nowrap()
-                    // A drag swaps the name as it crosses stops; a morph per
-                    // stop would garble a fast sweep.
+                    // A drag swaps the name as it crosses stops, since a morph
+                    // per stop would garble a fast sweep; so does a key step.
                     .child(
                         morph_text("effort-title-text", title.clone())
                             .color(title_color)
-                            .instant(self.effort_preview.is_some()),
+                            .instant(self.effort_preview.is_some() || self.effort_keyed),
                     ),
             )
             .child({
@@ -332,6 +371,17 @@ impl ChatScreen {
                     .child(reset)
             });
 
+        let labels = || {
+            div()
+                .flex()
+                .justify_between()
+                .px_1()
+                .text_xs()
+                .text_color(gpui::rgb(theme::text_muted()))
+                .child(gpui::text!(tr("chat-effort-faster")))
+                .child(gpui::text!(tr("chat-effort-deeper")))
+        };
+        let slider_shown = levels.is_some();
         let body = match levels {
             Some(levels) => {
                 let selected = shown
@@ -373,20 +423,55 @@ impl ChatScreen {
                     .flex_col()
                     .gap_1p5()
                     .child(slider)
-                    .when(levels.len() > 1, |body| {
-                        body.child(
-                            div()
-                                .flex()
-                                .justify_between()
-                                .px_1()
-                                .text_xs()
-                                .text_color(gpui::rgb(theme::text_muted()))
-                                .child(gpui::text!(tr("chat-effort-faster")))
-                                .child(gpui::text!(tr("chat-effort-deeper"))),
-                        )
-                    })
+                    .when(levels.len() > 1, |body| body.child(labels()))
             }
-            None => div().child(self.effort_status(cx)),
+            // The status line holds the slider's place, so the panel keeps
+            // its height when levels arrive and the slider replaces it.
+            None => div()
+                .relative()
+                .flex()
+                .flex_col()
+                .gap_1p5()
+                .child(div().h(px(44.)))
+                .child(labels().invisible())
+                .child(
+                    div()
+                        .absolute()
+                        .inset_0()
+                        .flex()
+                        .items_center()
+                        .child(self.effort_status(cx).w_full()),
+                ),
+        };
+        // When one replaces the other (not on opening), the incoming body
+        // rises into place as it fades in.
+        let swap = {
+            let mut seen = self.effort_body.get();
+            if seen.slider != Some(slider_shown) {
+                if seen.slider.is_some() {
+                    seen.swaps += 1;
+                    seen.at = Some(std::time::Instant::now());
+                }
+                seen.slider = Some(slider_shown);
+                self.effort_body.set(seen);
+            }
+            seen.at
+                .filter(|at| at.elapsed() < BODY_IN)
+                .map(|_| seen.swaps)
+        };
+        let body = match swap {
+            Some(count) => body
+                .with_animation(
+                    ("effort-body", count),
+                    Animation::new(BODY_IN).with_easing(gpui::ease_out_quint()),
+                    |body, delta| {
+                        body.opacity(delta)
+                            .mt(px(4. * (1. - delta)))
+                            .mb(px(-4. * (1. - delta)))
+                    },
+                )
+                .into_any_element(),
+            None => body.into_any_element(),
         };
 
         div()

@@ -16,13 +16,17 @@
 //!   thumb runs ahead, a thinning neck of fill stretches between them. The
 //!   fill never passes the thumb: no orange shows beyond the white.
 //! - Dots swell as the fill flows over them, a ripple marks each stop a
-//!   drag crosses and each level that lands, and the thumb blooms in the
-//!   level's colour when one is picked.
-//! - When its panel opens, the thumb pops in and the fill pours to it.
-//!   When the stops change (another model), the dots glide to their places.
+//!   drag crosses, and when a level lands (a release, a click, reset) a
+//!   stronger ripple spreads and the thumb blooms in the level's colour.
+//!   A step from the keyboard moves the thumb but plays none of these.
+//! - When its panel opens the thumb settles in from slightly large, with
+//!   the fill already at it: the panel opens often, to switch models, so
+//!   the opening stays quiet. When the stops change (another model), the
+//!   dots glide to their places.
 //! - At the model's top stop the thumb keeps a warm halo, which rises in
-//!   when the thumb arrives there. The owner hears of the arrival
-//!   ([`EffortSliderState::topped`]) to play its own part.
+//!   when the thumb arrives there and fades, quicker, when it leaves. The
+//!   owner hears of the arrival ([`EffortSliderState::topped`]) to play
+//!   its own part.
 //!
 //! The element asks for frames only while something moves. Reduced motion
 //! drops the springs and effects and jumps instead.
@@ -70,14 +74,18 @@ const POUR: Tuning = Tuning(220., 0.9);
 /// The thumb lifting under the pointer.
 const LIFT: Tuning = Tuning(600., 0.7);
 /// The thumb settling as the panel opens: from a little large down to
-/// its size, never so small that the track shows around it.
-const POP: Tuning = Tuning(380., 0.42);
+/// its size, without a visible bounce, never so small that the track
+/// shows around it.
+const POP: Tuning = Tuning(420., 0.75);
 /// Where that settle starts.
-const POP_FROM: f32 = 1.12;
+const POP_FROM: f32 = 1.05;
 /// The thumb counts as arrived at the top stop this close to the end.
 const ARRIVED: f32 = 0.985;
-/// The halo the thumb keeps at the top stop takes this long to come up.
+/// The halo the thumb keeps at the top stop takes this long to come up,
+/// and this long to go when the thumb leaves: an exit quieter than the
+/// entrance.
 const HOT_IN: Duration = Duration::from_millis(300);
+const HOT_OUT: Duration = Duration::from_millis(160);
 
 /// What the owner hears from the slider: the stop under a drag as it
 /// changes (`None` when the drag ends), and the stop picked by a release.
@@ -316,22 +324,31 @@ pub struct EffortSliderState {
     /// has, so the owner can key its part of the moment.
     topped: Option<Instant>,
     topped_count: usize,
+    /// Whether the selected stop was the top one last frame, and when the
+    /// thumb last left it, for the halo's fade.
+    was_top: bool,
+    left_top: Option<Instant>,
+    /// Set by a fresh showing: put the thumb and the fill straight at the
+    /// selected stop on the next frame.
+    settle: bool,
 }
 
 impl EffortSliderState {
     /// Start a fresh showing: forget a drag or hover the slider never saw
-    /// end (its popup closed under the pointer), settle the thumb in and
-    /// pour the fill to it.
+    /// end (its popup closed under the pointer), and settle the thumb in
+    /// with the fill already at it.
     pub fn release(&mut self) {
         self.drag = None;
         self.hover = None;
         self.preview = None;
         self.pop.snap(POP_FROM);
-        self.fill.snap(0.);
+        self.settle = true;
         self.ripples.clear();
         self.bloom = None;
         self.armed = false;
         self.topped = None;
+        self.was_top = false;
+        self.left_top = None;
     }
 
     /// The thumb's last arrival at the top stop since this showing began:
@@ -342,24 +359,36 @@ impl EffortSliderState {
 
     /// Watch for the thumb arriving at the top stop (`top`: the selected
     /// stop is the last). Arriving from below starts the top's moment,
-    /// once; reduced motion skips the moment but not the halo.
-    fn note_top(&mut self, top: bool, now: Instant, reduce_motion: bool) {
+    /// once, unless `quiet` (reduced motion, or a step from the keyboard):
+    /// then the halo shows without it. Leaving the top starts the halo's
+    /// fade.
+    fn note_top(&mut self, top: bool, now: Instant, quiet: bool) {
         if !top {
             self.armed = true;
-        } else if self.armed && (reduce_motion || self.thumb.value >= ARRIVED) {
-            self.armed = false;
-            if !reduce_motion {
-                self.topped = Some(now);
-                self.topped_count += 1;
+            if self.was_top && !quiet {
+                self.left_top = Some(now);
+            }
+        } else {
+            self.left_top = None;
+            if self.armed && (quiet || self.thumb.value >= ARRIVED) {
+                self.armed = false;
+                if !quiet {
+                    self.topped = Some(now);
+                    self.topped_count += 1;
+                }
             }
         }
+        self.was_top = top;
     }
 
     /// The warm halo at the top stop, from 0 to 1: full when it was there
-    /// already, rising after an arrival, none while the thumb is on its way.
+    /// already, rising after an arrival, fading after the thumb leaves,
+    /// none while the thumb is on its way.
     fn hot(&self, top: bool, now: Instant) -> f32 {
         if !top || self.armed {
-            return 0.;
+            return self
+                .left_top
+                .map_or(0., |at| 1. - ease_out_cubic(elapsed(at, now, HOT_OUT)));
         }
         self.topped
             .map_or(1., |at| ease_out_cubic(elapsed(at, now, HOT_IN)))
@@ -389,6 +418,10 @@ impl EffortSliderState {
                 self.pop.snap(1.);
             }
             self.started = true;
+        }
+        if std::mem::take(&mut self.settle) {
+            self.thumb.snap(target);
+            self.fill.snap(target);
         }
         if reduce_motion {
             self.thumb.snap(target);
@@ -523,8 +556,14 @@ impl Element for EffortSlider {
                 // Switching models onto the top stop is not arriving there.
                 state.armed = false;
             } else if state.selected != Some(self.selected) {
-                // A level landed, from the pointer, the keyboard or reset.
-                if state.selected.is_some() && !reduce_motion {
+                // A level landed without a drag: reset, or a save from
+                // elsewhere. A drag's stops ripple as it crosses them and its
+                // release blooms where it lets go; a key step plays nothing.
+                if state.selected.is_some()
+                    && !reduce_motion
+                    && state.drag.is_none()
+                    && !window.last_input_was_keyboard()
+                {
                     state.ripples.push(Ripple {
                         position: stop_position(self.selected, count),
                         strength: 1.,
@@ -545,9 +584,13 @@ impl Element for EffortSlider {
             state.note_top(
                 self.enabled && count > 1 && self.selected + 1 == count,
                 now,
-                reduce_motion,
+                reduce_motion || window.last_input_was_keyboard(),
             );
-            moving || state.topped.is_some_and(|at| elapsed(at, now, HOT_IN) < 1.)
+            moving
+                || state.topped.is_some_and(|at| elapsed(at, now, HOT_IN) < 1.)
+                || state
+                    .left_top
+                    .is_some_and(|at| elapsed(at, now, HOT_OUT) < 1.)
         };
         if moving {
             window.request_animation_frame();
@@ -1005,9 +1048,22 @@ impl Element for EffortSlider {
                 let Some(position) = state.borrow_mut().drag.take() else {
                     return;
                 };
-                state.borrow_mut().preview = None;
-                window.release_pointer();
                 let stop = nearest_stop(position, count);
+                {
+                    let mut state = state.borrow_mut();
+                    state.preview = None;
+                    // The level lands where the pointer lets go.
+                    if goo {
+                        let now = Instant::now();
+                        state.ripples.push(Ripple {
+                            position: stop_position(stop, count),
+                            strength: 1.,
+                            started: now,
+                        });
+                        state.bloom = Some(now);
+                    }
+                }
+                window.release_pointer();
                 if let Some(on_commit) = &on_commit {
                     on_commit(&stop, window, cx);
                 }
@@ -1107,6 +1163,16 @@ mod tests {
         state.note_top(true, now, false);
         assert_eq!(count(&state), Some(2));
 
+        // Leaving, the halo fades out over its exit; a key step drops it at
+        // once.
+        let later = now + HOT_IN;
+        state.note_top(false, later, false);
+        assert_eq!(state.hot(false, later), 1.);
+        assert_eq!(state.hot(false, later + HOT_OUT), 0.);
+        state.note_top(true, later, true);
+        state.note_top(false, later, true);
+        assert_eq!(state.hot(false, later), 0.);
+
         // Reduced motion: no moment, the halo at once.
         let mut still = started();
         still.note_top(false, now, true);
@@ -1173,7 +1239,7 @@ mod tests {
         assert_eq!(state.fill.value, state.thumb.value);
     }
 
-    /// No orange runs past the white: through the opening pour, a sweep
+    /// No orange runs past the white: through the opening, a sweep
     /// back and the settle's overshoot, the fill's edge stays at or behind
     /// the thumb.
     #[test]
