@@ -1193,11 +1193,16 @@ impl ChatScreen {
         &mut self,
         controls: Vec<gpui::AnyElement>,
     ) -> (gpui::AnyElement, bool) {
-        // The row may narrow: the model chip's name gives way before Send.
+        // The row takes the room left beside Send and wraps onto a second
+        // line when the chips do not fit, rather than letting a chip shrink
+        // under its neighbours. Only a chip alone on its line still gives
+        // way, the model chip's name first.
         let row = div()
             .flex()
+            .flex_wrap()
             .items_center()
             .gap_1()
+            .flex_auto()
             .min_w_0()
             .children(controls);
         if self.selected_model.is_none() && (self.booting || self.models_loading) {
