@@ -15,7 +15,7 @@ update-confirmation-restart = Zum Aktualisieren neu starten
 settings-defaults = Standardeinstellungen
 settings-chat-appearance = Chatdarstellung
 settings-editing = Bearbeitung
-settings-voice = Stimme
+settings-voice = Sprachausgabe
 settings-web = Neue Aufgaben können das Web nutzen
 settings-web-description = Stellt dem Modell web_search und open_url bereit. Der Webzugriff lässt sich für jede Aufgabe im Eingabefeld ein- oder ausschalten.
 settings-appearance = Darstellung
@@ -177,7 +177,7 @@ settings-settings-ready = Bereit
 settings-settings-available = Verfügbar
 settings-settings-detected = Erkannt
 settings-settings-setup-required = Einrichtung erforderlich
-settings-settings-powered-by-cua-an-open-source-project-from-the = Unterstützt durch Cua, ein Open-Source-Projekt vom
+settings-settings-powered-by-cua-an-open-source-project-from-the = Basiert auf Cua, einem Open-Source-Projekt vom
 settings-settings-built-into-maple = In Maple integriert
 settings-settings-global = Global
 settings-settings-chat = Chat
@@ -460,7 +460,7 @@ settings-integration-version = Version { $version }
 # $percent is a number from 0 to 100.
 settings-usage-percent = { $percent } % genutzt
 # $reset is a formatted date or a phrase such as "in 3 days".
-settings-usage-resets = · Zurückgesetzt am { $reset }
+settings-usage-resets = · Zurücksetzung: { $reset }
 # $delete-acknowledgement is the exact text to type, not translated.
 settings-delete-confirmation = Gib zur Bestätigung { $delete-acknowledgement } ein
 # $min-credit-purchase-dollars and $max-credit-purchase-dollars are whole dollar amounts.
@@ -836,9 +836,9 @@ settings-month-december = Dezember
 settings-date = { $day }. { $month } { $year }
 # $name is a product name such as Pro, not translated.
 settings-plan-name = { $name }-Tarif
-settings-reset-monthly = Monatlich
+settings-reset-monthly = monatlich
 settings-reset-soon = in weniger als 1 Stunde
-settings-reset-tomorrow = Morgen
+settings-reset-tomorrow = morgen
 # $count is a number of hours.
 settings-reset-hours = { $count ->
     [one] in { $count } Stunde
@@ -1243,7 +1243,7 @@ chat-integration-count = { $count ->
    *[other] { $count } Integrationen
 }
 # $count is the number of running agents.
-chat-agents-running = { $count } laufen
+chat-agents-running = { $count } aktiv
 chat-folder-choose = Projektordner wählen
 chat-folder-parent = Zum übergeordneten Ordner
 chat-folder-go = Öffnen
@@ -1282,7 +1282,7 @@ chat-activity-outside = Weitere laufende Aktivitäten liegen außerhalb dieser A
 chat-reload-latest = Neuesten Stand laden
 chat-jump-latest = Zum neuesten Eintrag springen
 chat-image-unavailable = Bild nicht verfügbar
-chat-background = Hintergrund
+chat-background = im Hintergrund
 chat-stop = Stoppen
 chat-billing-open = Abrechnung öffnen
 chat-question-label = Frage von Maple
@@ -1322,7 +1322,7 @@ chat-trust-allow = Projekt vertrauen
 chat-remove = Entfernen
 chat-delete = Löschen
 chat-delete-title = Diese Aufgabe löschen?
-chat-trust-saved = Projekt vertraut: Seine Skills und Anweisungen sind für neue Aufgaben verfügbar
+chat-trust-saved = Dem Projekt wird vertraut: Seine Skills und Anweisungen sind für neue Aufgaben verfügbar
 chat-trust-denied = Dem Projekt wird weiterhin nicht vertraut
 chat-trust-description = Wenn du einem Projekt vertraust, darf Maple dessen Anweisungen und Agent-Skills verwenden. Diese Anweisungen können beeinflussen, wie Agenten arbeiten und Werkzeuge nutzen. Du kannst diese Auswahl später im Projektmenü ändern.
 chat-remove-description = Das Projekt verschwindet aus der Seitenleiste und seine Aufgaben werden archiviert. Dort kannst du sie wiederherstellen. Es werden keine Dateien gelöscht.
@@ -1459,7 +1459,10 @@ chat-no-assistant-item = Kein Assistenteneintrag verfügbar
 chat-queue-changed = Die eingereihte Nachricht hat sich geändert; versuche es erneut
 chat-queue-editing = Wird im Eingabefeld bearbeitet…
 # $count is the number of queued messages.
-chat-queue-count = { $count } für nach diesem Durchlauf eingereiht
+chat-queue-count = { $count ->
+    [one] 1 Nachricht wartet auf das Ende dieses Durchlaufs
+   *[other] { $count } Nachrichten warten auf das Ende dieses Durchlaufs
+}
 chat-upload-wait-recovery = Dateien bereit · warte auf Wiederherstellung des Hosts
 chat-upload-wait-send = Dateien bereit · warte auf vorherigen Sendevorgang
 # $completed is the number of files uploaded; $count is the total.
@@ -1507,11 +1510,11 @@ chat-page-projects-more = Weitere Projekte laden
 # Usage footer; plan and reset are localized display values.
 chat-usage-unavailable-label = Nutzung nicht verfügbar. Nutzungseinstellungen öffnen
 # Screen reader label. $percent is a number from 0 to 100. $plan is the plan name. $reset is a formatted date or a phrase such as "in 3 days".
-chat-usage-label = Nutzung, { $percent } Prozent genutzt. { $plan }, zurückgesetzt am { $reset }. Nutzungseinstellungen öffnen
+chat-usage-label = Nutzung, { $percent } Prozent genutzt. { $plan }, Zurücksetzung: { $reset }. Nutzungseinstellungen öffnen
 # $percent is a number from 0 to 100.
 chat-usage-percent = { $percent } % genutzt
 # $reset is a formatted date or a phrase such as "in 3 days".
-chat-usage-reset = Zurückgesetzt am { $reset }
+chat-usage-reset = Zurücksetzung: { $reset }
 
 # Shared with native desktop computer presentation.
 
@@ -1626,7 +1629,7 @@ runtime-timeline-web-search = Websuche
 runtime-timeline-read-file = Datei lesen
 runtime-timeline-write-file = Datei schreiben
 runtime-timeline-list-files = Dateien auflisten
-runtime-timeline-find-files = Dateien finden
+runtime-timeline-find-files = Dateien suchen
 runtime-timeline-search = Suchen
 
 ## Runtime host failures
@@ -1763,7 +1766,7 @@ runtime-error-repair-confirmation = Gib genau SAVE READABLE DATA ein, um lesbare
 runtime-error-key-memory = Dieser Computer hat nicht genug freien Arbeitsspeicher, um Maple zu entsperren (benötigt werden { $required_mib } MiB).
 
 ## Runtime folders, attachments, and paging
-runtime-error-folder-browser-worker = Ordnersuchprozess wurde nicht abgeschlossen
+runtime-error-folder-browser-worker = Ordnerbrowser-Prozess wurde nicht abgeschlossen
 runtime-error-folder-create-worker = Ordnererstellungsprozess wurde nicht abgeschlossen
 runtime-error-folder-unicode = Dieser Ordnerpfad ist kein gültiger Unicode
 runtime-error-folder-long = Dieser Ordnerpfad ist zu lang
@@ -1778,7 +1781,7 @@ runtime-error-folder-home = Der persönliche Ordner dieses Computers ist nicht v
 runtime-error-folder-cursor = Ungültiger Cursor für die Ordnerseite
 runtime-error-folder-encode = Ordnerseite konnte nicht kodiert werden
 runtime-error-folder-large = Dieser Ordnereintrag ist zu groß für die Anzeige
-runtime-error-folder-many = Dieser Ordner hat zu viele Einträge zum Durchsuchen. Gib den vollständigen Pfad eines Unterordners ein.
+runtime-error-folder-many = Dieser Ordner hat zu viele Einträge, um sie anzuzeigen. Gib den vollständigen Pfad eines Unterordners ein.
 runtime-error-folder-name = Gib einen einzelnen Ordnernamen ohne Pfadtrenner ein
 runtime-error-attachment-open = Der bereitgestellte Anhang konnte nicht geöffnet werden
 runtime-error-attachment-inspect = Anhang konnte nicht geprüft werden
@@ -1796,11 +1799,11 @@ runtime-error-attachment-operation = Unbekannter Anhangsvorgang
 runtime-error-attachment-operation-encode = Anhangsvorgang konnte nicht kodiert werden
 runtime-error-paging-store = Lokaler Datenspeicher ist nicht verfügbar
 runtime-error-paging-worker = Lokaler Speicherprozess wurde nicht abgeschlossen
-runtime-error-paging-request = Ungültige Hostparameter für die Seiteneinteilung
+runtime-error-paging-request = Ungültige Hostparameter für die Paginierung
 runtime-error-paging-encode = Hostseite konnte nicht kodiert werden
 runtime-error-paging-timestamp = Projektmetadaten enthalten einen ungültigen Zeitstempel
 runtime-error-paging-queue = Die eingereihte Nachricht ist nicht mehr verfügbar
-runtime-error-paging-operation = Unbekannter Maple-Vorgang für die Seiteneinteilung
+runtime-error-paging-operation = Unbekannter Maple-Paginierungsvorgang
 runtime-error-paging-navigation-budget = Navigationsmetadaten überschreiten das Limit der serialisierten Seite
 runtime-error-paging-open-budget = Ungültiges Seitenlimit beim Öffnen der Aufgabe
 runtime-error-paging-row-limit = Ungültiges Zeilenlimit beim Öffnen der Aufgabe
@@ -1913,7 +1916,7 @@ runtime-error-oauth-complete-github = GitHub-Anmeldung fehlgeschlagen
 runtime-error-oauth-complete-google = Google-Anmeldung fehlgeschlagen
 runtime-error-oauth-complete-apple = Apple-Anmeldung fehlgeschlagen
 runtime-error-oauth-cancelled = Anmeldung wurde abgebrochen. Beginne erneut.
-runtime-error-oauth-callback = Dieser Rückruf passt nicht zur ausstehenden Anmeldung. Beginne erneut.
+runtime-error-oauth-callback = Dieser Callback passt nicht zur ausstehenden Anmeldung. Beginne erneut.
 runtime-error-oauth-browser = Dein Browser konnte nicht geöffnet werden. Prüfe deinen Standardbrowser und versuche es erneut.
 runtime-error-oauth-url = Füge die vollständige URL ein, zu der du weitergeleitet wurdest (sie enthält code und state)
 runtime-error-sign-in-publication = Anmeldung fehlgeschlagen. Versuche es erneut.
@@ -1956,7 +1959,7 @@ chat-sidebar-order-invalid = Ungültige manuelle Seitenleistenreihenfolge
 chat-sidebar-summary-failed = Seitenleistenübersichten konnten nicht vorbereitet werden
 chat-sidebar-account-inactive = Das Seitenleistenkonto ist nicht mehr aktiv
 chat-sidebar-page-large = Seitenleistenseite ist zu groß
-chat-sidebar-page-stalled = Seiteneinteilung der Seitenleistenübersicht wurde nicht weitergesetzt
+chat-sidebar-page-stalled = Paginierung der Seitenleistenübersicht wurde nicht weitergesetzt
 chat-sidebar-order-cancelled = Manuelle Seitenleistensortierung wurde abgebrochen
 chat-sidebar-order-changed = Die Seitenleistenreihenfolge hat sich geändert; aktualisiere diese Liste
 chat-search-unavailable = Suche ist nicht verfügbar
@@ -2001,7 +2004,7 @@ settings-catalog-browser-sign-in = Mit Browser anmelden
 settings-catalog-server-required = Servernamen und URL eingeben
 settings-catalog-productivity = Produktivität
 settings-catalog-teams = Teams
-settings-catalog-business = Geschäft
+settings-catalog-business = Unternehmen
 settings-catalog-developer = Entwicklung
 # $name is an app name, not translated.
 settings-catalog-get-app = { $name } herunterladen
@@ -2030,8 +2033,8 @@ settings-catalog-summary-gitlab = Mit deinen Projekten, Issues und Merge Request
 settings-catalog-summary-vercel = Deine Projekte und Deployments prüfen
 settings-catalog-summary-cloudflare = Mit deinem Cloudflare-Konto arbeiten
 settings-catalog-summary-supabase = Deine Datenbanken und Projekte verwalten
-settings-catalog-summary-sentry = Deine Fehler und Probleme untersuchen
-settings-catalog-summary-playwright = Websites durchsuchen, durch Seiten klicken und Formulare ausfüllen
+settings-catalog-summary-sentry = Deine Fehler und Issues untersuchen
+settings-catalog-summary-playwright = Websites aufrufen, durch Seiten klicken und Formulare ausfüllen
 settings-catalog-summary-xcode = Deine Xcode-Projekte bauen und testen
 settings-catalog-summary-vana = Die persönlichen Daten nutzen, die du teilen möchtest
 settings-catalog-summary-home-assistant = Dein Smart Home ansehen und steuern
@@ -2078,7 +2081,7 @@ settings-acp-paseo-start = Führe paseo reload aus und starte dann einen Agenten
 settings-acp-t3-open = Öffne Settings → Providers → Add provider und wähle dann Show more und Local ACP command.
 settings-acp-t3-config = Füge den Pfad unten als ausführbare Datei ein und füge acp als einziges Argument hinzu.
 # $name is the agent name shown in that editor, not translated.
-settings-acp-t3-start = Benenne ihn { $name } und wähle ihn dann in einem neuen Thread aus.
+settings-acp-t3-start = Nenne ihn { $name } und wähle ihn dann in einem neuen Thread aus.
 
 # Maple inference failures; raw diagnostics remain unchanged.
 runtime-provider-clock = Maple konnte die sichere Serververbindung nicht verifizieren, weil Datum oder Uhrzeit dieses Geräts falsch zu sein scheinen. Prüfe Datum, Uhrzeit und Zeitzone des Geräts und versuche es erneut
