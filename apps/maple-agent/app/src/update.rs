@@ -427,7 +427,10 @@ impl Controller {
                         releases.prepared = Some(prepared);
                     }
                     Ok(None) => {}
-                    Err(_) => self.fail("Saved update could not be verified; checking again"),
+                    Err(error) => {
+                        log::warn!("saved update could not be verified: {error:#}");
+                        self.fail("Saved update could not be verified; checking again")
+                    }
                 }
             }
             self.check().await;
@@ -530,7 +533,8 @@ impl Controller {
                     .await;
                 true
             }
-            Err(_) => {
+            Err(error) => {
+                log::warn!("update check failed: {error:#}");
                 self.recheck_failed(previous);
                 false
             }
@@ -702,7 +706,8 @@ impl Controller {
                     Err(error) => self.installation_failed(service, &release, error).await,
                 }
             }
-            Err(_) => {
+            Err(error) => {
+                log::warn!("update download failed: {error:#}");
                 self.fail("Could not download or verify the update. Retry when you are ready.")
             }
         }

@@ -594,6 +594,76 @@ fn oversized_unknown_and_duplicate_envelope_fields_are_rejected() {
     );
 }
 
+/// Some networks reach the internet only through a proxy, so update checks
+/// must follow the same proxy settings as the rest of the app.
+#[test]
+fn update_checks_use_the_configured_proxy() {
+    const TEST: &str = "tests::update_checks_use_the_configured_proxy";
+    if std::env::var_os("MAPLE_UPDATER_PROXY_TEST").is_none() {
+        // Proxy settings are process-wide, so only a child running this test
+        // alone may change them.
+        let result = std::process::Command::new(std::env::current_exe().unwrap())
+            .args(["--exact", TEST, "--nocapture", "--test-threads=1"])
+            .env("MAPLE_UPDATER_PROXY_TEST", "1")
+            .output()
+            .unwrap();
+        assert!(
+            result.status.success(),
+            "isolated proxy check failed: {}\n{}",
+            String::from_utf8_lossy(&result.stdout),
+            String::from_utf8_lossy(&result.stderr)
+        );
+        assert!(String::from_utf8_lossy(&result.stdout).contains("UPDATER_PROXY_OK"));
+        return;
+    }
+    tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()
+        .unwrap()
+        .block_on(async {
+            let proxy = Fixture::new(vec![ok(&envelope(&manifest("0.0.2")))]).await;
+            let temp = tempfile::tempdir().unwrap();
+            let mut config = proxy.config(&temp);
+            // Nothing listens at the feed's own address, so the check can only
+            // reach the feed through the proxy.
+            let closed = std::net::TcpListener::bind("127.0.0.1:0")
+                .unwrap()
+                .local_addr()
+                .unwrap()
+                .port();
+            config.feed_url.set_port(Some(closed)).unwrap();
+            let feed = config.feed_url.to_string();
+            let proxy_url = format!(
+                "http://{}:{}",
+                proxy.url.host_str().unwrap(),
+                proxy.url.port().unwrap()
+            );
+            // SAFETY: this child process runs only this test, and no other
+            // thread reads the environment while it changes. A non-empty
+            // NO_PROXY keeps Windows from adding its own bypass list.
+            unsafe {
+                for name in ["all_proxy", "ALL_PROXY", "http_proxy", "no_proxy"] {
+                    std::env::remove_var(name);
+                }
+                std::env::set_var("HTTP_PROXY", &proxy_url);
+                std::env::set_var("NO_PROXY", "updates.invalid");
+            }
+            let updater = test_updater(config).unwrap();
+            assert!(matches!(
+                updater.check().await.unwrap(),
+                CheckOutcome::Available(_)
+            ));
+            let requests = proxy.requests.lock().unwrap();
+            assert_eq!(requests.len(), 1);
+            assert!(
+                requests[0].starts_with(&format!("GET {feed} HTTP/1.1\r\n")),
+                "the proxy did not receive the feed request: {}",
+                requests[0]
+            );
+            println!("UPDATER_PROXY_OK");
+        });
+}
+
 struct Fixture {
     url: crate::Url,
     requests: Arc<Mutex<Vec<String>>>,
