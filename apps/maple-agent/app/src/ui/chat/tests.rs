@@ -13604,6 +13604,44 @@ mod state_tests {
             assert!(cx.debug_bounds("effort-slider").is_none());
         }
 
+        /// Levels that failed to load offer Retry as a row the keyboard
+        /// reaches, and it keeps the panel open while they load again.
+        #[gpui::test]
+        fn retry_for_failed_levels_is_a_row_the_keyboard_reaches(cx: &mut TestAppContext) {
+            let (chat, cx) = chat_window(cx, |this, _| {
+                this.models = vec!["model-a".to_string()];
+                this.selected_model = Some("model-a".into());
+            });
+            // The levels' read failed.
+            chat.update(cx, |this, cx| {
+                this.thinking = None;
+                this.thinking_loading = false;
+                this.thinking_saving = false;
+                cx.notify();
+            });
+            cx.run_until_parked();
+            press(cx, "model-picker");
+            assert!(cx.debug_bounds("effort-status").is_some());
+            assert!(cx.debug_bounds("retry-thinking").is_some());
+            let highlighted = |cx: &mut gpui::VisualTestContext| {
+                cx.update(|_window, app| chat.read(app).popup.highlighted().cloned())
+            };
+            let retry = Some(gpui::ElementId::from("retry-thinking"));
+            for _ in 0..2 {
+                if highlighted(cx) != retry {
+                    cx.simulate_keystrokes("down");
+                }
+            }
+            assert_eq!(highlighted(cx), retry, "Down reaches Retry");
+            let before = chat.update(cx, |this, _| this.thinking_generation);
+            cx.simulate_keystrokes("enter");
+            assert_eq!(open_menu(&chat, cx), "Model", "Retry keeps the panel open");
+            assert!(
+                chat.update(cx, |this, _| this.thinking_generation) > before,
+                "the levels load again"
+            );
+        }
+
         #[gpui::test]
         fn pending_first_send_renders_at_the_conversation_position(cx: &mut TestAppContext) {
             let (chat, cx) = chat_window(cx, |this, cx| {

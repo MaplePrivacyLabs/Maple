@@ -178,10 +178,7 @@ impl ChatScreen {
         }
     }
 
-    /// Save `level` for the selected task, or as the new-task default. A
-    /// pick made while another saves waits for it, and only the latest
-    /// waiting pick goes out, so a slider swept across its stops saves once
-    /// more at most.
+    /// Save `level` for the selected task, or as the new-task default.
     pub(super) fn pick_thinking(&mut self, level: ThinkingLevel, cx: &mut Context<Self>) {
         if !self
             .thinking
@@ -190,27 +187,39 @@ impl ChatScreen {
         {
             return;
         }
-        let Some(key) = self.thinking_key() else {
-            return;
-        };
+        if let Some(key) = self.thinking_key() {
+            self.save_thinking(key, level, cx);
+        }
+    }
+
+    /// Save `level` for `key`. A pick made while another saves waits for
+    /// it, and only the latest waiting pick goes out, so a slider swept
+    /// across its stops saves once more at most. It goes out for the task
+    /// and model it was made on, even when those are no longer selected.
+    fn save_thinking(&mut self, key: ThinkingKey, level: ThinkingLevel, cx: &mut Context<Self>) {
         if self.thinking_saving {
             self.thinking_queued = Some((key, level));
             cx.notify();
             return;
         }
         self.thinking_queued = None;
-        if self
-            .thinking
-            .as_ref()
-            .is_some_and(|state| state.current == level)
-        {
+        let selected = self.thinking_key().as_ref() == Some(&key);
+        let state = if selected {
+            self.thinking.clone()
+        } else {
+            self.thinking_cache.get(&key)
+        };
+        let Some(state) = state.filter(|state| state.levels.contains(&level)) else {
+            return;
+        };
+        if state.current == level {
             return;
         }
         self.thinking_generation += 1;
         self.thinking_loading = false;
         self.thinking_saving = true;
-        if let Some(state) = self.thinking.take() {
-            self.thinking_cache.begin_pick(key.clone(), state, level);
+        self.thinking_cache.begin_pick(key.clone(), state, level);
+        if selected {
             self.thinking = self.thinking_cache.get(&key);
         }
         let backend = self.backend.clone();
@@ -223,39 +232,55 @@ impl ChatScreen {
                     .await
             },
             cx,
-            move |this, result, cx| {
-                this.thinking_saving = false;
-                match result {
-                    Ok(state) => {
-                        let applied = this.thinking_cache.finish_pick(&key, Some(state));
-                        this.thinking_cache.invalidate_defaults();
-                        if let Some(state) = applied {
-                            this.thinking_cache.insert(key.clone(), state.clone());
-                            // The runtime persisted this clamped level as the
-                            // new-task default. Other models fetch their own
-                            // clamp, never borrowing these capabilities.
-                            this.thinking_cache.insert(
-                                ThinkingKey {
-                                    session: None,
-                                    model: key.model,
-                                },
-                                state,
-                            );
-                        }
-                    }
-                    Err(error) => {
-                        this.thinking_cache.finish_pick(&key, None);
-                        this.notice = Some(error.context("chat-thinking-save-failed"));
-                    }
-                }
-                this.refresh_thinking(cx);
-                if let Some(level) = this.queued_thinking() {
-                    this.pick_thinking(level, cx);
-                }
-                this.thinking_queued = None;
-                cx.notify();
-            },
+            move |this, result, cx| this.thinking_saved(key, result, cx),
         );
+        cx.notify();
+    }
+
+    /// A save for `key` finished: keep what the runtime applied, or roll
+    /// back, then send the pick that waited for it.
+    fn thinking_saved(
+        &mut self,
+        key: ThinkingKey,
+        result: Result<AgentThinkingState, crate::ui::task::Failure>,
+        cx: &mut Context<Self>,
+    ) {
+        self.thinking_saving = false;
+        match result {
+            Ok(state) => {
+                let applied = self.thinking_cache.finish_pick(&key, Some(state));
+                self.thinking_cache.invalidate_defaults();
+                if let Some(state) = applied {
+                    self.thinking_cache.insert(key.clone(), state.clone());
+                    // The runtime persisted this clamped level as the
+                    // new-task default. Other models fetch their own
+                    // clamp, never borrowing these capabilities.
+                    self.thinking_cache.insert(
+                        ThinkingKey {
+                            session: None,
+                            model: key.model,
+                        },
+                        state,
+                    );
+                }
+            }
+            Err(error) => {
+                self.thinking_cache.finish_pick(&key, None);
+                // A pick waiting to replace this one for the same task and
+                // model is the one to report on.
+                if self
+                    .thinking_queued
+                    .as_ref()
+                    .is_none_or(|(queued, _)| queued != &key)
+                {
+                    self.notice = Some(error.context("chat-thinking-save-failed"));
+                }
+            }
+        }
+        self.refresh_thinking(cx);
+        if let Some((key, level)) = self.thinking_queued.take() {
+            self.save_thinking(key, level, cx);
+        }
         cx.notify();
     }
 }
@@ -391,6 +416,45 @@ mod tests {
             this.selected_model = Some("model-a".into());
             this.refresh_thinking(cx);
             assert_eq!(this.thinking, Some(state(ThinkingLevel::Low)));
+        });
+    }
+
+    /// A pick that waited behind a save still goes out for the model it
+    /// was made on after another model is selected, and the save it
+    /// replaces fails without a notice.
+    #[gpui::test]
+    fn a_waiting_pick_saves_for_its_own_model_after_a_switch(cx: &mut gpui::TestAppContext) {
+        let _guard = crate::settings::SETTINGS_IO_LOCK.lock();
+        cx.executor().allow_parking();
+        let backend = Arc::new(
+            crate::backend::AgentBackend::for_test("http://127.0.0.1:9".into(), String::new())
+                .expect("backend"),
+        );
+        let chat = cx.new(|cx| ChatScreen::new_inner_for_test(backend, "user".into(), cx));
+        chat.update(cx, |this, cx| {
+            let model_a = key(None, "model-a");
+            this.selected_session = None;
+            this.selected_model = Some("model-a".into());
+            // High saving for model A, as `save_thinking` leaves it.
+            this.thinking_cache.begin_pick(
+                model_a.clone(),
+                state(ThinkingLevel::Low),
+                ThinkingLevel::High,
+            );
+            this.thinking = this.thinking_cache.get(&model_a);
+            this.thinking_saving = true;
+            this.pick_thinking(ThinkingLevel::Off, cx);
+            assert_eq!(this.queued_thinking(), Some(ThinkingLevel::Off));
+            this.selected_model = Some("model-b".into());
+            this.refresh_thinking(cx);
+            this.thinking_saved(model_a.clone(), Err("offline".to_string().into()), cx);
+            assert!(this.notice.is_none(), "the waiting pick replaces it");
+            assert!(this.thinking_saving, "the waiting pick goes out");
+            assert_eq!(
+                this.thinking_cache.get(&model_a).map(|state| state.current),
+                Some(ThinkingLevel::Off)
+            );
+            assert!(this.thinking.is_none(), "model B keeps its own levels");
         });
     }
 }

@@ -1210,6 +1210,13 @@ impl<V: 'static> MenuItem<V> {
         self
     }
 
+    /// Picking the row keeps the menu open, for an action whose result
+    /// shows in the menu itself.
+    pub(crate) fn keep_open(mut self) -> Self {
+        self.keep_open = true;
+        self
+    }
+
     /// A disabled row is dimmed and cannot be picked or highlighted.
     pub(crate) fn enabled(mut self, enabled: bool) -> Self {
         self.enabled = enabled;

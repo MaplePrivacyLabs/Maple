@@ -26,8 +26,8 @@ const PULSE: Duration = Duration::from_millis(420);
 const SPIN: Duration = Duration::from_millis(560);
 /// The brain's spark at the top stop.
 const SPARK: Duration = Duration::from_millis(560);
-/// The slider and the status line cross-fade this fast when one replaces
-/// the other (levels arriving for a new model).
+/// The slider or the status line fades in this fast when one replaces the
+/// other (levels arriving for a new model).
 const BODY_IN: Duration = Duration::from_millis(200);
 
 /// What the effort footer's body showed last, and its latest swap between
@@ -74,6 +74,27 @@ impl ChatScreen {
             .as_ref()
             .map(|state| state.levels.as_slice())
             .filter(|levels| !levels.is_empty() && *levels != [ThinkingLevel::Off])
+    }
+
+    /// The level the chip names: one waiting to save, then the saved one.
+    /// `None` when the panel shows no slider.
+    pub(super) fn effort_chosen(&self) -> Option<ThinkingLevel> {
+        self.effort_levels()?;
+        let state = self.thinking.as_ref()?;
+        Some(
+            self.queued_thinking()
+                .filter(|level| state.levels.contains(level))
+                .unwrap_or(state.current),
+        )
+    }
+
+    /// The selected model's levels failed to load, so the panel offers
+    /// Retry.
+    pub(super) fn effort_failed(&self) -> bool {
+        self.selected_model.is_some()
+            && self.thinking.is_none()
+            && !self.thinking_loading
+            && !self.thinking_saving
     }
 
     /// The level the panel shows: the one under a drag, then one waiting
@@ -436,7 +457,7 @@ impl ChatScreen {
                         .inset_0()
                         .flex()
                         .items_center()
-                        .child(self.effort_status(cx).w_full()),
+                        .child(self.effort_status().w_full()),
                 ),
         };
         // When one replaces the other (not on opening), the incoming body
@@ -485,18 +506,19 @@ impl ChatScreen {
     }
 
     /// The track's place while there is no slider: loading, saving, a
-    /// model that does not think, or levels that failed to load.
-    fn effort_status(&self, cx: &mut Context<Self>) -> gpui::Stateful<Div> {
-        let (text, retry) = if self.selected_model.is_none() {
-            (tr("chat-thinking-choose-model"), false)
+    /// model that does not think, or levels that failed to load (Retry is
+    /// a row above, so the keyboard reaches it).
+    fn effort_status(&self) -> gpui::Stateful<Div> {
+        let text = if self.selected_model.is_none() {
+            tr("chat-thinking-choose-model")
         } else if self.thinking.is_some() {
-            (tr("chat-thinking-unsupported"), false)
+            tr("chat-thinking-unsupported")
         } else if self.thinking_loading {
-            (tr("chat-thinking-loading"), false)
+            tr("chat-thinking-loading")
         } else if self.thinking_saving {
-            (tr("chat-thinking-saving"), false)
+            tr("chat-thinking-saving")
         } else {
-            (tr("chat-thinking-unavailable"), true)
+            tr("chat-thinking-unavailable")
         };
         div()
             .id("effort-status")
@@ -515,24 +537,6 @@ impl ChatScreen {
                 row.child(spinner("effort-loading", px(12.), theme::text_muted()))
             })
             .child(div().min_w_0().truncate().child(gpui::text!(text)))
-            .when(retry, |row| {
-                row.child(
-                    div()
-                        .id("retry-thinking")
-                        .debug_selector(|| "retry-thinking".to_string())
-                        .role(gpui::Role::Button)
-                        .flex_none()
-                        .font_weight(gpui::FontWeight::MEDIUM)
-                        .text_color(gpui::rgb(theme::accent()))
-                        .hover(|style| style.underline().cursor_pointer())
-                        .on_click(cx.listener(|this, _: &gpui::ClickEvent, _, cx| {
-                            cx.stop_propagation();
-                            this.refresh_thinking(cx);
-                            cx.notify();
-                        }))
-                        .child(gpui::text!(tr("chat-thinking-retry"))),
-                )
-            })
     }
 }
 

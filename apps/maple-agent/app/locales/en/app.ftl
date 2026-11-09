@@ -1249,6 +1249,8 @@ chat-model-group-uncensored = Uncensored
 chat-model-group-fast = Fast & cheap
 chat-model-group-more = More models
 chat-model-popular = Popular
+# $model is the model's name. The model row's accessible name when it carries the Popular badge.
+chat-model-popular-row = { $model }, Popular
 # $count is the number of integrations.
 chat-integration-count = { $count ->
     [one] 1 integration

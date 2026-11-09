@@ -1184,6 +1184,7 @@ chat-model-group-uncensored = Sin censura
 chat-model-group-fast = Rápidos y económicos
 chat-model-group-more = Más modelos
 chat-model-popular = Popular
+chat-model-popular-row = { $model }, Popular
 chat-integration-count = { $count ->
     [one] 1 integración
    *[other] { $count } integraciones

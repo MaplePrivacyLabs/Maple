@@ -15,7 +15,7 @@ use super::thinking::thinking_label;
 use super::transcript::{render_plan_row, render_subagent_row};
 use super::{
     COMPOSER_PLACEHOLDER, ChatPopup, ChatScreen, DraftAttachment, OpenSettingsSection,
-    SIDE_THREAD_PLACEHOLDER, Section, ThinkingLevel,
+    SIDE_THREAD_PLACEHOLDER, Section,
 };
 use crate::ui::i18n::{UiText, tr};
 use crate::ui::icons::{icon, spinner};
@@ -382,22 +382,17 @@ impl ChatScreen {
                     .unwrap_or_else(|| tr("chat-model").to_string());
                 let chip_name = label.clone();
                 // The level rides on the chip once the model's levels are
-                // known, for a model that thinks.
-                let level = self
-                    .thinking
-                    .as_ref()
-                    .filter(|state| state.levels != [ThinkingLevel::Off])
-                    .map(|state| thinking_label(state.current));
+                // known, for a model that thinks: a pick waiting to save,
+                // else the saved level, as the panel shows it.
+                let chosen = self.effort_chosen();
+                let level = chosen.map(thinking_label);
                 // At a model's top level the effort word stays warm, as the
                 // panel's slider does.
-                let detail_color: gpui::Hsla = match self.thinking.as_ref() {
-                    Some(state)
-                        if state.levels.len() > 1
-                            && state.levels.last() == Some(&state.current) =>
+                let detail_color: gpui::Hsla = match (self.thinking.as_ref(), chosen) {
+                    (Some(state), Some(chosen))
+                        if state.levels.len() > 1 && state.levels.last() == Some(&chosen) =>
                     {
-                        crate::ui::effort_slider::heat_color(super::effort::level_heat(
-                            state.current,
-                        ))
+                        crate::ui::effort_slider::heat_color(super::effort::level_heat(chosen))
                     }
                     _ => gpui::rgb(theme::text_muted()).into(),
                 };
@@ -636,15 +631,24 @@ impl ChatScreen {
             menu = menu.items(models.into_iter().map(|model| {
                 let pick = model.to_string();
                 let label = self.model_label(model).to_string();
+                let popular = POPULAR_MODELS.contains(&model);
+                // The badge is drawn content; the row's name carries it for
+                // assistive technology.
+                let name: SharedString = if popular {
+                    self.messages
+                        .get("chat-model-popular-row", [("model", label.clone().into())])
+                } else {
+                    label.clone().into()
+                };
                 let row = MenuItem::new(
                     SharedString::from(format!("model-{model}")),
-                    label.clone(),
+                    name,
                     move |this: &mut Self, _: &mut Window, cx: &mut Context<Self>| {
                         this.pick_model(pick.clone(), cx);
                     },
                 )
                 .current(selected == Some(model));
-                if POPULAR_MODELS.contains(&model) {
+                if popular {
                     row.content(
                         div()
                             .min_w_0()
@@ -658,6 +662,22 @@ impl ChatScreen {
                     row
                 }
             }));
+        }
+        // Levels that failed to load: Retry is a row, so the keyboard
+        // reaches it, and the panel stays open while they load again.
+        if self.effort_failed() {
+            menu = menu.separator().item(
+                MenuItem::new(
+                    "retry-thinking",
+                    tr("chat-thinking-retry"),
+                    |this: &mut Self, _: &mut Window, cx: &mut Context<Self>| {
+                        this.refresh_thinking(cx);
+                        cx.notify();
+                    },
+                )
+                .icon("rotate-ccw")
+                .keep_open(),
+            );
         }
         menu.footer(self.effort_footer(cx))
     }

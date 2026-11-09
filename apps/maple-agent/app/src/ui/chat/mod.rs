@@ -576,8 +576,8 @@ pub struct ChatScreen {
     effort_pulse_at: Option<std::time::Instant>,
     /// The level last moved by a key step: its name swaps at once.
     effort_keyed: bool,
-    /// What the effort footer showed last, so the slider and the status
-    /// line cross-fade when one replaces the other.
+    /// What the effort footer showed last, so the slider or the status
+    /// line fades in when one replaces the other.
     effort_body: std::cell::Cell<effort::EffortBody>,
     /// Desktop notifications enabled (settings).
     notify_enabled: bool,
