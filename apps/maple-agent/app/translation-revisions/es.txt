@@ -47,7 +47,6 @@ chat-conversation a79faee049b595cd
 chat-copy fcc0d6c446691565
 chat-copy-link dddbb5b57e95b4a8
 chat-creating-task 56cf0adaaff8ab2d
-chat-credits-detail 64ed221943ec0d7b
 chat-credits-label d498b7fe02c3ef29
 chat-credits-title c1c62a56c4769279
 chat-delete 14c763a6f81dc3bd

@@ -1766,8 +1766,6 @@ chat-usage-credits-in-use = In use until your plan resets.
 chat-usage-credits-next = Used once your plan runs out.
 # Tooltip title on the composer's credit balance while extra credits extend a used-up plan.
 chat-credits-title = On extra credits
-# Tooltip line under that title; the balance and the reset date follow on their own lines.
-chat-credits-detail = Tasks use your extra credits until your plan resets.
 # Screen reader label for the composer's credit balance. $left is the balance with the word "left", such as "984,534 left". $reset is a formatted date or a phrase such as "in 3 days", "Tomorrow" or "Monthly".
 chat-credits-label = On extra credits, { $left }. Resets { $reset }. Open Usage settings
 

@@ -1267,7 +1267,6 @@ impl ChatScreen {
         let reset: SharedString =
             crate::ui::settings::presentation::reset_date(plan, &self.messages);
         let detail = [
-            tr("chat-credits-detail"),
             left.clone(),
             self.messages
                 .get("chat-usage-reset", [("reset", reset.to_string().into())]),
