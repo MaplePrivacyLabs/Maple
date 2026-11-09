@@ -226,8 +226,9 @@ tokens! {
     link: 0xc29a8d, 0x9e7469;
     /// A short label's pill, such as the Popular badge: coral on the dark
     /// coral container on dark; on light, where coral read like an alert,
-    /// secondary grey on the pill grey. 4.5:1 or better.
-    badge_fill: 0x3a2118, 0xe8e8ed;
+    /// secondary grey on pebble-200, a step darker than a highlighted
+    /// row so the pill stays visible on one. 4.5:1 or better.
+    badge_fill: 0x3a2118, 0xd1d2dc;
     badge_text: 0xff9771, 0x525252;
 
     /// Elicitation row fill/border: the coral container and maple-300.
