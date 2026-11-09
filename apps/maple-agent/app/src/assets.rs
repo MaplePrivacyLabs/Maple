@@ -95,6 +95,7 @@ assets!(
     "icons/plug.svg",
     "icons/settings.svg",
     "icons/shield-check.svg",
+    "icons/shield-user.svg",
     "icons/square-pen.svg",
     "icons/square.svg",
     "icons/terminal.svg",

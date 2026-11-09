@@ -138,7 +138,7 @@ impl Section {
             Self::Apps => "layout-grid",
             Self::Api => "terminal",
             Self::Remote => "monitor",
-            Self::Account => "shield-check",
+            Self::Account => "shield-user",
             Self::Usage => "gauge",
             Self::Billing => "credit-card",
             Self::About => "info",
