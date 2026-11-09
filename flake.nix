@@ -59,6 +59,49 @@
           };
         };
         lib = pkgs.lib;
+        # Keep the Linux AppImage's GStreamer components on one patched stable
+        # release for the October and November 2026 security advisories.
+        gstScopeFixed = pkgs.gst_all_1.overrideScope (_: prev: {
+          gstreamer = prev.gstreamer.overrideAttrs (_: rec {
+            version = "1.28.9";
+            src = pkgs.fetchurl {
+              url = "https://gstreamer.freedesktop.org/src/gstreamer/gstreamer-${version}.tar.xz";
+              hash = "sha256-bb90T1gxMaNIRcxkHoA4Q3Zqm6gM4AN4qQQ/1tjV+zg=";
+            };
+          });
+          gst-plugins-base = prev.gst-plugins-base.overrideAttrs (_: rec {
+            version = "1.28.9";
+            src = pkgs.fetchurl {
+              url = "https://gstreamer.freedesktop.org/src/gst-plugins-base/gst-plugins-base-${version}.tar.xz";
+              hash = "sha256-wf2maLUg5q73Y8DrliwDLJ/lK84yLosAxptOnoR73cE=";
+            };
+          });
+          gst-plugins-good = prev.gst-plugins-good.overrideAttrs (_: rec {
+            version = "1.28.9";
+            src = pkgs.fetchurl {
+              url = "https://gstreamer.freedesktop.org/src/gst-plugins-good/gst-plugins-good-${version}.tar.xz";
+              hash = "sha256-5RjNl0g3BqJS6V5gMSoi0j3sb152c69vW95xnDqcp/Q=";
+            };
+          });
+          # libnice and OpenAL's PipeWire dependency link against GStreamer;
+          # keep their transitive core/base dependencies on this scope too.
+          gst-plugins-bad = (prev.gst-plugins-bad.override {
+            libnice = pkgs.libnice.override { gst_all_1 = gstScopeFixed; };
+            openal = pkgs.openal.override {
+              pipewire = pkgs.pipewire.override {
+                gst_all_1 = gstScopeFixed;
+                libcamera = pkgs.libcamera.override { gst_all_1 = gstScopeFixed; };
+                libcanberra = pkgs.libcanberra.override { gst_all_1 = gstScopeFixed; };
+              };
+            };
+          }).overrideAttrs (_: rec {
+            version = "1.28.9";
+            src = pkgs.fetchurl {
+              url = "https://gstreamer.freedesktop.org/src/gst-plugins-bad/gst-plugins-bad-${version}.tar.xz";
+              hash = "sha256-Sk4Le/hPhoN4xI8UOnrDqYkjtIilt08aNbpGvDxD9rE=";
+            };
+          });
+        });
         # Darwin can expose 512-byte pipes. Larger heredocs must use Bash's
         # tempfile path instead of filling a pipe before starting its reader.
         mapleBash = if pkgs.stdenv.hostPlatform.isDarwin then
@@ -268,11 +311,11 @@
             gdk-pixbuf
             glib
             glib-networking
-            gst_all_1.gstreamer
-            gst_all_1.gst-libav
-            gst_all_1.gst-plugins-bad
-            gst_all_1.gst-plugins-base
-            gst_all_1.gst-plugins-good
+            gstScopeFixed.gstreamer
+            gstScopeFixed.gst-libav
+            gstScopeFixed.gst-plugins-bad
+            gstScopeFixed.gst-plugins-base
+            gstScopeFixed.gst-plugins-good
             gtk3
             librsvg
             libsoup_3
@@ -282,7 +325,9 @@
             desktop-file-utils
             rpm
             squashfsTools
-            webkitgtk_4_1
+            # WebKitGTK otherwise retains the older GStreamer runtime in the
+            # AppImage dependency closure even when the plugin list is patched.
+            (webkitgtk_4_1.override { gst_all_1 = gstScopeFixed; })
             xdg-utils
           ];
 
@@ -559,7 +604,7 @@
         gstreamerPlugins =
           pkgs.symlinkJoin {
             name = "maple-gstreamer-plugins";
-            paths = with pkgs.gst_all_1; [
+            paths = with gstScopeFixed; [
               gstreamer.out
               gst-libav
               gst-plugins-bad
@@ -626,7 +671,7 @@
           export MAPLE_NIX_LINUX_CLOSURE_INFO=${linuxRuntimeClosure}
           export MAPLE_NIX_LINUXDEPLOY_SUPPORT_PATH=${lib.makeBinPath linuxdeploySupportPackages}
           export GSTREAMER_PLUGINS_DIR=${gstreamerPlugins}/lib/gstreamer-1.0
-          export GSTREAMER_HELPERS_DIR=${pkgs.gst_all_1.gstreamer.out}/libexec/gstreamer-1.0
+          export GSTREAMER_HELPERS_DIR=${gstScopeFixed.gstreamer.out}/libexec/gstreamer-1.0
           export __EGL_VENDOR_LIBRARY_FILENAMES=${pkgs.mesa}/share/glvnd/egl_vendor.d/50_mesa.json
           export LIBGL_DRIVERS_PATH=${pkgs.mesa}/lib/dri
           export LIBGL_ALWAYS_SOFTWARE=1
