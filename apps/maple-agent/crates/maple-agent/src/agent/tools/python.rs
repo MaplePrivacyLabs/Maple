@@ -170,20 +170,27 @@ impl PythonWorkers {
     }
 
     /// Free a slot for `requester` by discarding the least recently used
-    /// idle scratchpad of another task.
+    /// idle scratchpad of another task. `holders` can be stale: a scratchpad
+    /// that has started a cell since is skipped, never cancelled.
     async fn make_room(&self, requester: &str, holders: &[Holder]) -> bool {
-        let candidate = {
+        let mut candidates = {
             let tasks = self.tasks.lock().unwrap();
             holders
                 .iter()
                 .filter(|holder| holder.key != requester && holder.phase == WorkerPhase::Idle)
-                .filter_map(|holder| tasks.get(&holder.key).and_then(Weak::upgrade))
-                .min_by_key(|task| task.last_used())
+                .filter_map(|holder| {
+                    let task = tasks.get(&holder.key).and_then(Weak::upgrade)?;
+                    Some((task, holder.generation))
+                })
+                .collect::<Vec<_>>()
         };
-        match candidate {
-            Some(task) => task.reset(MAKE_ROOM_REASON.to_string()).await.is_ok(),
-            None => false,
+        candidates.sort_by_cached_key(|(task, _)| task.last_used());
+        for (task, generation) in candidates {
+            if let Some(cleanup) = task.reset_if_idle(generation, MAKE_ROOM_REASON) {
+                return cleanup.await.is_ok();
+            }
         }
+        false
     }
 }
 
@@ -264,6 +271,22 @@ impl TaskPython {
             state.state_loss_reason = Some(reason.clone());
         }
         handle.reset(reason)
+    }
+
+    /// `reset`, only while `generation` is still current and idle. `None`
+    /// leaves a scratchpad that has started a cell, or changed, as it is.
+    fn reset_if_idle(&self, generation: u64, reason: &str) -> Option<Cleanup> {
+        let mut state = self.state.lock().unwrap();
+        if state.closed {
+            return None;
+        }
+        let reason = bound_error(reason.to_string());
+        let cleanup = state
+            .handle
+            .as_ref()?
+            .reset_if_idle(generation, reason.clone())?;
+        state.state_loss_reason = Some(reason);
+        Some(cleanup)
     }
 
     async fn call(&self, params: PythonParams, cancel: CancellationToken) -> AgentToolResult {
@@ -588,6 +611,7 @@ fn format_outcome(outcome: &Outcome) -> String {
 mod tests {
     use super::*;
     use std::path::Path;
+    use std::time::Duration;
 
     fn fixture() -> PackagedPython {
         let manifest = std::env::var_os("MAPLE_CODE_MODE_RUNTIME_MANIFEST")
@@ -629,6 +653,35 @@ mod tests {
             has_history,
             CancellationToken::new(),
         )
+    }
+
+    /// Starts a call that waits for the file `gate` and returns `marker`,
+    /// once the runtime has admitted its cell.
+    async fn waiting_call(
+        workers: &PythonWorkers,
+        task: &Arc<TaskPython>,
+        gate: &str,
+    ) -> tokio::task::JoinHandle<AgentToolResult> {
+        let code = format!(
+            "import asyncio, pathlib\nwhile not pathlib.Path({gate:?}).exists():\n    await asyncio.sleep(0.01)\nmarker"
+        );
+        let call = {
+            let task = Arc::clone(task);
+            tokio::spawn(async move {
+                task.call(params(&code, false), CancellationToken::new())
+                    .await
+            })
+        };
+        let running =
+            |holder: &Holder| holder.key == task.key && holder.phase == WorkerPhase::Executing;
+        tokio::time::timeout(Duration::from_secs(10), async {
+            while !workers.runtime.snapshot().holders.iter().any(running) {
+                tokio::time::sleep(Duration::from_millis(5)).await;
+            }
+        })
+        .await
+        .expect("the waiting cell was not admitted");
+        call
     }
 
     #[test]
@@ -762,6 +815,87 @@ mod tests {
             .call(params("marker", false), CancellationToken::new())
             .await;
         assert!(text(&result).contains("value:\n0"), "{}", text(&result));
+        for task in &tasks {
+            task.retire(UNLOADED_REASON).await;
+        }
+        workers.shutdown().await;
+    }
+
+    #[tokio::test]
+    async fn making_room_spares_a_scratchpad_that_started_a_cell_after_the_snapshot() {
+        let workers = PythonWorkers::new(fixture());
+        let root = tempfile::tempdir().unwrap();
+        let tasks = (0..=MAX_WORKERS)
+            .map(|index| task(&workers, &format!("task-{index}"), root.path(), false))
+            .collect::<Vec<_>>();
+        for (index, task) in tasks.iter().take(MAX_WORKERS).enumerate() {
+            let result = task
+                .call(
+                    params(&format!("marker = {index}"), false),
+                    CancellationToken::new(),
+                )
+                .await;
+            assert!(!result.is_error, "{}", text(&result));
+        }
+        let mut others = Vec::new();
+        for task in &tasks[2..MAX_WORKERS] {
+            others.push(waiting_call(&workers, task, "release-others").await);
+        }
+        // The requester is refused while task-0 and task-1 are idle.
+        let requester = &tasks[MAX_WORKERS];
+        let Err(Error::Capacity { holders }) =
+            requester.execute("'room'", &CancellationToken::new()).await
+        else {
+            panic!("a full runtime refuses another scratchpad");
+        };
+        let idle = holders
+            .iter()
+            .filter(|holder| holder.phase == WorkerPhase::Idle)
+            .map(|holder| holder.key.as_str())
+            .collect::<Vec<_>>();
+        assert_eq!(idle, ["task-0", "task-1"]);
+        // Then task-0 starts a cell. Using task-1 afterwards leaves task-0
+        // the least recently used, so making room tries it first.
+        let victim = waiting_call(&workers, &tasks[0], "release-0").await;
+        let result = tasks[1]
+            .call(params("marker", false), CancellationToken::new())
+            .await;
+        assert!(text(&result).contains("value:\n1"), "{}", text(&result));
+        let made_room = workers.make_room(&requester.key, &holders).await;
+        let made_more_room = workers.make_room(&requester.key, &holders).await;
+
+        std::fs::write(root.path().join("release-0"), "").unwrap();
+        let result = victim.await.unwrap();
+        assert!(!result.is_error, "{}", text(&result));
+        assert!(text(&result).contains("value:\n0"), "{}", text(&result));
+        assert!(!text(&result).contains("State loss"), "{}", text(&result));
+        // task-1 made room instead, and the requester runs in its slot. No
+        // scratchpad of the stale holders was idle the second time.
+        assert!(made_room);
+        assert!(!made_more_room);
+        let result = requester
+            .call(params("'room'", false), CancellationToken::new())
+            .await;
+        assert!(!result.is_error, "{}", text(&result));
+        let result = tasks[1]
+            .call(
+                params("'marker' in globals()", false),
+                CancellationToken::new(),
+            )
+            .await;
+        assert!(text(&result).contains("value:\nFalse"), "{}", text(&result));
+        assert!(
+            text(&result).contains(MAKE_ROOM_REASON),
+            "{}",
+            text(&result)
+        );
+
+        std::fs::write(root.path().join("release-others"), "").unwrap();
+        for (index, call) in (2..).zip(others) {
+            let result = call.await.unwrap();
+            let expected = format!("value:\n{index}");
+            assert!(text(&result).contains(&expected), "{}", text(&result));
+        }
         for task in &tasks {
             task.retire(UNLOADED_REASON).await;
         }

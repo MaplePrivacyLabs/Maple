@@ -24,6 +24,8 @@ use tokio_util::sync::CancellationToken;
 pub type Execution = Pin<Box<dyn Future<Output = Result<Outcome, Error>> + Send>>;
 type Cleanup = Pin<Box<dyn Future<Output = Result<ResetOutcome, Error>> + Send>>;
 type CleanupState = Option<Result<(), String>>;
+/// The retired generation, if any, and the cleanup to observe.
+type Retired = (Option<u64>, Option<watch::Receiver<CleanupState>>);
 
 #[derive(Clone)]
 pub struct Runtime {
@@ -410,17 +412,32 @@ impl TaskHandle {
     pub fn reset(&self, reason: impl Into<String>) -> Cleanup {
         self.cleanup(reason.into(), false)
     }
+    /// `reset`, only while `generation` is this binding's current generation
+    /// and its worker is idle. Admission makes a worker busy under the same
+    /// lock, so a cell admitted first keeps running. Returns `None`, changing
+    /// nothing, when the generation is busy or gone or the binding is closed.
+    pub fn reset_if_idle(&self, generation: u64, reason: impl Into<String>) -> Option<Cleanup> {
+        let retired = self.inner.retire_idle_generation(
+            &self.key,
+            self.binding,
+            generation,
+            &reason.into(),
+        )?;
+        Some(self.observe(retired))
+    }
     /// Closes this exact binding forever, synchronously, including prepared handles.
     pub fn retire(&self, reason: impl Into<String>) -> Cleanup {
         self.cleanup(reason.into(), true)
     }
     fn cleanup(&self, reason: String, close: bool) -> Cleanup {
-        let observation = self
+        let retired = self
             .inner
             .retire_binding(&self.key, self.binding, &reason, close);
+        self.observe(retired)
+    }
+    fn observe(&self, (generation, receiver): Retired) -> Cleanup {
         let timeout = self.inner.config.cleanup_timeout;
         Box::pin(async move {
-            let (generation, receiver) = observation;
             if let Some(receiver) = receiver {
                 tokio::time::timeout(timeout, observe_cleanup(receiver))
                     .await
@@ -445,22 +462,9 @@ fn holders(state: &State) -> Vec<Holder> {
     holders.sort_by_key(|holder| holder.generation);
     holders
 }
-impl Inner {
-    fn snapshot(&self) -> CapacitySnapshot {
-        CapacitySnapshot {
-            limit: MAX_WORKERS,
-            holders: holders(&self.state.lock().unwrap()),
-        }
-    }
-    fn retire_binding(
-        &self,
-        key: &str,
-        id: u64,
-        reason: &str,
-        close: bool,
-    ) -> (Option<u64>, Option<watch::Receiver<CleanupState>>) {
-        let mut state = self.state.lock().unwrap();
-        let Some(binding) = state
+impl State {
+    fn retire_binding(&mut self, key: &str, id: u64, reason: &str, close: bool) -> Retired {
+        let Some(binding) = self
             .bindings
             .get_mut(key)
             .filter(|binding| binding.id == id)
@@ -473,14 +477,14 @@ impl Inner {
         }
         let generation = binding.generation;
         if close && generation.is_none() {
-            state.bindings.remove(key);
+            self.bindings.remove(key);
             return (None, None);
         }
         if generation.is_some() {
             binding.state_loss_reason = Some(output::prefix(reason, 1024).into());
         }
         let receiver = generation
-            .and_then(|generation| state.workers.get_mut(&generation))
+            .and_then(|generation| self.workers.get_mut(&generation))
             .map(|worker| {
                 if !matches!(worker.phase, WorkerPhase::CleanupPending) {
                     worker.phase = WorkerPhase::Retiring;
@@ -489,6 +493,41 @@ impl Inner {
                 worker.cleanup.clone()
             });
         (generation, receiver)
+    }
+}
+impl Inner {
+    fn snapshot(&self) -> CapacitySnapshot {
+        CapacitySnapshot {
+            limit: MAX_WORKERS,
+            holders: holders(&self.state.lock().unwrap()),
+        }
+    }
+    fn retire_binding(&self, key: &str, id: u64, reason: &str, close: bool) -> Retired {
+        self.state
+            .lock()
+            .unwrap()
+            .retire_binding(key, id, reason, close)
+    }
+    /// The check and the fence share admission's lock: no cell can be
+    /// admitted between seeing the worker idle and retiring it.
+    fn retire_idle_generation(
+        &self,
+        key: &str,
+        id: u64,
+        generation: u64,
+        reason: &str,
+    ) -> Option<Retired> {
+        let mut state = self.state.lock().unwrap();
+        let binding = state.bindings.get(key).filter(|binding| binding.id == id)?;
+        let idle = !state.closed
+            && !binding.closed
+            && !binding.lifetime.is_cancelled()
+            && binding.generation == Some(generation)
+            && state
+                .workers
+                .get(&generation)
+                .is_some_and(|worker| matches!(worker.phase, WorkerPhase::Idle));
+        idle.then(|| state.retire_binding(key, id, reason, false))
     }
     fn retire_all(&self, reason: &str) -> Vec<watch::Receiver<CleanupState>> {
         let mut state = self.state.lock().unwrap();

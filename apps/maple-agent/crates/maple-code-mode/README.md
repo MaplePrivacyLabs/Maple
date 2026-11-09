@@ -28,7 +28,10 @@ call's token does not retire its idle worker. Owner revocation always retires it
 `reset` ends the worker generation while preserving the logical task binding.
 `retire` permanently fences that binding, including previously prepared handles.
 Both fence admission before returning their cleanup future. Neither spawns a
-replacement. A later permitted call starts fresh only after exact prior cleanup.
+replacement. `reset_if_idle` resets only a given generation that is still current
+and idle, decided under admission's lock, so a caller freeing a slot from a stale
+`Capacity` snapshot never cancels a cell admitted since; otherwise it changes nothing.
+A later permitted call starts fresh only after exact prior cleanup.
 Starting, executing, idle, retiring, and cleanup-pending workers all count toward
 the capacity limit. There is no eviction, idle expiry, or cell execution deadline.
 
