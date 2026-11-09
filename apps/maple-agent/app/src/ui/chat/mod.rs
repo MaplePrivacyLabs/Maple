@@ -259,9 +259,8 @@ pub(super) struct QuestionSelection {
 pub(super) enum ChatPopup {
     /// The header chip's project menu.
     Project,
-    /// The model chip's popover: the effort slider for the selected model.
-    Effort,
-    /// The model list, opened from the popover or `/model`.
+    /// The model chip's panel: the models a task can use, and under them
+    /// the selected model's effort slider. `/model` opens it too.
     Model,
     Integrations,
     /// The composer chip's permission modes.
@@ -564,10 +563,7 @@ pub struct ChatScreen {
     thinking_queued: Option<(thinking::ThinkingKey, ThinkingLevel)>,
     /// The level under the effort slider's thumb while it is dragged.
     effort_preview: Option<ThinkingLevel>,
-    /// The model list was opened from the effort popover, which a pick
-    /// reopens on the new model's levels.
-    effort_return: bool,
-    /// The effort slider's motion, kept while its popover is closed so a
+    /// The effort slider's motion, kept while its panel is closed so a
     /// model with other levels glides into place when it reopens.
     effort_slider: std::rc::Rc<std::cell::RefCell<crate::ui::effort_slider::EffortSliderState>>,
     /// Resets so far, naming each spin of the reset icon, and when the
@@ -1492,7 +1488,6 @@ impl ChatScreen {
             thinking_saving: false,
             thinking_queued: None,
             effort_preview: None,
-            effort_return: false,
             effort_slider: Default::default(),
             effort_reset_spins: 0,
             effort_reset_at: None,
@@ -2348,13 +2343,13 @@ impl ChatScreen {
     }
 
     /// Open or close one of the composer chips' menus. Opening the
-    /// integrations menu refreshes the task's servers; opening the effort
-    /// popover starts from the saved level.
+    /// integrations menu refreshes the task's servers; opening the model
+    /// panel starts its slider from the saved level.
     pub(super) fn toggle_popup(&mut self, popup: ChatPopup, cx: &mut Context<Self>) {
         if self.popup.toggle(popup, cx) {
             match popup {
                 ChatPopup::Integrations => self.refresh_session_mcp(cx),
-                ChatPopup::Effort => self.reset_effort_input(),
+                ChatPopup::Model => self.reset_effort_input(),
                 _ => {}
             }
         }
@@ -4997,8 +4992,7 @@ impl ChatScreen {
             }
             "model" => {
                 if args.is_empty() {
-                    self.effort_return = false;
-                    self.popup.open(ChatPopup::Model, cx);
+                    self.open_model_panel(cx);
                 } else {
                     let query = args.to_string();
                     match self

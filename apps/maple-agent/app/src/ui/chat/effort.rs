@@ -1,12 +1,13 @@
-//! The model chip's popover: how hard the selected model thinks, on a
-//! slider sized to the levels that model offers, with the model's name
-//! above it as the way to another model.
+//! The model chip's panel: the models a task can use, and under them how
+//! hard the selected model thinks, on a slider sized to the levels that
+//! model offers. Maple's users switch models more often than effort, so
+//! the models come first, and a pick closes the panel as the plain list
+//! did.
 //!
 //! Changes of state move rather than swap: the level's name morphs letter
 //! by letter into the next one, the brain gives a small pulse as the level
-//! lands, reset spins back, and the whole popover rises in as it opens.
-//! Arriving at the model's top level, the brain sparks: a warm flash and a
-//! burst of rays.
+//! lands, and reset spins back. Arriving at the model's top level, the
+//! brain sparks: a warm flash and a burst of rays.
 
 use std::time::Duration;
 
@@ -18,9 +19,7 @@ use crate::ui::effort_slider::{effort_slider, heat_color};
 use crate::ui::i18n::tr;
 use crate::ui::icons::{icon, spinner};
 use crate::ui::morph_text::morph_text;
-use crate::ui::popup::Menu;
 
-const POPOVER_WIDTH: gpui::Pixels = px(300.);
 /// The brain's pulse as a level lands.
 const PULSE: Duration = Duration::from_millis(420);
 /// Reset's spin back.
@@ -65,7 +64,7 @@ impl ChatScreen {
             .filter(|levels| !levels.is_empty() && *levels != [ThinkingLevel::Off])
     }
 
-    /// The level the popover shows: the one under a drag, then one waiting
+    /// The level the panel shows: the one under a drag, then one waiting
     /// to save, then the saved one.
     pub(super) fn effort_shown(&self) -> Option<ThinkingLevel> {
         let state = self.thinking.as_ref()?;
@@ -80,11 +79,10 @@ impl ChatScreen {
         })
     }
 
-    /// Forget a drag the popover never saw end and start from the saved
+    /// Forget a drag the panel never saw end and start from the saved
     /// level.
     pub(super) fn reset_effort_input(&mut self) {
         self.effort_preview = None;
-        self.effort_return = false;
         self.effort_slider.borrow_mut().release();
     }
 
@@ -107,7 +105,7 @@ impl ChatScreen {
         cx.notify();
     }
 
-    /// Left and Right in the popover: one stop down or up.
+    /// Left and Right in the panel: one stop down or up.
     pub(super) fn step_effort(&mut self, step: i32, cx: &mut Context<Self>) {
         let (Some(levels), Some(shown)) = (self.effort_levels(), self.effort_shown()) else {
             return;
@@ -133,9 +131,10 @@ impl ChatScreen {
         }
     }
 
-    /// Swap the popover for the model list; a pick there brings the
-    /// popover back on the new model.
-    fn open_model_list(&mut self, cx: &mut Context<Self>) {
+    /// Open the model panel from the keyboard (`/model`, the composer
+    /// row): on the selected model, as a native popup button opens on its
+    /// choice, with the slider starting from the saved level.
+    pub(super) fn open_model_panel(&mut self, cx: &mut Context<Self>) {
         match self.selected_model.clone() {
             Some(model) => {
                 self.popup
@@ -143,10 +142,12 @@ impl ChatScreen {
             }
             None => self.popup.open(ChatPopup::Model, cx),
         }
-        self.effort_return = true;
+        self.reset_effort_input();
     }
 
-    pub(super) fn effort_menu(&self, cx: &mut Context<Self>) -> Menu<Self> {
+    /// The panel's footer, under the models: the selected model's level,
+    /// reset, and the slider.
+    pub(super) fn effort_footer(&self, cx: &mut Context<Self>) -> Div {
         let levels = self.effort_levels();
         let shown = self.effort_shown();
         let heat = match (levels, shown) {
@@ -168,12 +169,6 @@ impl ChatScreen {
         } else {
             gpui::rgb(theme::text_secondary()).into()
         };
-        let model_label = self
-            .selected_model
-            .as_deref()
-            .map(|model| SharedString::from(self.model_label(model).to_string()))
-            .unwrap_or_else(|| tr("chat-model"));
-
         let landed = shown.map_or(0, |level| level as usize + 1);
         // Arriving at the top level, while the brain's spark runs.
         let spark = self
@@ -186,7 +181,7 @@ impl ChatScreen {
             .items_center()
             .gap_1()
             .child(
-                // What this popover sets, warming with the level and giving
+                // What this footer sets, warming with the level and giving
                 // a small pulse as one lands.
                 div()
                     .size_8()
@@ -261,55 +256,21 @@ impl ChatScreen {
                     }),
             )
             .child(
+                // The level's name morphs into the next one.
                 div()
-                    .id("effort-model")
-                    .debug_selector(|| "effort-model".to_string())
-                    .role(gpui::Role::Button)
-                    .aria_label(tr("chat-effort-change-model"))
+                    .debug_selector(|| "effort-title".to_string())
                     .flex_1()
                     .min_w_0()
-                    .flex()
-                    .flex_col()
-                    .items_center()
-                    .px_3()
-                    .py_1p5()
-                    .rounded(theme::RADIUS_MD)
-                    .hover(|style| {
-                        style
-                            .bg(gpui::rgb(theme::bg_sidebar_pill()))
-                            .cursor_pointer()
-                    })
-                    .active(|style| style.bg(gpui::rgb(theme::bg_sidebar_row_selected())))
-                    .on_click(cx.listener(|this, _: &gpui::ClickEvent, _, cx| {
-                        cx.stop_propagation();
-                        this.open_model_list(cx);
-                    }))
+                    .text_size(px(14.))
+                    .line_height(px(20.))
+                    .font_weight(gpui::FontWeight::SEMIBOLD)
+                    .whitespace_nowrap()
+                    // A drag swaps the name as it crosses stops; a morph per
+                    // stop would garble a fast sweep.
                     .child(
-                        // The level's name morphs into the next one.
-                        div()
-                            .debug_selector(|| "effort-title".to_string())
-                            .text_size(px(15.))
-                            .line_height(px(20.))
-                            .font_weight(gpui::FontWeight::SEMIBOLD)
-                            .whitespace_nowrap()
-                            // A drag swaps the name as it crosses stops;
-                            // a morph per stop would garble a fast sweep.
-                            .child(
-                                morph_text("effort-title-text", title.clone())
-                                    .color(title_color)
-                                    .instant(self.effort_preview.is_some()),
-                            ),
-                    )
-                    .child(
-                        div()
-                            .max_w_full()
-                            .flex()
-                            .items_center()
-                            .gap_0p5()
-                            .text_xs()
-                            .text_color(gpui::rgb(theme::text_muted()))
-                            .child(div().min_w_0().truncate().child(gpui::text!(model_label)))
-                            .child(icon("chevron-right", px(12.), theme::text_muted())),
+                        morph_text("effort-title-text", title.clone())
+                            .color(title_color)
+                            .instant(self.effort_preview.is_some()),
                     ),
             )
             .child({
@@ -324,7 +285,7 @@ impl ChatScreen {
                         theme::text_faint()
                     },
                 );
-                // Only while the spin runs: a reopened popover must not
+                // Only while the spin runs: a reopened panel must not
                 // replay an earlier reset.
                 let spinning = self.effort_reset_at.is_some_and(|at| at.elapsed() < SPIN);
                 let reset = if spinning {
@@ -428,27 +389,18 @@ impl ChatScreen {
             None => div().child(self.effort_status(cx)),
         };
 
-        Menu::new("effort-menu", POPOVER_WIDTH)
-            .label(tr("chat-effort"))
-            .application_vim(self.application_vim_enabled)
-            .on_adjust(|this: &mut Self, step, _, cx| this.step_effort(step, cx))
-            // The keyboard's way to the model name's list.
-            .on_confirm(|this: &mut Self, _, cx| this.open_model_list(cx))
-            .child(
-                // The popover's content rises in as it opens.
-                motion::rise_in(
-                    div()
-                        .flex()
-                        .flex_col()
-                        .gap_3()
-                        .px_1()
-                        .pt_1()
-                        .pb_2()
-                        .child(header)
-                        .child(body),
-                    "effort-popover-content",
-                ),
-            )
+        div()
+            .flex()
+            .flex_col()
+            .gap_2()
+            .mt_1()
+            .pt_2()
+            .px_2()
+            .pb_1()
+            .border_t_1()
+            .border_color(gpui::rgb(theme::border()))
+            .child(header)
+            .child(body)
     }
 
     /// The track's place while there is no slider: loading, saving, a

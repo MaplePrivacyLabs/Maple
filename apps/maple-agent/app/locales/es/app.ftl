@@ -1105,7 +1105,6 @@ chat-effort = Esfuerzo
 chat-effort-reset = Volver al nivel recomendado
 chat-effort-faster = Más rápido
 chat-effort-deeper = Más profundo
-chat-effort-change-model = Cambiar de modelo
 chat-model-effort-chip = { $model }, esfuerzo { $effort }
 chat-feedback-placeholder = ¿Qué te gustaría contarnos?
 chat-feedback-send = Enviar comentarios

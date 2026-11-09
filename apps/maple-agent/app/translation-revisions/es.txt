@@ -53,7 +53,6 @@ chat-delete-task c34f60d6df892bcc
 chat-delete-title 6050693f1a848384
 chat-dictate 2178ffdb2c070d39
 chat-effort e1d2b8e59dd08a77
-chat-effort-change-model 3dff93802e1a999d
 chat-effort-deeper ef4f0e96b38fc7b4
 chat-effort-faster 24e0efa5f4fa8a8c
 chat-effort-reset c9668fd3e101afca

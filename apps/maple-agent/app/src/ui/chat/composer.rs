@@ -345,10 +345,7 @@ impl ChatScreen {
         cx: &mut Context<Self>,
     ) {
         match control {
-            ComposerControl::Model => {
-                self.popup.open(ChatPopup::Effort, cx);
-                self.reset_effort_input();
-            }
+            ComposerControl::Model => self.open_model_panel(cx),
             ComposerControl::Integrations => {
                 self.popup.open(ChatPopup::Integrations, cx);
                 self.refresh_session_mcp(cx);
@@ -391,20 +388,8 @@ impl ChatScreen {
                     .as_ref()
                     .filter(|state| state.levels != [ThinkingLevel::Off])
                     .map(|state| thinking_label(state.current));
-                // One chip, two panels: the effort popover it opens, and the
-                // model list the popover (or `/model`) swaps in for it.
-                let list = self.popup.is_open(&ChatPopup::Model);
-                let open = list || self.popup.is_open(&ChatPopup::Effort);
-                let panel = if list {
-                    Some(self.model_menu())
-                } else if open {
-                    Some(self.effort_menu(cx))
-                } else {
-                    None
-                }
-                .map(|menu| self.popup.render(menu, Placement::AboveStart, window, cx));
                 // At a model's top level the effort word stays warm, as the
-                // popover's slider does.
+                // panel's slider does.
                 let detail_color: gpui::Hsla = match self.thinking.as_ref() {
                     Some(state)
                         if state.levels.len() > 1
@@ -422,7 +407,7 @@ impl ChatScreen {
                     label,
                     level.clone().map(|level| (level, detail_color)),
                     true,
-                    open,
+                    self.popup.is_open(&ChatPopup::Model),
                     false,
                 );
                 if let Some(level) = level {
@@ -434,20 +419,16 @@ impl ChatScreen {
                         ],
                     ));
                 }
-                div()
-                    .relative()
-                    .min_w_0()
-                    .child(self.popup.trigger(
-                        if list {
-                            ChatPopup::Model
-                        } else {
-                            ChatPopup::Effort
-                        },
-                        button,
-                        cx,
-                        |this, window, cx| this.press_chip(ChatPopup::Effort, window, cx),
-                    ))
-                    .children(panel)
+                self.with_menu(
+                    ChatPopup::Model,
+                    button,
+                    Placement::AboveStart,
+                    window,
+                    cx,
+                    |this, cx| this.model_menu(cx),
+                )
+                // The model's name truncates before the row squeezes Send.
+                .min_w_0()
             }
             ComposerControl::Integrations => self.with_menu(
                 ChatPopup::Integrations,
@@ -635,15 +616,16 @@ impl ChatScreen {
         menu
     }
 
-    fn model_menu(&self) -> Menu<Self> {
+    /// The models, the selected one checked, with its effort slider docked
+    /// under them. A pick applies from the task's next message and closes
+    /// the panel; Left and Right step the effort.
+    fn model_menu(&self, cx: &mut Context<Self>) -> Menu<Self> {
         let selected = self.selected_model.as_deref();
-        // A task offers every model; a pick applies from its next message.
-        // Opened from the effort popover, a pick goes back to it, now on the
-        // new model's levels.
         Menu::new("model-menu", px(320.))
             .label(tr("chat-model"))
-            .max_height(px(320.))
+            .max_height(px(480.))
             .application_vim(self.application_vim_enabled)
+            .on_adjust(|this: &mut Self, step, _, cx| this.step_effort(step, cx))
             .items(self.models.iter().map(|model| {
                 let pick = model.clone();
                 MenuItem::new(
@@ -651,14 +633,11 @@ impl ChatScreen {
                     self.model_label(model).to_string(),
                     move |this: &mut Self, _: &mut Window, cx: &mut Context<Self>| {
                         this.pick_model(pick.clone(), cx);
-                        if std::mem::take(&mut this.effort_return) {
-                            this.popup.open(ChatPopup::Effort, cx);
-                            this.reset_effort_input();
-                        }
                     },
                 )
                 .current(selected == Some(model.as_str()))
             }))
+            .footer(self.effort_footer(cx))
     }
 
     /// What the task may do without asking.

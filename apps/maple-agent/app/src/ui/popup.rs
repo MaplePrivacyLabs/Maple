@@ -534,7 +534,7 @@ impl<V: 'static, K: Clone + PartialEq + 'static> Popup<V, K> {
             priority,
             application_vim,
             adjust,
-            confirm,
+            footer,
         } = menu;
 
         // What the keyboard needs about each item: its id, its action,
@@ -649,8 +649,11 @@ impl<V: 'static, K: Clone + PartialEq + 'static> Popup<V, K> {
             .when_some(label, |panel, label| panel.aria_label(label))
             .max_w(room_width)
             .max_h(max_height)
-            .overflow_y_scroll()
-            .track_scroll(&self.scroll)
+            // Rows scroll; a footer stays put under them, so only the rows
+            // scroll then.
+            .when(footer.is_none(), |panel| {
+                panel.overflow_y_scroll().track_scroll(&self.scroll)
+            })
             .on_mouse_down_out(cx.listener(move |view, _: &MouseDownEvent, window, cx| {
                 if !over_inner_menu(&focus, window, cx) {
                     get(view).close(cx);
@@ -700,9 +703,6 @@ impl<V: 'static, K: Clone + PartialEq + 'static> Popup<V, K> {
                         return;
                     }
                     let Some(row) = get(view).highlighted_row(&picks) else {
-                        if let Some(confirm) = &confirm {
-                            confirm(view, window, cx);
-                        }
                         return;
                     };
                     pick(view, get, &picks, row, window, cx);
@@ -727,8 +727,22 @@ impl<V: 'static, K: Clone + PartialEq + 'static> Popup<V, K> {
                 cx.listener(move |view, event: &KeyDownEvent, window, cx| {
                     type_ahead(view, get, &picks, &focus, event, window, cx);
                 })
-            })
-            .children(children);
+            });
+        let panel = match footer {
+            None => panel.children(children),
+            Some(footer) => panel
+                .child(
+                    div()
+                        .id("menu-rows")
+                        .flex()
+                        .flex_col()
+                        .min_h_0()
+                        .overflow_y_scroll()
+                        .track_scroll(&self.scroll)
+                        .children(children),
+                )
+                .child(footer),
+        };
 
         // A sibling after the panel, covering it, records the panel's hitbox
         // for an outer menu to test. The panel itself may scroll, so the
@@ -1003,7 +1017,7 @@ pub(crate) struct Menu<V: 'static> {
     priority: usize,
     application_vim: bool,
     adjust: Option<OnAdjust<V>>,
-    confirm: Option<OnSelect<V>>,
+    footer: Option<AnyElement>,
 }
 
 enum Entry<V: 'static> {
@@ -1024,7 +1038,7 @@ impl<V: 'static> Menu<V> {
             priority: 1,
             application_vim: false,
             adjust: None,
-            confirm: None,
+            footer: None,
         }
     }
 
@@ -1038,13 +1052,11 @@ impl<V: 'static> Menu<V> {
         self
     }
 
-    /// What Enter or Space does while no row is highlighted, in a menu
-    /// whose content is not rows.
-    pub(crate) fn on_confirm(
-        mut self,
-        confirm: impl Fn(&mut V, &mut Window, &mut Context<V>) + 'static,
-    ) -> Self {
-        self.confirm = Some(Rc::new(confirm));
+    /// Content docked under the rows, such as a control for the picked
+    /// row: it stays in view while the rows scroll, and the keyboard skips
+    /// it.
+    pub(crate) fn footer(mut self, element: impl IntoElement) -> Self {
+        self.footer = Some(element.into_any_element());
         self
     }
 

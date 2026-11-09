@@ -8577,7 +8577,7 @@ mod state_tests {
         for (trigger, menu) in [
             ("view-options", "View"),
             ("menu-session-s1", "Task(s1)"),
-            ("model-picker", "Effort"),
+            ("model-picker", "Model"),
             ("mcp-menu", "Integrations"),
             ("root-picker", "Project"),
         ] {
@@ -8607,8 +8607,8 @@ mod state_tests {
             this.sync_sidebar(cx);
         });
         for (first, then, open) in [
-            ("view-options", "model-picker", "Effort"),
-            ("menu-session-s1", "model-picker", "Effort"),
+            ("view-options", "model-picker", "Model"),
+            ("menu-session-s1", "model-picker", "Model"),
             ("model-picker", "menu-session-s1", "Task(s1)"),
             ("model-picker", "view-options", "View"),
             ("menu-session-s1", "view-options", "View"),
@@ -11697,11 +11697,11 @@ mod state_tests {
         cx.simulate_keystrokes("h");
         assert_eq!(row(cx).1, Some(ComposerControl::Mode));
 
-        // Enter opens the model chip's effort popover; closing it returns
-        // to the row on the same control.
+        // Enter opens the model chip's panel; closing it returns to the row
+        // on the same control.
         cx.simulate_keystrokes("g g enter");
         cx.update(|_window, app| {
-            assert_eq!(chat.read(app).popup.open_key(), Some(&ChatPopup::Effort));
+            assert_eq!(chat.read(app).popup.open_key(), Some(&ChatPopup::Model));
         });
         cx.simulate_keystrokes("escape");
         assert_eq!(
@@ -11959,7 +11959,15 @@ mod state_tests {
                 _window: &mut Window,
                 _cx: &mut Context<Self>,
             ) -> impl IntoElement {
-                div().w(px(1200.)).h(px(800.)).child(self.chat.clone())
+                // A column, as in the app, so the chat fills the window and
+                // the composer sits at its foot with room above for the
+                // model panel.
+                div()
+                    .w(px(1200.))
+                    .h(px(800.))
+                    .flex()
+                    .flex_col()
+                    .child(self.chat.clone())
             }
         }
 
@@ -13395,13 +13403,13 @@ mod state_tests {
         }
 
         /// Left and Right step through the selected model's own levels,
-        /// stopping at either end.
+        /// stopping at either end, while Up, Down and Enter pick a model.
         #[gpui::test]
-        fn arrow_keys_step_through_the_models_levels(cx: &mut TestAppContext) {
+        fn arrow_keys_step_the_effort_and_pick_a_model(cx: &mut TestAppContext) {
             use ThinkingLevel::{High, Low, Max};
             let (chat, cx) = effort_window(cx, vec![Low, High, Max], High);
             press(cx, "model-picker");
-            assert_eq!(open_menu(&chat, cx), "Effort");
+            assert_eq!(open_menu(&chat, cx), "Model");
             cx.simulate_keystrokes("right");
             assert_eq!(queued(&chat, cx), Some(Max));
             cx.simulate_keystrokes("right");
@@ -13410,10 +13418,14 @@ mod state_tests {
             assert_eq!(queued(&chat, cx), Some(Low), "Medium is not a stop");
             cx.simulate_keystrokes("left");
             assert_eq!(queued(&chat, cx), Some(Low));
-            assert_eq!(open_menu(&chat, cx), "Effort", "steps keep it open");
-            // Enter goes to the model list, as a press on the model's name.
-            cx.simulate_keystrokes("enter");
-            assert_eq!(open_menu(&chat, cx), "Model");
+            assert_eq!(open_menu(&chat, cx), "Model", "steps keep it open");
+            cx.simulate_keystrokes("down down enter");
+            assert_eq!(open_menu(&chat, cx), "", "a pick closes it");
+            assert_eq!(
+                chat.update(cx, |this, _| this.selected_model.clone())
+                    .as_deref(),
+                Some("model-b")
+            );
         }
 
         /// The same place on the track is a different level on models with
@@ -13473,33 +13485,37 @@ mod state_tests {
             assert_eq!(queued(&chat, cx), Some(High));
         }
 
-        /// The model's name in the popover opens the model list; a pick
-        /// there returns to the popover on the new model.
+        /// The chip opens the models with the selected one's slider under
+        /// them; a pick closes the panel, and `/model` opens the same one.
         #[gpui::test]
-        fn the_popover_switches_models_and_comes_back(cx: &mut TestAppContext) {
+        fn the_panel_puts_the_models_above_the_slider(cx: &mut TestAppContext) {
             let (chat, cx) = effort_window(
                 cx,
                 vec![ThinkingLevel::Low, ThinkingLevel::High],
                 ThinkingLevel::High,
             );
             press(cx, "model-picker");
-            press(cx, "effort-model");
-            assert_eq!(open_menu(&chat, cx), "Model");
+            let row = cx.debug_bounds("model-model-b").expect("model row");
+            let slider = cx.debug_bounds("effort-slider").expect("slider");
+            assert!(row.bottom() <= slider.top(), "models first, effort below");
             press(cx, "model-model-b");
-            assert_eq!(open_menu(&chat, cx), "Effort");
+            assert_eq!(open_menu(&chat, cx), "");
             assert_eq!(
                 chat.update(cx, |this, _| this.selected_model.clone())
                     .as_deref(),
                 Some("model-b")
             );
-            // `/model` opens the list on its own; a pick there just closes it.
+            // The runtime's answer for the new model's levels, then `/model`.
             chat.update(cx, |this, cx| {
-                this.popup.close(cx);
-                this.effort_return = false;
-                this.popup.open(ChatPopup::Model, cx);
+                this.thinking = Some(AgentThinkingState {
+                    levels: vec![ThinkingLevel::Low, ThinkingLevel::High],
+                    current: ThinkingLevel::High,
+                });
+                assert!(this.try_command(None, "/model", cx));
             });
-            press(cx, "model-model-a");
-            assert_eq!(open_menu(&chat, cx), "");
+            cx.run_until_parked();
+            assert_eq!(open_menu(&chat, cx), "Model");
+            assert!(cx.debug_bounds("effort-slider").is_some());
         }
 
         /// A model that does not think says so where the slider would be.

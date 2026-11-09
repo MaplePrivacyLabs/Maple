@@ -18,7 +18,7 @@
 //! - Dots swell as the fill flows over them, a ripple marks each stop a
 //!   drag crosses and each level that lands, and the thumb blooms in the
 //!   level's colour when one is picked.
-//! - When the popover opens, the thumb pops in and the fill pours to it.
+//! - When its panel opens, the thumb pops in and the fill pours to it.
 //!   When the stops change (another model), the dots glide to their places.
 //! - At the model's top stop the thumb keeps a warm halo, which rises in
 //!   when the thumb arrives there. The owner hears of the arrival
@@ -69,7 +69,7 @@ const FOLLOW: Tuning = Tuning(2200., 0.86);
 const POUR: Tuning = Tuning(220., 0.9);
 /// The thumb lifting under the pointer.
 const LIFT: Tuning = Tuning(600., 0.7);
-/// The thumb settling as the popover opens: from a little large down to
+/// The thumb settling as the panel opens: from a little large down to
 /// its size, never so small that the track shows around it.
 const POP: Tuning = Tuning(380., 0.42);
 /// Where that settle starts.
@@ -383,7 +383,7 @@ impl EffortSliderState {
         };
         if !self.started {
             self.thumb.snap(target);
-            // Shown without a release (no popover opening): no settle from
+            // Shown without a release (no panel opening): no settle from
             // nothing, which would bare the fill around a tiny thumb.
             if self.pop.value < 1. {
                 self.pop.snap(1.);

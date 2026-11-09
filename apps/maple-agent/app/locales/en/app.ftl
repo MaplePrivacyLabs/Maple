@@ -1167,7 +1167,6 @@ chat-effort = Effort
 chat-effort-reset = Reset to recommended
 chat-effort-faster = Faster
 chat-effort-deeper = Deeper
-chat-effort-change-model = Change model
 # $model is the model's name; $effort is its effort level, such as High.
 chat-model-effort-chip = { $model }, { $effort } effort
 chat-feedback-placeholder = What would you like us to know?
