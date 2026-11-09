@@ -547,10 +547,7 @@ impl Element for EffortSlider {
                 now,
                 reduce_motion,
             );
-            moving
-                || state
-                    .topped
-                    .is_some_and(|at| elapsed(at, now, HOT_IN) < 1.)
+            moving || state.topped.is_some_and(|at| elapsed(at, now, HOT_IN) < 1.)
         };
         if moving {
             window.request_animation_frame();
@@ -620,10 +617,7 @@ impl Element for EffortSlider {
                     .map(|at| at.map_or(0., |at| swell(elapsed(at, now, DOT_SWELL))))
                     .collect(),
                 bloom: state.bloom.map_or(0., |at| swell(elapsed(at, now, BLOOM))),
-                hot: state.hot(
-                    self.enabled && count > 1 && self.selected + 1 == count,
-                    now,
-                ),
+                hot: state.hot(self.enabled && count > 1 && self.selected + 1 == count, now),
             }
         };
         let thumb_x = x_at(snapshot.thumb.value);

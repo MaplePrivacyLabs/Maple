@@ -1739,7 +1739,10 @@ const MODEL_GROUPS: [(&str, ModelGroup); 7] = [
     ("glm-5-3", ModelGroup::Capable),
     ("kimi-k3-1-pro", ModelGroup::Capable),
     ("kimi-k3", ModelGroup::Capable),
-    ("deepseek-v4-1-flash-1017-uncensored", ModelGroup::Uncensored),
+    (
+        "deepseek-v4-1-flash-1017-uncensored",
+        ModelGroup::Uncensored,
+    ),
     ("deepseek-v4-1-flash", ModelGroup::Fast),
     ("glm-5-3-flash", ModelGroup::Fast),
     ("gemma4-31b", ModelGroup::Fast),
