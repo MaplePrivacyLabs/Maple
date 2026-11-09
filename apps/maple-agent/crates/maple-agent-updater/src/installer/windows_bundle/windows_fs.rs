@@ -2,7 +2,7 @@
 //! junction/reparse point and existing ACLs are never repaired by taking over
 //! a directory. Pointer publication uses a same-directory write-through move.
 
-use super::super::WindowsStorageGuard;
+use super::super::{WindowsGuardFailure, WindowsStorageGuard};
 use std::{
     ffi::{OsStr, c_void},
     fs::{self, File},
@@ -28,16 +28,18 @@ use windows_sys::Win32::{
             GetSecurityInfo, SDDL_REVISION_1, SE_FILE_OBJECT,
         },
         CreateWellKnownSid, DACL_SECURITY_INFORMATION, EqualSid, GetAce, GetAclInformation,
-        GetTokenInformation, INHERIT_ONLY_ACE, IsValidAcl, IsValidSid, OWNER_SECURITY_INFORMATION,
-        PSID, SECURITY_ATTRIBUTES, SECURITY_MAX_SID_SIZE, TOKEN_QUERY, TOKEN_USER, TokenUser,
-        WinBuiltinAdministratorsSid, WinCreatorOwnerRightsSid, WinLocalSystemSid,
+        GetLengthSid, GetTokenInformation, INHERIT_ONLY_ACE, INHERITED_ACE, IsValidAcl, IsValidSid,
+        OWNER_SECURITY_INFORMATION, PSID, SECURITY_ATTRIBUTES, SECURITY_MAX_SID_SIZE, TOKEN_QUERY,
+        TOKEN_USER, TokenUser, WinBuiltinAdministratorsSid, WinCreatorOwnerRightsSid,
+        WinLocalSystemSid,
     },
     Storage::FileSystem::{
         BY_HANDLE_FILE_INFORMATION, CREATE_NEW, CreateDirectoryW, CreateFileW, DELETE,
         FILE_APPEND_DATA, FILE_ATTRIBUTE_DIRECTORY, FILE_ATTRIBUTE_REPARSE_POINT,
-        FILE_DELETE_CHILD, FILE_FLAG_BACKUP_SEMANTICS, FILE_FLAG_OPEN_REPARSE_POINT,
-        FILE_READ_ATTRIBUTES, FILE_SHARE_DELETE, FILE_SHARE_READ, FILE_SHARE_WRITE,
-        FILE_WRITE_ATTRIBUTES, FILE_WRITE_DATA, FILE_WRITE_EA, GetFileInformationByHandle,
+        FILE_ATTRIBUTE_TAG_INFO, FILE_DELETE_CHILD, FILE_FLAG_BACKUP_SEMANTICS,
+        FILE_FLAG_OPEN_REPARSE_POINT, FILE_READ_ATTRIBUTES, FILE_SHARE_DELETE, FILE_SHARE_READ,
+        FILE_SHARE_WRITE, FILE_WRITE_ATTRIBUTES, FILE_WRITE_DATA, FILE_WRITE_EA,
+        FileAttributeTagInfo, GetFileInformationByHandle, GetFileInformationByHandleEx,
         MOVEFILE_REPLACE_EXISTING, MOVEFILE_WRITE_THROUGH, MoveFileExW, OPEN_ALWAYS, OPEN_EXISTING,
         READ_CONTROL, WRITE_DAC, WRITE_OWNER,
     },
@@ -66,6 +68,19 @@ fn invalid() -> io::Error {
 // exposing filesystem paths, user names, SIDs, ACL contents or other state.
 fn invalid_at(stage: WindowsStorageGuard) -> io::Error {
     io::Error::new(io::ErrorKind::PermissionDenied, stage)
+}
+
+/// A guard refusal that also says what the guard saw, in fixed words only.
+fn refused(failure: WindowsGuardFailure) -> io::Error {
+    io::Error::new(io::ErrorKind::PermissionDenied, failure)
+}
+
+/// Copy a SID that Windows has already validated, for classification only.
+fn sid_bytes(sid: PSID) -> Vec<u8> {
+    // SAFETY: callers pass a SID that IsValidSid accepted or that Windows
+    // returned in a live security descriptor or token buffer.
+    let length = unsafe { GetLengthSid(sid) } as usize;
+    unsafe { std::slice::from_raw_parts(sid.cast::<u8>(), length) }.to_vec()
 }
 
 fn wide(value: &OsStr) -> io::Result<Vec<u16>> {
@@ -191,17 +206,41 @@ pub(super) fn validate_path_binding(path: &Path, file: &File) -> io::Result<()> 
 }
 
 fn information(file: &File) -> io::Result<BY_HANDLE_FILE_INFORMATION> {
+    information_at(file, None)
+}
+
+/// `depth` places an ancestor in its path for a reparse-point diagnostic.
+fn information_at(
+    file: &File,
+    depth: Option<(usize, usize)>,
+) -> io::Result<BY_HANDLE_FILE_INFORMATION> {
     let mut info = BY_HANDLE_FILE_INFORMATION::default();
     if unsafe { GetFileInformationByHandle(file.as_raw_handle().cast(), &mut info) } == 0 {
         return Err(io::Error::last_os_error());
     }
     if info.dwFileAttributes & FILE_ATTRIBUTE_REPARSE_POINT != 0 {
-        return Err(invalid_at(WindowsStorageGuard::ReparsePoint));
+        return Err(refused(WindowsGuardFailure::reparse(
+            reparse_tag(file),
+            depth,
+        )));
     }
     if info.dwFileAttributes & FILE_ATTRIBUTE_DIRECTORY == 0 && info.nNumberOfLinks != 1 {
         return Err(invalid_at(WindowsStorageGuard::HardLinks));
     }
     Ok(info)
+}
+
+fn reparse_tag(file: &File) -> Option<u32> {
+    let mut tag = FILE_ATTRIBUTE_TAG_INFO::default();
+    (unsafe {
+        GetFileInformationByHandleEx(
+            file.as_raw_handle().cast(),
+            FileAttributeTagInfo,
+            (&mut tag as *mut FILE_ATTRIBUTE_TAG_INFO).cast(),
+            size_of::<FILE_ATTRIBUTE_TAG_INFO>() as u32,
+        )
+    } != 0)
+        .then_some(tag.ReparseTag)
 }
 
 /// Retaining ancestor handles without FILE_SHARE_DELETE fences rename/removal
@@ -210,9 +249,9 @@ fn ancestors(path: &Path, include_leaf: bool) -> io::Result<Vec<File>> {
     let paths = checked_components(path)?;
     let count = paths.len().saturating_sub(usize::from(!include_leaf));
     let mut guards = Vec::with_capacity(count);
-    for path in paths.iter().take(count) {
+    for (index, path) in paths.iter().take(count).enumerate() {
         let file = open_raw(path, FILE_READ_ATTRIBUTES, OPEN_EXISTING, null())?;
-        let info = information(&file)?;
+        let info = information_at(&file, Some((index + 1, paths.len())))?;
         if (path != paths.last().unwrap() || !include_leaf)
             && info.dwFileAttributes & FILE_ATTRIBUTE_DIRECTORY == 0
         {
@@ -337,25 +376,18 @@ fn trusted_storage_sid(sid: PSID, user: PSID, system: PSID, admins: PSID) -> boo
 }
 
 fn validate_private_handle(file: &File) -> io::Result<()> {
-    validate_storage_handle(file, false)
+    validate_storage_handle(file)
 }
 
-fn validate_storage_handle(file: &File, installation_parent: bool) -> io::Result<()> {
+fn validate_storage_handle(file: &File) -> io::Result<()> {
     let info = information(file)?;
+    let directory = info.dwFileAttributes & FILE_ATTRIBUTE_DIRECTORY != 0;
     // FILE_DELETE_CHILD is meaningful only for a directory. NSIS can leave
     // that bit in an inherited read ACE on a regular file; it grants no file
     // mutation authority. Classify the same opened handle, retaining every
     // other mutating right and the full directory mask.
-    let write_rights = if info.dwFileAttributes & FILE_ATTRIBUTE_DIRECTORY != 0 {
-        if installation_parent {
-            // On a directory this bit is FILE_ADD_SUBDIRECTORY. Another user
-            // creating a sibling does not grant authority over a protected
-            // app child. Keep deletion, redirection and permission changes
-            // forbidden; the new child is exclusively created and validated.
-            WRITE_RIGHTS & !FILE_APPEND_DATA
-        } else {
-            WRITE_RIGHTS
-        }
+    let write_rights = if directory {
+        WRITE_RIGHTS
     } else {
         WRITE_RIGHTS & !FILE_DELETE_CHILD
     };
@@ -391,7 +423,11 @@ fn validate_storage_handle(file: &File, installation_parent: bool) -> io::Result
         system.as_ptr().cast_mut().cast(),
         admins.as_ptr().cast_mut().cast(),
     ) {
-        return Err(invalid_at(WindowsStorageGuard::Owner));
+        return Err(refused(WindowsGuardFailure::owner(
+            &sid_bytes(owner),
+            Some(sid_bytes(user.sid()).as_slice()),
+            directory,
+        )));
     }
     // OWNER RIGHTS (S-1-3-4) grants rights only to this object's current owner.
     // Resolve its authority only after the actual handle owner passed the
@@ -453,7 +489,13 @@ fn validate_storage_handle(file: &File, installation_parent: bool) -> io::Result
             )
             && !same_sid(sid, owner_rights.as_ptr().cast_mut().cast())
         {
-            return Err(invalid_at(WindowsStorageGuard::ForeignWriter));
+            return Err(refused(WindowsGuardFailure::foreign_writer(
+                &sid_bytes(sid),
+                Some(sid_bytes(user.sid()).as_slice()),
+                ace.Mask,
+                header.AceFlags as u32 & INHERITED_ACE != 0,
+                directory,
+            )));
         }
     }
     Ok(())
@@ -505,16 +547,27 @@ pub(super) fn private_directory(path: &Path) -> io::Result<()> {
             }
         }
     }
-    validate_directory(path, false)
+    validate_directory(path)
 }
 
-/// Read-only admission for a pre-existing ancestor of a NEW destination.
-/// Never apply this policy to an existing app root or installed file.
+/// Admission for a pre-existing ancestor of a NEW destination, such as
+/// `%LOCALAPPDATA%\Programs`. Maple did not create this folder and never
+/// changes it, so its permissions are not judged: Windows profiles routinely
+/// carry extra entries (a moved profile, a domain group, a folder under a
+/// drive root) that are no evidence of an attack. The new app root is created
+/// below it with an explicit protected ACL, while the namespace from the drive
+/// root down stays pinned and free of links. Never apply this to an existing
+/// app root or installed file.
 pub(super) fn installation_parent(path: &Path) -> io::Result<()> {
-    validate_directory(path, true)
+    let _parents = ancestors(path, false)?;
+    let directory = open_raw(path, FILE_READ_ATTRIBUTES, OPEN_EXISTING, null())?;
+    if information(&directory)?.dwFileAttributes & FILE_ATTRIBUTE_DIRECTORY == 0 {
+        return Err(invalid_at(WindowsStorageGuard::AncestorType));
+    }
+    validate_path_binding(path, &directory)
 }
 
-fn validate_directory(path: &Path, parent: bool) -> io::Result<()> {
+fn validate_directory(path: &Path) -> io::Result<()> {
     let _parents = ancestors(path, false)?;
     let directory = open_raw(
         path,
@@ -525,7 +578,7 @@ fn validate_directory(path: &Path, parent: bool) -> io::Result<()> {
     if information(&directory)?.dwFileAttributes & FILE_ATTRIBUTE_DIRECTORY == 0 {
         return Err(invalid());
     }
-    validate_storage_handle(&directory, parent)?;
+    validate_storage_handle(&directory)?;
     validate_path_binding(path, &directory)
 }
 
@@ -838,8 +891,20 @@ mod tests {
         assert!(private_directory(&claimed).is_err());
     }
 
+    fn guard_detail(error: &io::Error) -> String {
+        error
+            .get_ref()
+            .and_then(|e| e.downcast_ref::<WindowsGuardFailure>())
+            .and_then(|f| f.detail.clone())
+            .unwrap_or_default()
+    }
+
+    // Real profiles carry foreign write entries Maple did not create, such as
+    // a folder under a drive root inheriting Authenticated Users Modify. A new
+    // app root below such a parent is still created with its own protected
+    // ACL, so the parent is admitted and left exactly as it was.
     #[test]
-    fn destination_parents_still_refuse_mutation_and_do_not_repair_permissions() {
+    fn destination_parents_with_foreign_writers_admit_a_protected_new_root() {
         let temporary = tempfile::tempdir().unwrap();
         for (index, access) in [
             GENERIC_ALL,
@@ -857,10 +922,25 @@ mod tests {
         {
             let parent = temporary.path().join(format!("parent-{index}"));
             directory_with_inheritable_everyone_access(&parent, FILE_APPEND_DATA | access);
-            let error = installation_parent(&parent).unwrap_err();
+            installation_parent(&parent).unwrap();
+            // Admission never repairs: an owned directory still refuses it,
+            // and the refusal says which kind of account could write.
+            let error = private_directory(&parent).unwrap_err();
             assert!(error.to_string().contains("foreign-write-ace"));
-            // Repeat sees the same refusal: admission must not alter the ACL.
-            assert!(installation_parent(&parent).is_err());
+            let detail = guard_detail(&error);
+            assert!(
+                detail.starts_with("account: everyone; access: 0x"),
+                "{detail}"
+            );
+            assert!(
+                detail.ends_with("; inherited: no; object: folder"),
+                "{detail}"
+            );
+            let root = parent.join("Maple Work");
+            private_directory(&root).unwrap();
+            let state = root.join("state");
+            drop(create_private(&state).unwrap());
+            drop(open_readonly(&state).unwrap());
         }
     }
 
