@@ -652,10 +652,7 @@ impl ChatScreen {
                             .items_center()
                             .gap_2()
                             .child(div().min_w_0().truncate().child(label))
-                            .child(widgets::status_badge(
-                                tr("chat-model-popular"),
-                                theme::accent(),
-                            )),
+                            .child(popular_badge()),
                     )
                 } else {
                     row
@@ -1706,6 +1703,22 @@ fn chip(
         .when(chevron, |el| {
             el.child(icon("chevron-down", px(14.), color).flex_none())
         })
+}
+
+/// The Popular badge on a model row: deep coral on the soft coral
+/// container, which reads at 4.5:1 or better in both themes, where the
+/// brand coral on a grey pill read at under 2:1 in the light one.
+fn popular_badge() -> Div {
+    div()
+        .flex_none()
+        .px_1p5()
+        .py(px(1.))
+        .rounded_full()
+        .bg(gpui::rgb(theme::accent_container()))
+        .text_xs()
+        .font_weight(gpui::FontWeight::SEMIBOLD)
+        .text_color(gpui::rgb(theme::accent_text()))
+        .child(tr("chat-model-popular"))
 }
 
 /// A section of the model panel.
