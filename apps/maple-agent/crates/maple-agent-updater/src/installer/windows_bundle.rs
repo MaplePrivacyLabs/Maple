@@ -1734,8 +1734,8 @@ fn admit_windows_installation(
                 .ok_or(InstallError::Invalid("Windows installer parent"))?;
         }
         // Existing destinations retain strict installed-storage admission.
-        // A parent of a new root may allow creation of sibling directories;
-        // the new app root itself receives an explicit protected ACL.
+        // The parent of a new root is not Maple's: its permissions are not
+        // judged, because the new app root receives an explicit protected ACL.
         if existing == root {
             windows_fs::private_directory(existing)?;
         } else {

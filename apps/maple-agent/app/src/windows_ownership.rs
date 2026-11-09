@@ -120,8 +120,8 @@ pub(crate) fn default_owner_identity() -> io::Result<String> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use maple_agent::store::{Store, StoreError, StorePaths, StoreState};
-    use std::{path::Path, process::Command};
+    use maple_agent::store::{Store, StorePaths, StoreState};
+    use std::process::Command;
     use windows_sys::Win32::Security::{TOKEN_STATISTICS, TokenStatistics};
 
     const FIXTURE: &str = "windows_ownership::tests::owner_process_fixture";
@@ -138,25 +138,8 @@ mod tests {
         )
     }
 
-    fn snapshot(directory: &Path) -> Vec<(String, Vec<u8>)> {
-        let mut files: Vec<_> = std::fs::read_dir(directory)
-            .unwrap()
-            .map(|entry| entry.unwrap())
-            // The WAL index is reconstructible and can be memory-mapped.
-            .filter(|entry| entry.file_name() != "maple.db-shm")
-            .map(|entry| {
-                (
-                    entry.file_name().to_string_lossy().into_owned(),
-                    std::fs::read(entry.path()).unwrap(),
-                )
-            })
-            .collect();
-        files.sort_by(|a, b| a.0.cmp(&b.0));
-        files
-    }
-
     #[test]
-    fn startup_owns_new_store_files_without_changing_the_parent_or_adopting_old_files() {
+    fn startup_owns_new_store_files_without_changing_the_parent_and_repairs_old_files() {
         let fixture = tempfile::Builder::new()
             .prefix("maple-windows-owner-")
             .tempdir()
@@ -176,7 +159,7 @@ mod tests {
         );
         assert!(
             String::from_utf8_lossy(&result.stdout)
-                .contains("owned store create/reopen and old-store refusal verified")
+                .contains("owned store create/reopen and old-store repair verified")
         );
         assert_eq!(default_owner_identity().unwrap(), before_owner);
         assert_eq!(token_id(), before_token);
@@ -204,15 +187,17 @@ mod tests {
         );
         let user = user_identity().unwrap();
         let stale = root.join("old-default-owner");
-        let old_snapshot = if default_owner_identity().unwrap() != user {
-            assert!(matches!(
-                Store::open(StorePaths::new(&stale)),
-                Err(StoreError::UnsafePath)
-            ));
-            Some(snapshot(&stale.join("store-v1/db")))
-        } else {
-            None
-        };
+        // Before startup sets the user as default owner, SQLite's own files in
+        // an elevated run are owned by Administrators, as in stores made by
+        // earlier versions. Only trusted accounts could have written them, so
+        // the store restores its private form instead of refusing to open.
+        let elevated_default = default_owner_identity().unwrap() != user;
+        if elevated_default {
+            let store = Store::open(StorePaths::new(&stale)).unwrap();
+            assert_eq!(store.state(), StoreState::Open);
+            store.upsert_account("stale-owner-fixture", 1).unwrap();
+            store.close_for_shutdown().unwrap();
+        }
 
         prepare().unwrap();
         prepare().unwrap(); // Already-correct ownership is an idempotent query.
@@ -225,13 +210,12 @@ mod tests {
             store.upsert_account("ownership-fixture", 1).unwrap();
             store.close_for_shutdown().unwrap();
         }
-        if let Some(before) = old_snapshot {
-            assert!(matches!(
-                Store::open(StorePaths::new(&stale)),
-                Err(StoreError::UnsafePath)
-            ));
-            assert_eq!(snapshot(&stale.join("store-v1/db")), before);
+        if elevated_default {
+            let store = Store::open(StorePaths::new(&stale)).unwrap();
+            assert_eq!(store.state(), StoreState::Open);
+            store.close_for_shutdown().unwrap();
+            assert!(stale.join("store-v1/db/maple.db").is_file());
         }
-        println!("owned store create/reopen and old-store refusal verified");
+        println!("owned store create/reopen and old-store repair verified");
     }
 }

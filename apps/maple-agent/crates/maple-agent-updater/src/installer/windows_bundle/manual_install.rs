@@ -303,6 +303,47 @@ fn profile_lock(profile: &str) -> Result<ProfileLock> {
     })
 }
 
+/// NSIS creates `%LOCALAPPDATA%\Maple Work Installer Staging\<run>` with a
+/// protected ACL, unpacks the payload into it and deletes it when it exits. A
+/// killed installer leaves its run behind, about 150 MB, so a later install
+/// removes runs older than an hour. Only that fixed root is touched, never this
+/// run's own folder, and never a link: `remove_dir_all` does not follow them.
+fn remove_stale_staging(payload: &Path) {
+    use std::os::windows::fs::MetadataExt;
+    use windows_sys::Win32::Storage::FileSystem::FILE_ATTRIBUTE_REPARSE_POINT;
+    const STAGING: &str = "Maple Work Installer Staging";
+    let Some(run) = payload.parent() else {
+        return;
+    };
+    let Some(root) = run
+        .parent()
+        .filter(|r| r.file_name() == Some(OsStr::new(STAGING)))
+    else {
+        return;
+    };
+    let Ok(entries) = std::fs::read_dir(root) else {
+        return;
+    };
+    for entry in entries.take(64).flatten() {
+        let path = entry.path();
+        let Ok(metadata) = std::fs::symlink_metadata(&path) else {
+            continue;
+        };
+        let stale = metadata
+            .created()
+            .ok()
+            .and_then(|created| created.elapsed().ok())
+            .is_some_and(|age| age > std::time::Duration::from_secs(3600));
+        if path != run
+            && stale
+            && metadata.is_dir()
+            && metadata.file_attributes() & FILE_ATTRIBUTE_REPARSE_POINT == 0
+        {
+            let _ = std::fs::remove_dir_all(&path);
+        }
+    }
+}
+
 fn digest(file: &File) -> Result<String> {
     let mut copied = file.try_clone()?;
     copied.seek(SeekFrom::Start(0))?;
@@ -419,6 +460,7 @@ fn install_with_progress(
         let checker = checker.canonicalize()?;
         let payload = checker.parent().ok_or_else(invalid)?;
         let _payload_paths = windows_fs::pin_directory(payload)?;
+        remove_stale_staging(payload);
         // Pin all payload bytes and their namespace before authenticating them.
         let sources: BTreeMap<_, _> = FILES
             .iter()
