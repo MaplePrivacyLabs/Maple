@@ -3141,11 +3141,17 @@ linux_system_elf_interpreter_for_file() {
   esac
 }
 
+# The host supplies glibc, and GBM and libdrm, which must match its GPU
+# drivers and kernel. A bundled libgbm looks for drivers only in its build's
+# compiled-in directory, so WebKit gets no GPU device and draws a blank window.
+# linuxdeploy excludes both by default; the closure repair must not add them.
 linux_appimage_ignored_needed_library() {
   case "$1" in
     ld-linux-*.so.* | \
       libc.so.* | \
       libdl.so.* | \
+      libdrm.so.* | \
+      libgbm.so.* | \
       libm.so.* | \
       libmvec.so.* | \
       libnss_*.so.* | \
@@ -3926,6 +3932,13 @@ verify_linux_appdir_runtime_closure() {
 
   libdir="$(linux_appdir_lib_dir "${appdir}")"
   status=0
+
+  while IFS= read -r -d '' library; do
+    if linux_appimage_ignored_needed_library "$(basename "${library}")"; then
+      echo "AppImage bundles ${library#"${appdir}"/}, which the host must supply." >&2
+      status=1
+    fi
+  done < <(find "${libdir}" -maxdepth 1 \( -type f -o -type l \) -print0 2>/dev/null)
 
   while IFS= read -r -d '' elf; do
     while IFS= read -r needed; do

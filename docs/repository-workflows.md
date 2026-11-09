@@ -314,6 +314,11 @@ which a file dialog aborts the process. `AppRun` sets `GIO_MODULE_DIR` to the
 bundled module. The dev shell sets its own, so only package verification can catch
 a gap: `scripts/ci/appimage_gio_runtime.py` loads the extracted AppImage's libraries
 and fails unless they have a TLS backend and the file chooser's schema and template.
+GPU-facing libraries go the other way: like glibc, `libgbm` and `libdrm` come from
+the host, because they must match its GPU drivers and kernel. A bundled `libgbm`
+searches only its build's driver directory (`/run/opengl-driver` from nixpkgs),
+so WebKit's GPU renderer fails and the window stays blank. `linuxdeploy` already
+excludes both, and the runtime-closure check rejects an AppImage that bundles them.
 The RPM builder preserves explicit `bundle.linux.rpm.depends` from the Tauri
 configuration. WebKitGTK (`webkit2gtk4.1`) is required on Fedora, including KDE;
 package verification rejects RPMs missing that requirement. Install a downloaded
