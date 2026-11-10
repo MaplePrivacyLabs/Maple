@@ -21,6 +21,17 @@
         overlays = [
           (import rust-overlay)
           (final: prev: {
+            # Backport GNOME/glib@c9da977c for the Linux desktop bundle.
+            # Remove this when the pinned nixpkgs GLib changes to a fixed build.
+            glib =
+              if prev.stdenv.hostPlatform.isLinux && prev.glib.version == "2.88.3" then
+                prev.glib.overrideAttrs (old: {
+                  patches = (old.patches or [ ]) ++ [
+                    ./apps/maple-research/frontend/src-tauri/patches/glib-dbus-introspection-cve-2026-58016.patch
+                  ];
+                })
+              else
+                prev.glib;
             # Keep bun on versions.bun (and setup-bun's Windows pin) when nixpkgs moves ahead.
             bun = prev.bun.overrideAttrs (old: rec {
               version = versions.bun;
