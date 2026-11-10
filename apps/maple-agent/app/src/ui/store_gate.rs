@@ -1156,7 +1156,22 @@ impl PasswordForm {
         }
     }
 
-    fn close(&mut self, cx: &mut Context<Self>) {
+    /// The heading the form shows for its action; also the dialog's
+    /// accessible name in Settings.
+    pub(crate) fn title(&self) -> gpui::SharedString {
+        match self.action {
+            PasswordAction::Set | PasswordAction::Setup => {
+                tr("settings-password-enable-encryption")
+            }
+            PasswordAction::Change => tr("settings-password-change-unlock-password"),
+            PasswordAction::Remove => tr("settings-password-remove-encryption"),
+        }
+    }
+
+    /// Leave the form without doing anything; a no-op while an operation
+    /// runs. The Cancel button, and the Settings dialog's Escape and
+    /// backdrop, all go through here.
+    pub(crate) fn close(&mut self, cx: &mut Context<Self>) {
         if self.busy {
             return;
         }
@@ -1557,19 +1572,19 @@ impl Render for PasswordForm {
         }
         let (title, description, submit_label) = match self.action {
             PasswordAction::Set | PasswordAction::Setup => (
-                tr("settings-password-enable-encryption"),
+                self.title(),
                 tr(
                     "settings-password-protect-saved-conversation-text-settings-and-sign-in-attached-fil",
                 ),
                 tr("settings-password-enable-encryption"),
             ),
             PasswordAction::Change => (
-                tr("settings-password-change-unlock-password"),
+                self.title(),
                 tr("settings-password-enter-your-current-unlock-password-then-choose-a-new-one"),
                 tr("settings-password-save-password"),
             ),
             PasswordAction::Remove => (
-                tr("settings-password-remove-encryption"),
+                self.title(),
                 tr(
                     "settings-password-your-local-maple-data-will-no-longer-be-encrypted-enter-your-curr",
                 ),

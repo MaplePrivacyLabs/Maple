@@ -1347,7 +1347,18 @@ export type ModelCatalogItem = Model &
     sort_order?: number;
     /** False for a model Maple Work does not offer for new tasks; absent on older servers. */
     available_in_agent?: boolean;
+    /** Id of the {@link ModelGroup} the model lists under; absent without one and on older servers. */
+    group?: string;
   };
+
+/**
+ * A section of the model picker. Translate the heading by `id` and show
+ * `label`, the English heading, for an id with no translation.
+ */
+export type ModelGroup = {
+  id: string;
+  label: string;
+};
 
 export type ModelAlias = ModelReasoningMetadata & {
   id: ModelAliasId;
@@ -1363,6 +1374,8 @@ export type ModelAlias = ModelReasoningMetadata & {
 export type ModelCatalogResponse = {
   object: "list";
   data: ModelCatalogItem[];
+  /** The picker's sections in display order; absent on older servers. */
+  groups?: ModelGroup[];
   aliases: ModelAlias[];
   defaults: {
     quick: ModelAliasId;

@@ -49,17 +49,52 @@ settings-notification-test-title = Desktop notifications on
 # $time is the local time as HH:MM.
 settings-notification-test-body = You will see alerts like this at { $time }.
 settings-section-general = General
-settings-section-account = Account
-settings-section-billing = Billing
+settings-section-appearance = Appearance
+settings-section-account = Account & Security
+settings-section-usage = Usage
+settings-section-billing = Plan & Billing
+settings-section-developer = Developer & API
 settings-section-shortcuts = Keyboard Shortcuts
-settings-section-prompt = Additional instructions
 settings-section-integrations = Integrations
 settings-section-tools = Tools
 settings-section-remote = Remote computers
-settings-section-usage = Usage
 settings-section-about = About
-settings-section-advanced = Privacy & Security
-settings-back = Back to app
+settings-group-workspace = Workspace
+settings-group-connections = Connections
+settings-group-account = Account & System
+settings-filter-placeholder = Filter settings…
+settings-filter-empty = No matching sections.
+# Hidden filter terms per section: former page names and the controls that moved there. Comma-separated, matched as plain substrings.
+settings-keywords-general = defaults, language, notifications, vim, voice, speech, agent instructions, system prompt
+settings-keywords-appearance = theme, dark, light, system, motion, font, text size, tool details, summaries
+settings-keywords-shortcuts = keyboard, bindings, hotkeys
+settings-keywords-integrations = mcp, servers, coding agents, computer use, custom server
+settings-keywords-tools = web, python, terminal, shell, files, read, write, edit, search
+settings-keywords-developer = api, acp, keys, local api, proxy, editors, credits
+settings-keywords-remote = pairing, computers, devices
+settings-keywords-account = privacy, security, password, sign out, encryption, local data, delete account, profile
+settings-keywords-usage = usage, meter, quota, limit, reset, credits
+settings-keywords-billing = plan, subscription, credits, upgrade, pro, max, team, payment
+settings-keywords-about = version, update
+settings-general-subtitle = Task defaults, language, notifications, editing modes, voice, and agent instructions.
+settings-appearance-subtitle = Theme, motion, conversation typography, and transcript display.
+settings-notifications-heading = Notifications
+settings-theme-motion = Theme & motion
+settings-transcript = Transcript
+settings-developer-tabs = Developer sections
+settings-developer-subtitle = OpenAI-compatible local API, account keys, and ACP client setup.
+settings-account-profile = Profile
+settings-account-security-group = Password & session
+settings-account-subtitle = Identity, sign-in credentials, local data protection, and account management.
+settings-usage-subtitle = How much of this month's plan you have used, and your extra credits.
+settings-usage-extra-credits = Extra credits
+settings-usage-what-counts = Tasks count toward your plan until it resets; extra credits are used once the plan allowance runs out.
+settings-usage-manage-plan = Manage plan
+settings-usage-manage-plan-description = Change plans, manage the subscription, or buy more credits.
+settings-billing-subtitle = Subscription, plans on sale, and prepaid API credits.
+settings-about-subtitle = Application version and background update downloads.
+settings-shortcuts-subtitle = Search and customize built-in keyboard bindings.
+settings-back = Back
 settings-title = Settings
 settings-sections = Settings sections
 settings-theme-label-system = System
@@ -111,7 +146,6 @@ settings-settings-shortcut-settings-applied = Shortcut settings applied.
 settings-settings-shortcut-recording-cancelled = Shortcut recording cancelled.
 settings-settings-a-shortcut-can-contain-at-most-four-strokes = A shortcut can contain at most four strokes.
 settings-settings-press-at-least-one-shortcut-key = Press at least one shortcut key.
-settings-settings-plan = Plan
 settings-settings-plan-usage-unavailable = Plan usage unavailable
 settings-settings-about = About
 settings-settings-version = Version
@@ -138,12 +172,10 @@ settings-settings-unbound = Unbound
 settings-settings-modified = Modified
 settings-settings-record = Record
 settings-settings-disable = Disable
-settings-settings-additional-instructions = Additional instructions
-settings-settings-added-to-every-task-after-maple-s-own-system-prompt-use-it-for-pr = Added to every task after Maple's own system prompt. Use it for preferences such as tone, language, or how you like to work. Changes apply to tasks started after you save.
+settings-agent-instructions = Agent instructions
 settings-settings-save = Save
 settings-settings-clear = Clear
 settings-settings-integrations = Integrations
-settings-settings-execution-computer-this-computer = Execution computer: This computer
 settings-settings-manage-integrations-here-enable-coding-agents-to-make-them-availa = Manage integrations here. Enable coding agents to make them available in the composer, then select them for each task.
 settings-settings-detecting-integrations = Detecting integrations…
 settings-settings-no-supported-integrations-detected-on-this-device = No supported integrations detected on this device.
@@ -155,7 +187,6 @@ settings-settings-cua-team = Cua team
 settings-settings-set-up = Set up
 settings-settings-enable = Enable
 settings-settings-edit-server = Edit server
-settings-settings-new-server = New server
 settings-settings-name = Name
 settings-settings-description = Description
 settings-settings-transport = Transport
@@ -199,7 +230,6 @@ settings-account-confirmation-code = Confirmation code
 settings-account-enter-the-confirmation-code-from-the-email = Enter the confirmation code from the email
 settings-account-password-changed = Password changed.
 settings-account-verification-email-sent-check-your-inbox = Verification email sent. Check your inbox.
-settings-account-account = Account
 settings-account-loading-account = Loading account…
 settings-account-email = Email
 settings-account-no-email-on-this-account = No email on this account
@@ -211,6 +241,7 @@ settings-account-danger-zone = Danger zone
 settings-account-delete-account = Delete account
 settings-account-permanently-deletes-your-account-tasks-and-encrypted-data-this-ca = Permanently deletes your account, tasks, and encrypted data. This cannot be undone.
 settings-account-delete-account-more = Delete account…
+settings-account-delete-dialog-title = Delete account?
 settings-account-this-permanently-deletes-your-account-tasks-and-encrypted-data-ty = This permanently deletes your account, tasks, and encrypted data. Type DELETE, then we email you a confirmation code.
 settings-account-cancel = Cancel
 settings-account-sending = Sending…
@@ -246,10 +277,11 @@ settings-advanced-maple-s-copy-of-your-conversation-text-settings-and-sign-in-on
 settings-advanced-your-conversation-text-settings-and-sign-in-are-stored-on-this-co = Your conversation text, settings and sign-in are stored on this computer, readable only by your user account. Set an unlock password to encrypt them. Attached files and images remain unencrypted.
 settings-advanced-erase-this-version-s-local-data = Erase this version's local data
 settings-advanced-cancel = Cancel
-settings-advanced-change-password = Change password…
+settings-advanced-change-password = Change unlock password…
 settings-advanced-set-unlock-password = Set unlock password…
 settings-advanced-remove-password = Remove password…
 settings-advanced-erase-local-data = Erase local data…
+settings-advanced-erase-dialog-title = Erase local data?
 settings-advanced-while-maple-is-locked-your-other-computers-can-t-reach-this-one-a = While Maple is locked, your other computers can't reach this one. After a restart, open Maple and unlock it to turn remote access back on.
 settings-advanced-claude-code-keeps-its-own-copy-of-the-work-maple-hands-it-in-its = Claude Code keeps its own copy of the work Maple hands it, in its own folder, and Maple's password doesn't encrypt it.
 settings-advanced-codex-keeps-its-own-copy-of-the-work-maple-hands-it-in-its-own-fo = Codex keeps its own copy of the work Maple hands it, in its own folder, and Maple's password doesn't encrypt it.
@@ -259,10 +291,9 @@ settings-advanced-your-unlock-password-was-removed = Your unlock password was re
 settings-api-credits-loading-balance = Loading balance…
 settings-api-credits-balance-unavailable = Balance unavailable
 settings-api-credits-enter-an-amount = Enter an amount
-settings-api-credits-opened-checkout-in-your-browser-refresh-after-paying-to-see-the-n = Opened checkout in your browser. Refresh after paying to see the new balance.
-settings-api-credits-opened-bitcoin-checkout-in-your-browser-credits-arrive-once-the-p = Opened Bitcoin checkout in your browser. Credits arrive once the payment confirms; refresh to see them.
+settings-api-credits-opened-checkout-in-your-browser-refresh-after-paying-to-see-the-n = Opened checkout in your browser. The balance updates when you come back.
+settings-api-credits-opened-bitcoin-checkout-in-your-browser-credits-arrive-once-the-p = Opened Bitcoin checkout in your browser. Credits arrive once the payment confirms; the balance updates when you come back.
 settings-api-credits-api-credits = API credits
-settings-api-credits-refresh = Refresh
 settings-api-credits-extra-credit-balance = Extra credit balance
 settings-api-credits-1-per-1-000-credits-extends-your-plan-when-its-included-usage-run = $1 per 1,000 credits. Extends your plan when its included usage runs out.
 settings-api-credits-custom-amount = Custom amount
@@ -271,8 +302,6 @@ settings-api-credits-pay-with-card = Pay with card
 settings-api-credits-pay-with-bitcoin = Pay with Bitcoin
 settings-api-credits-opening-checkout = Opening checkout…
 settings-api-credits-anonymous-accounts-pay-with-bitcoin = Anonymous accounts pay with Bitcoin
-settings-api-credits-checkout-opens-in-your-browser-anonymous-accounts-pay-with-bitcoi = Checkout opens in your browser. Anonymous accounts pay with Bitcoin.
-settings-api-credits-checkout-opens-in-your-browser = Checkout opens in your browser.
 settings-api-keys-key-name-for-example-cursor = Key name, for example “Cursor”
 settings-api-keys-api-keys = API keys
 settings-api-keys-unlock-api-access = Unlock API access
@@ -288,21 +317,20 @@ settings-api-keys-copy-the-key-now-for-your-privacy-it-is-not-stored-anywhere-yo
 settings-api-keys-done = Done
 settings-api-keys-deleting = Deleting…
 settings-api-keys-confirm-delete = Confirm delete
-settings-billing-opened-the-subscription-portal-in-your-browser-refresh-after-maki = Opened the subscription portal in your browser. Refresh after making changes.
+settings-billing-opened-the-subscription-portal-in-your-browser-refresh-after-maki = Opened the subscription portal in your browser. This page updates when you come back.
 settings-billing-opened-the-pricing-page-in-your-browser = Opened the pricing page in your browser.
-settings-billing-opened-checkout-in-your-browser-refresh-after-paying-to-see-the-n = Opened checkout in your browser. Refresh after paying to see the new plan.
+settings-billing-opened-checkout-in-your-browser-refresh-after-paying-to-see-the-n = Opened checkout in your browser. This page updates when you come back.
 settings-billing-plan = Plan
-settings-billing-refresh = Refresh
 settings-billing-loading-plan = Loading plan…
 settings-billing-free = Free
-settings-billing-manage-subscription = Manage subscription
-settings-billing-plans = Plans
 settings-billing-no-plans-are-on-sale-right-now = No plans are on sale right now.
 settings-billing-loading-plans = Loading plans…
-settings-billing-payments-open-in-your-browser-bitcoin-payments-and-team-seats-are = Payments open in your browser. Bitcoin payments and team seats are set up on the web pricing page.
-settings-billing-current-plan = Current plan
 settings-billing-choose = Choose
 settings-billing-change-plan = Change plan
+settings-refresh = Refresh
+settings-billing-your-plan = Your plan
+settings-billing-view-plans = View plans
+settings-billing-choose-a-plan = Choose a plan
 settings-billing-see-on-the-web = See on the web
 settings-billing-active = Active
 settings-billing-trial = Trial
@@ -312,7 +340,7 @@ settings-billing-paid-with-bitcoin-to-change-plans-contact-support-trymaple-ai =
 settings-billing-activated-with-a-subscription-pass-it-ends-on-the-date-above-with = Activated with a subscription pass. It ends on the date above without renewing.
 settings-local-api-port-1-65535 = Port (1–65535)
 settings-local-api-could-not-read-the-local-api-status-reconnect-to-this-computer-an = Could not read the local API status. Reconnect to this computer and try again.
-settings-local-api-could-not-update-the-local-api-refresh-its-status-and-try-again = Could not update the local API. Refresh its status and try again.
+settings-local-api-could-not-update-the-local-api-refresh-its-status-and-try-again = Could not update the local API. Refresh the page and try again.
 settings-local-api-local-api = Local API
 settings-local-api-learn-more = Learn more
 settings-local-api-enable-local-api-on-this-computer = Enable local API on this computer
@@ -320,7 +348,6 @@ settings-local-api-unavailable-while-local-api-settings-are-loading-or-being-upd
 settings-local-api-updating-local-api-settings = Updating local API settings…
 settings-local-api-port = Port
 settings-local-api-copy-local-api-base-url = Copy local API base URL
-settings-local-api-refresh-status = Refresh status
 settings-local-api-enter-a-port-between-1-and-65535 = Enter a port between 1 and 65535.
 settings-local-api-paused = Paused
 settings-local-api-starting = Starting…
@@ -832,6 +859,211 @@ settings-month-november = November
 settings-month-december = December
 # $month is a translated month name; $day and $year are numbers.
 settings-date = { $month } { $day }, { $year }
+settings-usage-scope = Your whole account: Maple Chat and Maple Work on every device, plus requests made with your API keys. Not just this computer.
+settings-usage-loading = Loading usage…
+settings-usage-retry = Try again
+# $left is a formatted number of credits.
+settings-usage-left = { $left } left
+# $used and $allowance are formatted numbers of credits.
+settings-usage-plan-amount = { $used } of { $allowance } plan credits used
+# $used and $allowance are formatted numbers of credits.
+settings-usage-team-amount = { $used } of { $allowance } team credits used
+# $credits is a formatted number.
+settings-usage-team-you = You { $credits }
+# $credits is a formatted number.
+settings-usage-team-rest = Rest of team { $credits }
+settings-usage-team-footer = Everything below is your own usage. The pool above includes the whole team.
+# $reset is a short date such as Dec 1.
+settings-usage-pace-exhausted = Plan credits ran out. Add Extra credits to keep going before the reset on { $reset }.
+# $reset is a short date such as Dec 1.
+settings-usage-pace-exhausted-extra = Plan credits ran out. Extra credits cover usage while your balance lasts. Plan credits reset on { $reset }.
+# $reset is a short date such as Dec 1.
+settings-usage-pace-team-exhausted = The team pool ran out. Team usage pauses until the reset on { $reset }.
+# $pace is a formatted number of credits and $count the same number for plurals; $allowance is a formatted number such as 20,000; $date is a short date.
+settings-usage-pace-runs-out = About { $pace } { $count ->
+    [one] credit
+   *[other] credits
+} a day reaches { $allowance } around { $date }. After that, you need Extra credits until the reset.
+# $pace is a formatted number of credits and $count the same number for plurals; $allowance is a formatted number such as 20,000; $date is a short date.
+settings-usage-pace-runs-out-extra = About { $pace } { $count ->
+    [one] credit
+   *[other] credits
+} a day reaches { $allowance } around { $date }. After that, Extra credits cover the rest.
+# $pace is a formatted number of credits and $count the same number for plurals; $allowance is a formatted number such as 20,000; $date is a short date.
+settings-usage-pace-team-runs-out = About { $pace } { $count ->
+    [one] credit
+   *[other] credits
+} a day reaches { $allowance } around { $date }. After that, team usage pauses until the reset.
+# $pace is a formatted number of credits and $count the same number for plurals; $projected and $allowance are formatted numbers such as 18,000; $reset is a short date.
+settings-usage-pace-on-track = About { $pace } { $count ->
+    [one] credit
+   *[other] credits
+} a day comes to roughly { $projected } of { $allowance } by { $reset }.
+settings-usage-history-title = Usage history
+settings-usage-range-picker = Usage range
+settings-usage-range-last-30-days = Last 30 days
+settings-usage-range-this-month = This month
+# $dates is a span of dates such as Nov 1 – Nov 8.
+settings-usage-range-this-month-dates = This month · { $dates }
+settings-usage-range-previous = Previous months
+# $dates is a span of dates such as Nov 1 – Nov 8.
+settings-usage-range-month-to-date = { $dates }, month to date
+settings-usage-range-error = Couldn't load usage for this range.
+settings-usage-tile-credits = Credits used
+settings-usage-tile-requests = Requests
+settings-usage-tile-active = Active days
+# $active and $days are numbers: days with usage, and days in the range.
+settings-usage-tile-active-value = { $active } of { $days }
+settings-usage-show = Show
+settings-usage-split-by = Split by
+settings-usage-metric-credits = Credits
+settings-usage-metric-requests = Requests
+settings-usage-metric-tokens = Tokens
+settings-usage-split-model = Model
+settings-usage-split-app = App
+settings-usage-split-pool = Plan / Extra
+settings-usage-split-token = Token type
+settings-usage-split-word-model = model
+settings-usage-split-word-app = app
+settings-usage-split-word-pool = which balance paid
+settings-usage-split-word-token = input, cached input and output
+settings-usage-daily-title-credits = Daily credits
+settings-usage-daily-title-requests = Daily requests
+settings-usage-daily-title-tokens = Daily tokens
+# $title is the chart's heading, such as Daily credits; $split is how bars are split, such as model.
+settings-usage-daily-label = { $title }, split by { $split }
+settings-usage-marker-reset = Plan credits reset
+settings-usage-extra-span = Plan credits ran out · Extra credits used
+settings-usage-no-usage = No usage in this range.
+settings-usage-apps-title = By app
+settings-usage-apps-description = Credits by the app that sent each request.
+# $percent is a percentage such as 12%.
+settings-usage-apps-api-share = { $percent } through API keys, in any app
+settings-usage-models-title = By model
+settings-usage-models-description = Every model that ran for your account in this range, including background requests Maple makes for you.
+settings-usage-col-model = Model
+settings-usage-col-requests = Requests
+settings-usage-col-input = Input
+settings-usage-col-cached = Cached input
+settings-usage-col-output = Output
+settings-usage-col-credits = Credits
+settings-usage-col-share = Share
+settings-usage-col-time = Time
+settings-usage-col-source = Source
+settings-usage-col-app = App
+# $count is a number of further apps.
+settings-usage-origin-more = { $count } more
+# $percent is a percentage such as 62%; $origin is an app such as Chat.
+settings-usage-origin-share = { $percent } { $origin }
+settings-usage-origin-chat = Chat
+settings-usage-origin-work = Work
+settings-usage-origin-proxy = Proxy
+settings-usage-origin-api = API keys
+settings-usage-token-input = Input
+settings-usage-token-cached = Cached input
+settings-usage-token-output = Output
+settings-usage-more-models = More models
+settings-usage-pool-plan = Plan credits
+settings-usage-pool-extra = Extra credits
+settings-usage-months-title = Last 12 months
+settings-usage-months-description = Credits per calendar month by app. The current month is shown so far.
+settings-usage-months-label = Credits per calendar month by app
+settings-usage-requests-title = Recent requests
+settings-usage-requests-description = Every request your account made, newest first.
+settings-usage-requests-loading = Loading requests…
+settings-usage-requests-error = Couldn't load recent requests.
+settings-usage-requests-empty = No requests yet.
+settings-usage-requests-more-error = Couldn't load more requests.
+settings-usage-load-more = Load more
+settings-usage-source-api-key = API key
+# $app is an app name: Chat, Work or Proxy.
+settings-usage-source-with-key = { $app } · API key
+settings-usage-paid-extra = Extra
+settings-usage-prices-title = Current model prices
+settings-usage-prices-description = Credits per 1 million tokens, as charged today. 1,000 credits is $1 at list price.
+settings-usage-prices-loading = Loading prices…
+settings-usage-prices-error = Couldn't load prices.
+settings-usage-price-same-as-input = Same as input
+settings-usage-prices-note = Usage above shows the credits actually charged at the time, so older requests may not match today's prices.
+settings-usage-prices-unlisted = Models marked — no longer have a listed price.
+settings-usage-prices-vary = * Depends on the provider that served the request; the default is shown.
+settings-usage-about-title = About these numbers
+settings-usage-about-account-title = Your whole account
+settings-usage-about-account = Maple Chat, Maple Work and Maple Proxy on every device, plus your API keys.
+settings-usage-about-apps-title = Apps and API keys
+settings-usage-about-apps = Each request counts toward the app that sent it, even when it used an API key, including the Local Proxy in Chat and the Local API in Work. API keys on their own are requests that named no app, such as direct API calls. Requests from before apps reported their name count as Chat unless they used an API key.
+settings-usage-about-credits-title = Credits
+# $plan is a product name such as Pro, not translated; $allowance is a formatted number.
+settings-usage-about-credits-plan = Credits measure usage at our API list prices: 1,000 credits is $1 of usage. Your { $plan } plan includes { $allowance } credits each billing period. Extra credits are used only after plan credits run out, and they don't expire.
+# $allowance is a formatted number.
+settings-usage-about-credits-unnamed = Credits measure usage at our API list prices: 1,000 credits is $1 of usage. Your plan includes { $allowance } credits each billing period. Extra credits are used only after plan credits run out, and they don't expire.
+# $allowance is a formatted number.
+settings-usage-about-credits-team = Credits measure usage at our API list prices: 1,000 credits is $1 of usage. Your team shares { $allowance } credits each billing period.
+settings-usage-about-background-title = Background requests
+settings-usage-about-background = Maple also sends requests for you, for example to name chats, summarize tool results, choose a model for Auto, or shorten long conversations. They run on whichever model Maple uses for that job, which can change, and they count toward your usage. They are listed under that model.
+settings-usage-about-auto-title = Auto, Quick and Powerful
+settings-usage-about-auto = These choose a model for each request. Usage is listed under the model that actually ran.
+settings-usage-about-tokens-title = Input, cached input and output
+settings-usage-about-tokens = Input is new prompt text. Cached input is prompt text the model reused from a recent request; models that support it charge less for it, and some models don't report it (shown as —). Output is what the model wrote. The three add up to your total tokens.
+settings-usage-about-prices-title = Prices
+settings-usage-about-prices = The price table shows today's prices. Usage shows the credits actually charged at the time.
+settings-usage-about-free-title = Not counted
+settings-usage-about-free = Voice input, read aloud and web search don't use credits.
+settings-usage-about-zone-title = Time zone
+# $zone is a time zone name such as America/Chicago.
+settings-usage-about-zone = Days are shown in your time zone ({ $zone }).
+# $month is a short month name such as Oct; $day is a number.
+settings-usage-short-date = { $month } { $day }
+# $weekday is a short weekday name such as Wed; $date is a short date such as Oct 14.
+settings-usage-weekday-date = { $weekday }, { $date }
+# $month is a month name such as October; $year is a number.
+settings-usage-month-year = { $month } { $year }
+settings-usage-month-jan = Jan
+settings-usage-month-feb = Feb
+settings-usage-month-mar = Mar
+settings-usage-month-apr = Apr
+settings-usage-month-may = May
+settings-usage-month-jun = Jun
+settings-usage-month-jul = Jul
+settings-usage-month-aug = Aug
+settings-usage-month-sep = Sep
+settings-usage-month-oct = Oct
+settings-usage-month-nov = Nov
+settings-usage-month-dec = Dec
+settings-usage-weekday-mon = Mon
+settings-usage-weekday-tue = Tue
+settings-usage-weekday-wed = Wed
+settings-usage-weekday-thu = Thu
+settings-usage-weekday-fri = Fri
+settings-usage-weekday-sat = Sat
+settings-usage-weekday-sun = Sun
+# $time is a clock time such as 2:41 PM.
+settings-usage-time-today = Today { $time }
+# $time is a clock time such as 2:41 PM.
+settings-usage-time-yesterday = Yesterday { $time }
+# $date is a date such as Oct 20; $time is a clock time such as 3:05 PM.
+settings-usage-time-date = { $date }, { $time }
+# $value is a formatted number and $count the same number for plurals.
+settings-usage-tip-credits = { $value } { $count ->
+    [one] credit
+   *[other] credits
+}
+# $value is a short number such as 1.2M and $count the number for plurals.
+settings-usage-tip-tokens = { $value } { $count ->
+    [one] token
+   *[other] tokens
+}
+# $models lists model names with short amounts, separated by dots.
+settings-usage-tip-more-models = More models: { $models }
+# $requests is a formatted number and $count the same number for plurals.
+settings-usage-tip-requests = { $count ->
+    [one] { $requests } request
+   *[other] { $requests } requests
+}
+# $credits is a formatted number.
+settings-usage-tip-extra = { $credits } from Extra credits
+# $label is a month and year such as November 2026.
+settings-usage-tip-so-far = { $label } (so far)
 # $name is a product name such as Pro, not translated.
 settings-plan-name = { $name } Plan
 settings-reset-monthly = Monthly
@@ -1400,7 +1632,6 @@ chat-select-all = Select all
 chat-close = Close
 chat-settings-menu-update = Settings menu, update available
 chat-settings-menu = Settings menu
-chat-account = Account
 chat-all-settings = All settings
 chat-update-error = Update failed
 chat-update-restart = Restart to finish update
@@ -1986,10 +2217,16 @@ settings-settings-connected = Connected
 settings-catalog-search = Search apps…
 settings-catalog-cancel = Cancel
 settings-catalog-connect = Connect
-settings-catalog-apps = Apps
+settings-catalog-popular = Popular apps
+# $count is the number of apps in the directory.
+settings-catalog-see-all = See all { $count } apps
 settings-catalog-custom = Custom server
+settings-section-apps = Apps
+settings-keywords-apps = apps, directory, catalog, mcp, connect, popular
+settings-catalog-add-custom = Add a custom server
+settings-catalog-custom-description = Connect an MCP server of your own, by address or command.
+settings-catalog-all-connected = Every app in the directory is connected.
 settings-catalog-intro = New tasks can use the apps you connect. Your sign-ins stay on this computer.
-settings-catalog-all = All
 settings-catalog-empty = No apps match.
 settings-catalog-stop-sign-in = Stop signing in
 settings-catalog-browser-sign-in = Sign in with browser
@@ -2046,7 +2283,6 @@ settings-section-acp = ACP
 settings-acp-copy-path = Copy executable path
 settings-acp-copy-config = Copy configuration
 settings-acp-examples = ACP examples
-settings-acp-title = ACP
 settings-acp-command = Command
 settings-acp-copy-command = Copy command
 settings-acp-examples-heading = Examples

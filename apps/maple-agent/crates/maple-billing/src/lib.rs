@@ -7,6 +7,9 @@
 
 use serde::{Deserialize, Serialize};
 
+mod usage;
+pub use usage::*;
+
 pub const DEFAULT_BILLING_API_URL: &str = "https://billing.opensecret.cloud";
 
 /// `GET /v1/maple/subscription/status`. Every field is optional on the
@@ -40,6 +43,9 @@ pub struct BillingStatus {
     pub used_tokens: Option<i64>,
     #[serde(default)]
     pub usage_reset_date: Option<String>,
+    /// Start of the window `usage_reset_date` ends.
+    #[serde(default)]
+    pub usage_period_start: Option<String>,
     #[serde(default)]
     pub api_credit_balance: Option<i64>,
 }

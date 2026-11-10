@@ -762,6 +762,23 @@ pub struct CatalogModel {
     /// servers that predate it.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub available_in_agent: Option<bool>,
+    /// The id of the [`CatalogGroup`] the model lists under; absent for a
+    /// model without one and on servers that predate groups.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub group: Option<String>,
+    /// Marks to show beside the model's name, such as `Popular`. The strings
+    /// are stable keys a client may translate.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub badges: Vec<String>,
+}
+
+/// A section of the model picker. Clients translate the heading by `id` and
+/// show `label` for an id they have no translation for.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct CatalogGroup {
+    pub id: String,
+    /// The English heading.
+    pub label: String,
 }
 
 /// Capability flags a catalog entry advertises.
@@ -837,6 +854,10 @@ pub struct CatalogAudio {
 pub struct ModelCatalogResponse {
     pub object: String,
     pub data: Vec<CatalogModel>,
+    /// The picker's sections in display order; empty on servers that predate
+    /// groups.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub groups: Vec<CatalogGroup>,
     #[serde(default)]
     pub aliases: Vec<CatalogAlias>,
     #[serde(default)]
