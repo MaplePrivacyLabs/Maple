@@ -1471,14 +1471,6 @@ chat-stop-run = Stop the run
 chat-queue-next-turn = Queue for next turn
 chat-send = Send
 chat-model = Model
-# The model panel's sections and the badge on a popular model.
-chat-model-group-capable = Most capable
-chat-model-group-uncensored = Uncensored
-chat-model-group-fast = Fast & cheap
-chat-model-group-more = More models
-chat-model-popular = Popular
-# $model is the model's name. The model row's accessible name when it carries the Popular badge.
-chat-model-popular-row = { $model }, Popular
 # $count is the number of integrations.
 chat-integration-count = { $count ->
     [one] 1 integration

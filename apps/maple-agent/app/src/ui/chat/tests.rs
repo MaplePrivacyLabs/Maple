@@ -13507,44 +13507,6 @@ mod state_tests {
             assert_eq!(queued(&chat, cx), Some(High));
         }
 
-        /// Known models list in their groups, in the table's order; a model
-        /// the table does not know lists last, under "More models"; and a
-        /// catalog the table knows none of names no group at all.
-        #[test]
-        fn models_list_in_their_groups() {
-            use crate::ui::chat::composer::{ModelGroup, group_models};
-            let models: Vec<String> = [
-                "deepseek-v4-1-flash",
-                "gemma4-31b",
-                "brand-new-model",
-                "kimi-k3",
-                "glm-5-3",
-                "deepseek-v4-1-flash-1017-uncensored",
-            ]
-            .map(String::from)
-            .to_vec();
-            assert_eq!(
-                group_models(&models),
-                vec![
-                    (Some(ModelGroup::Capable), vec!["glm-5-3", "kimi-k3"]),
-                    (
-                        Some(ModelGroup::Uncensored),
-                        vec!["deepseek-v4-1-flash-1017-uncensored"]
-                    ),
-                    (
-                        Some(ModelGroup::Fast),
-                        vec!["deepseek-v4-1-flash", "gemma4-31b"]
-                    ),
-                    (Some(ModelGroup::More), vec!["brand-new-model"]),
-                ]
-            );
-            let unknown = vec!["model-a".to_string(), "model-b".to_string()];
-            assert_eq!(
-                group_models(&unknown),
-                vec![(None, vec!["model-a", "model-b"])]
-            );
-        }
-
         /// The chip opens the models with the selected one's slider under
         /// them; a pick closes the panel, and `/model` opens the same one.
         #[gpui::test]

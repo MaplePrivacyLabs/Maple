@@ -576,7 +576,7 @@ impl ChatScreen {
         menu
     }
 
-    /// The models in their groups, the selected one checked, with its
+    /// The models, the selected one checked, with its
     /// effort slider docked under them. A pick applies from the task's next
     /// message and closes the panel; Left and Right step the effort.
     fn model_menu(&self, cx: &mut Context<Self>) -> Menu<Self> {
@@ -586,48 +586,17 @@ impl ChatScreen {
             .max_height(px(480.))
             .application_vim(self.application_vim_enabled)
             .on_adjust(|this: &mut Self, step, _, cx| this.step_effort(step, cx));
-        for (index, (group, models)) in group_models(&self.models).into_iter().enumerate() {
-            if let Some(group) = group {
-                if index > 0 {
-                    menu = menu.separator();
-                }
-                menu = menu.header(tr(group.label_key()));
-            }
-            menu = menu.items(models.into_iter().map(|model| {
-                let pick = model.to_string();
-                let label = self.model_label(model).to_string();
-                let popular = POPULAR_MODELS.contains(&model);
-                // The badge is drawn content; the row's name carries it for
-                // assistive technology.
-                let name: SharedString = if popular {
-                    self.messages
-                        .get("chat-model-popular-row", [("model", label.clone().into())])
-                } else {
-                    label.clone().into()
-                };
-                let row = MenuItem::new(
-                    SharedString::from(format!("model-{model}")),
-                    name,
-                    move |this: &mut Self, _: &mut Window, cx: &mut Context<Self>| {
-                        this.pick_model(pick.clone(), cx);
-                    },
-                )
-                .current(selected == Some(model));
-                if popular {
-                    row.content(
-                        div()
-                            .min_w_0()
-                            .flex()
-                            .items_center()
-                            .gap_2()
-                            .child(div().min_w_0().truncate().child(label))
-                            .child(popular_badge()),
-                    )
-                } else {
-                    row
-                }
-            }));
-        }
+        menu = menu.items(self.models.iter().map(|model| {
+            let pick = model.clone();
+            MenuItem::new(
+                SharedString::from(format!("model-{model}")),
+                self.model_label(model).to_string(),
+                move |this: &mut Self, _: &mut Window, cx: &mut Context<Self>| {
+                    this.pick_model(pick.clone(), cx);
+                },
+            )
+            .current(selected == Some(model.as_str()))
+        }));
         // Levels that failed to load: Retry is a row, so the keyboard
         // reaches it, and the panel stays open while they load again.
         if self.effort_failed() {
@@ -1688,96 +1657,4 @@ fn chip(
         .when(chevron, |el| {
             el.child(icon("chevron-down", px(14.), color).flex_none())
         })
-}
-
-/// The Popular badge on a model row: coral on dark, grey on light (see
-/// `badge_fill`), held to 4.5:1 by the contrast test.
-fn popular_badge() -> Div {
-    div()
-        .flex_none()
-        .px_1p5()
-        .py(px(1.))
-        .rounded_full()
-        .bg(gpui::rgb(theme::badge_fill()))
-        .text_xs()
-        .font_weight(gpui::FontWeight::SEMIBOLD)
-        .text_color(gpui::rgb(theme::badge_text()))
-        .child(tr("chat-model-popular"))
-}
-
-/// A section of the model panel.
-#[derive(Clone, Copy, Debug, PartialEq)]
-pub(super) enum ModelGroup {
-    Capable,
-    Uncensored,
-    Fast,
-    /// Models the table below does not know yet.
-    More,
-}
-
-impl ModelGroup {
-    const ORDER: [Self; 4] = [Self::Capable, Self::Uncensored, Self::Fast, Self::More];
-
-    fn label_key(self) -> &'static str {
-        match self {
-            Self::Capable => "chat-model-group-capable",
-            Self::Uncensored => "chat-model-group-uncensored",
-            Self::Fast => "chat-model-group-fast",
-            Self::More => "chat-model-group-more",
-        }
-    }
-}
-
-/// The catalog's models by group, in the order they list in. The catalog
-/// carries no group yet, so the app keeps this table; a model deployed
-/// since it was written lists under "More models" until it is added here
-/// (or the catalog serves groups and this table goes).
-const MODEL_GROUPS: [(&str, ModelGroup); 7] = [
-    ("glm-5-3", ModelGroup::Capable),
-    ("kimi-k3-1-pro", ModelGroup::Capable),
-    ("kimi-k3", ModelGroup::Capable),
-    (
-        "deepseek-v4-1-flash-1017-uncensored",
-        ModelGroup::Uncensored,
-    ),
-    ("deepseek-v4-1-flash", ModelGroup::Fast),
-    ("glm-5-3-flash", ModelGroup::Fast),
-    ("gemma4-31b", ModelGroup::Fast),
-];
-
-/// Models the panel marks Popular.
-const POPULAR_MODELS: [&str; 1] = ["deepseek-v4-1-flash-1017-uncensored"];
-
-/// `models` in their groups, each group in the table's order and models the
-/// table does not know last, in the catalog's order. A catalog of only
-/// unknown models is one unnamed group: a lone "More models" says nothing.
-pub(super) fn group_models(models: &[String]) -> Vec<(Option<ModelGroup>, Vec<&str>)> {
-    let group_of = |model: &str| {
-        MODEL_GROUPS
-            .iter()
-            .find(|(id, _)| *id == model)
-            .map(|(_, group)| *group)
-    };
-    if models.iter().all(|model| group_of(model).is_none()) {
-        return vec![(None, models.iter().map(String::as_str).collect())];
-    }
-    ModelGroup::ORDER
-        .into_iter()
-        .filter_map(|group| {
-            let members: Vec<&str> = if group == ModelGroup::More {
-                models
-                    .iter()
-                    .map(String::as_str)
-                    .filter(|model| group_of(model).is_none())
-                    .collect()
-            } else {
-                MODEL_GROUPS
-                    .iter()
-                    .filter(|(id, of)| *of == group && models.iter().any(|model| model == id))
-                    .map(|(id, _)| *id)
-                    .collect()
-            };
-            (!members.is_empty()).then_some((Some(group), members))
-        })
-        .collect()
 }
