@@ -9,7 +9,7 @@ use std::sync::{Arc, Mutex, MutexGuard};
 use std::time::{Duration, Instant};
 
 use pi_agent_core::QueueMode;
-use pi_ai::Model;
+use pi_ai::{Model, ThinkingLevel};
 use pi_coding_agent::resources::Resources;
 use pi_coding_agent::session::EntryKind;
 use pi_coding_agent::settings::{RetrySettings, Settings};
@@ -28,7 +28,9 @@ use super::mcp::{
     MAX_IDLE_TASKS_WITH_SERVERS, STARTUP_WAIT, TaskMcp, read_saved_servers, task_servers,
 };
 use super::permissions::{PermissionGate, TaskPermissions, permission_extension};
-use super::provider::{CatalogEntry, catalog_entry, maple_model, maple_model_registry};
+use super::provider::{
+    CatalogEntry, catalog_entry, maple_model, maple_model_registry, recommended_thinking_level,
+};
 use super::questions::QuestionBroker;
 use super::runs::{Failures, Runs};
 use super::store::{TaskKind, TaskRow, TaskStore};
@@ -132,6 +134,10 @@ pub(super) struct AgentRuntime {
     /// The bundled CPython behind the tasks' `python` scratchpads, when this
     /// build has one.
     python: Option<Arc<tools::PythonWorkers>>,
+    /// A level picked for a task's next model, by task id: the model and
+    /// the level its switch takes. Held in memory, as the composer holds
+    /// the pick of that model until the task's next message.
+    next_thinking: Mutex<HashMap<String, (String, ThinkingLevel)>>,
 }
 
 impl AgentRuntime {
@@ -165,6 +171,7 @@ impl AgentRuntime {
             runs: Runs::default(),
             failures: Failures::default(),
             python: tools::PythonWorkers::bundled(),
+            next_thinking: Mutex::new(HashMap::new()),
         })
     }
 
@@ -630,6 +637,71 @@ impl AgentRuntime {
         context_window: Option<u64>,
         vision: Option<bool>,
     ) -> Model {
+        self.pi_model_entry(model_id, context_window, vision)
+            .await
+            .0
+    }
+
+    /// `model_id`'s levels as [`Self::pi_model`] resolves them, and the
+    /// level the catalog recommends for it.
+    pub(super) async fn thinking_model(&self, model_id: &str) -> (Model, ThinkingLevel) {
+        let (model, entry) = self.pi_model_entry(model_id, None, None).await;
+        let recommended = recommended_thinking_level(&model, Some(&entry));
+        (model, recommended)
+    }
+
+    /// The level the catalog recommends for `model`
+    /// ([`recommended_thinking_level`]).
+    pub(super) async fn recommended_level(&self, model: &Model) -> ThinkingLevel {
+        let entry = match self.api.model_catalog().await {
+            Ok(catalog) => catalog_entry(&catalog, &model.id),
+            Err(error) => {
+                log::warn!("Failed to fetch the model catalog for a thinking level: {error}");
+                None
+            }
+        };
+        recommended_thinking_level(model, entry.as_ref())
+    }
+
+    /// The level a new task on `model` starts at: the one picked with it
+    /// on New Task while it is the model picked there, else `recommended`.
+    pub(super) fn new_task_level(
+        &self,
+        model: &Model,
+        recommended: ThinkingLevel,
+    ) -> ThinkingLevel {
+        match super::catalog::new_task_pick(&self.host.paths, &self.user_id, &model.id) {
+            Ok(Some(level)) => model.clamp_thinking_level(level),
+            Ok(None) => recommended,
+            Err(error) => {
+                log::warn!("Failed to read the New Task thinking pick: {error}");
+                recommended
+            }
+        }
+    }
+
+    /// The level picked for `task`'s next model, when that is `model_id`.
+    pub(super) fn next_level(&self, task: &str, model_id: &str) -> Option<ThinkingLevel> {
+        lock(&self.next_thinking)
+            .get(task)
+            .filter(|(model, _)| model == model_id)
+            .map(|(_, level)| *level)
+    }
+
+    /// Keep `level` for `task`'s switch to `model_id`, replacing a pick
+    /// for another model.
+    pub(super) fn set_next_level(&self, task: &str, model_id: &str, level: ThinkingLevel) {
+        lock(&self.next_thinking).insert(task.to_string(), (model_id.to_string(), level));
+    }
+
+    /// [`Self::pi_model`], with the catalog's entry for the model: empty
+    /// when the catalog cannot be read.
+    async fn pi_model_entry(
+        &self,
+        model_id: &str,
+        context_window: Option<u64>,
+        vision: Option<bool>,
+    ) -> (Model, CatalogEntry) {
         let mut entry = match self.api.model_catalog().await {
             Ok(catalog) => catalog_entry(&catalog, model_id).unwrap_or_default(),
             Err(error) => {
@@ -649,14 +721,15 @@ impl AgentRuntime {
                             model.input.push(pi_ai::InputModality::Image);
                         }
                     }
-                    return model;
+                    return (model, CatalogEntry::default());
                 }
                 CatalogEntry::default()
             }
         };
         entry.context_window = context_window.or(entry.context_window);
         entry.vision = vision.or(entry.vision);
-        maple_model(model_id, Some(&entry), context_limit_override())
+        let model = maple_model(model_id, Some(&entry), context_limit_override());
+        (model, entry)
     }
 
     /// The task's Pi session, built on first use, on `model`. Its skills
@@ -829,7 +902,16 @@ impl AgentRuntime {
             .map_err(|error| format!("Failed to start the Agent task: {error}"))?;
         let switched = match stored {
             Some(_) => self.switch_model(&session, row, model).await,
-            None => None,
+            None => {
+                // A task without messages starts as a new task on its model.
+                if row.message_count == 0 {
+                    let recommended = self.recommended_level(&model).await;
+                    session
+                        .set_thinking_level(self.new_task_level(&model, recommended))
+                        .await;
+                }
+                None
+            }
         };
         sync_external_agent_tools(&session, &agents, providers);
         sessions.insert(
@@ -879,9 +961,9 @@ impl AgentRuntime {
     /// that switched to another model records a notice in its transcript,
     /// which is returned with its entry to show live.
     ///
-    /// Pi's switch takes the thinking default of the session's settings,
-    /// read when the session was built. A switch to another model takes the
-    /// account's default as it is now, which the composer previews.
+    /// A switch to another model starts it at the level picked for it while
+    /// the task waited for the switch, else at the level the catalog
+    /// recommends for it, never at the previous model's level.
     async fn switch_model(
         &self,
         session: &AgentSession,
@@ -892,14 +974,24 @@ impl AgentRuntime {
             .model()
             .is_none_or(|previous| previous.id != model.id);
         let model_id = model.id.clone();
+        let level = if changed {
+            let picked = lock(&self.next_thinking)
+                .remove(&row.id)
+                .filter(|(picked, _)| *picked == model_id)
+                .map(|(_, level)| level);
+            Some(match picked {
+                Some(level) => level,
+                None => self.recommended_level(&model).await,
+            })
+        } else {
+            None
+        };
         self.models.register_models([model.clone()]);
         session.set_model(model).await;
-        if !changed {
+        let Some(level) = level else {
             return None;
-        }
-        if let Some(level) = self.thinking_default() {
-            session.set_thinking_level(level).await;
-        }
+        };
+        session.set_thinking_level(level).await;
         if row.message_count == 0 {
             return None;
         }
@@ -969,16 +1061,6 @@ impl AgentRuntime {
             .unwrap_or_else(|| model_id.to_string())
     }
 
-    /// The account's saved thinking default, if it has one.
-    fn thinking_default(&self) -> Option<pi_ai::ThinkingLevel> {
-        super::config::load_agent_config_inner(&self.host.paths, &self.user_id)
-            .map(|config| config.default_thinking_level)
-            .unwrap_or_else(|error| {
-                log::warn!("Failed to read the thinking default: {error}");
-                None
-            })
-    }
-
     /// The skills, prompt templates and instruction files of a task in
     /// `cwd`, or `None` when they cannot be read.
     async fn resources(&self, cwd: &str) -> Option<Resources> {
@@ -1002,8 +1084,9 @@ impl AgentRuntime {
     }
 
     /// The settings of every session: Maple's retry budget, queued messages
-    /// delivered together, the saved thinking default, and the host's opening
-    /// instructions after Pi's own.
+    /// delivered together, and the host's opening instructions after Pi's
+    /// own. A session's thinking level is set where it starts or switches
+    /// models, from the catalog and the New Task pick.
     fn settings(&self) -> Settings {
         let appended = format!(
             "{}\n\n{}",
@@ -1017,7 +1100,6 @@ impl AgentRuntime {
             http_idle_timeout_ms: Some(0),
             steering_mode: QueueMode::All,
             follow_up_mode: QueueMode::All,
-            default_thinking_level: self.thinking_default(),
             append_system_prompt: Some(appended).filter(|text| !text.is_empty()),
             ..Settings::default()
         }

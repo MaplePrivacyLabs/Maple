@@ -5799,23 +5799,30 @@ impl ChatScreen {
         );
     }
 
-    /// Pick the model of the next message, in a task or a new one. It also
-    /// becomes the account default for new tasks.
+    /// Pick the model of the next message, in a task or a new one. A pick
+    /// on New Task is remembered for new tasks, starting at the model's own
+    /// level unless it is the model already remembered; a task's pick is
+    /// the task's alone.
     fn pick_model(&mut self, model: String, cx: &mut Context<Self>) {
         self.selected_model = Some(model.clone());
-        self.default_model = Some(model.clone());
+        if self.selected_session.is_none() {
+            if self.default_model.as_deref() != Some(model.as_str()) {
+                self.thinking_cache.invalidate_defaults();
+            }
+            self.default_model = Some(model.clone());
+            // Remember the choice across launches via the agent config.
+            let backend = self.backend.clone();
+            let user_id = self.user_id.clone();
+            self.call(
+                async move { backend.save_default_model(&user_id, model).await },
+                cx,
+                |_this, _result, _cx| {},
+            );
+        }
         self.refresh_thinking(cx);
         self.popup.close(cx);
         cx.notify();
         self.refresh_model_catalog(cx);
-        // Remember the choice across launches via the agent config.
-        let backend = self.backend.clone();
-        let user_id = self.user_id.clone();
-        self.call(
-            async move { backend.save_default_model(&user_id, model).await },
-            cx,
-            |_this, _result, _cx| {},
-        );
         self.refresh_context_usage(cx);
     }
 
@@ -6548,7 +6555,7 @@ impl ChatScreen {
                 self.sync_sidebar_activity(cx);
             }
             AgentServiceEvent::ThinkingChanged { session_id, state } => {
-                self.apply_thinking_changed(&session_id, state, cx);
+                self.apply_thinking_changed(&session_id, state);
             }
             AgentServiceEvent::RemoteAccessEnded(_)
             | AgentServiceEvent::HostDisconnected
