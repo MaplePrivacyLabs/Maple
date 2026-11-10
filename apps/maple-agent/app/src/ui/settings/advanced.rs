@@ -320,6 +320,11 @@ impl SettingsScreen {
         self.advanced.erase_focus_pending = true;
         self.advanced.notice = None;
         self.advanced.success = None;
+        // Every way of closing the dialog leads back here, so the word is
+        // typed afresh each time and the erase button starts inert.
+        self.advanced
+            .confirmation
+            .update(cx, |input, cx| input.clear(cx));
         cx.notify();
     }
 
