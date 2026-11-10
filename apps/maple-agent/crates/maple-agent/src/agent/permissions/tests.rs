@@ -73,22 +73,25 @@ fn auto_runs_what_does_not_look_dangerous_and_names_what_it_stops() {
     // Not sure it is safe is not the same as looking dangerous.
     let mut unsure = answers(NO_HAZARD, OBSERVE);
     unsure.answers[HAZARD] = choice_answer(&[
-        (NO_HAZARD, 0.5),
-        ("other_destructive", HAZARD_AT - 0.01),
-        ("force_push", 0.11),
+        (NO_HAZARD, AUTO_AT),
+        ("other_destructive", 0.3),
+        ("force_push", 0.1),
     ]);
     assert_eq!(decide(AUTO, &unsure), Some(Verdict::Allow));
-    unsure.answers[HAZARD] = choice_answer(&[(NO_HAZARD, 0.6), ("other_destructive", HAZARD_AT)]);
+    // The hazards count together: no single one has to stand out.
+    unsure.answers[HAZARD] = choice_answer(&[
+        (NO_HAZARD, AUTO_AT - 0.01),
+        ("other_destructive", 0.21),
+        ("force_push", 0.2),
+    ]);
     assert_eq!(
         decide(AUTO, &unsure),
         Some(Verdict::Ask(AgentPermissionReason::Destructive))
     );
+    // Only the hazards decide: writing and editing files is Auto's work.
     let mut lasting = answers(NO_HAZARD, "project_change");
-    lasting.answers[REVERSIBLE] = bool_answer(REVERSIBLE_AT - 0.01);
-    assert_eq!(
-        decide(AUTO, &lasting),
-        Some(Verdict::Ask(AgentPermissionReason::ChangesProject))
-    );
+    lasting.answers[REVERSIBLE] = bool_answer(0.1);
+    assert_eq!(decide(AUTO, &lasting), Some(Verdict::Allow));
 }
 
 #[test]
