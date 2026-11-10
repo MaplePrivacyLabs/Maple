@@ -8,6 +8,7 @@
     <array>
         <string>en</string>
         <string>es</string>
+        <string>de</string>
     </array>
     <key>CFBundleDisplayName</key>
     <string>Maple Agent Debug</string>
@@ -32,7 +33,7 @@
     <key>NSMicrophoneUsageDescription</key>
     <string>Maple records your microphone when you choose to dictate a message.</string>
     <key>NSDocumentsFolderUsageDescription</key>
-    <string>Maple keeps its default workspace in Documents/Maple, where the agent works on the files for your tasks.</string>
+    <string>Maple uses Documents/Maple for your workspace and new projects. The agent works with your task files in these folders.</string>
     <key>NSHighResolutionCapable</key>
     <true/>
     <key>NSScreenCaptureUsageDescription</key>

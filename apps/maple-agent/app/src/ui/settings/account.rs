@@ -29,6 +29,11 @@ pub(super) enum AccountTarget {
     DeleteCode,
     DeleteConfirm,
     DeleteCancel,
+    /// The erase dialog's controls. It confirms erasing local data, which
+    /// lives on this page.
+    EraseWord,
+    EraseCancel,
+    EraseConfirm,
 }
 
 pub(super) struct AccountState {
@@ -242,6 +247,10 @@ impl SettingsScreen {
             AccountTarget::DeleteCode => focus_input(&self.account.delete_code, window, cx),
             AccountTarget::DeleteConfirm => self.confirm_account_deletion(cx),
             AccountTarget::DeleteCancel => self.cancel_account_deletion(cx),
+            AccountTarget::EraseWord => focus_input(&self.advanced.confirmation, window, cx),
+            AccountTarget::EraseCancel => self.close_erase_dialog(cx),
+            // Checks the typed word itself, like the button.
+            AccountTarget::EraseConfirm => self.erase_local_store(cx),
         }
     }
 

@@ -296,6 +296,9 @@ pub enum Error {
     #[error("Invalid password reset request")]
     InvalidPasswordResetRequest,
 
+    #[error("Rate limited")]
+    RateLimited(ApiError),
+
     #[error("Account deletion request expired")]
     AccountDeletionExpired,
 
@@ -474,6 +477,10 @@ pub enum ApiError {
     #[error("Too many requests")]
     TooManyRequests,
 
+    /// A request limit from `web::rate_limit`, with the time left on it.
+    #[error("Too many requests. Try again later.")]
+    RateLimited { retry_after: Duration },
+
     #[error("This environment is limited to internal accounts")]
     InternalAccountRequired,
 
@@ -541,6 +548,7 @@ impl IntoResponse for ApiError {
             ApiError::UnprocessableEntity => StatusCode::UNPROCESSABLE_ENTITY,
             ApiError::PayloadTooLarge => StatusCode::PAYLOAD_TOO_LARGE,
             ApiError::TooManyRequests => StatusCode::TOO_MANY_REQUESTS,
+            ApiError::RateLimited { .. } => StatusCode::TOO_MANY_REQUESTS,
             ApiError::InternalAccountRequired => StatusCode::FORBIDDEN,
         };
         // Preserve the legacy flat fields while making these application
@@ -572,6 +580,7 @@ impl IntoResponse for ApiError {
             ApiError::AccessTokenExpired => Some(ACCESS_TOKEN_EXPIRED_ERROR_CODE),
             ApiError::ImageDescriptionUnavailable => Some(IMAGE_DESCRIPTION_UNAVAILABLE_ERROR_CODE),
             ApiError::InferenceCapacity { .. } => Some(INFERENCE_CAPACITY_ERROR_CODE),
+            ApiError::RateLimited { .. } => Some("rate_limit_exceeded"),
             ApiError::InferenceProvider(error) => Some(error.code()),
             ApiError::SystemOneRequest(error) => Some(error.code()),
             ApiError::Transcription(error) => Some(error.code()),
@@ -602,7 +611,9 @@ impl IntoResponse for ApiError {
                 .headers_mut()
                 .insert(ERROR_CODE_HEADER, HeaderValue::from_static(error_code));
         }
-        if let ApiError::InferenceRateLimited { retry_after } = &self {
+        if let ApiError::InferenceRateLimited { retry_after }
+        | ApiError::RateLimited { retry_after } = &self
+        {
             if let Ok(value) = HeaderValue::from_str(&retry_after.as_secs().to_string()) {
                 response.headers_mut().insert(header::RETRY_AFTER, value);
             }
@@ -1056,7 +1067,7 @@ pub struct AppState {
     provider_client: Arc<ProviderClient>,
     proxy_router: Arc<ProxyRouter>,
     provider_router: Arc<ProviderRouter>,
-    inference_rate_limiter: Arc<web::inference_rate_limit::InferenceRateLimiter>,
+    rate_limits: web::rate_limit::RateLimits,
     resend_api_key: Option<String>,
     ephemeral_keys: Arc<RwLock<BoundedTtlCache<PendingAttestationKey, EphemeralSecret>>>,
     session_states: Arc<tokio::sync::Mutex<LeaseAwareTtlCache<Uuid, SessionState>>>,
@@ -1176,7 +1187,7 @@ struct AuthenticatedUser {
 
 #[derive(Default)]
 pub struct AppStateBuilder {
-    inference_rate_limiter: Arc<web::inference_rate_limit::InferenceRateLimiter>,
+    rate_limits: web::rate_limit::RateLimits,
     app_mode: Option<AppMode>,
     db: Option<Arc<dyn DBConnection + Send + Sync>>,
     enclave_key: Option<Vec<u8>>,
@@ -1206,11 +1217,8 @@ pub struct AppStateBuilder {
 }
 
 impl AppStateBuilder {
-    fn inference_rate_limiter(
-        mut self,
-        limiter: web::inference_rate_limit::InferenceRateLimiter,
-    ) -> Self {
-        self.inference_rate_limiter = Arc::new(limiter);
+    fn rate_limits(mut self, rate_limits: web::rate_limit::RateLimits) -> Self {
+        self.rate_limits = rate_limits;
         self
     }
     pub fn remote_relay_token(mut self, token: Option<zeroize::Zeroizing<String>>) -> Self {
@@ -1522,7 +1530,7 @@ impl AppStateBuilder {
             provider_client,
             proxy_router,
             provider_router,
-            inference_rate_limiter: self.inference_rate_limiter,
+            rate_limits: self.rate_limits,
             resend_api_key: self.resend_api_key,
             ephemeral_keys: Arc::new(RwLock::new(BoundedTtlCache::new(
                 NonZeroUsize::new(MAX_PENDING_ATTESTATIONS)
@@ -2376,6 +2384,31 @@ impl AppState {
         Ok(alphanumeric_code)
     }
 
+    /// Admits one confirmation attempt against the reset request that
+    /// `hashed_secret` belongs to.
+    ///
+    /// Only a request created with a secret can be completed with it, so a
+    /// submission whose secret matches none of the account's requests is not a
+    /// guess at anything and is refused uncounted. Each one that does match is
+    /// charged to that request's budget before its code is examined. Whoever
+    /// started a request holds its secret; nobody else can spend its attempts.
+    fn admit_password_reset_attempt(
+        attempts: &web::rate_limit::Limiter,
+        account: Uuid,
+        secret_matches_a_request: bool,
+        hashed_secret: &str,
+    ) -> Result<(), Error> {
+        if !secret_matches_a_request {
+            return Err(Error::InvalidPasswordResetRequest);
+        }
+        attempts
+            .check(web::rate_limit::Key::scoped(
+                account,
+                &[hashed_secret.as_bytes()],
+            ))
+            .map_err(Error::RateLimited)
+    }
+
     async fn confirm_password_reset(
         &self,
         email: String,
@@ -2391,6 +2424,15 @@ impl AppState {
             return Err(Error::UserNotFound);
         }
 
+        let hashed_plaintext = generate_reset_hash(plaintext_secret);
+        Self::admit_password_reset_attempt(
+            &self.rate_limits.password_reset_attempt,
+            user.uuid,
+            self.db
+                .password_reset_request_exists_for_secret(user.uuid, &hashed_plaintext)?,
+            &hashed_plaintext,
+        )?;
+
         // MAC the provided alphanumeric code for lookup, bound to this user/project.
         let reset_code_mac =
             password_reset_code_mac(&self.enclave_key, project_id, user.uuid, &alphanumeric_code)
@@ -2405,9 +2447,6 @@ impl AppState {
                 warn!("Password reset expired for user: {}", user.uuid);
                 return Err(Error::PasswordResetExpired);
             }
-
-            // Hash the plaintext secret again for comparison
-            let hashed_plaintext = generate_reset_hash(plaintext_secret.clone());
 
             // Compare the hashed values using constant-time comparison
             if hashed_plaintext
@@ -2562,6 +2601,18 @@ impl AppState {
             Err(_) => return Err(Error::UserNotFound),
         };
 
+        let hashed_plaintext = generate_reset_hash(plaintext_secret);
+        Self::admit_password_reset_attempt(
+            &self.rate_limits.platform_password_reset_attempt,
+            platform_user.uuid,
+            self.db
+                .platform_password_reset_request_is_active_for_secret(
+                    platform_user.uuid,
+                    &hashed_plaintext,
+                )?,
+            &hashed_plaintext,
+        )?;
+
         // Deterministically encrypt the provided alphanumeric code for lookup
         let secret_key = SecretKey::from_slice(&self.enclave_key)
             .map_err(|e| Error::EncryptionError(e.to_string()))?;
@@ -2582,9 +2633,6 @@ impl AppState {
                 );
                 return Err(Error::PasswordResetExpired);
             }
-
-            // Hash the plaintext secret again for comparison
-            let hashed_plaintext = generate_reset_hash(plaintext_secret.clone());
 
             // Compare the hashed values using constant-time comparison
             if hashed_plaintext
@@ -4182,10 +4230,7 @@ async fn main() -> Result<(), Error> {
         web::remote::relay::load_token(&app_mode, aws_credential_manager.clone(), db.clone())
             .await?;
     let app_state = AppStateBuilder::default()
-        .inference_rate_limiter(
-            web::inference_rate_limit::InferenceRateLimiter::from_env()
-                .map_err(Error::BuilderError)?,
-        )
+        .rate_limits(web::rate_limit::RateLimits::from_env().map_err(Error::BuilderError)?)
         .app_mode(app_mode.clone())
         .db(db)
         .enclave_key(enclave_key)

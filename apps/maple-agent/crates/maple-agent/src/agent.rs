@@ -52,10 +52,11 @@ use std::sync::{Arc, RwLock};
 use crate::maple_api::{MapleApiSession, account_scope};
 pub use attachments::{AgentAttachment, AgentImageUpload};
 pub use catalog::catalog_model_labels;
+pub(crate) use config::maple_workspace_path;
 use config::*;
 pub use config::{
     MAPLE_WORKSPACE_DIRECTORY_NAME, MAPLE_WORKSPACE_DISPLAY_NAME, default_maple_workspace_path,
-    ensure_default_maple_workspace, include_default_maple_workspace, is_default_maple_workspace,
+    ensure_maple_workspace, include_default_maple_workspace, maple_project_container_path,
     maple_workspace_directory, startup_project_root,
 };
 pub use integrations::begin_integration_setup;
@@ -69,6 +70,13 @@ pub use surface::{
     AGENT_SURFACE_INACTIVE_ERROR, AgentSurfaceAccess, AgentSurfaceLease, AgentSurfaceSession,
 };
 pub use tasks::NOTHING_TO_COMPACT_ERROR;
+
+/// Run one cell in this build's bundled CPython, unpacking it first where it
+/// travels inside the executable, and return the interpreter's version and
+/// path. `paths` is the profile's store; nothing in the store is opened.
+pub async fn check_bundled_python(paths: &crate::store::StorePaths) -> Result<String, String> {
+    tools::check_bundled_python(paths).await
+}
 pub use types::*;
 
 /// The model a new task starts on when the user has not picked one and the
@@ -1119,7 +1127,7 @@ impl AgentRuntimeHandle {
             load_project_config_inner(self.paths(), &self.user_id, &project_root)
                 .map_err(|e| e.to_string())?
         };
-        Ok(self.project_trust_status(&config, &project_root))
+        self.project_trust_status(&config, &project_root)
     }
 
     /// The trust status of `project_root`, with what trusting it would add
@@ -1128,9 +1136,19 @@ impl AgentRuntimeHandle {
         &self,
         config: &AgentConfig,
         project_root: &Path,
-    ) -> AgentProjectTrustStatus {
+    ) -> Result<AgentProjectTrustStatus, String> {
+        let tasks = self.store()?;
+        let workspace = tasks
+            .store()
+            .maple_workspace_path()
+            .map_err(|e| e.to_string())?;
         let features = resources::protected_features(self.paths(), &self.user_id, project_root);
-        project_trust_status(config, project_root, features)
+        Ok(project_trust_status(
+            config,
+            project_root,
+            workspace.as_deref(),
+            features,
+        ))
     }
 
     pub async fn set_project_trust(
@@ -1170,7 +1188,7 @@ impl AgentRuntimeHandle {
         if let Some(runtime) = runtime {
             runtime.unload_project_tasks(&root).await?;
         }
-        Ok(self.project_trust_status(&config, &project_root))
+        self.project_trust_status(&config, &project_root)
     }
 
     /// Deliver the user's answer to a question from this account's runtime.

@@ -236,7 +236,9 @@ fn explicit_project_selection_prepends_new_roots_and_preserves_existing_metadata
         .unwrap();
     let before = store.project(alice, first).unwrap().unwrap();
     store.register_explicit_project(alice, first, 50).unwrap();
-    assert_eq!(store.project(alice, first).unwrap().unwrap(), before);
+    let mut touched = before.clone();
+    touched.last_used_ms = 50;
+    assert_eq!(store.project(alice, first).unwrap().unwrap(), touched);
     assert_eq!(
         store
             .recent_projects(alice, 10)
@@ -973,4 +975,93 @@ fn dictionary_normalizes_input_and_pages_every_word_once() {
         store.dictionary_words(None, 0),
         Err(StoreError::InvalidInput)
     );
+}
+
+#[test]
+fn recent_project_picker_uses_recency_across_navigation_pages_and_preserves_order() {
+    let (_directory, store, alice, bob) = fixture();
+    let prefix = project_root!("/projects");
+    let roots = (0..75)
+        .map(|i| format!("{prefix}/{i:03}"))
+        .collect::<Vec<_>>();
+    for (i, root) in roots.iter().enumerate() {
+        store
+            .register_explicit_project(alice, root, i as i64 + 1)
+            .unwrap();
+    }
+    let navigation_before = store.recent_projects(alice, 50).unwrap();
+    assert!(
+        !navigation_before
+            .iter()
+            .any(|project| project.root == roots[0])
+    );
+    // Selecting an older project changes recency, not the manually ranked list.
+    store
+        .register_explicit_project(alice, &roots[0], 100)
+        .unwrap();
+    store
+        .register_explicit_project(alice, &roots[1], 101)
+        .unwrap();
+    store
+        .register_explicit_project(alice, &roots[2], 102)
+        .unwrap();
+    let recent = store.recently_used_projects(alice).unwrap();
+    assert_eq!(
+        recent
+            .iter()
+            .map(|project| &project.root)
+            .collect::<Vec<_>>(),
+        vec![&roots[2], &roots[1], &roots[0]]
+    );
+    assert_eq!(store.recent_projects(alice, 50).unwrap(), navigation_before);
+    assert!(store.recently_used_projects(bob).unwrap().is_empty());
+    store
+        .register_explicit_project(bob, &roots[0], 500)
+        .unwrap();
+    store.remove_project(alice, &roots[2], 103).unwrap();
+    // Offered but never used and unlisted task roots are not recent choices.
+    store
+        .remember_project(alice, &format!("{prefix}/offered"), i64::MAX, 0)
+        .unwrap();
+    listed_task(&store, alice, 999, &format!("{prefix}/task-only"), 900);
+    let recent = store.recently_used_projects(alice).unwrap();
+    assert_eq!(
+        recent
+            .iter()
+            .map(|project| &project.root)
+            .collect::<Vec<_>>(),
+        vec![&roots[1], &roots[0], &roots[74]]
+    );
+    assert_eq!(
+        store.recently_used_projects(bob).unwrap()[0].last_used_ms,
+        500
+    );
+    store
+        .begin_account_deletion(alice, "11111111-1111-4111-8111-111111111111", 1000)
+        .unwrap();
+    assert!(store.recently_used_projects(alice).is_err());
+    assert_eq!(store.recently_used_projects(bob).unwrap().len(), 1);
+}
+
+#[test]
+fn accepted_task_use_preserves_project_metadata_and_does_not_revive_removed_roots() {
+    let (_directory, store, alice, bob) = fixture();
+    let root = project_root!("/projects/used");
+    store.register_explicit_project(alice, root, 1).unwrap();
+    let task = listed_task(&store, alice, 890, root, 2);
+    store
+        .set_project_display_name(alice, root, Some("My project"), 3)
+        .unwrap();
+    store.set_project_trust(alice, root, Some(true), 3).unwrap();
+    let mut expected = store.project(alice, root).unwrap().unwrap();
+    store.touch_task_project(bob, &task.uuid, 50).unwrap();
+    assert_eq!(store.project(alice, root).unwrap().unwrap(), expected);
+    store.touch_task_project(alice, &task.uuid, 60).unwrap();
+    expected.last_used_ms = 60;
+    assert_eq!(store.project(alice, root).unwrap().unwrap(), expected);
+    store.remove_project(alice, root, 70).unwrap();
+    let removed = store.project(alice, root).unwrap().unwrap();
+    store.touch_task_project(alice, &task.uuid, 80).unwrap();
+    assert_eq!(store.project(alice, root).unwrap().unwrap(), removed);
+    assert!(store.recently_used_projects(alice).unwrap().is_empty());
 }

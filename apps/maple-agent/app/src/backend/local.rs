@@ -544,7 +544,7 @@ fn home_dir() -> Option<PathBuf> {
 }
 
 /// Root the desktop app opens when the account has no saved root and the
-/// Documents/Maple workspace cannot be created. The GUI must not depend on
+/// Maple workspace cannot be created. The GUI must not depend on
 /// the directory it was launched from: that is the job of the `maple acp`
 /// command, not a windowed app started from a launcher.
 fn fallback_project_root() -> Option<String> {
@@ -552,24 +552,29 @@ fn fallback_project_root() -> Option<String> {
 }
 
 /// Root for a GUI start: the saved folder when it still exists and was not
-/// removed, otherwise Documents/Maple unless the user removed it. Home is
+/// removed, otherwise the built-in workspace unless the user removed it. Home is
 /// only the last resort. Never the process working directory. The
 /// workspace may not exist yet: `gui_start_root` creates it.
-pub(super) fn gui_project_root(config: &maple_agent::agent::AgentConfig) -> Option<String> {
-    let workspace = maple_agent::agent::default_maple_workspace_path();
-    maple_agent::agent::startup_project_root(config, workspace.as_deref())
-        .or_else(fallback_project_root)
+pub(super) fn gui_project_root(
+    config: &maple_agent::agent::AgentConfig,
+    workspace: Option<&std::path::Path>,
+) -> Option<String> {
+    maple_agent::agent::startup_project_root(config, workspace).or_else(fallback_project_root)
 }
 
 /// `gui_project_root` for a runtime start, which needs the folder on disk.
-/// Documents/Maple is created here, the first time a start uses it. If
+/// The workspace is created here, the first time a start uses it. If
 /// that fails (Documents access denied, for example), the start uses home.
-fn gui_start_root(config: &maple_agent::agent::AgentConfig) -> Option<String> {
-    let root = gui_project_root(config)?;
-    if !maple_agent::agent::is_default_maple_workspace(std::path::Path::new(&root)) {
+fn gui_start_root(
+    config: &maple_agent::agent::AgentConfig,
+    workspace: Option<&std::path::Path>,
+) -> Option<String> {
+    let root = gui_project_root(config, workspace)?;
+    let path = std::path::Path::new(&root);
+    if workspace != Some(path) {
         return Some(root);
     }
-    match maple_agent::agent::ensure_default_maple_workspace() {
+    match maple_agent::agent::ensure_maple_workspace(path) {
         Ok(path) => Some(path.to_string_lossy().to_string()),
         Err(error) => {
             log::warn!("{error}");
@@ -2684,15 +2689,19 @@ impl LocalBackend {
         let session = self.session_for(user_id).await?;
         // The agent falls back to the process working directory when no root
         // is given. That is right for `maple acp`, not for the GUI: pick the
-        // saved root or Documents/Maple instead.
+        // saved root or the built-in workspace instead.
         let request = match request {
             Some(AgentStartRequest {
                 project_root: None,
                 model,
             }) => {
                 let config = handle.load_config().await?;
+                let workspace = self
+                    .open_store()?
+                    .maple_workspace_path()
+                    .map_err(|e| e.to_string())?;
                 Some(AgentStartRequest {
-                    project_root: gui_start_root(&config),
+                    project_root: gui_start_root(&config, workspace.as_deref()),
                     model,
                 })
             }
@@ -2786,8 +2795,13 @@ impl LocalBackend {
     ) -> Result<SelectedProject, String> {
         let handle = self.service.handle_for_user(user_id).await?;
         // The listed Maple workspace is created the first time it is chosen.
-        if maple_agent::agent::is_default_maple_workspace(std::path::Path::new(path.trim())) {
-            maple_agent::agent::ensure_default_maple_workspace()?;
+        let workspace = self
+            .open_store()?
+            .maple_workspace_path()
+            .map_err(|e| e.to_string())?;
+        let requested = std::path::Path::new(path.trim());
+        if workspace.as_deref() == Some(requested) {
+            maple_agent::agent::ensure_maple_workspace(requested)?;
         }
         let project_root = handle.save_recent_project_root(path).await?;
         let project = handle.project_root_metadata(project_root.clone()).await?;

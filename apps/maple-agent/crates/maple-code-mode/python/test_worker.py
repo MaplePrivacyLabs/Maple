@@ -35,7 +35,8 @@ class NativeWorker:
         self.temporary = tempfile.TemporaryDirectory(prefix="maple-python-ø ")
         self.root = str(Path(root or self.temporary.name).resolve())
         self.process = subprocess.Popen(
-            [str(PYTHON), "-I", "-B", "-u", str(WORKER), "--generation", "7"],
+            [str(PYTHON), "-I", "-B", "-u", "-X", "thread_inherit_context=1",
+             str(WORKER), "--generation", "7"],
             cwd=self.root,
             stdin=subprocess.PIPE,
             stdout=subprocess.PIPE,
@@ -240,6 +241,33 @@ None
         for item in messages:
             if item["type"] == "output":
                 self.assertEqual(item["execution_id"], 1)
+
+    def test_thread_exceptions_count_against_the_cell_that_started_them(self):
+        code = """import sys, threading
+release = threading.Event()
+def fail():
+    raise ValueError('thread-failure')
+def late():
+    release.wait()
+    raise ValueError('late-failure')
+held = threading.Thread(target=late, daemon=True)
+held.start()
+for target in (fail, sys.exit):
+    thread = threading.Thread(target=target)
+    thread.start()
+    thread.join()
+"""
+        messages = self.worker.execute(code)
+        self.assertEqual(messages[-1]["status"], "ok")
+        self.assertEqual(messages[-1]["thread_exceptions"], 1)
+        self.assertEqual(messages[-1]["first_thread_exception"], "ValueError: thread-failure")
+        self.assertIn("ValueError: thread-failure", output(messages, "stderr"))
+        self.assertTrue(all(item["execution_id"] == 1 for item in messages if item["type"] == "output"))
+        # After its cell finished, an exception is that cell's late output.
+        messages = self.worker.execute("release.set()\nheld.join()")
+        self.assertEqual(messages[-1]["thread_exceptions"], 0)
+        self.assertIn("ValueError: late-failure", output(messages, "stderr"))
+        self.assertTrue(all(item["execution_id"] == 1 for item in messages if item["type"] == "output"))
 
     def test_binary_utf8_is_incremental_and_incomplete_bytes_flush_before_done(self):
         messages = self.worker.execute("import sys\nsys.stdout.buffer.write(b'\\xf0\\x9f')\nsys.stdout.buffer.write(b'\\x98\\x80')\nsys.stdout.buffer.write(b'\\xf0')\nNone")

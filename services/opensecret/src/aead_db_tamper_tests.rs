@@ -2890,3 +2890,561 @@ async fn db_remote_windows_reclaim_authenticated_expiry_without_deleting_newer_r
     );
     assert!(remaining.iter().any(|r| r.nonce == newer.id));
 }
+
+/// The password-reset limits from `web::rate_limit`, for user and platform
+/// accounts, exercised through the inner routers the Transport V2 gateway
+/// dispatches to.
+mod password_reset_limits {
+    use super::{
+        build_local_test_app_state, create_password_wrapped_user, first_active_project,
+        test_credential,
+    };
+    use crate::{
+        encrypt::encrypt_with_key,
+        generate_reset_hash,
+        models::{
+            org_projects::OrgProject,
+            platform_users::{NewPlatformUser, PlatformUser},
+            schema::{password_reset_requests, platform_password_reset_requests, platform_users},
+            users::User,
+        },
+        transport_v2::crypto::SessionId,
+        web::{
+            encryption_middleware::TransportSession, login_routes::router as login_routes,
+            platform_login_routes,
+        },
+        ApiError, AppState, Error,
+    };
+    use axum::{
+        body::Body,
+        http::{header, Request, Response, StatusCode},
+        Router,
+    };
+    use diesel::{ExpressionMethods, QueryDsl, RunQueryDsl};
+    use password_auth::generate_hash;
+    use secp256k1::SecretKey;
+    use serde_json::{json, Value};
+    use std::sync::Arc;
+    use tower::ServiceExt;
+    use uuid::Uuid;
+
+    const GENERIC_REQUEST_MESSAGE: &str =
+        "If an account with that email exists, we have sent a password reset link.";
+
+    async fn test_app_state() -> Arc<AppState> {
+        let database_url = std::env::var("AEAD_TAMPER_TEST_DATABASE_URL")
+            .expect("this test requires disposable migrated Postgres");
+        Arc::new(build_local_test_app_state(database_url).await)
+    }
+
+    /// Short enough for the 64-character local part the routes validate.
+    fn test_email(label: &str) -> String {
+        format!("reset-{label}-{}@example.com", Uuid::new_v4().simple())
+    }
+
+    async fn create_user(app_state: &AppState, project: &OrgProject, label: &str) -> User {
+        create_password_wrapped_user(
+            app_state,
+            project.id,
+            test_email(label),
+            test_credential(label),
+        )
+        .await
+    }
+
+    async fn create_platform_user(app_state: &AppState, label: &str) -> PlatformUser {
+        let secret_key = SecretKey::from_slice(&app_state.enclave_key).unwrap();
+        let password_enc = encrypt_with_key(
+            &secret_key,
+            generate_hash(test_credential(label)).as_bytes(),
+        )
+        .await;
+        app_state
+            .db
+            .create_platform_user(NewPlatformUser::new(test_email(label), Some(password_enc)))
+            .expect("test platform user should be created")
+    }
+
+    fn delete_platform_user(app_state: &AppState, user: &PlatformUser) {
+        let conn = &mut app_state
+            .db
+            .get_pool()
+            .get()
+            .expect("test database connection should be available");
+        diesel::delete(platform_users::table.filter(platform_users::uuid.eq(user.uuid)))
+            .execute(conn)
+            .expect("test platform user should be removed");
+    }
+
+    fn unconsumed_reset_requests(app_state: &AppState, user: &User) -> i64 {
+        let conn = &mut app_state
+            .db
+            .get_pool()
+            .get()
+            .expect("test database connection should be available");
+        password_reset_requests::table
+            .filter(password_reset_requests::user_id.eq(user.uuid))
+            .filter(password_reset_requests::is_reset.eq(false))
+            .count()
+            .get_result(conn)
+            .expect("reset requests should be countable")
+    }
+
+    fn unconsumed_platform_reset_requests(app_state: &AppState, user: &PlatformUser) -> i64 {
+        let conn = &mut app_state
+            .db
+            .get_pool()
+            .get()
+            .expect("test database connection should be available");
+        platform_password_reset_requests::table
+            .filter(platform_password_reset_requests::platform_user_id.eq(user.uuid))
+            .filter(platform_password_reset_requests::is_reset.eq(false))
+            .count()
+            .get_result(conn)
+            .expect("reset requests should be countable")
+    }
+
+    fn stored_platform_password(app_state: &AppState, user: &PlatformUser) -> Option<Vec<u8>> {
+        app_state
+            .db
+            .get_platform_user_by_uuid(user.uuid)
+            .expect("test platform user should still exist")
+            .password_enc
+    }
+
+    async fn password_opens_account(
+        app_state: &AppState,
+        project: &OrgProject,
+        user: &User,
+        password: &str,
+    ) -> bool {
+        app_state
+            .authenticate_user(user.email.clone(), None, password.to_string(), project.id)
+            .await
+            .is_ok_and(|authenticated| authenticated.is_some())
+    }
+
+    /// A code of the right shape that is certainly not `code`.
+    fn wrong_code(code: &str) -> String {
+        let replacement = if code.starts_with('A') { "B" } else { "A" };
+        format!("{replacement}{}", &code[1..])
+    }
+
+    /// The inner request the gateway builds for an unauthenticated route: a
+    /// live session and the decrypted JSON body, with no credential.
+    fn v2_post(uri: &str, body: Value) -> Request<Body> {
+        let (mut parts, body) = Request::builder()
+            .method("POST")
+            .uri(uri)
+            .header("content-type", "application/json")
+            .body(Body::from(body.to_string()))
+            .expect("request should build")
+            .into_parts();
+        parts
+            .extensions
+            .insert(TransportSession::v2(SessionId::from_bytes([0xAB; 16])));
+        Request::from_parts(parts, body)
+    }
+
+    async fn post(app: &Router, uri: &str, body: Value) -> Response<Body> {
+        app.clone()
+            .oneshot(v2_post(uri, body))
+            .await
+            .expect("router should respond")
+    }
+
+    async fn body_json(response: Response<Body>) -> Value {
+        let bytes = axum::body::to_bytes(response.into_body(), usize::MAX)
+            .await
+            .unwrap();
+        serde_json::from_slice(&bytes).expect("the inner router answers V2 requests in plain JSON")
+    }
+
+    async fn assert_generic_request_answer(response: Response<Body>) {
+        assert_eq!(response.status(), StatusCode::OK);
+        assert!(response.headers().get(header::RETRY_AFTER).is_none());
+        assert_eq!(
+            body_json(response).await,
+            json!({ "message": GENERIC_REQUEST_MESSAGE })
+        );
+    }
+
+    async fn assert_rate_limited(response: Response<Body>) {
+        assert_eq!(response.status(), StatusCode::TOO_MANY_REQUESTS);
+        assert!(response.headers().get(header::RETRY_AFTER).is_some());
+        assert_eq!(
+            response.headers().get(crate::ERROR_CODE_HEADER).unwrap(),
+            "rate_limit_exceeded"
+        );
+        assert_eq!(
+            body_json(response).await,
+            json!({ "status": 429, "message": "Too many requests. Try again later." })
+        );
+    }
+
+    #[tokio::test]
+    #[ignore = "requires AEAD_TAMPER_TEST_DATABASE_URL pointing at disposable migrated local Postgres"]
+    async fn db_reset_requests_are_capped_per_account_with_an_unchanged_response() {
+        let app_state = test_app_state().await;
+        let project = first_active_project(&app_state);
+        let app = login_routes(app_state.clone());
+        let user = create_user(&app_state, &project, "cap").await;
+        let bystander = create_user(&app_state, &project, "bystander").await;
+
+        // Two more requests than the budget: every answer is the same, but
+        // only the budgeted ones create a request (and so a live code).
+        for attempt in 0..7 {
+            let response = post(
+                &app,
+                "/password-reset/request",
+                json!({
+                    "email": user.email,
+                    "hashed_secret": generate_reset_hash(format!("cap-{attempt}")),
+                    "client_id": project.client_id,
+                }),
+            )
+            .await;
+            assert_generic_request_answer(response).await;
+        }
+        assert_eq!(unconsumed_reset_requests(&app_state, &user), 5);
+
+        // The budget belongs to the targeted account, not to the caller.
+        let response = post(
+            &app,
+            "/password-reset/request",
+            json!({
+                "email": bystander.email,
+                "hashed_secret": generate_reset_hash("bystander".to_string()),
+                "client_id": project.client_id,
+            }),
+        )
+        .await;
+        assert_generic_request_answer(response).await;
+        assert_eq!(unconsumed_reset_requests(&app_state, &bystander), 1);
+
+        app_state.db.delete_user(&user).unwrap();
+        app_state.db.delete_user(&bystander).unwrap();
+    }
+
+    #[tokio::test]
+    #[ignore = "requires AEAD_TAMPER_TEST_DATABASE_URL pointing at disposable migrated local Postgres"]
+    async fn db_reset_attempts_are_charged_to_the_request_their_secret_belongs_to() {
+        let app_state = test_app_state().await;
+        let project = first_active_project(&app_state);
+        let app = login_routes(app_state.clone());
+        let user = create_user(&app_state, &project, "guess").await;
+        let email = user.email.clone().expect("test user has an email");
+        let original_password = test_credential("guess");
+        let new_password = test_credential("guess-new");
+
+        let secret = "guess-owner-secret".to_string();
+        let code = app_state
+            .create_password_reset_request(
+                email.clone(),
+                generate_reset_hash(secret.clone()),
+                project.id,
+            )
+            .await
+            .unwrap();
+
+        // Submissions with a secret no request was created with cannot
+        // complete anything, so they are refused without being counted, even
+        // when they carry the right code.
+        for attempt in 0..10 {
+            let result = app_state
+                .confirm_password_reset(
+                    email.clone(),
+                    if attempt == 0 {
+                        code.clone()
+                    } else {
+                        wrong_code(&code)
+                    },
+                    format!("guess-unrelated-secret-{attempt}"),
+                    new_password.to_string(),
+                    project.id,
+                )
+                .await;
+            assert!(matches!(result, Err(Error::InvalidPasswordResetRequest)));
+        }
+
+        // The owner may still miss four times and succeed on the fifth.
+        for _ in 0..4 {
+            let result = app_state
+                .confirm_password_reset(
+                    email.clone(),
+                    wrong_code(&code),
+                    secret.clone(),
+                    new_password.to_string(),
+                    project.id,
+                )
+                .await;
+            assert!(matches!(result, Err(Error::InvalidPasswordResetRequest)));
+        }
+        assert!(password_opens_account(&app_state, &project, &user, original_password).await);
+        app_state
+            .confirm_password_reset(
+                email.clone(),
+                code,
+                secret,
+                new_password.to_string(),
+                project.id,
+            )
+            .await
+            .expect("the fifth attempt with the right code completes the reset");
+        assert!(password_opens_account(&app_state, &project, &user, new_password).await);
+
+        // A request that has used its five attempts is closed, even to the
+        // right code, and says so through the route.
+        let exhausted_secret = "guess-exhausted-secret".to_string();
+        let exhausted_code = app_state
+            .create_password_reset_request(
+                email.clone(),
+                generate_reset_hash(exhausted_secret.clone()),
+                project.id,
+            )
+            .await
+            .unwrap();
+        let attacker_password = test_credential("guess-attacker");
+        for _ in 0..5 {
+            let result = app_state
+                .confirm_password_reset(
+                    email.clone(),
+                    wrong_code(&exhausted_code),
+                    exhausted_secret.clone(),
+                    attacker_password.to_string(),
+                    project.id,
+                )
+                .await;
+            assert!(matches!(result, Err(Error::InvalidPasswordResetRequest)));
+        }
+        let result = app_state
+            .confirm_password_reset(
+                email.clone(),
+                exhausted_code.clone(),
+                exhausted_secret.clone(),
+                attacker_password.to_string(),
+                project.id,
+            )
+            .await;
+        assert!(matches!(
+            result,
+            Err(Error::RateLimited(ApiError::RateLimited { .. }))
+        ));
+        let response = post(
+            &app,
+            "/password-reset/confirm",
+            json!({
+                "email": email,
+                "alphanumeric_code": exhausted_code,
+                "plaintext_secret": exhausted_secret,
+                "new_password": attacker_password,
+                "client_id": project.client_id,
+            }),
+        )
+        .await;
+        assert_rate_limited(response).await;
+        assert!(password_opens_account(&app_state, &project, &user, new_password).await);
+        assert!(!password_opens_account(&app_state, &project, &user, attacker_password).await);
+
+        // Each request has its own budget: a fresh one still works.
+        let fresh_secret = "guess-fresh-secret".to_string();
+        let fresh_code = app_state
+            .create_password_reset_request(
+                email.clone(),
+                generate_reset_hash(fresh_secret.clone()),
+                project.id,
+            )
+            .await
+            .unwrap();
+        let final_password = test_credential("guess-final");
+        let response = post(
+            &app,
+            "/password-reset/confirm",
+            json!({
+                "email": email,
+                "alphanumeric_code": fresh_code,
+                "plaintext_secret": fresh_secret,
+                "new_password": final_password,
+                "client_id": project.client_id,
+            }),
+        )
+        .await;
+        assert_eq!(response.status(), StatusCode::OK);
+        assert!(password_opens_account(&app_state, &project, &user, final_password).await);
+
+        app_state.db.delete_user(&user).unwrap();
+    }
+
+    #[tokio::test]
+    #[ignore = "requires AEAD_TAMPER_TEST_DATABASE_URL pointing at disposable migrated local Postgres"]
+    async fn db_platform_reset_requests_are_capped_per_account_with_an_unchanged_response() {
+        let app_state = test_app_state().await;
+        let app = platform_login_routes(app_state.clone());
+        let user = create_platform_user(&app_state, "cap").await;
+        let bystander = create_platform_user(&app_state, "bystander").await;
+
+        for attempt in 0..7 {
+            let response = post(
+                &app,
+                "/platform/password-reset/request",
+                json!({
+                    "email": user.email,
+                    "hashed_secret": generate_reset_hash(format!("cap-{attempt}")),
+                }),
+            )
+            .await;
+            assert_generic_request_answer(response).await;
+        }
+        assert_eq!(unconsumed_platform_reset_requests(&app_state, &user), 5);
+
+        let response = post(
+            &app,
+            "/platform/password-reset/request",
+            json!({
+                "email": bystander.email,
+                "hashed_secret": generate_reset_hash("bystander".to_string()),
+            }),
+        )
+        .await;
+        assert_generic_request_answer(response).await;
+        assert_eq!(
+            unconsumed_platform_reset_requests(&app_state, &bystander),
+            1
+        );
+
+        delete_platform_user(&app_state, &user);
+        delete_platform_user(&app_state, &bystander);
+    }
+
+    #[tokio::test]
+    #[ignore = "requires AEAD_TAMPER_TEST_DATABASE_URL pointing at disposable migrated local Postgres"]
+    async fn db_platform_reset_attempts_are_charged_to_the_request_their_secret_belongs_to() {
+        let app_state = test_app_state().await;
+        let app = platform_login_routes(app_state.clone());
+        let user = create_platform_user(&app_state, "guess").await;
+        let original_password = stored_platform_password(&app_state, &user);
+        let new_password = test_credential("guess-new");
+
+        let secret = "guess-owner-secret".to_string();
+        let code = app_state
+            .create_platform_password_reset_request(
+                user.email.clone(),
+                generate_reset_hash(secret.clone()),
+            )
+            .await
+            .unwrap();
+
+        for attempt in 0..10 {
+            let result = app_state
+                .confirm_platform_password_reset(
+                    user.email.clone(),
+                    if attempt == 0 {
+                        code.clone()
+                    } else {
+                        wrong_code(&code)
+                    },
+                    format!("guess-unrelated-secret-{attempt}"),
+                    new_password.to_string(),
+                )
+                .await;
+            assert!(matches!(result, Err(Error::InvalidPasswordResetRequest)));
+        }
+
+        for _ in 0..4 {
+            let result = app_state
+                .confirm_platform_password_reset(
+                    user.email.clone(),
+                    wrong_code(&code),
+                    secret.clone(),
+                    new_password.to_string(),
+                )
+                .await;
+            assert!(matches!(result, Err(Error::InvalidPasswordResetRequest)));
+        }
+        assert_eq!(
+            stored_platform_password(&app_state, &user),
+            original_password
+        );
+        app_state
+            .confirm_platform_password_reset(
+                user.email.clone(),
+                code,
+                secret,
+                new_password.to_string(),
+            )
+            .await
+            .expect("the fifth attempt with the right code completes the reset");
+        let reset_password = stored_platform_password(&app_state, &user);
+        assert_ne!(reset_password, original_password);
+
+        let exhausted_secret = "guess-exhausted-secret".to_string();
+        let exhausted_code = app_state
+            .create_platform_password_reset_request(
+                user.email.clone(),
+                generate_reset_hash(exhausted_secret.clone()),
+            )
+            .await
+            .unwrap();
+        let attacker_password = test_credential("guess-attacker");
+        for _ in 0..5 {
+            let result = app_state
+                .confirm_platform_password_reset(
+                    user.email.clone(),
+                    wrong_code(&exhausted_code),
+                    exhausted_secret.clone(),
+                    attacker_password.to_string(),
+                )
+                .await;
+            assert!(matches!(result, Err(Error::InvalidPasswordResetRequest)));
+        }
+        let result = app_state
+            .confirm_platform_password_reset(
+                user.email.clone(),
+                exhausted_code.clone(),
+                exhausted_secret.clone(),
+                attacker_password.to_string(),
+            )
+            .await;
+        assert!(matches!(
+            result,
+            Err(Error::RateLimited(ApiError::RateLimited { .. }))
+        ));
+        let response = post(
+            &app,
+            "/platform/password-reset/confirm",
+            json!({
+                "email": user.email,
+                "alphanumeric_code": exhausted_code,
+                "plaintext_secret": exhausted_secret,
+                "new_password": attacker_password,
+            }),
+        )
+        .await;
+        assert_rate_limited(response).await;
+        assert_eq!(stored_platform_password(&app_state, &user), reset_password);
+
+        let fresh_secret = "guess-fresh-secret".to_string();
+        let fresh_code = app_state
+            .create_platform_password_reset_request(
+                user.email.clone(),
+                generate_reset_hash(fresh_secret.clone()),
+            )
+            .await
+            .unwrap();
+        let response = post(
+            &app,
+            "/platform/password-reset/confirm",
+            json!({
+                "email": user.email,
+                "alphanumeric_code": fresh_code,
+                "plaintext_secret": fresh_secret,
+                "new_password": test_credential("guess-final"),
+            }),
+        )
+        .await;
+        assert_eq!(response.status(), StatusCode::OK);
+        assert_ne!(stored_platform_password(&app_state, &user), reset_password);
+
+        delete_platform_user(&app_state, &user);
+    }
+}

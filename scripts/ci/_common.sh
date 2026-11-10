@@ -3141,11 +3141,17 @@ linux_system_elf_interpreter_for_file() {
   esac
 }
 
+# The host supplies glibc, and GBM and libdrm, which must match its GPU
+# drivers and kernel. A bundled libgbm looks for drivers only in its build's
+# compiled-in directory, so WebKit gets no GPU device and draws a blank window.
+# linuxdeploy excludes both by default; the closure repair must not add them.
 linux_appimage_ignored_needed_library() {
   case "$1" in
     ld-linux-*.so.* | \
       libc.so.* | \
       libdl.so.* | \
+      libdrm.so.* | \
+      libgbm.so.* | \
       libm.so.* | \
       libmvec.so.* | \
       libnss_*.so.* | \
@@ -3260,6 +3266,37 @@ linux_runtime_closure_webkitgtk_store_path() {
       printf '%s\n' "${root}"
       return 0
     fi
+  done < "${store_paths}"
+
+  return 1
+}
+
+linux_runtime_closure_gio_tls_module() {
+  local store_paths root
+
+  store_paths="$(linux_runtime_closure_store_paths_file)"
+  while IFS= read -r root; do
+    if [ -f "${root}/lib/gio/modules/libgiognutls.so" ]; then
+      printf '%s\n' "${root}/lib/gio/modules/libgiognutls.so"
+      return 0
+    fi
+  done < "${store_paths}"
+
+  return 1
+}
+
+linux_runtime_closure_gtk3_compiled_schemas() {
+  local store_paths root schemas
+
+  store_paths="$(linux_runtime_closure_store_paths_file)"
+  while IFS= read -r root; do
+    [ -e "${root}/lib/libgtk-3.so.0" ] || continue
+    for schemas in "${root}"/share/gsettings-schemas/*/glib-2.0/schemas/gschemas.compiled; do
+      if [ -f "${schemas}" ]; then
+        printf '%s\n' "${schemas}"
+        return 0
+      fi
+    done
   done < "${store_paths}"
 
   return 1
@@ -3484,7 +3521,10 @@ EOF
   "${compiler}" -x c -O2 -Wall -Wextra "${source}" -o "${patcher}"
   rm -f "${source}"
   chmod 0755 "${patcher}"
-  sanitize_linux_package_executable "${patcher}"
+  # Build-time users need the Nix interpreter until their rewrites finish.
+  if [ "${2:-portable}" = portable ]; then
+    sanitize_linux_package_executable "${patcher}"
+  fi
 }
 
 write_linux_appimage_webkit_hook() {
@@ -3736,6 +3776,7 @@ export PATH="$this_dir/usr/bin:$this_dir/usr/sbin:$this_dir/usr/games:$this_dir/
 export LD_LIBRARY_PATH="${MAPLE_WEBKIT_LIBRARY_PATH:+${MAPLE_WEBKIT_LIBRARY_PATH}:}$this_dir/usr/lib:$this_dir/usr/lib/i386-linux-gnu:$this_dir/usr/lib/x86_64-linux-gnu:$this_dir/usr/lib32:$this_dir/usr/lib64:$this_dir/lib:$this_dir/lib/i386-linux-gnu:$this_dir/lib/x86_64-linux-gnu:$this_dir/lib32:$this_dir/lib64${LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH}"
 export XDG_DATA_DIRS="$this_dir/usr/share:${XDG_DATA_DIRS:-/usr/local/share/:/usr/share/}"
 export GSETTINGS_SCHEMA_DIR="$this_dir/usr/share/glib-2.0/schemas${GSETTINGS_SCHEMA_DIR:+:$GSETTINGS_SCHEMA_DIR}"
+export GIO_MODULE_DIR="$this_dir/usr/lib/gio/modules"
 export PYTHONPATH="$this_dir/usr/share/pyshared${PYTHONPATH:+:$PYTHONPATH}"
 export PERLLIB="$this_dir/usr/share/perl5:$this_dir/usr/lib/perl5${PERLLIB:+:$PERLLIB}"
 export QT_PLUGIN_PATH="$this_dir/usr/lib/qt4/plugins:$this_dir/usr/lib/i386-linux-gnu/qt4/plugins:$this_dir/usr/lib/x86_64-linux-gnu/qt4/plugins:$this_dir/usr/lib32/qt4/plugins:$this_dir/usr/lib64/qt4/plugins:$this_dir/usr/lib/qt5/plugins:$this_dir/usr/lib/i386-linux-gnu/qt5/plugins:$this_dir/usr/lib/x86_64-linux-gnu/qt5/plugins:$this_dir/usr/lib32/qt5/plugins:$this_dir/usr/lib64/qt5/plugins${QT_PLUGIN_PATH:+:$QT_PLUGIN_PATH}"
@@ -3779,7 +3820,7 @@ stage_linux_appdir_webkit_runtime() {
   sanitize_linux_appdir_executables_under "${appdir}/usr/libexec/webkit2gtk-4.1"
   sanitize_linux_appdir_executables_under "${runtime_dir}/bin"
   set_linux_appdir_rpath_under "${appdir}/usr/lib/webkit2gtk-4.1" '$ORIGIN/../..'
-  install_linux_appimage_string_patcher "${appdir}"
+  install_linux_appimage_string_patcher "${appdir}" build
 
   for exe in "${runtime_dir}/bin/bwrap" "${runtime_dir}/bin/xdg-dbus-proxy"; do
     touch -h -d "@${SOURCE_DATE_EPOCH}" "${exe}"
@@ -3794,6 +3835,36 @@ stage_linux_appdir_webkit_runtime() {
   write_linux_appimage_maple_apprun "${appdir}"
 
   printf 'staged-linux-appimage-webkit-runtime  %s\n' "${webkit_store}"
+}
+
+# GIO loads its TLS backend and GTK reads its file chooser settings at runtime,
+# so nothing in the DT_NEEDED closure pulls either into the AppDir. Stage them
+# before the closure repair, which then bundles the module's own libraries.
+stage_linux_appdir_gio_runtime() {
+  local appdir="$1"
+  local tls_module schemas module_dir schema_dir
+
+  if [ ! -e "${appdir}/usr/lib/libwebkit2gtk-4.1.so.0" ]; then
+    return 0
+  fi
+
+  if ! tls_module="$(linux_runtime_closure_gio_tls_module)"; then
+    echo "AppImage runtime closure has no GIO TLS module (glib-networking)." >&2
+    return 1
+  fi
+  if ! schemas="$(linux_runtime_closure_gtk3_compiled_schemas)"; then
+    echo "AppImage runtime closure has no compiled GTK3 GSettings schemas." >&2
+    return 1
+  fi
+
+  module_dir="${appdir}/usr/lib/gio/modules"
+  schema_dir="${appdir}/usr/share/glib-2.0/schemas"
+  mkdir -p "${module_dir}" "${schema_dir}"
+  cp -L --preserve=mode,timestamps "${tls_module}" "${module_dir}/libgiognutls.so"
+  cp -L --preserve=mode,timestamps "${schemas}" "${schema_dir}/gschemas.compiled"
+  chmod u+w "${module_dir}/libgiognutls.so" "${schema_dir}/gschemas.compiled"
+
+  printf 'staged-linux-appimage-gio-runtime  %s  %s\n' "${tls_module}" "${schemas}"
 }
 
 repair_linux_appdir_runtime_closure() {
@@ -3865,6 +3936,22 @@ verify_linux_appdir_runtime_closure() {
   libdir="$(linux_appdir_lib_dir "${appdir}")"
   status=0
 
+  while IFS= read -r -d '' library; do
+    if linux_appimage_ignored_needed_library "$(basename "${library}")"; then
+      echo "AppImage bundles ${library#"${appdir}"/}, which the host must supply." >&2
+      status=1
+    fi
+  done < <(find "${libdir}" -maxdepth 1 \( -type f -o -type l \) -print0 2>/dev/null)
+
+  if [ -f "${libdir}/libepoxy.so.0" ]; then
+    for soname in libGLESv2.so.2 libGL.so.1; do
+      if ! linux_appdir_library_is_self_contained "${appdir}" "${libdir}/${soname}"; then
+        echo "AppImage is missing bundled libepoxy dlopen library ${soname}." >&2
+        status=1
+      fi
+    done
+  fi
+
   while IFS= read -r -d '' elf; do
     while IFS= read -r needed; do
       [ -n "${needed}" ] || continue
@@ -3906,12 +3993,61 @@ verify_linux_appdir_runtime_closure() {
   return "${status}"
 }
 
+# Inspect runtime constants, not .dynstr: patchelf can leave obsolete absolute
+# DT_NEEDED strings there after replacing the live entry with a soname.
+linux_appimage_runtime_library_paths() {
+  readelf --string-dump=.rodata "$1" 2>/dev/null |
+    sed -nE 's@^.*\]  (/nix/store/[^[:space:]]+).*$@\1@p' |
+    grep -E '/lib(64)?/[^/*%]+\.so(\.[0-9]+)*$|/[^/]*libglvnd[^/]*/lib$' |
+    LC_ALL=C sort -u || true
+}
+
+repair_linux_appdir_runtime_library_paths() {
+  local appdir="$1"
+  local elf path soname source
+  local patcher="${appdir}/usr/libexec/maple-webkit-runtime/maple-replace-strings"
+
+  # libepoxy dlopens these dispatch libraries; vendor drivers stay on the host.
+  for soname in libGLESv2.so.2 libGL.so.1; do
+    source="$(linux_runtime_closure_library_for_soname "${soname}")"
+    copy_linux_runtime_library_to_appdir "${appdir}" "${source}" "${soname}"
+  done
+
+  while IFS= read -r -d '' elf; do
+    while IFS= read -r path; do
+      case "${path}" in
+        *-libglvnd-*/lib)
+          # dlopen expands $ORIGIN relative to the calling libepoxy.
+          # shellcheck disable=SC2016
+          "${patcher}" "${elf}" "${path}" '$ORIGIN'
+          ;;
+        *)
+          soname="$(basename "${path}")"
+          # Host-supplied libraries resolve by soname from the host.
+          if ! linux_appimage_ignored_needed_library "${soname}"; then
+            source="$(linux_runtime_closure_library_for_soname "${soname}")"
+            copy_linux_runtime_library_to_appdir "${appdir}" "${source}" "${soname}"
+          fi
+          "${patcher}" "${elf}" "${path}" "${soname}"
+          ;;
+      esac
+      touch -h -d "@${SOURCE_DATE_EPOCH}" "${elf}"
+    done < <(linux_appimage_runtime_library_paths "${elf}")
+  done < <(find "${appdir}" -type f -print0)
+}
+
 verify_linux_appdir_portable_runtime_paths() {
   local appdir="$1"
   local status=0
-  local path rpath target
+  local path rpath target runtime_path
 
   while IFS= read -r -d '' path; do
+    while IFS= read -r runtime_path; do
+      echo "AppImage ELF contains a Nix runtime library path." >&2
+      echo "runtime_path=${runtime_path}" >&2
+      echo "file=${path}" >&2
+      status=1
+    done < <(linux_appimage_runtime_library_paths "${path}")
     rpath="$(patchelf --print-rpath "${path}" 2>/dev/null || true)"
     case "${rpath}" in
       *"/nix/store/"* | *"/home/runner/work/"* | *"/Users/runner/work/"* | *"/Users/tony/"*)
@@ -4016,6 +4152,23 @@ verify_linux_appdir_webkit_runtime() {
   return "${status}"
 }
 
+# Load the AppDir's own libraries with AppRun's settings and nothing from the
+# host. Needs the bundle's glibc, which the desktop-linux shell's Python has.
+verify_linux_appdir_gio_runtime() {
+  local appdir="$1"
+
+  if [ ! -e "${appdir}/usr/lib/libwebkit2gtk-4.1.so.0" ]; then
+    return 0
+  fi
+
+  env -u DISPLAY -u WAYLAND_DISPLAY -u GIO_EXTRA_MODULES \
+    LD_LIBRARY_PATH="${appdir}/usr/lib" \
+    GIO_MODULE_DIR="${appdir}/usr/lib/gio/modules" \
+    GSETTINGS_SCHEMA_DIR="${appdir}/usr/share/glib-2.0/schemas" \
+    XDG_DATA_DIRS="${appdir}/usr/share" \
+    "$(python3_runner)" -I "${SCRIPT_DIR}/appimage_gio_runtime.py" "${appdir}"
+}
+
 prepare_linux_appdir_for_appimage() {
   local appdir="$1"
   local exe="${appdir}/usr/bin/maple"
@@ -4026,6 +4179,9 @@ prepare_linux_appdir_for_appimage() {
   fi
 
   stage_linux_appdir_webkit_runtime "${appdir}"
+  stage_linux_appdir_gio_runtime "${appdir}"
+  repair_linux_appdir_runtime_library_paths "${appdir}"
+  sanitize_linux_package_executable "${appdir}/usr/libexec/maple-webkit-runtime/maple-replace-strings"
   repair_linux_appdir_runtime_closure "${appdir}"
   sanitize_linux_appdir_library_rpaths "${appdir}"
   remove_linux_appdir_nix_xdg_wrappers "${appdir}"
@@ -4158,6 +4314,7 @@ verify_linux_appimage_executable_metadata() {
     verify_linux_appdir_runtime_closure "${tmp}/AppDir" &&
     verify_linux_appdir_portable_runtime_paths "${tmp}/AppDir" &&
     verify_linux_appdir_webkit_runtime "${tmp}/AppDir" &&
+    verify_linux_appdir_gio_runtime "${tmp}/AppDir" &&
     verify_linux_appdir_glibc_floor "${tmp}/AppDir"
   ) || status=$?
   rm -rf "${tmp}"

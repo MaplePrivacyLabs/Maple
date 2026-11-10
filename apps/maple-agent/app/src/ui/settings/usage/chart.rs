@@ -251,10 +251,18 @@ pub(super) fn bars(chart: Bars, tip: Rc<dyn Fn(usize) -> Tip>) -> gpui::Stateful
                 .w(px(1.))
                 .bg(gpui::rgb(theme::text_muted()))
                 .child(
+                    // The label sits on the side of the line with room for
+                    // it, so a marker near the right edge is not cut off.
                     div()
                         .absolute()
                         .top(px(-2.))
-                        .left(px(4.))
+                        .map(|label| {
+                            if index * 2 > count {
+                                label.right(px(4.))
+                            } else {
+                                label.left(px(4.))
+                            }
+                        })
                         .child(axis_label(text)),
                 ),
         );

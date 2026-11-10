@@ -155,6 +155,27 @@ class PreparationTests(unittest.TestCase):
                 prepare.replace_directory(root / "missing", destination)
             self.assertEqual((destination / "valid").read_text(), "retained")
 
+    def test_packed_runtime_is_reproducible_and_holds_only_plain_files(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            runtime = root / "runtime"
+            (runtime / "Lib/json").mkdir(parents=True)
+            (runtime / "python.exe").write_bytes(b"MZ")
+            (runtime / "Lib/json/__init__.py").write_text("pass\n")
+            (runtime / prepare.RECEIPT).write_text("{}")
+            prepare.write_archive(runtime, root / "first.tar.gz")
+            (runtime / "python.exe").touch()
+            prepare.write_archive(runtime, root / "second.tar.gz")
+            self.assertEqual((root / "first.tar.gz").read_bytes(), (root / "second.tar.gz").read_bytes())
+            with tarfile.open(root / "first.tar.gz") as archive:
+                members = archive.getmembers()
+            self.assertEqual([member.name for member in members], ["Lib/json/__init__.py", "python.exe"])
+            self.assertTrue(all(member.isfile() and member.mtime == 0 for member in members))
+            (runtime / "link").symlink_to("python.exe")
+            with self.assertRaisesRegex(ValueError, "links"):
+                prepare.write_archive(runtime, root / "third.tar.gz")
+            self.assertFalse((root / "third.tar.gz").exists())
+
     def test_nix_requires_explicit_manifest(self):
         with self.assertRaisesRegex(ValueError, "explicit"):
             prepare.verify_nix(None)
