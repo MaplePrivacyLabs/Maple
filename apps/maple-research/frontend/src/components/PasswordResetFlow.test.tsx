@@ -67,6 +67,57 @@ function submitButton() {
 }
 
 describe("PasswordResetFlow", () => {
+  for (const emailCode of ["abcd1234", "a".repeat(9), "0123456789abcdef".repeat(2)]) {
+    test(`accepts a ${emailCode.length}-character email reset code`, async () => {
+      const api = await mount();
+      expect(view.root.findByProps({ id: "reset-email-code" }).props.maxLength).toBe(32);
+      await input("reset-email-code", ` ${emailCode} `);
+      await submit();
+      expect(api.getPasswordResetOptions).toHaveBeenCalledWith(
+        props.email,
+        emailCode.toUpperCase(),
+        props.secret
+      );
+      await passwords();
+      await input("reset-recovery-code", RECOVERY_CODE);
+      await submit();
+      expect(api.completePasswordReset.mock.calls[0][1]).toBe(emailCode.toUpperCase());
+    });
+  }
+
+  for (const emailCode of ["a".repeat(7), "a".repeat(33), "abcd-1234", "abcd 1234"]) {
+    test("rejects an email reset code outside the accepted alphanumeric shape", async () => {
+      const api = await mount();
+      await input("reset-email-code", emailCode);
+      await submit();
+      expect(text(view.root)).toContain("8–32 letters or numbers");
+      expect(view.root.findByProps({ id: "reset-email-code" }).props.value).toBe(emailCode);
+      expect(api.getPasswordResetOptions).not.toHaveBeenCalled();
+      expect(api.completePasswordReset).not.toHaveBeenCalled();
+    });
+  }
+
+  test("ambiguous recovery pastes keep the proof and inputs until a single code is supplied", async () => {
+    const api = await mount();
+    await verify();
+    await passwords();
+    const pasted = `${RECOVERY_CODE}\nMPLRC1-000G-40R4-0M30-E209-185G-R38E-1W81-24GK-2GAH-C5RR-34D1-P70X-3RFG-948Q-DC7M`;
+    await input("reset-recovery-code", pasted);
+    await submit();
+    expect(text(view.root)).toContain("Paste just the code you want to use");
+    expect(view.root.findByProps({ id: "reset-recovery-code" }).props.value).toBe(pasted);
+    expect(view.root.findByProps({ id: "reset-new-password" }).props.value).toBe(
+      "new-password-fixture"
+    );
+    expect(view.root.findByProps({ value: "preserve" }).props.checked).toBe(true);
+    expect(api.completePasswordReset).not.toHaveBeenCalled();
+    await input("reset-recovery-code", RECOVERY_CODE);
+    await submit();
+    expect(api.getPasswordResetOptions).toHaveBeenCalledTimes(1);
+    expect(api.completePasswordReset).toHaveBeenCalledTimes(1);
+    expect(text(view.root)).toContain("Password reset successful");
+  });
+
   test("verifies the email proof before exposing reset options and defaults to preserving data", async () => {
     const api = await mount();
     expect(text(view.root)).not.toContain("No recovery code is enabled");

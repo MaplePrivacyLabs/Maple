@@ -41,6 +41,35 @@ async function submit() {
 }
 
 describe("RecoveryCodeSettings", () => {
+  test("ambiguous saved-code confirmation retains the issued code and navigation lock", async () => {
+    const lock = mock<(locked: boolean) => void>(() => {});
+    await act(async () => {
+      view = create(<RecoveryCodeSettings api={api()} onLockChange={lock} />);
+    });
+    await click("Enable recovery");
+    await enterPassword();
+    await submit();
+    const pasted = `${code}\nMPLRC1-000G-40R4-0M30-E209-185G-R38E-1W81-24GK-2GAH-C5RR-34D1-P70X-3RFG-948Q-DC7M`;
+    await act(async () => {
+      view.root
+        .findByProps({ id: "recovery-confirmation" })
+        .props.onChange({ target: { value: pasted } });
+    });
+    await click("Done");
+    expect(text(view.root)).toContain("Paste just the code you want to use");
+    expect(view.root.findByProps({ id: "recovery-code" }).props.value).toBe(code);
+    expect(view.root.findByProps({ id: "recovery-confirmation" }).props.value).toBe(pasted);
+    expect(lock.mock.calls.at(-1)).toEqual([true]);
+    await act(async () => {
+      view.root
+        .findByProps({ id: "recovery-confirmation" })
+        .props.onChange({ target: { value: code } });
+    });
+    await click("Done");
+    expect(view.root.findAllByProps({ id: "recovery-code" })).toHaveLength(0);
+    expect(lock.mock.calls.at(-1)).toEqual([false]);
+  });
+
   test("waits for a confirmed file save and keeps the code until explicitly acknowledged", async () => {
     let resolve!: (result: "saved") => void;
     const saveCode = mock(
