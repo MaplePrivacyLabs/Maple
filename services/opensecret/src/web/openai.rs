@@ -620,8 +620,53 @@ struct EmbeddingRequest {
     user: Option<String>,
 }
 
+/// The only embedding model this endpoint forwards to the provider.
+const EMBEDDING_MODEL: &str = "nomic-embed-text";
+
 fn default_embedding_model() -> String {
-    "nomic-embed-text".to_string()
+    EMBEDDING_MODEL.to_string()
+}
+
+/// Rejects anything the endpoint does not serve before billing or the provider is
+/// contacted. The request model is otherwise forwarded verbatim.
+fn validate_embedding_request(request: &EmbeddingRequest) -> Result<(), ApiError> {
+    if request.model != EMBEDDING_MODEL {
+        error!("Unsupported embeddings model requested");
+        return Err(ApiError::BadRequest);
+    }
+    let is_empty = match &request.input {
+        Value::String(s) => s.trim().is_empty(),
+        Value::Array(arr) => arr.is_empty(),
+        _ => true,
+    };
+    if is_empty {
+        error!("Input is empty or invalid");
+        return Err(ApiError::BadRequest);
+    }
+    Ok(())
+}
+
+/// Embeddings are a metered paid surface for every caller and auth method: a paid plan
+/// with usage remaining in the pool the call is billed to. A caller whose plan billing
+/// cannot confirm gets a retryable 503, never free access.
+fn ensure_embeddings_access(
+    user_uuid: Uuid,
+    is_guest: bool,
+    billing_access: Option<crate::billing::ChatBillingAccess>,
+) -> Result<(), ApiError> {
+    let Some(access) = billing_access else {
+        error!(
+            "Embeddings plan could not be confirmed by billing: {}",
+            user_uuid
+        );
+        return Err(ApiError::ServiceUnavailable);
+    };
+    completion_entitlement(user_uuid, is_guest, Some(access), "embeddings")?;
+    if !access.is_paid() {
+        error!("Free plan attempted to use embeddings: {}", user_uuid);
+        return Err(ApiError::ModelNotAvailableOnPlan);
+    }
+    Ok(())
 }
 
 // ============================================================================
@@ -4131,50 +4176,17 @@ async fn proxy_tts(
 
 async fn proxy_embeddings(
     State(state): State<Arc<AppState>>,
-    _headers: HeaderMap,
+    headers: HeaderMap,
     axum::Extension(session_id): axum::Extension<TransportSession>,
     axum::Extension(user): axum::Extension<User>,
-    axum::Extension(_auth_method): axum::Extension<AuthMethod>,
+    axum::Extension(auth_method): axum::Extension<AuthMethod>,
     Decrypted(embedding_request): Decrypted<EmbeddingRequest>,
 ) -> Result<Response, ApiError> {
-    // Check if guest user is allowed (paid guests are allowed, free guests are not)
-    if user.is_guest() {
-        if let Some(billing_client) = &state.billing_client {
-            match billing_client.is_user_paid(user.uuid).await {
-                Ok(true) => {
-                    debug!("Paid guest user allowed for embeddings: {}", user.uuid);
-                }
-                Ok(false) => {
-                    error!(
-                        "Free guest user attempted to use embeddings feature: {}",
-                        user.uuid
-                    );
-                    return Err(ApiError::Unauthorized);
-                }
-                Err(e) => {
-                    error!("Billing check failed for guest user {}: {}", user.uuid, e);
-                    return Err(ApiError::Unauthorized);
-                }
-            }
-        } else {
-            error!(
-                "Guest user attempted to use embeddings without billing client: {}",
-                user.uuid
-            );
-            return Err(ApiError::Unauthorized);
-        }
-    }
-
-    // Validate input is not empty
-    let is_empty = match &embedding_request.input {
-        Value::String(s) => s.trim().is_empty(),
-        Value::Array(arr) => arr.is_empty(),
-        _ => true,
-    };
-    if is_empty {
-        error!("Input is empty or invalid");
-        return Err(ApiError::BadRequest);
-    }
+    validate_embedding_request(&embedding_request)?;
+    let billing_access = state
+        .chat_billing_access(user.uuid, auth_method == AuthMethod::ApiKey)
+        .await;
+    ensure_embeddings_access(user.uuid, user.is_guest(), billing_access)?;
 
     let proxy_config = state.proxy_router.get_tinfoil_proxy();
 
@@ -4234,9 +4246,9 @@ async fn proxy_embeddings(
 
         if prompt_tokens > 0 {
             let billing_context = BillingContext::new(
-                _auth_method,
+                auth_method,
                 embedding_request.model.clone(),
-                crate::client_app::ClientApp::from_headers(&_headers),
+                crate::client_app::ClientApp::from_headers(&headers),
             );
             let embedding_usage = CompletionUsage {
                 prompt_tokens,
@@ -7264,6 +7276,59 @@ mod tests {
             prepare_tts_request(over_limit),
             Err(TTSRequestValidationError::InputTooLong)
         );
+    }
+
+    #[test]
+    fn embeddings_are_closed_to_free_exhausted_and_unconfirmed_plans() {
+        use crate::billing::ChatBillingAccess;
+        let user = Uuid::nil();
+        let access = |can_use, is_free| Some(ChatBillingAccess::for_tests(can_use, is_free));
+        for is_guest in [false, true] {
+            assert!(ensure_embeddings_access(user, is_guest, access(true, false)).is_ok());
+            assert!(matches!(
+                ensure_embeddings_access(user, is_guest, access(false, false)),
+                Err(ApiError::UsageLimitReached)
+            ));
+            // Without a billing answer the plan is unknown: fail closed but retryable.
+            assert!(matches!(
+                ensure_embeddings_access(user, is_guest, None),
+                Err(ApiError::ServiceUnavailable)
+            ));
+        }
+        assert!(matches!(
+            ensure_embeddings_access(user, false, access(true, true)),
+            Err(ApiError::ModelNotAvailableOnPlan)
+        ));
+        assert!(matches!(
+            ensure_embeddings_access(user, false, access(false, true)),
+            Err(ApiError::UsageLimitReached)
+        ));
+        assert!(matches!(
+            ensure_embeddings_access(user, true, access(true, true)),
+            Err(ApiError::Unauthorized)
+        ));
+    }
+
+    #[test]
+    fn embeddings_accept_only_the_served_model_and_non_empty_input() {
+        let request = |body: Value| serde_json::from_value::<EmbeddingRequest>(body).unwrap();
+        assert!(validate_embedding_request(&request(json!({"input": "hello"}))).is_ok());
+        assert!(validate_embedding_request(&request(
+            json!({"input": ["a", "b"], "model": "nomic-embed-text"})
+        ))
+        .is_ok());
+        for body in [
+            json!({"input": "hello", "model": "some-other-embedding-model"}),
+            json!({"input": "hello", "model": ""}),
+            json!({"input": "  "}),
+            json!({"input": []}),
+            json!({"input": 7}),
+        ] {
+            assert!(matches!(
+                validate_embedding_request(&request(body)),
+                Err(ApiError::BadRequest)
+            ));
+        }
     }
 
     #[test]
