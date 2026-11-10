@@ -6015,11 +6015,14 @@ dependencies = [
 name = "maple-code-mode"
 version = "0.0.23"
 dependencies = [
+ "flate2",
  "libc",
  "log",
  "process-wrap",
  "serde",
  "serde_json",
+ "sha2 0.10.9",
+ "tar",
  "tempfile",
  "tokio",
  "tokio-util",

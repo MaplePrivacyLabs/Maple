@@ -113,6 +113,9 @@ AGENT_PACKAGING = tuple("apps/maple-agent/" + glob for glob in (
 AGENT_WINDOWS_PACKAGING = tuple("apps/maple-agent/" + glob for glob in (
     "scripts/windows-*", "scripts/build-release.sh", "scripts/release-info.py", "release-profiles.json",
     "release_profile.rs",
+    # The python tool's CPython, which build-release.sh embeds in the executable.
+    "scripts/prepare-python.py", "scripts/python-runtime.json", "scripts/python-licenses/**",
+    "crates/maple-code-mode/build.rs", "crates/maple-code-mode/src/embedded.rs",
 )) + WINDOWS_TOOLCHAIN
 APPLE_TOOLCHAIN = ("scripts/ci/apple-toolchain.json", "scripts/ci/select-xcode.py")
 # The composite actions that carry Xcode's Metal Toolchain from GitHub's xcode-27 image

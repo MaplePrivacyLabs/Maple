@@ -142,6 +142,10 @@ enum Mode {
     Login(LoginArgs),
     /// Unlock Maple local data; the password is prompted on the controlling TTY.
     Unlock,
+    /// Start the bundled Python, unpacking it first on Windows, and run one
+    /// cell. Packaging checks use this; it needs no account.
+    #[command(hide = true)]
+    PythonCheck,
 }
 
 #[derive(Debug, Subcommand, PartialEq, Eq)]
@@ -558,6 +562,13 @@ fn main() {
                 std::process::exit(1);
             }
         }
+        Some(Mode::PythonCheck) => match run_python_check() {
+            Ok(report) => print!("{report}"),
+            Err(error) => {
+                eprintln!("{error}");
+                std::process::exit(1);
+            }
+        },
         Some(Mode::Login(args)) => {
             init_logging(LogOutput::FileOnly);
             if let Err(error) = run_login(args) {
@@ -715,6 +726,16 @@ fn require_open_cli(backend: &AgentBackend) -> Result<(), String> {
         maple_agent::store::StoreState::Refused { reason } => Err(reason.message().into()),
         _ => Err("Maple local data is not ready. Open Maple and try again.".into()),
     }
+}
+
+fn run_python_check() -> Result<String, String> {
+    let runtime = tokio::runtime::Builder::new_multi_thread()
+        .enable_all()
+        .build()
+        .map_err(|error| format!("Failed to start the check: {error}"))?;
+    runtime.block_on(maple_agent::agent::check_bundled_python(
+        &backend::store_paths(),
+    ))
 }
 
 fn run_unlock() -> Result<(), String> {
@@ -1027,6 +1048,7 @@ mod tests {
     #[test]
     fn acp_subcommand_keeps_precedence_over_following_flags() {
         assert!(matches!(parse(&["acp"]), Ok(Some(Mode::Acp { .. }))));
+        assert_eq!(parse(&["python-check"]).unwrap(), Some(Mode::PythonCheck));
         assert!(matches!(
             parse(&["acp", "--version"]),
             Ok(Some(Mode::Acp { .. }))

@@ -90,6 +90,11 @@ signed runtime resources, and threads start in a copy of their starter's context
 The bundle guarantees the standard library; it does not select project virtual
 environments or provide a writable shared package installation.
 
+Windows packages carry the same runtime inside the executable
+(`MAPLE_CODE_MODE_EMBEDDED_RUNTIME` at build time, `EmbeddedPython`). The host
+unpacks it once into a private per-user directory and launches it from there;
+see `docs/python-code-mode.md`.
+
 This is a deliberate simplification from PR #2's optional-IPython proof of concept.
 CPython is the only implementation. IPython magics, SDK/controller calls, RLM,
 namespace serialization, and optional engines are absent. PR #2 remains historical

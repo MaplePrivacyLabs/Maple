@@ -1,12 +1,14 @@
 //! Task-lived, bundled CPython execution. This crate owns processes, not host authority.
+mod embedded;
 mod output;
 mod process;
 mod protocol;
 mod resources;
 mod worker;
 
+pub use embedded::EmbeddedPython;
 pub use output::{BackgroundChunk, BackgroundOutput};
-pub use resources::{PackagedPython, RuntimeManifest};
+pub use resources::{PYTHON_VERSION, PackagedPython, RuntimeManifest};
 pub use worker::{Execution, Runtime, TaskHandle};
 
 use serde::{Deserialize, Serialize};
