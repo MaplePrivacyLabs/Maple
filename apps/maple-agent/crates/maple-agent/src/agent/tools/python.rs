@@ -581,6 +581,23 @@ fn format_outcome(outcome: &Outcome) -> String {
         "Python generation {}, execution {}: {status} ({} ms)",
         outcome.generation, outcome.execution_id, outcome.elapsed_ms
     );
+    let threads = outcome.thread_exceptions;
+    if threads > 0 {
+        let many = threads > 1;
+        let _ = write!(
+            text,
+            "; {threads} {} started by this cell",
+            if many {
+                "exceptions in threads"
+            } else {
+                "exception in a thread"
+            }
+        );
+        if let Some(first) = &outcome.first_thread_exception {
+            let _ = write!(text, " ({}{first})", if many { "first: " } else { "" });
+        }
+        let _ = write!(text, "; traceback{} in stderr", if many { "s" } else { "" });
+    }
     if let Some(runtime) = &outcome.runtime {
         let _ = write!(
             text,
@@ -981,6 +998,39 @@ mod tests {
             );
             task.retire(UNLOADED_REASON).await;
         }
+        workers.shutdown().await;
+    }
+
+    #[tokio::test]
+    async fn exceptions_in_threads_a_cell_started_reach_its_status_line() {
+        let workers = PythonWorkers::new(fixture());
+        let root = tempfile::tempdir().unwrap();
+        let task = task(&workers, "threads", root.path(), false);
+        let define = "import threading\ndef run(target, *args):\n    thread = threading.Thread(target=target, args=args)\n    thread.start()\n    thread.join()\ndef fail(n):\n    raise TypeError(f'failure {n}')\nfor n in range(3):\n    run(fail, n)";
+        for (code, status, output) in [
+            (
+                define,
+                "; 3 exceptions in threads started by this cell (first: TypeError: failure 0); tracebacks in stderr",
+                "stderr:\nException in thread",
+            ),
+            (
+                "run(fail, 9)",
+                "; 1 exception in a thread started by this cell (TypeError: failure 9); traceback in stderr",
+                "stderr:\nException in thread",
+            ),
+            ("run(print, 'thread output')", "", "stdout:\nthread output"),
+        ] {
+            let result = task
+                .call(params(code, false), CancellationToken::new())
+                .await;
+            let text = text(&result);
+            assert!(!result.is_error, "{text}");
+            let first_line = text.lines().next().unwrap();
+            assert_eq!(first_line.split_once(" ms)").unwrap().1, status, "{text}");
+            assert!(text.contains(output), "{text}");
+            assert!(!text.contains("Background"), "{text}");
+        }
+        task.retire(UNLOADED_REASON).await;
         workers.shutdown().await;
     }
 }

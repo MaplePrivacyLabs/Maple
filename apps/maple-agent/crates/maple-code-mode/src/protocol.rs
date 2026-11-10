@@ -3,6 +3,9 @@ use serde::{Deserialize, Serialize};
 use std::io;
 use tokio::io::{AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt};
 
+/// The worker's one-line summary of a thread exception: its type and message.
+const EXCEPTION_SUMMARY_BYTES: usize = 256;
+
 #[derive(Debug, Clone, Copy, Deserialize, Serialize)]
 #[serde(rename_all = "lowercase")]
 pub(crate) enum Stream {
@@ -66,6 +69,12 @@ pub(crate) enum WorkerFrame {
         elapsed_ms: u64,
         dropped_stdout_bytes: u64,
         dropped_stderr_bytes: u64,
+        /// Uncaught exceptions in threads the cell started, raised while it
+        /// ran. Defaulted, so a worker that never sends them still decodes.
+        #[serde(default)]
+        thread_exceptions: u64,
+        #[serde(default)]
+        first_thread_exception: Option<String>,
     },
     Fatal {
         generation: u64,
@@ -114,7 +123,12 @@ impl WorkerFrame {
                     && executable.len() <= 16 * 1024
                     && cwd.len() <= 16 * 1024
             }
-            Self::Done { .. } => true,
+            Self::Done {
+                first_thread_exception,
+                ..
+            } => first_thread_exception
+                .as_ref()
+                .is_none_or(|summary| summary.len() <= EXCEPTION_SUMMARY_BYTES),
         };
         if valid {
             Ok(())
@@ -195,5 +209,29 @@ mod tests {
             encoded.extend(bytes);
             assert!(read_frame(&mut &encoded[..]).await.is_err());
         }
+    }
+    #[tokio::test]
+    async fn done_defaults_thread_exceptions_and_bounds_their_summary() {
+        let done = |summary: Option<String>| {
+            let mut frame = serde_json::json!({"type":"done","generation":1,"execution_id":1,"status":"ok","elapsed_ms":0,"dropped_stdout_bytes":0,"dropped_stderr_bytes":0});
+            if let Some(summary) = summary {
+                frame["thread_exceptions"] = 1.into();
+                frame["first_thread_exception"] = summary.into();
+            }
+            let bytes = serde_json::to_vec(&frame).unwrap();
+            let mut encoded = (bytes.len() as u32).to_be_bytes().to_vec();
+            encoded.extend(bytes);
+            encoded
+        };
+        assert!(matches!(
+            read_frame(&mut &done(None)[..]).await.unwrap(),
+            WorkerFrame::Done {
+                thread_exceptions: 0,
+                first_thread_exception: None,
+                ..
+            }
+        ));
+        let oversized = "x".repeat(EXCEPTION_SUMMARY_BYTES + 1);
+        assert!(read_frame(&mut &done(Some(oversized))[..]).await.is_err());
     }
 }

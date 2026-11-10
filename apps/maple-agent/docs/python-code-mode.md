@@ -83,8 +83,13 @@ Results include the worker generation and execution ID, captured stdout/stderr,
 final value or traceback, omitted-byte counts, and state-loss notices. The first
 call of each interpreter identifies the exact interpreter and working directory.
 Raw/native and subprocess output is labelled unattributed; late Python output
-retains its original execution ID and is consumed by a later call. Large outputs
-should be written to files. Output limits do not impose a Python memory sandbox.
+retains its original execution ID and is consumed by a later call. Threads carry
+the execution ID of the cell that starts them, so their output and tracebacks
+belong to that cell, whose status line counts the uncaught exceptions they raise
+while it runs and names the first. A pool thread keeps that ID, so a later cell's
+work on it shows as the earlier cell's late output; `asyncio.to_thread` work
+stays with its caller. Large outputs should be written to files. Output limits do
+not impose a Python memory sandbox.
 
 ## Permissions
 

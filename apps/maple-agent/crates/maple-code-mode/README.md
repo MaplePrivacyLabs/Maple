@@ -58,10 +58,15 @@ can request shutdown while Python is executing a cell.
 
 User stdin returns EOF. Python text/binary streams produce attributed output;
 raw file-descriptor, native, and subprocess writes are captured as unattributed
-output. Invalid UTF-8 is replaced. Drain fences deliver already-emitted synchronous
-output before the terminal frame; stdout/stderr have no total ordering guarantee.
-Late output never modifies a completed outcome and is consumed once by a later
-call. Retention is bounded independently of draining:
+output. Threads inherit the execution ID of the cell that starts them. A pool
+thread keeps it for later work, except `asyncio.to_thread` calls, which carry
+their caller's. An uncaught exception in a thread prints as output of the cell
+whose ID it carries and, while that cell runs, is counted in its terminal frame
+with the first one's type and message. Invalid UTF-8 is replaced. Drain fences
+deliver already-emitted synchronous output before the terminal frame;
+stdout/stderr have no total ordering guarantee. Late output never modifies a
+completed outcome and is consumed once by a later call. Retention is bounded
+independently of draining:
 
 - Source: 256 KiB per cell; traceback history: 64 cells or 1 MiB.
 - Output chunks: 16 KiB; transport queues: at most 256 KiB plus reserved controls.
@@ -69,17 +74,19 @@ call. Retention is bounded independently of draining:
 - Background: 64 KiB with a bounded chunk count.
 
 Outcomes report generation, execution ID, output, result/error, elapsed time,
-dropped bytes, attributed background chunks, and state-loss notices. Custom Python
-formatting methods retain native authority and may block or allocate; cancellation
-and process termination cover a hung unfinished call, not a memory sandbox.
+dropped bytes, thread exceptions, attributed background chunks, and state-loss
+notices. Custom Python formatting methods retain native authority and may block or
+allocate; cancellation and process termination cover a hung unfinished call, not a
+memory sandbox.
 
 ## Distribution and checks
 
 Development and standalone archives use the hash-pinned Python Build Standalone
 20260929 CPython 3.14.7 normal-GIL build. Nix packages retain locked nixpkgs'
 CPython 3.14.7 closure. Both carry `runtime.json`, `worker.py`, and licenses. The
-interpreter launches with `-I -B -u`: project imports are enabled only after worker
-bootstrap imports, and bytecode writes cannot mutate signed runtime resources.
+interpreter launches with `-I -B -u -X thread_inherit_context=1`: project imports
+are enabled only after worker bootstrap imports, bytecode writes cannot mutate
+signed runtime resources, and threads start in a copy of their starter's context.
 The bundle guarantees the standard library; it does not select project virtual
 environments or provide a writable shared package installation.
 
