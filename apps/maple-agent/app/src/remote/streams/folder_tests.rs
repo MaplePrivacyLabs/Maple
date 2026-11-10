@@ -465,19 +465,21 @@ async fn recent_projects_require_their_own_capability_and_fresh_authorization() 
             response(&mut tx, call.id, json!("accepted")).await;
         };
         let viewer = async {
-            let error = client
+            let result = client
                 .call(command(1, Method::RecentProjectRoots), async {
                     assert!(supported, "unsupported peers must not authorize");
                     Err("account changed".into())
                 })
-                .await
-                .err()
-                .unwrap();
-            assert!(error.contains(if supported {
-                "account changed"
+                .await;
+            if supported {
+                assert_eq!(result.err().as_deref(), Some("account changed"));
             } else {
-                "Update Maple"
-            }));
+                assert!(matches!(
+                    result.unwrap(),
+                    Message::Response { result: Err(_), failure: Some(failure), .. }
+                        if failure.code == RECENT_PROJECTS_UNSUPPORTED_CODE
+                ));
+            }
             let method = if supported {
                 Method::RecentProjectRoots
             } else {

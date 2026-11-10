@@ -3670,7 +3670,7 @@ mod state_tests {
             this.select_scratch_project(cx);
             assert!(this.scratch_project);
             assert_eq!(this.project_root, None);
-            assert_eq!(this.project_label(cx), "Start from scratch");
+            assert_eq!(this.project_label(cx), "New project");
             assert_eq!(this.selected_model.as_deref(), Some("chosen-model"));
             assert!(!this.session_setup_pending);
             assert!(this.scratch_creation.is_none());
@@ -12331,7 +12331,7 @@ mod state_tests {
     }
 
     #[gpui::test]
-    fn project_picker_caps_recents_across_computers(cx: &mut TestAppContext) {
+    fn project_picker_caps_recents_per_computer(cx: &mut TestAppContext) {
         let (chat, cx) = chat_window(cx, |_, _| {});
         chat.update(cx, |this, _| {
             let roots = [
@@ -12340,6 +12340,7 @@ mod state_tests {
                 (None, "local-new", 40),
                 (Some("remote"), "remote-next", 30),
                 (Some("remote"), "remote-old", 20),
+                (Some("remote"), "remote-fourth", 15),
                 (None, "local-new", 39),
             ]
             .into_iter()
@@ -12374,7 +12375,26 @@ mod state_tests {
                     .iter()
                     .map(|(_, root)| root.path.as_str())
                     .collect::<Vec<_>>(),
-                ["remote-new", "local-new", "remote-next"]
+                [
+                    "remote-new",
+                    "local-new",
+                    "remote-next",
+                    "remote-old",
+                    "local-old"
+                ]
+            );
+            let mut third = recent_root("local-third");
+            third.last_used_ms = 8;
+            let mut fourth = recent_root("local-fourth");
+            fourth.last_used_ms = 7;
+            this.merge_picker_projects(None, vec![fourth, third]);
+            assert_eq!(
+                this.picker_projects
+                    .iter()
+                    .filter(|(host, _)| host.is_none())
+                    .map(|(_, root)| root.path.as_str())
+                    .collect::<Vec<_>>(),
+                ["local-new", "local-old", "local-third"]
             );
         });
     }
@@ -13523,6 +13543,11 @@ mod state_tests {
                 .detach();
             });
             for (row, computer, destination) in [
+                (
+                    "computer-1-scratch",
+                    "remote-one",
+                    Destination::ScratchProject,
+                ),
                 (
                     "computer-1-project-0",
                     "remote-one",

@@ -2354,7 +2354,7 @@ impl ChatScreen {
     /// Text for the header project chip.
     pub fn project_label(&self, cx: &gpui::App) -> String {
         if self.scratch_project {
-            return tr("chat-start-from-scratch").to_string();
+            return tr("chat-new-project-button").to_string();
         }
         self.project_root
             .as_deref()

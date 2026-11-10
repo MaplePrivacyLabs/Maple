@@ -1,6 +1,69 @@
 //! Host-scoped navigation data. Transcripts, drafts and execution stay in their
 //! existing per-computer ChatScreen; only project/task summaries are projected.
 use super::*;
+use maple_agent::store::{
+    NavigationTaskPage, NavigationTaskQuery, PinFilter, TaskSection, TaskSummary,
+};
+
+enum PickerProjectResponse {
+    Recent(Vec<RecentProjectRoot>),
+    LegacyTasks(Vec<TaskSummary>),
+}
+
+async fn read_picker_projects(
+    backend: &AgentBackend,
+    user: &str,
+) -> Result<PickerProjectResponse, UiFailure> {
+    match backend
+        .call_presented("recent_project_roots", (user,))
+        .await
+    {
+        Ok(projects) => Ok(PickerProjectResponse::Recent(projects)),
+        Err(error) if error.code == crate::remote::streams::RECENT_PROJECTS_UNSUPPORTED_CODE => {
+            // Older hosts can still return their recent task summaries. Use
+            // that existing, account-scoped read to recover project activity.
+            let query = NavigationTaskQuery {
+                section: TaskSection::Recent,
+                project: None,
+                pins: PinFilter::Ignore,
+                cursor: None,
+                limit: 50,
+            };
+            let page: NavigationTaskPage =
+                backend.call_presented("list_tasks", (user, query)).await?;
+            Ok(PickerProjectResponse::LegacyTasks(page.tasks))
+        }
+        Err(error) => Err(error.into()),
+    }
+}
+
+fn legacy_picker_projects(
+    tasks: Vec<TaskSummary>,
+    names: Option<&HashMap<String, String>>,
+) -> Vec<RecentProjectRoot> {
+    let mut seen = HashSet::new();
+    // The host orders its task page by last update, newest first.
+    tasks
+        .into_iter()
+        .filter(|task| task.message_count > 0 && task.state != "archived")
+        .filter(|task| !task.project_root.is_empty() && seen.insert(task.project_root.clone()))
+        .take(3)
+        .map(|task| RecentProjectRoot {
+            name: task
+                .project_display_name
+                .or_else(|| {
+                    names
+                        .and_then(|names| names.get(&task.project_root))
+                        .cloned()
+                })
+                .unwrap_or_else(|| sidebar::remote_root_display_name(&task.project_root)),
+            path: task.project_root,
+            last_used_ms: u128::try_from(task.updated_ms).unwrap_or_default(),
+            is_default_workspace: false,
+            name_revision: 0,
+        })
+        .collect()
+}
 
 #[derive(Clone, Debug, PartialEq, Eq, Hash)]
 pub(crate) enum Destination {
@@ -12,6 +75,7 @@ pub(crate) enum Destination {
     /// An explicit picker choice also records use of an already-selected root.
     DraftRecentProject(String),
     RecentProject(String),
+    ScratchProject,
     Task(String),
     NewProject,
     DraftNewProject,
@@ -240,6 +304,7 @@ impl ChatScreen {
     pub(crate) fn navigation_generation(&self) -> u64 {
         self.selection_generation
     }
+
     /// Warm a paired computer without opening a conversation or running a task.
     /// The normal event stream keeps its navigation summaries live.
     pub(crate) fn new_catalog(
@@ -414,7 +479,9 @@ impl ChatScreen {
         // auto-select a session. Explicit task clicks still win.
         let needs_draft = matches!(
             destination,
-            Destination::DraftProject(_) | Destination::DraftRecentProject(_)
+            Destination::DraftProject(_)
+                | Destination::DraftRecentProject(_)
+                | Destination::ScratchProject
         ) || (self.navigation_only
             && !matches!(destination, Destination::Task(_)));
         if needs_draft && !self.prepare_draft_navigation(cx) {
@@ -426,6 +493,7 @@ impl ChatScreen {
                 .sidebar
                 .update(cx, |s, cx| s.set_project_filter(None, cx)),
             Destination::Task(id) => self.select_session(&id, cx),
+            Destination::ScratchProject => self.select_scratch_project(cx),
             Destination::RecentProject(path) | Destination::DraftRecentProject(path) => {
                 self.select_project_root(path, cx);
             }
@@ -487,8 +555,15 @@ impl ChatScreen {
                 .then_with(|| a.path.cmp(&b.path))
         });
         let mut seen = HashSet::new();
-        projects.retain(|(host, project)| seen.insert((host.clone(), project.path.clone())));
-        projects.truncate(3);
+        let mut counts = HashMap::new();
+        projects.retain(|(host, project)| {
+            let count = counts.entry(host.clone()).or_insert(0);
+            if *count >= 3 || !seen.insert((host.clone(), project.path.clone())) {
+                return false;
+            }
+            *count += 1;
+            true
+        });
         self.picker_projects = projects;
     }
 
@@ -527,8 +602,8 @@ impl ChatScreen {
             let user = user.clone();
             let request_user = user.clone();
             let request_backend = backend.clone();
-            self.call(
-                async move { request_backend.recent_project_roots(&request_user).await },
+            self.call_semantic(
+                async move { read_picker_projects(&request_backend, &request_user).await },
                 cx,
                 move |this, result, cx| {
                     if this.user_id != user
@@ -554,7 +629,15 @@ impl ChatScreen {
                         return;
                     }
                     match result {
-                        Ok(roots) => this.merge_picker_projects(key, roots),
+                        Ok(PickerProjectResponse::Recent(roots)) => {
+                            this.merge_picker_projects(key, roots);
+                        }
+                        Ok(PickerProjectResponse::LegacyTasks(tasks)) => {
+                            let names = this.computers.iter().find(|computer| computer.key == key);
+                            let roots =
+                                legacy_picker_projects(tasks, names.map(|c| &c.project_names));
+                            this.merge_picker_projects(key, roots);
+                        }
                         Err(error) => this.notice = Some(error.into()),
                     }
                     cx.notify();
@@ -579,18 +662,32 @@ impl ChatScreen {
             .max_height(px(440.))
             .application_vim(self.application_vim_enabled);
         for (index, computer) in self.computers.iter().enumerate() {
+            if index > 0 {
+                menu = menu.child(
+                    div()
+                        .w_full()
+                        .flex_none()
+                        .my_1()
+                        .h(px(1.))
+                        .bg(gpui::rgb(theme::border())),
+                );
+            }
             menu = menu.child(
                 div()
                     .px_3()
-                    .pt_2()
+                    .pt_1()
                     .pb_1()
                     .text_xs()
+                    .font_weight(gpui::FontWeight::MEDIUM)
                     .text_color(gpui::rgb(theme::text_muted()))
-                    .child(computer.label.clone()),
+                    .child(gpui::text!(
+                        id = SharedString::from(format!("computer-{index}-heading")),
+                        computer.label.clone()
+                    )),
             );
             menu = menu.item(self.scratch_project_item(
                 SharedString::from(format!("computer-{index}-scratch")),
-                computer.key.as_deref() == self.backend.remote_host(),
+                computer.key.clone(),
             ));
             let request = Navigate {
                 computer: computer.key.clone(),
@@ -613,7 +710,18 @@ impl ChatScreen {
                 .iter()
                 .any(|(key, _)| key == &computer.key)
             {
-                menu = menu.separator().header(tr("chat-recent-projects"));
+                menu = menu.child(
+                    div()
+                        .px_3()
+                        .pt_2()
+                        .pb_1()
+                        .text_xs()
+                        .text_color(gpui::rgb(theme::text_muted()))
+                        .child(gpui::text!(
+                            id = SharedString::from(format!("computer-{index}-recents")),
+                            tr("chat-recent-projects")
+                        )),
+                );
             }
             for (project_index, (_, project)) in self
                 .picker_projects
@@ -673,6 +781,47 @@ mod tests {
     use super::*;
     use crate::remote::wire::{Error, Refusal};
     use gpui::TestAppContext;
+
+    #[test]
+    fn legacy_recents_use_distinct_projects_with_recent_task_activity() {
+        let task = |path: &str, updated_ms, state: &str, message_count| TaskSummary {
+            uuid: String::new(),
+            title: String::new(),
+            project_root: path.into(),
+            project_display_name: None,
+            state: state.into(),
+            kind: "desktop".into(),
+            pinned_ms: None,
+            web_enabled: false,
+            permission_mode: None,
+            model: None,
+            message_count,
+            created_ms: 1,
+            updated_ms,
+            truncated: false,
+        };
+        let names = HashMap::from([("/first".into(), "First Project".into())]);
+        let roots = legacy_picker_projects(
+            vec![
+                task("/removed", 60, "archived", 1),
+                task("/draft", 55, "active", 0),
+                task("/first", 50, "active", 2),
+                task("/first", 40, "settled", 3),
+                task("C:\\work\\Second", 30, "settled", 1),
+                task("/third", 20, "active", 1),
+                task("/fourth", 10, "active", 1),
+            ],
+            Some(&names),
+        );
+        assert_eq!(
+            roots
+                .iter()
+                .map(|root| root.name.as_str())
+                .collect::<Vec<_>>(),
+            ["First Project", "Second", "third"]
+        );
+        assert_eq!(roots[0].last_used_ms, 50);
+    }
 
     #[gpui::test]
     fn catalog_marks_only_actual_protocol_refusal_as_update_required(cx: &mut TestAppContext) {

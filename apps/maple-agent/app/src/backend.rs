@@ -283,7 +283,7 @@ operations! {
     browse_project_folders(user_id: (&str), request: (ProjectFolderRequest)) -> ProjectFolderPage;
     create_project_folder(user_id: (&str), parent_path: (String), name: (String)) -> String;
     [dispatch_only] create_scratch_project(user_id: (&str)) -> SelectedProject;
-    recent_project_roots(user_id: (&str)) -> Vec<RecentProjectRoot>;
+    [test_only] recent_project_roots(user_id: (&str)) -> Vec<RecentProjectRoot>;
     rename_project_root(user_id: (&str), path: (String), name: (String)) -> RecentProjectRoot;
     archive_project_root(user_id: (&str), path: (String), fallback: (Option<String>)) -> ();
     [dispatch_only] create_session(user_id: (&str), request: (Option<AgentCreateSessionRequest>)) -> AgentSessionDetail;

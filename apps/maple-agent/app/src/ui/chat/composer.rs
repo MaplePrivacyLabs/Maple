@@ -11,6 +11,7 @@ use maple_agent::agent::{AgentPermissionMode, AgentSlashCommand, SideQuestionTur
 
 use super::cache::MarkdownKind;
 use super::commands::ChatCommand;
+use super::computers::{Destination, Navigate};
 use super::transcript::{render_plan_row, render_subagent_row};
 use super::{
     COMPOSER_PLACEHOLDER, ChatPopup, ChatScreen, DraftAttachment, OpenSettingsSection,
@@ -236,7 +237,7 @@ impl ChatScreen {
                     chip(
                         "root-picker",
                         Some(if self.scratch_project {
-                            "plus"
+                            "folder-plus"
                         } else if self.backend.remote_host().is_some() {
                             "globe"
                         } else {
@@ -529,7 +530,10 @@ impl ChatScreen {
         if self.computers.len() > 1 {
             return self.computers_project_menu();
         }
-        menu = menu.item(self.scratch_project_item("root-scratch", true));
+        menu = menu.item(self.scratch_project_item(
+            "root-scratch",
+            self.backend.remote_host().map(str::to_owned),
+        ));
         menu = menu.item(
             MenuItem::new(
                 "root-choose",
@@ -573,24 +577,25 @@ impl ChatScreen {
     pub(super) fn scratch_project_item(
         &self,
         id: impl Into<gpui::ElementId>,
-        active: bool,
+        computer: Option<String>,
     ) -> MenuItem<Self> {
-        let item = MenuItem::new(
+        let current = self.scratch_project && computer.as_deref() == self.backend.remote_host();
+        MenuItem::new(
             id,
-            tr("chat-start-from-scratch"),
-            |this: &mut Self, _, cx| {
-                this.select_scratch_project(cx);
+            tr("chat-new-project-button"),
+            move |this: &mut Self, _, cx| {
+                if computer.as_deref() == this.backend.remote_host() {
+                    this.select_scratch_project(cx);
+                } else {
+                    cx.emit(Navigate {
+                        computer: computer.clone(),
+                        destination: Destination::ScratchProject,
+                    });
+                }
             },
         )
-        .icon("plus")
-        .current(active && self.scratch_project)
-        .enabled(active);
-        // Only a disabled entry needs a line saying why.
-        if active {
-            item
-        } else {
-            item.note(tr("chat-scratch-switch-computer"))
-        }
+        .icon("folder-plus")
+        .current(current)
     }
 
     fn model_menu(&self) -> Menu<Self> {

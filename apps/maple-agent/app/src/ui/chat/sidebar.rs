@@ -4733,7 +4733,7 @@ pub(super) fn root_display_name(root: &str) -> String {
 
 /// Interpret Windows paths on a Unix controller without changing the path sent
 /// back to the owner, or treating a backslash in a Unix filename as a separator.
-fn remote_root_display_name(root: &str) -> String {
+pub(super) fn remote_root_display_name(root: &str) -> String {
     let windows = root.starts_with(r"\\")
         || (root.as_bytes().get(1) == Some(&b':') && root.as_bytes().get(2) == Some(&b'\\'));
     if windows {
