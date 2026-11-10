@@ -163,18 +163,35 @@ impl SettingsScreen {
         cx.notify();
     }
 
-    pub(super) fn visible_application_targets(&self) -> Vec<SettingsTarget> {
-        // The server dialog covers the page; its fields take the keyboard
-        // themselves, so nothing underneath is a target while it is open.
-        if self.mcp_editor.is_some()
+    /// A dialog drawn over the whole Settings screen is open. Nothing under
+    /// it, the sidebar included, takes Application Vim keys until it closes.
+    pub(super) fn dialog_open(&self) -> bool {
+        self.mcp_editor.is_some()
             || self.mcp_address.is_some()
             || self.advanced.erase
             || self.advanced.form.is_some()
-        {
-            return Vec::new();
-        }
+            || self.account.delete != super::account::DeleteFlow::Idle
+    }
+
+    pub(super) fn visible_application_targets(&self) -> Vec<SettingsTarget> {
+        // The server dialog covers the page; its fields take the keyboard
+        // themselves, so nothing underneath is a target while it is open.
         if self.account.delete != super::account::DeleteFlow::Idle {
             return self.delete_dialog_targets();
+        }
+        if self.advanced.erase {
+            use super::account::AccountTarget;
+            return [
+                AccountTarget::EraseWord,
+                AccountTarget::EraseCancel,
+                AccountTarget::EraseConfirm,
+            ]
+            .into_iter()
+            .map(SettingsTarget::Account)
+            .collect();
+        }
+        if self.dialog_open() {
+            return Vec::new();
         }
         match self.section {
             Section::General => [
@@ -362,7 +379,11 @@ impl SettingsScreen {
                 row.rounded(crate::ui::theme::RADIUS_SM)
                     .border_l_2()
                     .border_color(gpui::rgb(crate::ui::theme::accent()))
-                    .anchor_scroll(Some(self.application_anchor.clone()))
+                    // A dialog's controls are not in the page: revealing
+                    // one would scroll the page behind the dialog.
+                    .when(!self.dialog_open(), |row| {
+                        row.anchor_scroll(Some(self.application_anchor.clone()))
+                    })
             })
             .child(child)
             .into_any_element()
@@ -643,6 +664,21 @@ impl SettingsScreen {
     ) {
         if !self.settings.application_vim_enabled {
             return;
+        }
+        if self.dialog_open() {
+            // The dialog covers the sidebar and the filter: keys stay on the
+            // dialog's own controls, and Escape closes it.
+            if matches!(
+                command,
+                SettingsApplicationCommand::MoveRegion(_) | SettingsApplicationCommand::Search
+            ) {
+                self.application_vim.count.clear();
+                return;
+            }
+            if self.application_vim.region == SettingsRegion::Navigation {
+                self.application_vim.region = SettingsRegion::Pane;
+                self.reconcile_application_vim_target();
+            }
         }
         match command {
             SettingsApplicationCommand::Next | SettingsApplicationCommand::Previous => {
@@ -1793,9 +1829,18 @@ mod tests {
             );
         });
         // With Application Vim on the first Escape leaves the field, the
-        // second reaches the dialog. Nothing underneath is a Vim target.
+        // second reaches the dialog. Only the dialog's controls are Vim
+        // targets, as in the deletion dialog.
         settings.update(cx, |this, _| {
-            assert!(this.visible_application_targets().is_empty())
+            use super::super::account::AccountTarget;
+            assert_eq!(
+                this.visible_application_targets(),
+                vec![
+                    SettingsTarget::Account(AccountTarget::EraseWord),
+                    SettingsTarget::Account(AccountTarget::EraseCancel),
+                    SettingsTarget::Account(AccountTarget::EraseConfirm),
+                ]
+            )
         });
         cx.simulate_keystrokes("escape escape");
         cx.run_until_parked();
@@ -1844,6 +1889,116 @@ mod tests {
             assert!(this.advanced.form.is_none(), "an idle form dismisses");
         });
         assert!(cx.debug_bounds("advanced-password-dialog").is_none());
+    }
+
+    /// A dialog covers the sidebar too: with Application Vim on, the keys
+    /// that leave the field and walk the sidebar neither change the page
+    /// under an open dialog nor close it.
+    #[gpui::test]
+    fn dialogs_keep_application_vim_off_the_sidebar(cx: &mut TestAppContext) {
+        use super::super::account::DeleteFlow;
+        let (settings, cx) = dropdown_window(cx, true);
+        settings.update(cx, |this, cx| {
+            this.select_section(Section::Account, cx);
+            this.advanced.status = Some(
+                serde_json::from_value(serde_json::json!({
+                    "state": {"state": "open"},
+                    "mode": "plain",
+                    "store_id": "current",
+                    "password_settings_available": true
+                }))
+                .expect("store status"),
+            );
+            // Opened by the pointer while the Vim cursor sat in the sidebar.
+            this.application_vim.region = SettingsRegion::Navigation;
+            this.application_vim.section = Section::Account;
+            this.open_erase_dialog(cx);
+        });
+        cx.run_until_parked();
+        // One Escape leaves the field; the dialog stays.
+        cx.simulate_keystrokes("escape");
+        cx.run_until_parked();
+        // h is refused; j j walks field, Cancel, erase button; Enter on the
+        // button without the word erases nothing.
+        cx.simulate_keystrokes("h j j enter");
+        cx.run_until_parked();
+        settings.update(cx, |this, cx| {
+            use super::super::account::AccountTarget;
+            assert!(this.advanced.erase, "the erase dialog is still open");
+            assert!(!this.advanced.busy, "nothing was erased");
+            assert_eq!(this.section, Section::Account, "the page did not change");
+            assert_eq!(
+                this.application_vim.target,
+                Some(SettingsTarget::Account(AccountTarget::EraseConfirm))
+            );
+            assert_eq!(
+                this.pane_scroll.offset().y,
+                px(0.),
+                "the page behind the dialog did not scroll"
+            );
+            this.close_erase_dialog(cx);
+        });
+        cx.run_until_parked();
+
+        // The deletion dialog has controls of its own: the cursor moves to
+        // them instead of the sidebar.
+        cx.update(|window, app| {
+            settings.update(app, |this, cx| {
+                this.account.delete = DeleteFlow::Acknowledging;
+                this.application_vim.region = SettingsRegion::Navigation;
+                this.application_vim.section = Section::Account;
+                window.focus(&this.application_focus, cx);
+                cx.notify();
+            });
+        });
+        cx.run_until_parked();
+        cx.simulate_keystrokes("h k k");
+        cx.run_until_parked();
+        settings.update(cx, |this, _| {
+            assert_eq!(this.section, Section::Account, "the page did not change");
+            assert_ne!(this.account.delete, DeleteFlow::Idle);
+            assert_eq!(
+                this.application_vim.region,
+                SettingsRegion::Pane,
+                "the cursor is on the dialog's controls"
+            );
+        });
+    }
+
+    /// The typed word never outlives the dialog, however it closed, and a
+    /// running erase holds both its dialog and its page.
+    #[gpui::test]
+    fn erase_dialog_reopens_empty_and_a_running_erase_keeps_its_page(cx: &mut TestAppContext) {
+        let (settings, cx) = dropdown_window(cx, false);
+        settings.update(cx, |this, cx| {
+            this.select_section(Section::Account, cx);
+            this.open_erase_dialog(cx);
+            this.advanced
+                .confirmation
+                .update(cx, |input, cx| input.set_text("ERASE", cx));
+            // What a finished erase leaves behind.
+            this.advanced.erase = false;
+            this.open_erase_dialog(cx);
+            assert!(
+                this.advanced.confirmation.read(cx).text().is_empty(),
+                "a reopened dialog starts with an empty field"
+            );
+
+            this.section_history.push(Section::Usage);
+            this.advanced.busy = true;
+            this.select_section(Section::General, cx);
+            this.go_back(cx);
+            assert_eq!(this.section, Section::Account);
+            assert!(this.advanced.erase, "the dialog stays while it runs");
+            assert_eq!(
+                this.section_history,
+                vec![Section::Usage],
+                "a refused Back keeps the way back"
+            );
+            this.advanced.busy = false;
+            this.go_back(cx);
+            assert_eq!(this.section, Section::Usage);
+        });
     }
 
     /// Account deletion runs in a dialog: it focuses the acknowledgement
