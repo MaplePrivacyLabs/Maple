@@ -307,21 +307,22 @@ async fn blocking<T: Send + 'static>(
 fn ensure_workspace_project(
     store: &Store,
     account: AccountId,
-) -> maple_agent::store::StoreResult<()> {
-    if let Some(path) = maple_agent::agent::default_maple_workspace_path() {
+) -> maple_agent::store::StoreResult<Option<std::path::PathBuf>> {
+    let workspace = store.maple_workspace_path()?;
+    if let Some(path) = &workspace {
         let root = path.to_string_lossy();
         let project = store.project(account, &root)?;
         if project
             .as_ref()
             .is_none_or(|project| project.removed_ms.is_none() && project.position.is_none())
         {
-            let now = chrono::Utc::now().timestamp_millis();
-            // Switcher pages include explicit positions or task-bearing roots.
-            // The offered empty workspace is an explicit choice at the end.
-            store.remember_project(account, &root, i64::MAX, now)?;
+            // Offering the empty workspace is not a use. Preserve existing
+            // recency when assigning an unpositioned workspace its list rank.
+            let last_used_ms = project.as_ref().map_or(0, |project| project.last_used_ms);
+            store.remember_project(account, &root, i64::MAX, last_used_ms)?;
         }
     }
-    Ok(())
+    Ok(workspace)
 }
 
 fn parse<T: DeserializeOwned>(params: Value) -> Result<(String, T), HostFailure> {
@@ -345,11 +346,13 @@ pub(super) async fn dispatch_presented(
             .map_err(|_| HostFailure::new("paging-request", "Invalid host paging parameters"))?;
         let (store, account) = context(backend, &user).await?;
         let workspace_store = store.clone();
-        blocking(move || ensure_workspace_project(&workspace_store, account)).await?;
+        let workspace =
+            blocking(move || ensure_workspace_project(&workspace_store, account)).await?;
         let handle = backend.service().handle_for_user(&user).await?;
         let runtime_status = handle.status().await?;
-        let project_root = super::local::gui_project_root(&handle.load_config().await?);
-        let default_project = match maple_agent::agent::default_maple_workspace_path() {
+        let project_root =
+            super::local::gui_project_root(&handle.load_config().await?, workspace.as_deref());
+        let default_project = match workspace {
             Some(path) => {
                 let path = path.to_string_lossy().into_owned();
                 let point_store = store.clone();
@@ -849,9 +852,20 @@ mod tests {
             page.projects[0].root.as_str(),
             workspace.to_string_lossy().as_ref()
         );
-        store
-            .remove_project(account, &page.projects[0].root, 2)
-            .unwrap();
+        let root = &page.projects[0].root;
+        let offered = store.project(account, root).unwrap().unwrap();
+        assert_eq!(offered.last_used_ms, 0);
+        assert!(store.recently_used_projects(account).unwrap().is_empty());
+        store.register_explicit_project(account, root, 10).unwrap();
+        let selected = store.project(account, root).unwrap().unwrap();
+        assert_eq!(selected.position, offered.position);
+        ensure_workspace_project(&store, account).unwrap();
+        assert_eq!(store.project(account, root).unwrap().unwrap(), selected);
+        assert_eq!(
+            store.recently_used_projects(account).unwrap(),
+            vec![selected]
+        );
+        store.remove_project(account, root, 20).unwrap();
         ensure_workspace_project(&store, account).unwrap();
         assert!(
             store

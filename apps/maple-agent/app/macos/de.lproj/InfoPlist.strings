@@ -7,7 +7,7 @@
 	<key>NSMicrophoneUsageDescription</key>
 	<string>Maple nimmt dein Mikrofon auf, wenn du eine Nachricht diktierst.</string>
 	<key>NSDocumentsFolderUsageDescription</key>
-	<string>Maple speichert seinen Standardarbeitsbereich in Documents/Maple, wo der Agent mit den Dateien deiner Aufgaben arbeitet.</string>
+	<string>Maple nutzt Documents/Maple für deinen Arbeitsbereich und neue Projekte. Der Agent arbeitet in diesen Ordnern mit den Dateien deiner Aufgaben.</string>
 	<key>NSScreenCaptureUsageDescription</key>
 	<string>Maple nimmt den Bildschirm auf, wenn du die Computerbedienung ausdrücklich aktivierst, damit der Agent die Apps sehen und bedienen kann, deren Steuerung du angefordert hast.</string>
 </dict>

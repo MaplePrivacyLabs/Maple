@@ -135,6 +135,8 @@ pub enum Method {
     TaskBootstrap,
     BrowseProjectFolders,
     CreateProjectFolder,
+    CreateScratchProject,
+    RecentProjectRoots,
     SelectProjectRoot,
     RenameProjectRoot,
     CreateSession,
@@ -210,7 +212,13 @@ impl Method {
                 | Self::CancelAttachmentUpload
         ) {
             MAX_MANAGEMENT_REPLY
-        } else if matches!(self, Self::BrowseProjectFolders | Self::CreateProjectFolder) {
+        } else if matches!(
+            self,
+            Self::BrowseProjectFolders
+                | Self::CreateProjectFolder
+                | Self::CreateScratchProject
+                | Self::RecentProjectRoots
+        ) {
             256 * 1024
         } else if matches!(
             self,
@@ -505,6 +513,8 @@ mod tests {
             // Controllers on older builds still send it; the host saves the
             // task's legacy flag.
             "set_session_web_enabled",
+            "create_scratch_project",
+            "recent_project_roots",
         ] {
             assert_eq!(Method::parse(name).unwrap().name(), name);
         }
@@ -512,7 +522,12 @@ mod tests {
 
     #[test]
     fn project_folder_commands_have_bounded_replies() {
-        for method in [Method::BrowseProjectFolders, Method::CreateProjectFolder] {
+        for method in [
+            Method::BrowseProjectFolders,
+            Method::CreateProjectFolder,
+            Method::CreateScratchProject,
+            Method::RecentProjectRoots,
+        ] {
             assert_eq!(Method::parse(&method.name()).unwrap(), method);
             assert_eq!(method.reply_limit(), 256 * 1024);
             assert!(!method.urgent());

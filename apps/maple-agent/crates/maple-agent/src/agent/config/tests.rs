@@ -336,7 +336,7 @@ fn bounded_defaults_and_target_state_do_not_collect_or_replace_other_project_map
     save_agent_config_inner(&fixture.layout, USER, &defaults).unwrap();
     let selected = load_project_config_inner(&fixture.layout, USER, &target).unwrap();
     assert_eq!(selected.project_trust.len(), 2);
-    assert_eq!(project_trust_decision(&selected, &target), Some(true));
+    assert_eq!(project_trust_decision(&selected, &target, None), Some(true));
     fixture
         .store
         .set_project_trust(account, &path_string(&target), Some(false), 3)
@@ -351,7 +351,7 @@ fn bounded_defaults_and_target_state_do_not_collect_or_replace_other_project_map
     assert_eq!(changed.default_project_root, Some(path_string(&target)));
     assert_eq!(changed.default_model, "custom-model");
     assert_eq!(changed.default_thinking_level, Some(ThinkingLevel::High));
-    assert_eq!(project_trust_decision(&changed, &target), Some(false));
+    assert_eq!(project_trust_decision(&changed, &target, None), Some(false));
     let untouched = fixture
         .store
         .project(account, &path_string(&unrelated))

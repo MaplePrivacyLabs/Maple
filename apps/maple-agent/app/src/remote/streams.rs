@@ -31,6 +31,9 @@ const DISCOVERY_TIMEOUT: Duration = Duration::from_secs(5);
 const FOLDERS_UNCONFIRMED: &str =
     "Could not confirm folder browsing support. Try again, or update Maple on the remote computer.";
 const FOLDERS_UNSUPPORTED: &str = "Update Maple on the remote computer to browse or create folders. Existing projects and chats remain available.";
+const SCRATCH_UNSUPPORTED: &str = "Update Maple on the remote computer to create a new project.";
+const RECENT_UNSUPPORTED: &str = "Update Maple on the remote computer to show recent projects.";
+pub(crate) const RECENT_PROJECTS_UNSUPPORTED_CODE: &str = "remote-recent-projects-unsupported";
 const PERMISSIONS_UNCONFIRMED: &str = "Could not confirm that the remote computer can change permissions. Try again, or update Maple there.";
 const PERMISSIONS_UNSUPPORTED: &str =
     "Update Maple on the remote computer to change permissions from here.";
@@ -138,6 +141,8 @@ pub struct Client {
     project_folders: OnceCell<bool>,
     permission_modes: OnceCell<bool>,
     tool_switches: OnceCell<bool>,
+    scratch_project: OnceCell<bool>,
+    recent_projects: OnceCell<bool>,
     discovery_timeout: Duration,
 }
 
@@ -160,6 +165,8 @@ impl Client {
             project_folders: OnceCell::new(),
             permission_modes: OnceCell::new(),
             tool_switches: OnceCell::new(),
+            scratch_project: OnceCell::new(),
+            recent_projects: OnceCell::new(),
             discovery_timeout: DISCOVERY_TIMEOUT,
         }
     }
@@ -224,17 +231,42 @@ impl Client {
     ) -> Result<Message, String> {
         if matches!(
             command.method,
-            Method::BrowseProjectFolders | Method::CreateProjectFolder
+            Method::BrowseProjectFolders
+                | Method::CreateProjectFolder
+                | Method::CreateScratchProject
+                | Method::RecentProjectRoots
         ) {
-            match self
-                .supports(
-                    &self.project_folders,
-                    super::update::PeerInfo::supports_project_folders,
-                )
-                .await
-            {
+            let (cell, check, unsupported): (_, fn(&super::update::PeerInfo) -> bool, _) =
+                match command.method {
+                    Method::CreateScratchProject => (
+                        &self.scratch_project,
+                        super::update::PeerInfo::supports_scratch_project,
+                        SCRATCH_UNSUPPORTED,
+                    ),
+                    Method::RecentProjectRoots => (
+                        &self.recent_projects,
+                        super::update::PeerInfo::supports_recent_projects,
+                        RECENT_UNSUPPORTED,
+                    ),
+                    _ => (
+                        &self.project_folders,
+                        super::update::PeerInfo::supports_project_folders,
+                        FOLDERS_UNSUPPORTED,
+                    ),
+                };
+            match self.supports(cell, check).await {
                 None => return Err(FOLDERS_UNCONFIRMED.into()),
-                Some(false) => return Err(FOLDERS_UNSUPPORTED.into()),
+                Some(false) if command.method == Method::RecentProjectRoots => {
+                    return Ok(Message::Response {
+                        id: command.id,
+                        result: Err(unsupported.into()),
+                        failure: Some(crate::backend::HostFailure::new(
+                            RECENT_PROJECTS_UNSUPPORTED_CODE,
+                            unsupported,
+                        )),
+                    });
+                }
+                Some(false) => return Err(unsupported.into()),
                 Some(true) => {}
             }
             // Discovery may have waited on the network. Cached support is

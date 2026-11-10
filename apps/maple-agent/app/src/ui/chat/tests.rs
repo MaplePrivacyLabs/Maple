@@ -8,7 +8,7 @@ mod state_tests {
     use crate::ui::chat::cache::{INLINE_PARSE_LIMIT, MAX_DIFF_LINES, ORDINAL_SPACING};
     use crate::ui::chat::composer::SideThreadTurn;
     use crate::ui::chat::computers::ProjectTarget;
-    use crate::ui::chat::sidebar::{RenameTarget, SidebarEvent, TaskMove};
+    use crate::ui::chat::sidebar::{RenameTarget, SidebarEvent, TaskMove, root_display_name};
     use crate::ui::chat::transcript::{diff_lines_for, tool_label_title};
     use crate::ui::chat::*;
     use gpui::{Context, TestAppContext};
@@ -866,6 +866,10 @@ mod state_tests {
         chat.update(cx, |this, cx| {
             let mut catalog = this.computers.as_ref().clone();
             catalog[1].projects[0].label = "Renamed remote project".into();
+            this.picker_projects_fixture = Some(vec![(
+                Some("peer".into()),
+                named_root("/tmp/proj", "Renamed remote project", 2),
+            )]);
             set_computer_snapshots(this, Arc::new(catalog), cx);
             assert_eq!(
                 this.project_label(cx),
@@ -913,7 +917,7 @@ mod state_tests {
             requests.borrow().last(),
             Some(&Navigate {
                 computer: Some("peer".into()),
-                destination: Destination::Project("/tmp/proj".into()),
+                destination: Destination::RecentProject("/tmp/proj".into()),
             })
         );
     }
@@ -3631,6 +3635,194 @@ mod state_tests {
             assert_eq!(this.selected_model.as_deref(), Some("glm-5-3"));
             let request = this.new_session_request().expect("request");
             assert_eq!(request.model.as_deref(), Some("glm-5-3"));
+        });
+    }
+
+    #[gpui::test]
+    fn missing_project_does_not_implicitly_create_a_scratch_folder(cx: &mut TestAppContext) {
+        cx.executor().allow_parking();
+        let chat = screen(cx);
+        chat.update(cx, |this, cx| {
+            this.booting = false;
+            this.new_session(cx);
+            this.set_project_context(None, cx);
+            this.send_text("A draft without a project".into(), cx);
+            assert!(!this.scratch_project);
+            assert!(this.scratch_creation.is_none());
+            assert!(!this.session_setup_pending);
+            assert!(this.pending_first_send.is_none());
+            assert!(this.new_session_request().is_none());
+            assert_eq!(
+                this.notice.as_ref().map(UiText::resolve).as_deref(),
+                Some("Choose a project before creating a task")
+            );
+        });
+    }
+
+    #[gpui::test]
+    fn scratch_selection_is_only_intent_and_first_send_creates_once(cx: &mut TestAppContext) {
+        cx.executor().allow_parking();
+        let chat = screen(cx);
+        chat.update(cx, |this, cx| {
+            this.booting = false;
+            this.new_session(cx);
+            this.selected_model = Some("chosen-model".into());
+            this.select_scratch_project(cx);
+            assert!(this.scratch_project);
+            assert_eq!(this.project_root, None);
+            assert_eq!(this.project_label(cx), "New project");
+            assert_eq!(this.selected_model.as_deref(), Some("chosen-model"));
+            assert!(!this.session_setup_pending);
+            assert!(this.scratch_creation.is_none());
+            assert!(this.pending_first_send.is_none());
+            assert!(this.screen_focus_pending);
+            assert!(this.new_session_request().is_none());
+
+            this.send_text("Make a timer".into(), cx);
+            let generation = this.selection_generation;
+            assert_eq!(this.scratch_creation, Some(generation));
+            assert!(this.session_setup_pending);
+            this.send_text("duplicate".into(), cx);
+            assert_eq!(
+                this.pending_first_send.as_ref().unwrap().text(),
+                "Make a timer"
+            );
+            this.finish_scratch_project(
+                generation,
+                this.host_recovery.epoch,
+                &this.user_id.clone(),
+                Ok(crate::backend::SelectedProject {
+                    project_root: absolute_fixture_root("scratch"),
+                    project: recent_root(&absolute_fixture_root("scratch")),
+                }),
+                cx,
+            );
+            assert!(!this.scratch_project);
+            assert_eq!(this.project_root, Some(absolute_fixture_root("scratch")));
+            assert!(this.scratch_creation.is_none());
+            assert!(
+                this.session_setup_pending,
+                "the existing session pipeline takes over"
+            );
+            assert_eq!(
+                this.new_session_request().unwrap().model.as_deref(),
+                Some("chosen-model")
+            );
+            assert_eq!(
+                this.pending_first_send.as_ref().unwrap().text(),
+                "Make a timer"
+            );
+        });
+    }
+
+    #[gpui::test]
+    fn scratch_failure_keeps_intent_and_never_uses_previous_project(cx: &mut TestAppContext) {
+        cx.executor().allow_parking();
+        let chat = screen(cx);
+        chat.update(cx, |this, cx| {
+            this.booting = false;
+            this.project_root = Some(absolute_fixture_root("previous"));
+            this.select_scratch_project(cx);
+            this.send_text("Make a timer".into(), cx);
+            this.finish_scratch_project(
+                this.selection_generation,
+                this.host_recovery.epoch,
+                &this.user_id.clone(),
+                Err("Cannot create folder".into()),
+                cx,
+            );
+            assert!(this.scratch_project);
+            assert!(this.project_root.is_none());
+            assert!(!this.session_setup_pending);
+            assert!(this.pending_first_send.is_none());
+            assert!(this.selected_session.is_none());
+            assert_eq!(
+                this.notice.as_ref().map(UiText::resolve).as_deref(),
+                Some("Cannot create folder")
+            );
+            this.send_text("Make a timer".into(), cx);
+            assert!(
+                this.scratch_creation.is_some(),
+                "an explicit retry can create"
+            );
+        });
+    }
+
+    #[gpui::test]
+    fn late_scratch_result_cannot_send_after_navigation_account_or_host_change(
+        cx: &mut TestAppContext,
+    ) {
+        cx.executor().allow_parking();
+        for change in 0..4 {
+            let chat = screen(cx);
+            chat.update(cx, |this, cx| {
+                this.booting = false;
+                this.select_scratch_project(cx);
+                this.send_text("Do not send later".into(), cx);
+                let generation = this.selection_generation;
+                let epoch = this.host_recovery.epoch;
+                let owner = this.user_id.clone();
+                match change {
+                    0 => this.begin_navigation(),
+                    1 => this.host_recovery.epoch += 1,
+                    2 => this.user_id = "another-account".into(),
+                    _ => this.cancel_scratch_send(cx),
+                }
+                this.finish_scratch_project(
+                    generation,
+                    epoch,
+                    &owner,
+                    Ok(crate::backend::SelectedProject {
+                        project_root: absolute_fixture_root("late"),
+                        project: recent_root(&absolute_fixture_root("late")),
+                    }),
+                    cx,
+                );
+                assert!(this.selected_session.is_none());
+                assert!(this.project_root.is_none());
+                assert!(this.pending_first_send.is_none());
+                assert!(!this.session_setup_pending);
+                assert!(!this.awaiting_first_token);
+            });
+        }
+    }
+
+    /// Settings and the plan gate hide the chat on the same computer; that
+    /// is not a switch, so the folder result still sends the first message.
+    #[gpui::test]
+    fn hiding_the_chat_keeps_a_pending_scratch_send(cx: &mut TestAppContext) {
+        cx.executor().allow_parking();
+        let chat = screen(cx);
+        chat.update(cx, |this, cx| {
+            this.booting = false;
+            this.select_scratch_project(cx);
+            this.send_text("Send after settings".into(), cx);
+            let generation = this.selection_generation;
+            this.set_visible(false, cx);
+            assert_eq!(this.scratch_creation, Some(generation));
+            assert_eq!(this.selection_generation, generation);
+            assert_eq!(
+                this.pending_first_send.as_ref().unwrap().text(),
+                "Send after settings"
+            );
+            assert!(this.notice.is_none());
+            this.set_visible(true, cx);
+            this.finish_scratch_project(
+                generation,
+                this.host_recovery.epoch,
+                &this.user_id.clone(),
+                Ok(crate::backend::SelectedProject {
+                    project_root: absolute_fixture_root("scratch"),
+                    project: recent_root(&absolute_fixture_root("scratch")),
+                }),
+                cx,
+            );
+            assert_eq!(this.project_root, Some(absolute_fixture_root("scratch")));
+            assert_eq!(
+                this.pending_first_send.as_ref().unwrap().text(),
+                "Send after settings"
+            );
+            assert!(this.session_setup_pending);
         });
     }
 
@@ -7609,6 +7801,72 @@ mod state_tests {
             })
             .unwrap_or_else(|| panic!("{selector} is not on screen"));
         cx.simulate_click(bounds.center(), gpui::Modifiers::default());
+    }
+
+    #[gpui::test]
+    fn scratch_menu_preserves_draft_and_returns_keyboard_focus(cx: &mut TestAppContext) {
+        for application_vim in [false, true] {
+            let (chat, cx) = chat_window(cx, |this, cx| {
+                this.set_application_vim_enabled(false, cx);
+                this.new_session(cx);
+                this.set_application_vim_enabled(application_vim, cx);
+                this.composer_vim_enabled = false;
+                this.selected_model = Some("chosen-model".into());
+                this.composer.as_ref().unwrap().update(cx, |input, cx| {
+                    input.set_vim_enabled(false, cx);
+                    input.set_text("My unsent draft", cx);
+                });
+                this.draft_attachments
+                    .push(attachments::DraftAttachment::preparing(
+                        1,
+                        "notes.txt".into(),
+                    ));
+            });
+            press(cx, "root-picker");
+            cx.simulate_keystrokes(if application_vim {
+                "j enter"
+            } else {
+                "down enter"
+            });
+            cx.run_until_parked();
+            cx.update(|window, app| {
+                let this = chat.read(app);
+                assert!(this.scratch_project);
+                assert!(!this.popup.is_open(&ChatPopup::Project));
+                assert!(!this.session_setup_pending);
+                let composer = this.composer.as_ref().unwrap().read(app);
+                assert_eq!(composer.text(), "My unsent draft");
+                let expected_focus = if application_vim {
+                    // Project selection follows the same navigation-mode
+                    // focus handoff as the existing folder picker.
+                    this.application_focus.clone()
+                } else {
+                    Some(composer.focus_handle(app))
+                };
+                assert_eq!(window.focused(app), expected_focus);
+                assert_eq!(this.draft_attachments.len(), 1);
+                assert_eq!(this.selected_model.as_deref(), Some("chosen-model"));
+            });
+            if application_vim {
+                // Use the shipped region command, not a direct focus call:
+                // the closed popup must relinquish its keyboard context.
+                cx.simulate_keystrokes("ctrl-w l");
+            }
+            cx.update(|window, app| {
+                let this = chat.read(app);
+                assert_eq!(
+                    window.focused(app),
+                    Some(this.composer.as_ref().unwrap().focus_handle(app))
+                );
+            });
+            cx.simulate_keystrokes("end space j k l");
+            cx.update(|_, app| {
+                assert_eq!(
+                    chat.read(app).composer.as_ref().unwrap().read(app).text(),
+                    "My unsent draft jkl"
+                );
+            });
+        }
     }
 
     #[gpui::test]
@@ -11631,6 +11889,7 @@ mod state_tests {
     fn test_application_vim_escape_assistant_focus_and_plain_command_count(
         cx: &mut TestAppContext,
     ) {
+        cx.executor().allow_parking();
         struct ChatHost {
             chat: Entity<ChatScreen>,
         }
@@ -12024,6 +12283,122 @@ mod state_tests {
         });
     }
 
+    #[gpui::test]
+    fn project_picker_shows_only_three_most_recent_roots(cx: &mut TestAppContext) {
+        let (chat, cx) = chat_window(cx, |this, _| {
+            // The folder picker belongs to a new task.
+            this.selected_session = None;
+            let roots = [
+                ("old", 1),
+                ("second", 40),
+                ("oldest", 0),
+                ("newest", 50),
+                ("third", 30),
+            ]
+            .into_iter()
+            .map(|(name, last_used_ms)| {
+                let mut root = recent_root(&absolute_fixture_root(name));
+                root.last_used_ms = last_used_ms;
+                root
+            })
+            .collect::<Vec<_>>();
+            this.recent_roots = roots.clone();
+            this.picker_projects_fixture =
+                Some(roots.into_iter().map(|root| (None, root)).collect());
+        });
+        press(cx, "root-picker");
+        assert!(cx.debug_bounds("root-choose").is_some());
+        cx.simulate_keystrokes("down down");
+        for name in ["newest", "second", "third"] {
+            cx.simulate_keystrokes("down");
+            assert_eq!(
+                cx.update(|_, app| chat.read(app).popup.highlighted().cloned()),
+                Some(gpui::ElementId::from(SharedString::from(format!(
+                    "root-{}",
+                    absolute_fixture_root(name)
+                ))))
+            );
+        }
+        cx.simulate_keystrokes("down");
+        assert_eq!(
+            cx.update(|_, app| chat.read(app).popup.highlighted().cloned()),
+            Some(gpui::ElementId::from("root-scratch"))
+        );
+        chat.update(cx, |this, _| {
+            assert_eq!(this.recent_roots.len(), 5);
+            assert_eq!(this.recent_roots[0].path, absolute_fixture_root("old"));
+        });
+    }
+
+    #[gpui::test]
+    fn project_picker_caps_recents_per_computer(cx: &mut TestAppContext) {
+        let (chat, cx) = chat_window(cx, |_, _| {});
+        chat.update(cx, |this, _| {
+            let roots = [
+                (None, "local-old", 10),
+                (Some("remote"), "remote-new", 50),
+                (None, "local-new", 40),
+                (Some("remote"), "remote-next", 30),
+                (Some("remote"), "remote-old", 20),
+                (Some("remote"), "remote-fourth", 15),
+                (None, "local-new", 39),
+            ]
+            .into_iter()
+            .map(|(host, name, last_used_ms)| {
+                let mut root = recent_root(name);
+                root.last_used_ms = last_used_ms;
+                (host.map(str::to_owned), root)
+            })
+            .collect();
+            // Local results are immediately usable while a remote has not replied.
+            let roots: Vec<_> = roots;
+            this.merge_picker_projects(
+                None,
+                roots
+                    .iter()
+                    .filter(|(host, _)| host.is_none())
+                    .map(|(_, root)| root.clone())
+                    .collect(),
+            );
+            assert_eq!(this.picker_projects[0].1.path, "local-new");
+            assert_eq!(this.picker_projects.len(), 2);
+            this.merge_picker_projects(
+                Some("remote".into()),
+                roots
+                    .into_iter()
+                    .filter(|(host, _)| host.is_some())
+                    .map(|(_, root)| root)
+                    .collect(),
+            );
+            assert_eq!(
+                this.picker_projects
+                    .iter()
+                    .map(|(_, root)| root.path.as_str())
+                    .collect::<Vec<_>>(),
+                [
+                    "remote-new",
+                    "local-new",
+                    "remote-next",
+                    "remote-old",
+                    "local-old"
+                ]
+            );
+            let mut third = recent_root("local-third");
+            third.last_used_ms = 8;
+            let mut fourth = recent_root("local-fourth");
+            fourth.last_used_ms = 7;
+            this.merge_picker_projects(None, vec![fourth, third]);
+            assert_eq!(
+                this.picker_projects
+                    .iter()
+                    .filter(|(host, _)| host.is_none())
+                    .map(|(_, root)| root.path.as_str())
+                    .collect::<Vec<_>>(),
+                ["local-new", "local-old", "local-third"]
+            );
+        });
+    }
+
     /// Ctrl-P opens the project menu, takes the focus off the composer,
     /// and walks its rows with plain arrow keys. Closing the menu gives
     /// the composer its focus back.
@@ -12060,6 +12435,13 @@ mod state_tests {
                 recent_root(&absolute_fixture_root("one")),
                 recent_root(&absolute_fixture_root("two")),
             ];
+            chat.picker_projects_fixture = Some(
+                chat.recent_roots
+                    .iter()
+                    .cloned()
+                    .map(|root| (None, root))
+                    .collect(),
+            );
             chat.booting = false;
             chat
         });
@@ -12078,8 +12460,7 @@ mod state_tests {
             "the open menu must hold the focus, or the arrows type instead"
         );
 
-        // Two recent roots and the "New project…" row: down, down, down
-        // wraps back to the first.
+        // Scratch and Choose folder come before recent roots.
         let highlighted = |cx: &mut gpui::VisualTestContext| {
             cx.update(|_window, app| chat.read(app).popup.highlighted().cloned())
         };
@@ -12089,19 +12470,20 @@ mod state_tests {
                 absolute_fixture_root(name)
             ))))
         };
-        let choose = || Some(gpui::ElementId::from("root-choose"));
         cx.simulate_keystrokes("down");
-        assert_eq!(highlighted(cx), root("one"));
+        assert_eq!(highlighted(cx), Some(gpui::ElementId::from("root-scratch")));
+        cx.simulate_keystrokes("down");
+        assert_eq!(highlighted(cx), Some(gpui::ElementId::from("root-choose")));
         cx.simulate_keystrokes("down down");
-        assert_eq!(highlighted(cx), choose());
+        assert_eq!(highlighted(cx), root("two"));
         cx.simulate_keystrokes("down");
-        assert_eq!(highlighted(cx), root("one"));
+        assert_eq!(highlighted(cx), Some(gpui::ElementId::from("root-scratch")));
         cx.simulate_keystrokes("up");
-        assert_eq!(highlighted(cx), choose());
+        assert_eq!(highlighted(cx), root("two"));
 
         // Enter on a recent root asks for the switch and closes the menu;
         // the composer takes the typing back.
-        cx.simulate_keystrokes("up up");
+        cx.simulate_keystrokes("up");
         assert_eq!(highlighted(cx), root("one"));
         cx.simulate_keystrokes("enter");
         assert!(!cx.update(|_window, app| { chat.read(app).popup.is_open(&ChatPopup::Project) }));
@@ -12116,7 +12498,7 @@ mod state_tests {
         chat.update(cx, |this, cx| this.set_application_vim_enabled(true, cx));
         cx.simulate_keystrokes("secondary-p");
         assert!(cx.update(|_window, app| { chat.read(app).popup.is_open(&ChatPopup::Project) }));
-        cx.simulate_keystrokes("j j");
+        cx.simulate_keystrokes("j j j j");
         assert_eq!(highlighted(cx), root("two"));
         cx.simulate_keystrokes("k");
         assert_eq!(highlighted(cx), root("one"));
@@ -12868,6 +13250,70 @@ mod state_tests {
         }
 
         #[gpui::test]
+        fn recent_picker_return_to_parked_draft_records_use_without_reloading_sidebar(
+            cx: &mut TestAppContext,
+        ) {
+            let backend = backend_with_mcp_servers(cx, "parked-recent-project", Vec::new());
+            let parked = mcp_project("parked-recent-project");
+            let other = mcp_project("newer-recent-project");
+            let mut roots = register_test_project(&backend, &parked);
+            roots.extend(register_test_project(&backend, &other));
+            let old_use = roots[0].last_used_ms;
+            let (chat, cx) = chat_window_in(cx, backend.clone(), |this, cx| {
+                this.navigation_ready = true;
+                this.selected_session = None;
+                this.draft = true;
+                this.project_root = Some(parked.clone());
+                this.apply_recent_roots(roots, cx);
+                this.composer.as_ref().unwrap().update(cx, |input, cx| {
+                    input.set_text("Keep this unfinished prompt", cx);
+                });
+            });
+            for destination in [
+                Destination::DraftRecentProject(parked.clone()),
+                Destination::RecentProject(parked.clone()),
+            ] {
+                register_test_project(&backend, &other);
+                let owner = backend.clone();
+                let before = await_backend_result(&backend, async move {
+                    owner.recent_project_roots("user").await
+                });
+                assert_eq!(before[0].path, other);
+                let pages = chat.update(cx, |this, cx| {
+                    let pages = this.sidebar.read(cx).navigation_page_state_for_test();
+                    this.navigate(destination, cx);
+                    assert!(
+                        this.root_selecting,
+                        "an explicit recent choice reaches its owner"
+                    );
+                    pages
+                });
+                wait_until(&chat, cx, "parked project selected", |this| {
+                    !this.root_selecting
+                });
+                chat.update(cx, |this, cx| {
+                    assert!(this.draft);
+                    assert!(this.selected_session.is_none());
+                    assert_eq!(this.project_root.as_deref(), Some(parked.as_str()));
+                    assert_eq!(
+                        this.composer_text(cx).as_deref(),
+                        Some("Keep this unfinished prompt")
+                    );
+                    assert_eq!(
+                        this.sidebar.read(cx).navigation_page_state_for_test(),
+                        pages
+                    );
+                });
+                let owner = backend.clone();
+                let recent = await_backend_result(&backend, async move {
+                    owner.recent_project_roots("user").await
+                });
+                assert_eq!(recent[0].path, parked);
+                assert!(recent[0].last_used_ms > old_use);
+            }
+        }
+
+        #[gpui::test]
         fn warmed_catalog_activation_keeps_runtime_ready(cx: &mut TestAppContext) {
             let chat = screen(cx);
             chat.update(cx, |this, cx| {
@@ -13076,6 +13522,17 @@ mod state_tests {
                         error: None,
                     })
                     .collect();
+                this.picker_projects_fixture = Some(
+                    [None, Some("remote-one"), Some("remote-two")]
+                        .into_iter()
+                        .map(|key| {
+                            (
+                                key.map(str::to_owned),
+                                recent_root(&absolute_fixture_root("project")),
+                            )
+                        })
+                        .collect(),
+                );
                 this.set_computers(Arc::new(computers), cx);
             });
             cx.update(|_, cx| {
@@ -13087,14 +13544,19 @@ mod state_tests {
             });
             for (row, computer, destination) in [
                 (
+                    "computer-1-scratch",
+                    "remote-one",
+                    Destination::ScratchProject,
+                ),
+                (
                     "computer-1-project-0",
                     "remote-one",
-                    Destination::DraftProject(absolute_fixture_root("project")),
+                    Destination::DraftRecentProject(absolute_fixture_root("project")),
                 ),
                 (
                     "computer-2-project-0",
                     "remote-two",
-                    Destination::DraftProject(absolute_fixture_root("project")),
+                    Destination::DraftRecentProject(absolute_fixture_root("project")),
                 ),
                 (
                     "computer-2-new-project",
@@ -13103,6 +13565,26 @@ mod state_tests {
                 ),
             ] {
                 press(cx, "root-picker");
+                // With multiple computers, later rows can be below the
+                // viewport. Keyboard navigation reveals the real row before
+                // clicking; a clipped debug rectangle is not a click target.
+                let target = gpui::ElementId::from(row);
+                for _ in 0..16 {
+                    cx.simulate_keystrokes("down");
+                    if cx.update(|_, app| chat.read(app).popup.highlighted() == Some(&target)) {
+                        break;
+                    }
+                }
+                assert_eq!(
+                    cx.update(|_, app| chat.read(app).popup.highlighted().cloned()),
+                    Some(target)
+                );
+                cx.run_until_parked();
+                let viewport = cx
+                    .debug_bounds("computer-project-menu")
+                    .expect("menu viewport");
+                let item = cx.debug_bounds(row).expect("revealed project row");
+                assert!(item.center().y >= viewport.top() && item.center().y <= viewport.bottom());
                 press(cx, row);
                 assert_eq!(
                     requests.borrow_mut().pop(),
@@ -13124,7 +13606,7 @@ mod state_tests {
                 requests.borrow_mut().pop(),
                 Some(Navigate {
                     computer: Some("remote-one".into()),
-                    destination: Destination::Project(absolute_fixture_root("project")),
+                    destination: Destination::RecentProject(absolute_fixture_root("project")),
                 })
             );
         }
