@@ -12894,12 +12894,7 @@ mod state_tests {
     }
 
     #[gpui::test]
-    fn extra_credits_show_in_the_menu_and_composer_and_stand_in_for_the_usage_offer(
-        cx: &mut TestAppContext,
-    ) {
-        use std::cell::Cell;
-        use std::rc::Rc;
-
+    fn extra_credits_show_in_the_menu_and_dismiss_the_usage_offer(cx: &mut TestAppContext) {
         use maple_agent::agent::USAGE_LIMIT_MESSAGE;
 
         let (chat, cx) = chat_window(cx, |chat, _cx| {
@@ -12907,15 +12902,6 @@ mod state_tests {
                 user_item("user-1", "test"),
                 item("usage-1", "error", Some(USAGE_LIMIT_MESSAGE)),
             ])
-        });
-        let usage_opened = Rc::new(Cell::new(0));
-        let observed = usage_opened.clone();
-        let _subscription = cx.update(|_, app| {
-            app.subscribe(&chat, move |_, request: &OpenSettingsSection, _| {
-                if matches!(request.0, Section::Usage) {
-                    observed.set(observed.get() + 1);
-                }
-            })
         });
         let plan = |percent_used, credit_balance| crate::billing::PlanUsage {
             product_name: Some("Max".into()),
@@ -12925,21 +12911,21 @@ mod state_tests {
             resets_label: "Monthly".into(),
             credit_balance,
         };
-        // (plan, Billing offered, credits chip, credits row in the menu)
+        // (plan, Billing offered, credits row in the menu)
         let cases = [
             // Unknown usage: the stop stands as the runtime reported it.
-            (None, true, false, false),
+            (None, true, false),
             // Allowance used up, no credits: still out of usage.
-            (Some(plan(100, Some(0))), true, false, false),
+            (Some(plan(100, Some(0))), true, false),
             // Used up with credits (bought since the stop): they extend the
-            // plan, so the chip replaces the offer.
-            (Some(plan(100, Some(984_534))), false, true, true),
+            // plan, so the Billing offer goes away.
+            (Some(plan(100, Some(984_534))), false, true),
             // Allowance left with credits waiting: the reading does not say
-            // credits are in use, so the stop keeps its offer and no chip
-            // shows; the menu still lists them.
-            (Some(plan(40, Some(984_534))), true, false, true),
+            // credits are in use, so the stop keeps its offer; the menu
+            // still lists them.
+            (Some(plan(40, Some(984_534))), true, true),
         ];
-        for (plan, billing, chip, credits_row) in cases {
+        for (plan, billing, credits_row) in cases {
             chat.update(cx, |chat, cx| {
                 chat.sidebar_plan = plan.clone();
                 cx.notify();
@@ -12949,11 +12935,6 @@ mod state_tests {
             assert_eq!(
                 cx.debug_bounds("composer-open-billing").is_some(),
                 billing,
-                "{plan:?}"
-            );
-            assert_eq!(
-                cx.debug_bounds("composer-credits").is_some(),
-                chip,
                 "{plan:?}"
             );
             press(cx, "open-settings");
@@ -12966,28 +12947,18 @@ mod state_tests {
             assert!(cx.debug_bounds("settings-menu").is_none());
         }
 
-        // The chip opens Usage settings; the transcript keeps the stop.
-        chat.update(cx, |chat, cx| {
-            chat.sidebar_plan = Some(plan(100, Some(984_534)));
-            cx.notify();
-        });
-        cx.update(|window, _| window.refresh());
-        cx.run_until_parked();
-        let before = usage_opened.get();
-        press(cx, "composer-credits");
-        cx.run_until_parked();
-        assert_eq!(usage_opened.get(), before + 1);
+        // The transcript keeps the earlier refusal.
         assert!(cx.debug_bounds("timeline-row-usage-1").is_some());
 
         // A refusal that arrives while the reading already says credits
-        // extend the plan means they did not pay: the offer comes back and
-        // the chip, which would say otherwise, stands down.
+        // extend the plan means they did not pay: the offer comes back.
         let refused: AgentTimelineItem = serde_json::from_value(serde_json::json!({
             "id": "usage-2", "itemType": "error", "createdMs": 2, "merge": "replace",
             "text": USAGE_LIMIT_MESSAGE, "label": {"kind": "error-usage"}
         }))
         .unwrap();
         chat.update(cx, |chat, cx| {
+            chat.sidebar_plan = Some(plan(100, Some(984_534)));
             chat.replace_timeline(vec![user_item("user-1", "test")]);
             chat.apply_incoming_item("s1", refused, cx);
             cx.notify();
@@ -12995,7 +12966,6 @@ mod state_tests {
         cx.update(|window, _| window.refresh());
         cx.run_until_parked();
         assert!(cx.debug_bounds("composer-open-billing").is_some());
-        assert!(cx.debug_bounds("composer-credits").is_none());
     }
 
     #[gpui::test]

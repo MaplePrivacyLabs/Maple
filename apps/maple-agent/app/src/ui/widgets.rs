@@ -562,7 +562,6 @@ pub fn tooltip(
         let label = label.clone();
         cx.new(|_| Tooltip {
             label,
-            detail: Vec::new(),
             shortcut: shortcut.map(SharedString::from),
             pointer: window.mouse_position(),
         })
@@ -586,29 +585,8 @@ pub fn tooltip_for_action(
         let pointer = window.mouse_position();
         cx.new(|_| Tooltip {
             label,
-            detail: Vec::new(),
             shortcut,
             pointer,
-        })
-        .into()
-    }
-}
-
-/// A tooltip with a title and short lines of explanation under it, for a
-/// status that needs a sentence rather than a name.
-pub fn tooltip_detail(
-    label: impl Into<SharedString>,
-    detail: impl IntoIterator<Item = SharedString>,
-) -> impl Fn(&mut Window, &mut App) -> AnyView + 'static {
-    let label = label.into();
-    let detail: Vec<SharedString> = detail.into_iter().collect();
-    move |window, cx| {
-        let (label, detail) = (label.clone(), detail.clone());
-        cx.new(|_| Tooltip {
-            label,
-            detail,
-            shortcut: None,
-            pointer: window.mouse_position(),
         })
         .into()
     }
@@ -686,15 +664,10 @@ fn key_glyph(key: &str) -> String {
 
 struct Tooltip {
     label: SharedString,
-    /// Lines under the label, each wrapped to a reading width.
-    detail: Vec<SharedString>,
     shortcut: Option<SharedString>,
     /// Where the pointer was when the tooltip showed, in window coordinates.
     pointer: Point<Pixels>,
 }
-
-/// How wide a tooltip's explanation runs before it wraps.
-const TOOLTIP_DETAIL_WIDTH: Pixels = px(260.);
 
 /// Space between the pointer and a tooltip above it.
 const TOOLTIP_GAP: Pixels = px(16.);
@@ -715,6 +688,7 @@ impl Render for Tooltip {
         let label = div()
             .debug_selector(|| "tooltip".into())
             .flex()
+            .items_center()
             .gap_2()
             .px_2()
             .py_1()
@@ -725,27 +699,7 @@ impl Render for Tooltip {
             .shadow_md()
             .text_xs()
             .text_color(gpui::rgb(theme::text_primary()))
-            .map(|label| {
-                if self.detail.is_empty() {
-                    return label.items_center().child(self.label.clone());
-                }
-                label
-                    .flex_col()
-                    .gap_0p5()
-                    .px_2p5()
-                    .py_1p5()
-                    .max_w(TOOLTIP_DETAIL_WIDTH)
-                    .child(
-                        div()
-                            .font_weight(gpui::FontWeight::MEDIUM)
-                            .child(self.label.clone()),
-                    )
-                    .children(self.detail.iter().map(|line| {
-                        div()
-                            .text_color(gpui::rgb(theme::text_muted()))
-                            .child(line.clone())
-                    }))
-            })
+            .child(self.label.clone())
             .children(self.shortcut.clone().map(|keys| {
                 div()
                     .px_1()

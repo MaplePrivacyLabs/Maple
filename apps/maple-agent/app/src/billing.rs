@@ -201,23 +201,6 @@ pub fn format_count(value: i64) -> String {
     out
 }
 
-/// "984.5K" or "1.2M": a balance short enough for a chip. Rounds down, so
-/// it never shows more than the account has.
-pub fn format_count_compact(value: i64) -> String {
-    let magnitude = value.unsigned_abs();
-    let (unit, suffix) = match magnitude {
-        0..1_000 => return format_count(value),
-        1_000..1_000_000 => (1_000, "K"),
-        _ => (1_000_000, "M"),
-    };
-    let tenths = magnitude / (unit / 10);
-    let sign = if value < 0 { "-" } else { "" };
-    match tenths % 10 {
-        0 => format!("{sign}{}{suffix}", tenths / 10),
-        tenth => format!("{sign}{}.{tenth}{suffix}", tenths / 10),
-    }
-}
-
 /// "$20/month" from a product's default price; None when it has no price.
 pub fn price_label(product: &Product) -> Option<String> {
     let price = product.default_price.as_ref()?;
@@ -643,23 +626,6 @@ mod tests {
             let stopped = with(100, credits);
             assert_eq!(stopped.extra_credits(), None);
             assert!(!stopped.on_extra_credits());
-        }
-    }
-
-    #[test]
-    fn compact_counts_round_down() {
-        for (value, label) in [
-            (0, "0"),
-            (999, "999"),
-            (1_000, "1K"),
-            (12_500, "12.5K"),
-            (984_534, "984.5K"),
-            (999_999, "999.9K"),
-            (1_000_000, "1M"),
-            (1_250_000, "1.2M"),
-            (-1_500, "-1.5K"),
-        ] {
-            assert_eq!(format_count_compact(value), label, "{value}");
         }
     }
 }

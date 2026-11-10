@@ -1630,8 +1630,6 @@ chat-usage-extra-credits = Créditos adicionales
 chat-usage-credits-left = { $credits } restantes
 chat-usage-credits-in-use = En uso hasta que tu plan se restablezca.
 chat-usage-credits-next = Se usan cuando se agote tu plan.
-chat-credits-title = Usando créditos adicionales
-chat-credits-label = Usando créditos adicionales, { $left }. Se restablece { $reset }. Abrir la configuración de uso
 
 # Shared with native desktop computer presentation.
 

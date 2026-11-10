@@ -1250,63 +1250,6 @@ impl ChatScreen {
             })
     }
 
-    /// While the billing reading says the plan's allowance is used up and
-    /// extra credits extend it: the balance by the send button, with the
-    /// detail on hover. It opens Usage settings. A task whose turn was
-    /// refused on credits shows the out-of-usage offer instead.
-    fn render_credits_chip(&self, cx: &mut Context<Self>) -> Option<gpui::Stateful<Div>> {
-        let plan = self
-            .sidebar_plan
-            .as_ref()
-            .filter(|plan| plan.on_extra_credits() && !self.usage_limit_reached())?;
-        let credits = plan.extra_credits()?;
-        let left = self.messages.get(
-            "chat-usage-credits-left",
-            [("credits", crate::billing::format_count(credits).into())],
-        );
-        let reset: SharedString =
-            crate::ui::settings::presentation::reset_date(plan, &self.messages);
-        let detail = [
-            left.clone(),
-            self.messages
-                .get("chat-usage-reset", [("reset", reset.to_string().into())]),
-        ];
-        Some(
-            div()
-                .id("composer-credits")
-                .debug_selector(|| "composer-credits".to_string())
-                .role(gpui::Role::Button)
-                .aria_label(self.messages.get(
-                    "chat-credits-label",
-                    [
-                        ("left", left.to_string().into()),
-                        ("reset", reset.to_string().into()),
-                    ],
-                ))
-                .flex_none()
-                .flex()
-                .items_center()
-                .gap_1()
-                .mr_1()
-                .pl_1p5()
-                .pr_2()
-                .py_0p5()
-                .rounded_full()
-                .bg(gpui::rgb(theme::accent_container()))
-                .text_xs()
-                .font_weight(gpui::FontWeight::SEMIBOLD)
-                .text_color(gpui::rgb(theme::accent_ink()))
-                .hover(|style| style.cursor_pointer())
-                .child(icon("coins", px(13.), theme::accent_ink()))
-                .child(crate::billing::format_count_compact(credits))
-                .tooltip(widgets::tooltip_detail(tr("chat-credits-title"), detail))
-                .on_click(cx.listener(|_this, _event, _window, cx| {
-                    cx.stop_propagation();
-                    cx.emit(OpenSettingsSection(Section::Usage));
-                })),
-        )
-    }
-
     /// The out-of-usage notice, docked on top of the composer where the
     /// next message would go. It offers Billing until a message is sent;
     /// the transcript keeps a one-line marker of the turn.
@@ -1670,7 +1613,6 @@ impl ChatScreen {
                         )
                     })
                     .child(div().flex_1())
-                    .children(self.render_credits_chip(cx))
                     .child(
                         div()
                             .id("context-indicator")

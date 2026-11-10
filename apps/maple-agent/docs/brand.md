@@ -280,10 +280,8 @@ one-line marker of that turn.
 Extra credits wear a coral `coins` icon on `accent_container`. The Settings
 menu shows the balance under the plan, with whether they are in use or wait
 for the allowance to run out; once the allowance is used up, the plan bar
-turns `text_faint`, since nothing is wrong. While they extend the plan, a
-chip by the send button shows the balance, rounded down ("984.5K"), with
-the exact balance and the reset date on hover. The plan reads 100% only
-once it is used up; just short of that it reads 99%.
+turns `text_faint`, since nothing is wrong. The plan reads 100% only once
+it is used up; just short of that it reads 99%.
 
 ### Spacing
 
