@@ -16,8 +16,6 @@ settings-defaults = Standardeinstellungen
 settings-chat-appearance = Chatdarstellung
 settings-editing = Bearbeitung
 settings-voice = Sprachausgabe
-settings-web = Neue Aufgaben können das Web nutzen
-settings-web-description = Stellt dem Modell web_search und open_url bereit. Der Webzugriff lässt sich für jede Aufgabe im Eingabefeld ein- oder ausschalten.
 settings-appearance = Darstellung
 settings-appearance-description = Systemdesign verwenden oder immer das dunkle bzw. helle Design nutzen.
 settings-chat-font = Chatschrift
@@ -51,18 +49,53 @@ settings-notification-test-title = Desktopbenachrichtigungen aktiviert
 # $time is the local time as HH:MM.
 settings-notification-test-body = Du siehst Benachrichtigungen wie diese um { $time }.
 settings-section-general = Allgemein
-settings-section-account = Konto
-settings-section-billing = Abrechnung
-settings-section-shortcuts = Tastenkürzel
-settings-section-prompt = Zusätzliche Anweisungen
-settings-section-integrations = Integrationen
-settings-section-remote = Entfernte Computer
+settings-section-appearance = Darstellung
+settings-section-account = Konto & Sicherheit
 settings-section-usage = Nutzung
+settings-section-billing = Tarif & Abrechnung
+settings-section-developer = Entwicklung & API
+settings-section-shortcuts = Tastenkürzel
+settings-section-integrations = Integrationen
+settings-section-tools = Werkzeuge
+settings-section-remote = Entfernte Computer
 settings-section-about = Über Maple
-settings-section-advanced = Datenschutz & Sicherheit
-settings-back = ← Zurück
+settings-group-workspace = Arbeitsbereich
+settings-group-connections = Verbindungen
+settings-group-account = Konto & System
+settings-filter-placeholder = Einstellungen filtern…
+settings-filter-empty = Keine passenden Bereiche.
+# Hidden filter terms per section: former page names and the controls that moved there. Comma-separated, matched as plain substrings.
+settings-keywords-general = Standardeinstellungen, Sprache, Benachrichtigungen, Vim, Stimme, Sprachausgabe, Agentenanweisungen, Systemanweisung
+settings-keywords-appearance = Design, dunkel, hell, System, Bewegung, Schrift, Textgröße, Werkzeugdetails, Zusammenfassungen
+settings-keywords-shortcuts = Tastatur, Belegungen, Tastenkürzel
+settings-keywords-integrations = MCP, Server, Programmieragenten, Computerbedienung, benutzerdefinierter Server
+settings-keywords-tools = Web, Python, Terminal, Shell, Dateien, lesen, schreiben, bearbeiten, suchen
+settings-keywords-developer = API, ACP, Schlüssel, lokale API, Proxy, Editoren, Guthaben
+settings-keywords-remote = Kopplung, Computer, Geräte
+settings-keywords-account = Datenschutz, Sicherheit, Passwort, abmelden, Verschlüsselung, lokale Daten, Konto löschen, Profil
+settings-keywords-usage = Nutzung, Verbrauch, Kontingent, Limit, Zurücksetzung, Guthaben
+settings-keywords-billing = Tarif, Abonnement, Guthaben, Upgrade, Pro, Max, Team, Zahlung
+settings-keywords-about = Version, Update
+settings-general-subtitle = Aufgabenstandards, Sprache, Benachrichtigungen, Bearbeitungsmodi, Stimme und Agentenanweisungen.
+settings-appearance-subtitle = Design, Bewegung, Gesprächsschrift und Darstellung des Gesprächsverlaufs.
+settings-notifications-heading = Benachrichtigungen
+settings-theme-motion = Design & Bewegung
+settings-transcript = Gesprächsverlauf
+settings-developer-tabs = Entwicklungsbereiche
+settings-developer-subtitle = OpenAI-kompatible lokale API, Kontoschlüssel und Einrichtung von ACP-Clients.
+settings-account-profile = Profil
+settings-account-security-group = Passwort & Sitzung
+settings-account-subtitle = Identität, Anmeldedaten, Schutz lokaler Daten und Kontoverwaltung.
+settings-usage-subtitle = Wie viel deines Monatstarifs du verbraucht hast und dein zusätzliches Guthaben.
+settings-usage-extra-credits = Zusätzliches Guthaben
+settings-usage-what-counts = Aufgaben verbrauchen dein Tarifguthaben bis zur Zurücksetzung; danach wird zusätzliches Guthaben verwendet.
+settings-usage-manage-plan = Tarif verwalten
+settings-usage-manage-plan-description = Tarif wechseln, Abonnement verwalten oder weiteres Guthaben kaufen.
+settings-billing-subtitle = Abonnement, angebotene Tarife und vorausbezahltes API-Guthaben.
+settings-about-subtitle = App-Version und Update-Downloads im Hintergrund.
+settings-shortcuts-subtitle = Integrierte Tastenkürzel suchen und anpassen.
+settings-back = Zurück
 settings-title = Einstellungen
-settings-sign-out = Abmelden
 settings-sections = Einstellungsbereiche
 settings-theme-label-system = System
 settings-theme-label-dark = Dunkel
@@ -113,7 +146,6 @@ settings-settings-shortcut-settings-applied = Tastenkürzeleinstellungen überno
 settings-settings-shortcut-recording-cancelled = Aufzeichnung des Tastenkürzels abgebrochen.
 settings-settings-a-shortcut-can-contain-at-most-four-strokes = Ein Tastenkürzel kann höchstens vier Tastenkombinationen enthalten.
 settings-settings-press-at-least-one-shortcut-key = Drücke mindestens eine Taste für das Tastenkürzel.
-settings-settings-plan = Tarif
 settings-settings-plan-usage-unavailable = Tarifnutzung nicht verfügbar
 settings-settings-about = Über Maple
 settings-settings-version = Version
@@ -140,12 +172,10 @@ settings-settings-unbound = Nicht zugewiesen
 settings-settings-modified = Geändert
 settings-settings-record = Aufzeichnen
 settings-settings-disable = Deaktivieren
-settings-settings-additional-instructions = Zusätzliche Anweisungen
-settings-settings-added-to-every-task-after-maple-s-own-system-prompt-use-it-for-pr = Wird jeder Aufgabe nach Maples eigener Systemanweisung hinzugefügt. Nutze dies für Vorlieben wie Ton, Sprache oder Arbeitsweise. Änderungen gelten für Aufgaben, die nach dem Speichern gestartet werden.
+settings-agent-instructions = Agentenanweisungen
 settings-settings-save = Speichern
 settings-settings-clear = Leeren
 settings-settings-integrations = Integrationen
-settings-settings-execution-computer-this-computer = Ausführender Computer: Dieser Computer
 settings-settings-manage-integrations-here-enable-coding-agents-to-make-them-availa = Verwalte hier Integrationen. Aktiviere Programmieragenten, um sie im Eingabefeld verfügbar zu machen, und wähle sie dann für jede Aufgabe aus.
 settings-settings-detecting-integrations = Integrationen werden erkannt…
 settings-settings-no-supported-integrations-detected-on-this-device = Keine unterstützten Integrationen auf diesem Gerät erkannt.
@@ -157,7 +187,6 @@ settings-settings-cua-team = Cua-Team
 settings-settings-set-up = Einrichten
 settings-settings-enable = Aktivieren
 settings-settings-edit-server = Server bearbeiten
-settings-settings-new-server = Neuer Server
 settings-settings-name = Name
 settings-settings-description = Beschreibung
 settings-settings-transport = Transport
@@ -201,7 +230,6 @@ settings-account-confirmation-code = Bestätigungscode
 settings-account-enter-the-confirmation-code-from-the-email = Bestätigungscode aus der E-Mail eingeben
 settings-account-password-changed = Passwort geändert.
 settings-account-verification-email-sent-check-your-inbox = Bestätigungs-E-Mail gesendet. Schau in deinen Posteingang.
-settings-account-account = Konto
 settings-account-loading-account = Konto wird geladen…
 settings-account-email = E-Mail
 settings-account-no-email-on-this-account = Keine E-Mail für dieses Konto
@@ -213,6 +241,7 @@ settings-account-danger-zone = Gefahrenbereich
 settings-account-delete-account = Konto löschen
 settings-account-permanently-deletes-your-account-tasks-and-encrypted-data-this-ca = Löscht dein Konto, deine Aufgaben und verschlüsselten Daten dauerhaft. Dies kann nicht rückgängig gemacht werden.
 settings-account-delete-account-more = Konto löschen…
+settings-account-delete-dialog-title = Konto löschen?
 settings-account-this-permanently-deletes-your-account-tasks-and-encrypted-data-ty = Dies löscht dein Konto, deine Aufgaben und verschlüsselten Daten dauerhaft. Gib DELETE ein, dann senden wir dir einen Bestätigungscode per E-Mail.
 settings-account-cancel = Abbrechen
 settings-account-sending = Wird gesendet…
@@ -248,10 +277,11 @@ settings-advanced-maple-s-copy-of-your-conversation-text-settings-and-sign-in-on
 settings-advanced-your-conversation-text-settings-and-sign-in-are-stored-on-this-co = Deine Gesprächstexte, Einstellungen und Anmeldedaten werden auf diesem Computer gespeichert und sind nur für dein Benutzerkonto lesbar. Lege ein Entsperrpasswort fest, um sie zu verschlüsseln. Angehängte Dateien und Bilder bleiben unverschlüsselt.
 settings-advanced-erase-this-version-s-local-data = Lokale Daten dieser Version löschen
 settings-advanced-cancel = Abbrechen
-settings-advanced-change-password = Passwort ändern…
+settings-advanced-change-password = Entsperrpasswort ändern…
 settings-advanced-set-unlock-password = Entsperrpasswort festlegen…
 settings-advanced-remove-password = Passwort entfernen…
 settings-advanced-erase-local-data = Lokale Daten löschen…
+settings-advanced-erase-dialog-title = Lokale Daten löschen?
 settings-advanced-while-maple-is-locked-your-other-computers-can-t-reach-this-one-a = Solange Maple gesperrt ist, können deine anderen Computer diesen nicht erreichen. Öffne Maple nach einem Neustart und entsperre es, um den Fernzugriff wieder zu aktivieren.
 settings-advanced-claude-code-keeps-its-own-copy-of-the-work-maple-hands-it-in-its = Claude Code speichert eine eigene Kopie der von Maple übergebenen Arbeit in seinem eigenen Ordner. Maples Passwort verschlüsselt diese Kopie nicht.
 settings-advanced-codex-keeps-its-own-copy-of-the-work-maple-hands-it-in-its-own-fo = Codex speichert eine eigene Kopie der von Maple übergebenen Arbeit in seinem eigenen Ordner. Maples Passwort verschlüsselt diese Kopie nicht.
@@ -261,10 +291,9 @@ settings-advanced-your-unlock-password-was-removed = Dein Entsperrpasswort wurde
 settings-api-credits-loading-balance = Guthaben wird geladen…
 settings-api-credits-balance-unavailable = Guthaben nicht verfügbar
 settings-api-credits-enter-an-amount = Betrag eingeben
-settings-api-credits-opened-checkout-in-your-browser-refresh-after-paying-to-see-the-n = Bezahlseite im Browser geöffnet. Aktualisiere nach der Zahlung, um das neue Guthaben zu sehen.
-settings-api-credits-opened-bitcoin-checkout-in-your-browser-credits-arrive-once-the-p = Bitcoin-Bezahlseite im Browser geöffnet. Guthaben wird nach Bestätigung der Zahlung gutgeschrieben; aktualisiere die Ansicht, um es zu sehen.
+settings-api-credits-opened-checkout-in-your-browser-refresh-after-paying-to-see-the-n = Bezahlseite im Browser geöffnet. Das Guthaben wird aktualisiert, wenn du zurückkehrst.
+settings-api-credits-opened-bitcoin-checkout-in-your-browser-credits-arrive-once-the-p = Bitcoin-Bezahlseite im Browser geöffnet. Guthaben wird nach Bestätigung der Zahlung gutgeschrieben; der Kontostand wird aktualisiert, wenn du zurückkehrst.
 settings-api-credits-api-credits = API-Guthaben
-settings-api-credits-refresh = Aktualisieren
 settings-api-credits-extra-credit-balance = Zusätzliches Guthaben
 settings-api-credits-1-per-1-000-credits-extends-your-plan-when-its-included-usage-run = 1 $ pro 1.000 Guthabenpunkte. Erweitert deinen Tarif, wenn die enthaltene Nutzung aufgebraucht ist.
 settings-api-credits-custom-amount = Eigener Betrag
@@ -273,8 +302,6 @@ settings-api-credits-pay-with-card = Mit Karte bezahlen
 settings-api-credits-pay-with-bitcoin = Mit Bitcoin bezahlen
 settings-api-credits-opening-checkout = Bezahlseite wird geöffnet…
 settings-api-credits-anonymous-accounts-pay-with-bitcoin = Anonyme Konten bezahlen mit Bitcoin
-settings-api-credits-checkout-opens-in-your-browser-anonymous-accounts-pay-with-bitcoi = Die Bezahlseite öffnet sich im Browser. Anonyme Konten bezahlen mit Bitcoin.
-settings-api-credits-checkout-opens-in-your-browser = Die Bezahlseite öffnet sich im Browser.
 settings-api-keys-key-name-for-example-cursor = Schlüsselname, zum Beispiel „Cursor“
 settings-api-keys-api-keys = API-Schlüssel
 settings-api-keys-unlock-api-access = API-Zugriff freischalten
@@ -290,21 +317,20 @@ settings-api-keys-copy-the-key-now-for-your-privacy-it-is-not-stored-anywhere-yo
 settings-api-keys-done = Fertig
 settings-api-keys-deleting = Wird gelöscht…
 settings-api-keys-confirm-delete = Löschen bestätigen
-settings-billing-opened-the-subscription-portal-in-your-browser-refresh-after-maki = Abonnementportal im Browser geöffnet. Aktualisiere nach Änderungen.
+settings-billing-opened-the-subscription-portal-in-your-browser-refresh-after-maki = Abonnementportal im Browser geöffnet. Diese Seite wird aktualisiert, wenn du zurückkehrst.
 settings-billing-opened-the-pricing-page-in-your-browser = Preisseite im Browser geöffnet.
-settings-billing-opened-checkout-in-your-browser-refresh-after-paying-to-see-the-n = Bezahlseite im Browser geöffnet. Aktualisiere nach der Zahlung, um den neuen Tarif zu sehen.
+settings-billing-opened-checkout-in-your-browser-refresh-after-paying-to-see-the-n = Bezahlseite im Browser geöffnet. Diese Seite wird aktualisiert, wenn du zurückkehrst.
 settings-billing-plan = Tarif
-settings-billing-refresh = Aktualisieren
 settings-billing-loading-plan = Tarif wird geladen…
 settings-billing-free = Kostenlos
-settings-billing-manage-subscription = Abonnement verwalten
-settings-billing-plans = Tarife
 settings-billing-no-plans-are-on-sale-right-now = Derzeit werden keine Tarife angeboten.
 settings-billing-loading-plans = Tarife werden geladen…
-settings-billing-payments-open-in-your-browser-bitcoin-payments-and-team-seats-are = Zahlungen öffnen sich im Browser. Bitcoin-Zahlungen und Teamplätze werden auf der Preisseite im Web eingerichtet.
-settings-billing-current-plan = Aktueller Tarif
 settings-billing-choose = Auswählen
 settings-billing-change-plan = Tarif wechseln
+settings-refresh = Aktualisieren
+settings-billing-your-plan = Dein Tarif
+settings-billing-view-plans = Tarife ansehen
+settings-billing-choose-a-plan = Tarif wählen
 settings-billing-see-on-the-web = Im Web ansehen
 settings-billing-active = Aktiv
 settings-billing-trial = Testphase
@@ -314,7 +340,7 @@ settings-billing-paid-with-bitcoin-to-change-plans-contact-support-trymaple-ai =
 settings-billing-activated-with-a-subscription-pass-it-ends-on-the-date-above-with = Mit einem Abonnementpass aktiviert. Endet am oben genannten Datum ohne Verlängerung.
 settings-local-api-port-1-65535 = Port (1–65535)
 settings-local-api-could-not-read-the-local-api-status-reconnect-to-this-computer-an = Der Status der lokalen API konnte nicht gelesen werden. Verbinde dich erneut mit diesem Computer und versuche es noch einmal.
-settings-local-api-could-not-update-the-local-api-refresh-its-status-and-try-again = Die lokale API konnte nicht aktualisiert werden. Aktualisiere ihren Status und versuche es erneut.
+settings-local-api-could-not-update-the-local-api-refresh-its-status-and-try-again = Die lokale API konnte nicht aktualisiert werden. Aktualisiere die Seite und versuche es erneut.
 settings-local-api-local-api = Lokale API
 settings-local-api-learn-more = Mehr erfahren
 settings-local-api-enable-local-api-on-this-computer = Lokale API auf diesem Computer aktivieren
@@ -322,7 +348,6 @@ settings-local-api-unavailable-while-local-api-settings-are-loading-or-being-upd
 settings-local-api-updating-local-api-settings = Einstellungen der lokalen API werden aktualisiert…
 settings-local-api-port = Port
 settings-local-api-copy-local-api-base-url = Basis-URL der lokalen API kopieren
-settings-local-api-refresh-status = Status aktualisieren
 settings-local-api-enter-a-port-between-1-and-65535 = Gib einen Port zwischen 1 und 65535 ein.
 settings-local-api-paused = Pausiert
 settings-local-api-starting = Wird gestartet…
@@ -834,6 +859,211 @@ settings-month-november = November
 settings-month-december = Dezember
 # $month is a translated month name; $day and $year are numbers.
 settings-date = { $day }. { $month } { $year }
+settings-usage-scope = Dein gesamtes Konto: Maple Chat und Maple Work auf allen Geräten sowie Anfragen mit deinen API-Schlüsseln. Nicht nur dieser Computer.
+settings-usage-loading = Nutzung wird geladen…
+settings-usage-retry = Erneut versuchen
+# $left is a formatted number of credits.
+settings-usage-left = { $left } übrig
+# $used and $allowance are formatted numbers of credits.
+settings-usage-plan-amount = { $used } von { $allowance } Tarif-Guthabenpunkten verbraucht
+# $used and $allowance are formatted numbers of credits.
+settings-usage-team-amount = { $used } von { $allowance } Team-Guthabenpunkten verbraucht
+# $credits is a formatted number.
+settings-usage-team-you = Du: { $credits }
+# $credits is a formatted number.
+settings-usage-team-rest = Rest des Teams: { $credits }
+settings-usage-team-footer = Alles unten zeigt deine eigene Nutzung. Das Guthaben oben umfasst das gesamte Team.
+# $reset is a short date such as Dec 1.
+settings-usage-pace-exhausted = Das Tarifguthaben ist aufgebraucht. Kaufe zusätzliches Guthaben, um vor der Zurücksetzung am { $reset } weiterzuarbeiten.
+# $reset is a short date such as Dec 1.
+settings-usage-pace-exhausted-extra = Das Tarifguthaben ist aufgebraucht. Zusätzliches Guthaben deckt die Nutzung, solange es reicht. Das Tarifguthaben wird am { $reset } zurückgesetzt.
+# $reset is a short date such as Dec 1.
+settings-usage-pace-team-exhausted = Das gemeinsame Teamguthaben ist aufgebraucht. Die Teamnutzung pausiert bis zur Zurücksetzung am { $reset }.
+# $pace is a formatted number of credits and $count the same number for plurals; $allowance is a formatted number such as 20,000; $date is a short date.
+settings-usage-pace-runs-out = Bei etwa { $pace } { $count ->
+    [one] Guthabenpunkt
+   *[other] Guthabenpunkten
+} pro Tag erreichst du { $allowance } ungefähr am { $date }. Danach benötigst du bis zur Zurücksetzung zusätzliches Guthaben.
+# $pace is a formatted number of credits and $count the same number for plurals; $allowance is a formatted number such as 20,000; $date is a short date.
+settings-usage-pace-runs-out-extra = Bei etwa { $pace } { $count ->
+    [one] Guthabenpunkt
+   *[other] Guthabenpunkten
+} pro Tag erreichst du { $allowance } ungefähr am { $date }. Danach deckt zusätzliches Guthaben den Rest.
+# $pace is a formatted number of credits and $count the same number for plurals; $allowance is a formatted number such as 20,000; $date is a short date.
+settings-usage-pace-team-runs-out = Bei etwa { $pace } { $count ->
+    [one] Guthabenpunkt
+   *[other] Guthabenpunkten
+} pro Tag erreicht ihr { $allowance } ungefähr am { $date }. Danach pausiert die Teamnutzung bis zur Zurücksetzung.
+# $pace is a formatted number of credits and $count the same number for plurals; $projected and $allowance are formatted numbers such as 18,000; $reset is a short date.
+settings-usage-pace-on-track = Bei etwa { $pace } { $count ->
+    [one] Guthabenpunkt
+   *[other] Guthabenpunkten
+} pro Tag kommst du bis zum { $reset } auf ungefähr { $projected } von { $allowance }.
+settings-usage-history-title = Nutzungsverlauf
+settings-usage-range-picker = Nutzungszeitraum
+settings-usage-range-last-30-days = Letzte 30 Tage
+settings-usage-range-this-month = Dieser Monat
+# $dates is a span of dates such as Nov 1 – Nov 8.
+settings-usage-range-this-month-dates = Dieser Monat · { $dates }
+settings-usage-range-previous = Vorherige Monate
+# $dates is a span of dates such as Nov 1 – Nov 8.
+settings-usage-range-month-to-date = { $dates }, bisher in diesem Monat
+settings-usage-range-error = Nutzung für diesen Zeitraum konnte nicht geladen werden.
+settings-usage-tile-credits = Verbrauchtes Guthaben
+settings-usage-tile-requests = Anfragen
+settings-usage-tile-active = Aktive Tage
+# $active and $days are numbers: days with usage, and days in the range.
+settings-usage-tile-active-value = { $active } von { $days }
+settings-usage-show = Anzeigen
+settings-usage-split-by = Aufteilen nach
+settings-usage-metric-credits = Guthabenpunkte
+settings-usage-metric-requests = Anfragen
+settings-usage-metric-tokens = Tokens
+settings-usage-split-model = Modell
+settings-usage-split-app = App
+settings-usage-split-pool = Tarif / Zusätzlich
+settings-usage-split-token = Tokentyp
+settings-usage-split-word-model = Modell
+settings-usage-split-word-app = App
+settings-usage-split-word-pool = belastetem Guthaben
+settings-usage-split-word-token = Eingabe, zwischengespeicherter Eingabe und Ausgabe
+settings-usage-daily-title-credits = Guthabenverbrauch pro Tag
+settings-usage-daily-title-requests = Anfragen pro Tag
+settings-usage-daily-title-tokens = Tokens pro Tag
+# $title is the chart's heading, such as Daily credits; $split is how bars are split, such as model.
+settings-usage-daily-label = { $title }, aufgeteilt nach { $split }
+settings-usage-marker-reset = Tarifguthaben zurückgesetzt
+settings-usage-extra-span = Tarifguthaben aufgebraucht · Zusätzliches Guthaben verwendet
+settings-usage-no-usage = Keine Nutzung in diesem Zeitraum.
+settings-usage-apps-title = Nach App
+settings-usage-apps-description = Guthabenverbrauch nach der App, die die jeweilige Anfrage gesendet hat.
+# $percent is a percentage such as 12%.
+settings-usage-apps-api-share = { $percent } über API-Schlüssel, in beliebigen Apps
+settings-usage-models-title = Nach Modell
+settings-usage-models-description = Alle Modelle, die in diesem Zeitraum für dein Konto ausgeführt wurden, einschließlich Hintergrundanfragen, die Maple für dich stellt.
+settings-usage-col-model = Modell
+settings-usage-col-requests = Anfragen
+settings-usage-col-input = Eingabe
+settings-usage-col-cached = Zwischengespeicherte Eingabe
+settings-usage-col-output = Ausgabe
+settings-usage-col-credits = Guthabenpunkte
+settings-usage-col-share = Anteil
+settings-usage-col-time = Zeit
+settings-usage-col-source = Quelle
+settings-usage-col-app = App
+# $count is a number of further apps.
+settings-usage-origin-more = { $count } weitere
+# $percent is a percentage such as 62%; $origin is an app such as Chat.
+settings-usage-origin-share = { $percent } { $origin }
+settings-usage-origin-chat = Chat
+settings-usage-origin-work = Work
+settings-usage-origin-proxy = Proxy
+settings-usage-origin-api = API-Schlüssel
+settings-usage-token-input = Eingabe
+settings-usage-token-cached = Zwischengespeicherte Eingabe
+settings-usage-token-output = Ausgabe
+settings-usage-more-models = Weitere Modelle
+settings-usage-pool-plan = Tarifguthaben
+settings-usage-pool-extra = Zusätzliches Guthaben
+settings-usage-months-title = Letzte 12 Monate
+settings-usage-months-description = Guthabenverbrauch pro Kalendermonat nach App. Für den aktuellen Monat wird der bisherige Verbrauch angezeigt.
+settings-usage-months-label = Guthabenverbrauch pro Kalendermonat nach App
+settings-usage-requests-title = Letzte Anfragen
+settings-usage-requests-description = Alle Anfragen deines Kontos, neueste zuerst.
+settings-usage-requests-loading = Anfragen werden geladen…
+settings-usage-requests-error = Letzte Anfragen konnten nicht geladen werden.
+settings-usage-requests-empty = Noch keine Anfragen.
+settings-usage-requests-more-error = Weitere Anfragen konnten nicht geladen werden.
+settings-usage-load-more = Mehr laden
+settings-usage-source-api-key = API-Schlüssel
+# $app is an app name: Chat, Work or Proxy.
+settings-usage-source-with-key = { $app } · API-Schlüssel
+settings-usage-paid-extra = Zusätzlich
+settings-usage-prices-title = Aktuelle Modellpreise
+settings-usage-prices-description = Guthabenpunkte pro 1 Million Tokens zu den heutigen Preisen. 1.000 Guthabenpunkte entsprechen 1 $ zum Listenpreis.
+settings-usage-prices-loading = Preise werden geladen…
+settings-usage-prices-error = Preise konnten nicht geladen werden.
+settings-usage-price-same-as-input = Wie Eingabe
+settings-usage-prices-note = Die Nutzung oben zeigt das zum jeweiligen Zeitpunkt tatsächlich berechnete Guthaben. Ältere Anfragen können daher von den heutigen Preisen abweichen.
+settings-usage-prices-unlisted = Für mit — gekennzeichnete Modelle ist kein Preis mehr aufgeführt.
+settings-usage-prices-vary = * Hängt vom Anbieter ab, der die Anfrage verarbeitet hat; angezeigt wird der Standardwert.
+settings-usage-about-title = Über diese Zahlen
+settings-usage-about-account-title = Dein gesamtes Konto
+settings-usage-about-account = Maple Chat, Maple Work und Maple Proxy auf allen Geräten sowie deine API-Schlüssel.
+settings-usage-about-apps-title = Apps und API-Schlüssel
+settings-usage-about-apps = Jede Anfrage wird der App zugerechnet, die sie gesendet hat, auch bei Verwendung eines API-Schlüssels. Das gilt auch für den lokalen Proxy in Chat und die lokale API in Work. Unter „API-Schlüssel“ allein stehen Anfragen ohne App-Namen, etwa direkte API-Aufrufe. Anfragen aus der Zeit, bevor Apps ihren Namen meldeten, zählen als Chat, sofern sie keinen API-Schlüssel verwendeten.
+settings-usage-about-credits-title = Guthabenpunkte
+# $plan is a product name such as Pro, not translated; $allowance is a formatted number.
+settings-usage-about-credits-plan = Guthabenpunkte messen die Nutzung zu unseren API-Listenpreisen: 1.000 Punkte entsprechen 1 $ Nutzung. Dein Tarif { $plan } enthält { $allowance } Guthabenpunkte pro Abrechnungszeitraum. Zusätzliches Guthaben wird erst nach Verbrauch des Tarifguthabens verwendet und verfällt nicht.
+# $allowance is a formatted number.
+settings-usage-about-credits-unnamed = Guthabenpunkte messen die Nutzung zu unseren API-Listenpreisen: 1.000 Punkte entsprechen 1 $ Nutzung. Dein Tarif enthält { $allowance } Guthabenpunkte pro Abrechnungszeitraum. Zusätzliches Guthaben wird erst nach Verbrauch des Tarifguthabens verwendet und verfällt nicht.
+# $allowance is a formatted number.
+settings-usage-about-credits-team = Guthabenpunkte messen die Nutzung zu unseren API-Listenpreisen: 1.000 Punkte entsprechen 1 $ Nutzung. Dein Team teilt sich { $allowance } Guthabenpunkte pro Abrechnungszeitraum.
+settings-usage-about-background-title = Hintergrundanfragen
+settings-usage-about-background = Maple stellt auch Anfragen für dich, etwa um Chats zu benennen, Werkzeugergebnisse zusammenzufassen, ein Modell für Auto auszuwählen oder lange Gespräche zu kürzen. Sie laufen auf dem Modell, das Maple für die jeweilige Aufgabe verwendet; dieses kann sich ändern. Sie zählen zu deiner Nutzung und werden unter diesem Modell aufgeführt.
+settings-usage-about-auto-title = Auto, Quick und Powerful
+settings-usage-about-auto = Diese Optionen wählen für jede Anfrage ein Modell. Die Nutzung wird unter dem tatsächlich ausgeführten Modell aufgeführt.
+settings-usage-about-tokens-title = Eingabe, zwischengespeicherte Eingabe und Ausgabe
+settings-usage-about-tokens = Eingabe ist neuer Prompttext. Zwischengespeicherte Eingabe ist Prompttext, den das Modell aus einer kürzlichen Anfrage wiederverwendet hat. Modelle, die dies unterstützen, berechnen dafür weniger; manche Modelle melden diese Daten nicht (als — angezeigt). Ausgabe ist der vom Modell geschriebene Text. Die drei Werte ergeben zusammen deine Gesamtzahl an Tokens.
+settings-usage-about-prices-title = Preise
+settings-usage-about-prices = Die Preistabelle zeigt die heutigen Preise. Die Nutzung zeigt das zum jeweiligen Zeitpunkt tatsächlich berechnete Guthaben.
+settings-usage-about-free-title = Nicht angerechnet
+settings-usage-about-free = Spracheingabe, Vorlesen und Websuche verbrauchen kein Guthaben.
+settings-usage-about-zone-title = Zeitzone
+# $zone is a time zone name such as America/Chicago.
+settings-usage-about-zone = Tage werden in deiner Zeitzone ({ $zone }) angezeigt.
+# $month is a short month name such as Oct; $day is a number.
+settings-usage-short-date = { $day }. { $month }
+# $weekday is a short weekday name such as Wed; $date is a short date such as Oct 14.
+settings-usage-weekday-date = { $weekday }, { $date }
+# $month is a month name such as October; $year is a number.
+settings-usage-month-year = { $month } { $year }
+settings-usage-month-jan = Jan
+settings-usage-month-feb = Feb
+settings-usage-month-mar = Mär
+settings-usage-month-apr = Apr
+settings-usage-month-may = Mai
+settings-usage-month-jun = Jun
+settings-usage-month-jul = Jul
+settings-usage-month-aug = Aug
+settings-usage-month-sep = Sep
+settings-usage-month-oct = Okt
+settings-usage-month-nov = Nov
+settings-usage-month-dec = Dez
+settings-usage-weekday-mon = Mo
+settings-usage-weekday-tue = Di
+settings-usage-weekday-wed = Mi
+settings-usage-weekday-thu = Do
+settings-usage-weekday-fri = Fr
+settings-usage-weekday-sat = Sa
+settings-usage-weekday-sun = So
+# $time is a clock time such as 2:41 PM.
+settings-usage-time-today = Heute { $time }
+# $time is a clock time such as 2:41 PM.
+settings-usage-time-yesterday = Gestern { $time }
+# $date is a date such as Oct 20; $time is a clock time such as 3:05 PM.
+settings-usage-time-date = { $date }, { $time }
+# $value is a formatted number and $count the same number for plurals.
+settings-usage-tip-credits = { $value } { $count ->
+    [one] Guthabenpunkt
+   *[other] Guthabenpunkte
+}
+# $value is a short number such as 1.2M and $count the number for plurals.
+settings-usage-tip-tokens = { $value } { $count ->
+    [one] Token
+   *[other] Tokens
+}
+# $models lists model names with short amounts, separated by dots.
+settings-usage-tip-more-models = Weitere Modelle: { $models }
+# $requests is a formatted number and $count the same number for plurals.
+settings-usage-tip-requests = { $count ->
+    [one] { $requests } Anfrage
+   *[other] { $requests } Anfragen
+}
+# $credits is a formatted number.
+settings-usage-tip-extra = { $credits } aus zusätzlichem Guthaben
+# $label is a month and year such as November 2026.
+settings-usage-tip-so-far = { $label } (bisher)
 # $name is a product name such as Pro, not translated.
 settings-plan-name = { $name }-Tarif
 settings-reset-monthly = monatlich
@@ -1202,8 +1432,6 @@ chat-toggle-sidebar = Seitenleiste umschalten
 chat-search = Suchen
 chat-new-task = Neue Aufgabe
 chat-integrations = Integrationen
-chat-web = Web
-chat-web-off = Web aus
 chat-mode = Berechtigungen
 chat-mode-read-only = Nur lesen
 chat-mode-read-only-note = Lesen und Builds werden ausgeführt. Vor allem anderen fragt Maple nach.
@@ -1371,7 +1599,6 @@ chat-slash-btw = Nebenfrage stellen; die Aufgabe sieht sie nicht
 chat-slash-compact = Gespräch zusammenfassen, um Kontext freizugeben
 chat-slash-new = Neue Aufgabe starten
 chat-slash-pin = Dieses Projekt anheften oder Anheftung lösen
-chat-slash-web = Webwerkzeuge für diese Aufgabe umschalten
 chat-slash-model = Modell wählen; zum Filtern einen Namen hinzufügen
 chat-slash-help = Verfügbare Befehle anzeigen
 chat-new-task-title = Neue Aufgabe
@@ -1379,7 +1606,7 @@ chat-choose-folder = Ordner wählen
 chat-feedback-invalid-length = Bitte gib 1 bis 5.000 Zeichen ein.
 chat-send-switched-recall = Nachricht nicht gesendet: Eine andere Aufgabe wurde zuerst geöffnet. Drücke im Eingabefeld die Pfeiltaste nach oben, um sie zurückzuholen
 chat-send-switched-restored = Nachricht nicht gesendet: Eine andere Aufgabe wurde zuerst geöffnet. Sie ist wieder im Eingabefeld
-chat-commands-help = Gib / ein, um Befehle aufzulisten. Integriert: /btw, /compact, /new, /pin, /web, /model, /help. Skills erscheinen als /name.
+chat-commands-help = Gib / ein, um Befehle aufzulisten. Integriert: /btw, /compact, /new, /pin, /model, /help. Skills erscheinen als /name.
 chat-skill-send-restored = Skill nicht gesendet, während der vorherige Sendevorgang abgeschlossen wird. Der Befehl wurde wiederhergestellt; sende ihn erneut, sobald alles bereit ist.
 chat-skill-send-retained = Skill nicht gesendet, während der vorherige Sendevorgang abgeschlossen wird. Der Befehl wird aufbewahrt; drücke im leeren Eingabefeld die Pfeiltaste nach oben, um ihn zurückzuholen.
 chat-wait-upload = Warte auf den aktuellen Datei-Upload oder brich ihn ab, bevor du weitere Dateien sendest. Text kann weiterhin eingereiht oder an die laufende Aufgabe gesendet werden.
@@ -1396,8 +1623,6 @@ chat-no-model-match = Kein Modell entspricht „{ $query }“
 # $message is the underlying error, which may be untranslated.
 chat-answer-failed = Antwort konnte nicht zugestellt werden: { $message }
 # $message is the underlying error, which may be untranslated.
-chat-web-failed = Webzugriff konnte nicht geändert werden: { $message }
-# $message is the underlying error, which may be untranslated.
 chat-mode-failed = Modus konnte nicht geändert werden: { $message }
 chat-copy-link = Link kopieren
 chat-copy = Kopieren
@@ -1405,7 +1630,6 @@ chat-select-all = Alles auswählen
 chat-close = Schließen
 chat-settings-menu-update = Einstellungsmenü, Update verfügbar
 chat-settings-menu = Einstellungsmenü
-chat-account = Konto
 chat-all-settings = Alle Einstellungen
 chat-update-error = Update fehlgeschlagen
 chat-update-restart = Zum Abschließen des Updates neu starten
@@ -1642,6 +1866,8 @@ runtime-error-host-updated = Maple wurde aktualisiert. Beende Maple und öffne e
 runtime-error-local-desktop = Befehle zum Datenspeicher-Lebenszyklus benötigen den lokalen Desktop
 runtime-error-remote-permissions-unsupported = Aktualisiere zuerst Maple auf dem entfernten Computer.
 runtime-error-remote-permissions-unconfirmed = Der entfernte Computer konnte nicht geprüft werden. Versuche es erneut oder aktualisiere Maple dort.
+runtime-error-remote-tools-unsupported = Aktualisiere Maple auf dem entfernten Computer, um seine Werkzeuge von hier aus auszuwählen.
+runtime-error-remote-tools-unconfirmed = Die Werkzeuge des entfernten Computers konnten nicht geprüft werden. Versuche es erneut oder aktualisiere Maple dort.
 
 # $name is a model name, not translated.
 runtime-timeline-model-switched = Zu { $name } gewechselt
@@ -1944,8 +2170,6 @@ chat-staging-open-failed = Anhang konnte nicht geöffnet werden: { $error }
 # $error is an untranslated diagnostic.
 chat-subscribe-history-failed = Aufgabenverlauf konnte nicht abonniert werden: { $error }
 # $error is an untranslated diagnostic.
-chat-web-change-error = Webzugriff konnte nicht geändert werden: { $error }
-# $error is an untranslated diagnostic.
 chat-mode-change-error = Modus konnte nicht geändert werden: { $error }
 # $name is an integration name; $error is an untranslated diagnostic.
 chat-integration-change-error = { $name } konnte nicht geändert werden: { $error }
@@ -1994,10 +2218,16 @@ settings-settings-connected = Verbunden
 settings-catalog-search = Apps suchen…
 settings-catalog-cancel = Abbrechen
 settings-catalog-connect = Verbinden
-settings-catalog-apps = Apps
+settings-catalog-popular = Beliebte Apps
+# $count is the number of apps in the directory.
+settings-catalog-see-all = Alle { $count } Apps ansehen
 settings-catalog-custom = Benutzerdefinierter Server
+settings-section-apps = Apps
+settings-keywords-apps = Apps, Verzeichnis, Katalog, MCP, verbinden, beliebt
+settings-catalog-add-custom = Benutzerdefinierten Server hinzufügen
+settings-catalog-custom-description = Verbinde einen eigenen MCP-Server über eine Adresse oder einen Befehl.
+settings-catalog-all-connected = Alle Apps im Verzeichnis sind verbunden.
 settings-catalog-intro = Neue Aufgaben können die von dir verbundenen Apps nutzen. Deine Anmeldedaten bleiben auf diesem Computer.
-settings-catalog-all = Alle
 settings-catalog-empty = Keine passenden Apps.
 settings-catalog-stop-sign-in = Anmeldung stoppen
 settings-catalog-browser-sign-in = Mit Browser anmelden
@@ -2054,7 +2284,6 @@ settings-section-acp = ACP
 settings-acp-copy-path = Pfad der ausführbaren Datei kopieren
 settings-acp-copy-config = Konfiguration kopieren
 settings-acp-examples = ACP-Beispiele
-settings-acp-title = ACP
 settings-acp-command = Befehl
 settings-acp-copy-command = Befehl kopieren
 settings-acp-examples-heading = Beispiele
@@ -2137,3 +2366,33 @@ settings-integration-install-codex = Installiere die Codex-CLI und stelle sicher
 
 # Keep the command and PATH unchanged.
 settings-integration-install-claude = Installiere Claude Code und stelle sicher, dass `claude` in PATH liegt. Öffne diese Seite dann erneut.
+
+# Settings → Tools: a label and a one-line description for each tool the model can be offered.
+settings-tools-intro = Wähle, welche Werkzeuge das Modell in Aufgaben auf diesem Computer verwenden darf. Änderungen gelten für offene Aufgaben ab ihrer nächsten Anfrage.
+settings-tools-intro-remote = Wähle, welche Werkzeuge das Modell in Aufgaben auf dem ausgewählten Computer verwenden darf. Änderungen gelten für seine offenen Aufgaben ab ihrer nächsten Anfrage.
+settings-tools-loading = Werkzeuge werden geladen…
+settings-tools-elsewhere = Externe Agenten, MCP-Server und Computerbedienung findest du unter Integrationen.
+settings-tools-read = Dateien lesen
+settings-tools-read-description = Textdateien und Bilder lesen.
+settings-tools-shell = Terminal
+settings-tools-shell-description = Befehle im Ordner der Aufgabe ausführen.
+settings-tools-edit = Dateien bearbeiten
+settings-tools-edit-description = Teile bestehender Dateien ändern.
+settings-tools-write = Dateien schreiben
+settings-tools-write-description = Dateien erstellen oder ihren Inhalt ersetzen.
+settings-tools-grep = Dateiinhalte durchsuchen
+settings-tools-grep-description = In Dateien nach Text suchen, ohne Befehle auszuführen.
+settings-tools-find = Dateien suchen
+settings-tools-find-description = Dateien nach Namen suchen, ohne Befehle auszuführen.
+settings-tools-ls = Dateien auflisten
+settings-tools-ls-description = Ordnerinhalte auflisten, ohne Befehle auszuführen.
+settings-tools-read-image = Bilder ansehen
+settings-tools-read-image-description = Bilder aus Anhängen, Dateien und Links ansehen.
+settings-tools-todo-write = Aufgabenplan
+settings-tools-todo-write-description = Die Schritte der Aufgabe während der Arbeit über dem Eingabefeld anzeigen.
+settings-tools-request-user-input = Fragen an dich
+settings-tools-request-user-input-description = Anhalten, um dir kurze Fragen zu stellen, und auf deine Antworten warten.
+settings-tools-web = Web
+settings-tools-web-description = Das Web durchsuchen und öffentliche Seiten lesen.
+settings-tools-python = Python
+settings-tools-python-description = Python in einer Arbeitsumgebung ausführen, deren Variablen zwischen Aufrufen erhalten bleiben.
