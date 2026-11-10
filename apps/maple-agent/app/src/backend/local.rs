@@ -2385,6 +2385,62 @@ impl LocalBackend {
         })
     }
 
+    /// Whether the account sees the full Usage page. The web app reads the
+    /// same flag; when the flag service can't be reached the page stays thin.
+    pub async fn usage_page_enabled_presented(&self, user_id: &str) -> Result<bool, HostFailure> {
+        // Flags belong to a signed-in account.
+        self.session_for(user_id).await?;
+        crate::flags::is_enabled(user_id, crate::flags::USAGE_PAGE)
+            .await
+            .map_err(|error| {
+                log::warn!("Could not load feature flags: {error}");
+                HostFailure::new("usage-flags", "Could not load feature flags")
+            })
+    }
+
+    /// Usage history for the Usage page: daily and monthly rows for the
+    /// range, and the billing window's daily credits when the query names it.
+    pub async fn usage_summary_presented(
+        &self,
+        user_id: &str,
+        query: crate::billing::UsageQuery,
+    ) -> Result<crate::billing::UsageSummary, HostFailure> {
+        let query = Arc::new(query);
+        self.billing_call_presented(user_id, |billing, token| {
+            let query = Arc::clone(&query);
+            async move { billing.usage(&token, &query).await }
+        })
+        .await
+        .map_err(|error| usage_failure(error, "Could not load usage"))
+    }
+
+    /// One page of recent requests, newest first.
+    pub async fn usage_requests_presented(
+        &self,
+        user_id: &str,
+        cursor: Option<String>,
+        limit: u32,
+    ) -> Result<crate::billing::UsageRequestsPage, HostFailure> {
+        let cursor = Arc::new(cursor);
+        self.billing_call_presented(user_id, |billing, token| {
+            let cursor = Arc::clone(&cursor);
+            async move {
+                billing
+                    .usage_requests(&token, cursor.as_deref(), limit)
+                    .await
+            }
+        })
+        .await
+        .map_err(|error| usage_failure(error, "Could not load recent requests"))
+    }
+
+    /// Current model prices. Public on the billing API, no token needed.
+    pub async fn usage_prices_presented(&self) -> Result<crate::billing::UsagePrices, HostFailure> {
+        self.timed_billing(self.billing.usage_prices())
+            .await?
+            .map_err(|error| usage_failure(error.to_string().into(), "Could not load prices"))
+    }
+
     /// Start a card or Bitcoin checkout for `credits` prepaid API credits in
     /// the system browser. The billing service credits the account from the
     /// provider's webhook; the browser then lands on the web app, so no
@@ -2522,6 +2578,35 @@ impl LocalBackend {
         credits: u64,
     ) -> Result<(), String> {
         self.purchase_api_credits_presented(user_id, method, credits)
+            .await
+            .map_err(|failure| failure.message)
+    }
+    pub async fn usage_page_enabled(&self, user_id: &str) -> Result<bool, String> {
+        self.usage_page_enabled_presented(user_id)
+            .await
+            .map_err(|failure| failure.message)
+    }
+    pub async fn usage_summary(
+        &self,
+        user_id: &str,
+        query: crate::billing::UsageQuery,
+    ) -> Result<crate::billing::UsageSummary, String> {
+        self.usage_summary_presented(user_id, query)
+            .await
+            .map_err(|failure| failure.message)
+    }
+    pub async fn usage_requests(
+        &self,
+        user_id: &str,
+        cursor: Option<String>,
+        limit: u32,
+    ) -> Result<crate::billing::UsageRequestsPage, String> {
+        self.usage_requests_presented(user_id, cursor, limit)
+            .await
+            .map_err(|failure| failure.message)
+    }
+    pub async fn usage_prices(&self) -> Result<crate::billing::UsagePrices, String> {
+        self.usage_prices_presented()
             .await
             .map_err(|failure| failure.message)
     }
@@ -3572,6 +3657,13 @@ fn billing_failure(error: HostFailure, fallback: &str, code: &str) -> HostFailur
         code,
         format!("{fallback}. Try again, or use the pricing page on the web."),
     )
+}
+
+/// A failed usage history read. The Usage page shows its own message, so
+/// the server detail only goes to the log.
+fn usage_failure(error: HostFailure, fallback: &str) -> HostFailure {
+    log::warn!("{fallback}: {error}");
+    HostFailure::new("usage-load", fallback)
 }
 
 /// Open the fixed pricing page while retaining typed browser failures.

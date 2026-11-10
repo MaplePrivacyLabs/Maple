@@ -15,7 +15,7 @@ use gpui::{Animation, AnimationExt as _, Transformation};
 
 use super::thinking::thinking_label;
 use super::*;
-use crate::ui::effort_slider::{effort_slider, heat_color};
+use crate::ui::effort_slider::{SLIDER_HEIGHT, effort_slider, heat_color};
 use crate::ui::i18n::tr;
 use crate::ui::icons::{icon, spinner};
 use crate::ui::morph_text::morph_text;
@@ -55,17 +55,6 @@ pub(super) fn level_heat(level: ThinkingLevel) -> f32 {
     }
 }
 
-/// The level a model runs at when nobody picked one: Medium, else the
-/// nearest level it accepts above Medium, else below. The runtime clamps
-/// the same way when no level is saved (`clamp_thinking_level`).
-pub(super) fn recommended_level(levels: &[ThinkingLevel]) -> Option<ThinkingLevel> {
-    levels
-        .iter()
-        .copied()
-        .find(|level| *level >= ThinkingLevel::Medium)
-        .or_else(|| levels.last().copied())
-}
-
 impl ChatScreen {
     /// The levels the slider offers, or `None` while they are unknown or
     /// the model does not think.
@@ -74,6 +63,17 @@ impl ChatScreen {
             .as_ref()
             .map(|state| state.levels.as_slice())
             .filter(|levels| !levels.is_empty() && *levels != [ThinkingLevel::Off])
+    }
+
+    /// The level reset returns to: the one the model runs at when nobody
+    /// picked one, the catalog's default, as the runtime serves it. `None`
+    /// without a slider, or from a host that does not say.
+    fn effort_recommended(&self) -> Option<ThinkingLevel> {
+        let levels = self.effort_levels()?;
+        self.thinking
+            .as_ref()?
+            .recommended
+            .filter(|level| levels.contains(level))
     }
 
     /// The level the chip names: one waiting to save, then the saved one.
@@ -171,7 +171,7 @@ impl ChatScreen {
     }
 
     fn reset_effort(&mut self, cx: &mut Context<Self>) {
-        if let Some(level) = self.effort_levels().and_then(recommended_level) {
+        if let Some(level) = self.effort_recommended() {
             self.effort_reset_spins += 1;
             self.effort_reset_at = Some(std::time::Instant::now());
             self.effort_keyed = false;
@@ -203,7 +203,7 @@ impl ChatScreen {
             (Some(_), Some(level)) => level_heat(level),
             _ => 0.,
         };
-        let recommended = levels.and_then(recommended_level);
+        let recommended = self.effort_recommended();
         let resettable = levels.is_some_and(|levels| levels.len() > 1)
             && recommended.is_some()
             && shown != recommended;
@@ -257,8 +257,7 @@ impl ChatScreen {
                                     ("effort-brain-flash", count),
                                     Animation::new(SPARK).with_easing(gpui::ease_out_quint()),
                                     |disc, delta| {
-                                        disc.size(px(14. + 16. * delta))
-                                            .opacity(0.32 * (1. - delta))
+                                        disc.size(px(14. + 10. * delta)).opacity(0.2 * (1. - delta))
                                     },
                                 )),
                         )
@@ -300,13 +299,13 @@ impl ChatScreen {
                                             Animation::new(SPARK)
                                                 .with_easing(gpui::ease_out_quint()),
                                             |burst, delta| {
-                                                let scale = 0.65 + 0.6 * delta;
+                                                let scale = 0.65 + 0.45 * delta;
                                                 burst
                                                     .with_transformation(Transformation::scale(
                                                         gpui::size(scale, scale),
                                                     ))
                                                     .opacity(
-                                                        (delta / 0.15).min(1.)
+                                                        0.7 * (delta / 0.15).min(1.)
                                                             * (1. - delta).powf(1.5),
                                                     )
                                             },
@@ -449,7 +448,7 @@ impl ChatScreen {
                 .flex()
                 .flex_col()
                 .gap_1p5()
-                .child(div().h(px(44.)))
+                .child(div().h(SLIDER_HEIGHT))
                 .child(labels().invisible())
                 .child(
                     div()
@@ -523,7 +522,7 @@ impl ChatScreen {
         div()
             .id("effort-status")
             .debug_selector(|| "effort-status".to_string())
-            .h(px(44.))
+            .h(SLIDER_HEIGHT)
             .flex()
             .items_center()
             .justify_center()
@@ -537,32 +536,5 @@ impl ChatScreen {
                 row.child(spinner("effort-loading", px(12.), theme::text_muted()))
             })
             .child(div().min_w_0().truncate().child(gpui::text!(text)))
-    }
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-    use ThinkingLevel::{High, Low, Max, Medium, Minimal, Off, Xhigh};
-
-    /// The levels each Maple Work model gets from the catalog's reasoning
-    /// controls (see the runtime's `reasoning_catalog_shapes_define_levels_
-    /// and_clamp_the_default`), and the level the runtime falls back to.
-    #[test]
-    fn the_recommended_level_is_the_runtimes_fallback_for_each_shape() {
-        for (levels, recommended) in [
-            // GLM 5.3, GLM-5.3 Flash, Kimi K3, Kimi K3.1 Pro.
-            (vec![Low, High, Max], High),
-            // DeepSeek V4.1 Flash and its uncensored build.
-            (vec![Off, Low, High, Xhigh, Max], High),
-            // Gemma 4 and other models without effort tiers.
-            (vec![Off, Minimal, Low, Medium, High], Medium),
-            // A model whose levels all sit below Medium.
-            (vec![Off, Minimal, Low], Low),
-            (vec![Off], Off),
-        ] {
-            assert_eq!(recommended_level(&levels), Some(recommended), "{levels:?}");
-        }
-        assert_eq!(recommended_level(&[]), None);
     }
 }

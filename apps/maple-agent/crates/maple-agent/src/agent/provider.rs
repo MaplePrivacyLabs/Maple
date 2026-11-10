@@ -27,7 +27,7 @@ use pi_ai::{
     Context, InputModality, MaxTokensField, Message, Model, ModelCompat, StreamFn, StreamOptions,
     ThinkingLevel,
 };
-use pi_coding_agent::{ApiKeySource, ModelRegistry};
+use pi_coding_agent::{ApiKeySource, DEFAULT_THINKING_LEVEL, ModelRegistry};
 use serde_json::{Value, json};
 use tokio_util::sync::CancellationToken;
 
@@ -347,6 +347,24 @@ pub(crate) fn maple_model(
         sampling_params: Default::default(),
         sampling_params_by_thinking_level: Default::default(),
     }
+}
+
+/// The level `model` runs at when nobody picked one: the catalog's
+/// `default_effort`, which follows the model maker's recommendation, when
+/// the model accepts it; else Pi's default clamped to the model.
+pub(crate) fn recommended_thinking_level(
+    model: &Model,
+    entry: Option<&CatalogEntry>,
+) -> ThinkingLevel {
+    entry
+        .and_then(|entry| entry.reasoning.as_ref()?.default_effort.as_deref())
+        .and_then(|effort| {
+            model
+                .thinking_levels()
+                .into_iter()
+                .find(|level| model.provider_thinking_value(*level).as_deref() == Some(effort))
+        })
+        .unwrap_or_else(|| model.clamp_thinking_level(DEFAULT_THINKING_LEVEL))
 }
 
 /// A task-bound provider view. Pi selects effective context before this

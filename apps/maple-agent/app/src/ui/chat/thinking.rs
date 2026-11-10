@@ -76,9 +76,9 @@ impl ThinkingCache {
         Some(entry.state.clone())
     }
 
-    /// A task pick also changes the account default. Other tasks keep their
-    /// own levels, while default previews must be revalidated for each model.
-    fn invalidate_defaults(&mut self) {
+    /// New Task remembers one model and level, so a pick there, or of a
+    /// model there, changes what a new task starts at on every model.
+    pub(super) fn invalidate_defaults(&mut self) {
         self.entries.retain(|entry| entry.key.session.is_some());
     }
 
@@ -158,13 +158,9 @@ impl ChatScreen {
         );
     }
 
-    pub(super) fn apply_thinking_changed(
-        &mut self,
-        session: &str,
-        state: AgentThinkingState,
-        cx: &mut Context<Self>,
-    ) {
-        self.thinking_cache.invalidate_defaults();
+    /// A task's level changed, here or on another surface. It is the
+    /// task's own: New Task's previews stand.
+    pub(super) fn apply_thinking_changed(&mut self, session: &str, state: AgentThinkingState) {
         self.thinking_cache.invalidate_session(session);
         if self.selected_session.as_deref() == Some(session) {
             self.thinking_generation += 1;
@@ -173,12 +169,11 @@ impl ChatScreen {
                 self.thinking_cache.insert(key, state.clone());
             }
             self.thinking = Some(state);
-        } else if self.selected_session.is_none() {
-            self.refresh_thinking(cx);
         }
     }
 
-    /// Save `level` for the selected task, or as the new-task default.
+    /// Save `level` for the selected task, or for New Task, which
+    /// remembers it with its model.
     pub(super) fn pick_thinking(&mut self, level: ThinkingLevel, cx: &mut Context<Self>) {
         if !self
             .thinking
@@ -255,19 +250,11 @@ impl ChatScreen {
         match result {
             Ok(state) => {
                 let applied = self.thinking_cache.finish_pick(&key, Some(state));
-                self.thinking_cache.invalidate_defaults();
+                if key.session.is_none() {
+                    self.thinking_cache.invalidate_defaults();
+                }
                 if let Some(state) = applied {
-                    self.thinking_cache.insert(key.clone(), state.clone());
-                    // The runtime persisted this clamped level as the
-                    // new-task default. Other models fetch their own
-                    // clamp, never borrowing these capabilities.
-                    self.thinking_cache.insert(
-                        ThinkingKey {
-                            session: None,
-                            model: key.model,
-                        },
-                        state,
-                    );
+                    self.thinking_cache.insert(key, state);
                 }
             }
             Err(error) => {
@@ -306,6 +293,7 @@ mod tests {
         AgentThinkingState {
             levels: vec![ThinkingLevel::Off, ThinkingLevel::Low, ThinkingLevel::High],
             current,
+            recommended: Some(ThinkingLevel::Low),
         }
     }
 
@@ -374,6 +362,7 @@ mod tests {
         let confirmed = AgentThinkingState {
             levels: vec![ThinkingLevel::Off, ThinkingLevel::Low],
             current: ThinkingLevel::Low,
+            recommended: Some(ThinkingLevel::Low),
         };
         assert_eq!(
             cache.finish_pick(&key, Some(confirmed.clone())),
@@ -455,7 +444,7 @@ mod tests {
                 assert_eq!(this.queued_thinking(), Some(ThinkingLevel::Off));
                 this.selected_model = Some("model-b".into());
                 if evicted {
-                    // A pushed update for the new-task default.
+                    // Another pick on New Task landed meanwhile.
                     this.thinking_cache.invalidate_defaults();
                 }
                 this.refresh_thinking(cx);
@@ -473,5 +462,45 @@ mod tests {
                 assert!(this.thinking.is_none(), "model B keeps its own levels");
             });
         }
+    }
+
+    /// A pick on New Task replaces the one model and level it remembers,
+    /// so every model's New Task preview is read again; a task's pick is
+    /// its own and leaves them.
+    #[gpui::test]
+    fn only_a_new_task_pick_drops_the_new_task_previews(cx: &mut gpui::TestAppContext) {
+        let _guard = crate::settings::SETTINGS_IO_LOCK.lock();
+        cx.executor().allow_parking();
+        let backend = Arc::new(
+            crate::backend::AgentBackend::for_test("http://127.0.0.1:9".into(), String::new())
+                .expect("backend"),
+        );
+        let chat = cx.new(|cx| ChatScreen::new_inner_for_test(backend, "user".into(), cx));
+        chat.update(cx, |this, cx| {
+            let preview = key(None, "model-b");
+            for (picked, kept) in [
+                (key(Some("task"), "model-a"), true),
+                (key(None, "model-a"), false),
+            ] {
+                this.thinking_cache
+                    .insert(preview.clone(), state(ThinkingLevel::High));
+                this.thinking_cache.begin_pick(
+                    picked.clone(),
+                    state(ThinkingLevel::Low),
+                    ThinkingLevel::High,
+                );
+                this.thinking_saving = true;
+                this.thinking_saved(picked.clone(), Ok(state(ThinkingLevel::High)), cx);
+                assert_eq!(
+                    this.thinking_cache.get(&preview).is_some(),
+                    kept,
+                    "{picked:?}"
+                );
+                assert_eq!(
+                    this.thinking_cache.get(&picked),
+                    Some(state(ThinkingLevel::High))
+                );
+            }
+        });
     }
 }

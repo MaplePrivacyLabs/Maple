@@ -5,7 +5,8 @@ use crate::ui::i18n::{UiText, tr};
 use gpui::{Context, Div, Entity, Focusable, div, prelude::*, px};
 
 use super::{
-    AccountDeleted, SettingsScreen, SettingsTarget, SignOutRequested, info_row, section_title,
+    AccountDeleted, SettingsScreen, SettingsTarget, SignOutRequested, info_row_content,
+    page_header, subsection_title,
 };
 use crate::backend::{MapleAccount, MapleLoginMethod};
 use crate::ui::icons::icon;
@@ -42,6 +43,8 @@ pub(super) struct AccountState {
     pub(super) delete_ack: Entity<TextInput>,
     pub(super) delete_code: Entity<TextInput>,
     pub(super) delete_busy: bool,
+    /// Focus the dialog's current field the next time it draws.
+    pub(super) delete_focus_pending: bool,
     pub(super) delete_error: Option<UiText>,
 }
 
@@ -130,6 +133,7 @@ impl AccountState {
             delete_ack: plain("settings-account-type-delete-to-continue", 13, cx),
             delete_code: plain("settings-account-confirmation-code", 14, cx),
             delete_busy: false,
+            delete_focus_pending: false,
             delete_error: None,
         }
     }
@@ -205,20 +209,7 @@ impl SettingsScreen {
         }
         targets.push(SettingsTarget::Account(AccountTarget::SignOut));
         if self.account.info.is_some() {
-            let delete = match self.account.delete {
-                DeleteFlow::Idle => vec![AccountTarget::DeleteStart],
-                DeleteFlow::Acknowledging => vec![
-                    AccountTarget::DeleteAcknowledge,
-                    AccountTarget::DeleteRequestCode,
-                    AccountTarget::DeleteCancel,
-                ],
-                DeleteFlow::CodeSent { .. } => vec![
-                    AccountTarget::DeleteCode,
-                    AccountTarget::DeleteConfirm,
-                    AccountTarget::DeleteCancel,
-                ],
-            };
-            targets.extend(delete.into_iter().map(SettingsTarget::Account));
+            targets.push(SettingsTarget::Account(AccountTarget::DeleteStart));
         }
         targets
     }
@@ -260,6 +251,7 @@ impl SettingsScreen {
         }
         self.account.delete = DeleteFlow::Acknowledging;
         self.account.delete_error = None;
+        self.account.delete_focus_pending = true;
         self.reconcile_application_vim_target();
         cx.notify();
     }
@@ -276,8 +268,39 @@ impl SettingsScreen {
         self.account
             .delete_code
             .update(cx, |input, cx| input.clear(cx));
+        self.application_focus_pending = true;
         self.reconcile_application_vim_target();
         cx.notify();
+    }
+
+    /// The deletion dialog's controls, in display order; the only targets
+    /// while it is open.
+    pub(super) fn delete_dialog_targets(&self) -> Vec<SettingsTarget> {
+        match self.account.delete {
+            DeleteFlow::Idle => Vec::new(),
+            DeleteFlow::Acknowledging => vec![
+                AccountTarget::DeleteAcknowledge,
+                AccountTarget::DeleteCancel,
+                AccountTarget::DeleteRequestCode,
+            ],
+            DeleteFlow::CodeSent { .. } => vec![
+                AccountTarget::DeleteCode,
+                AccountTarget::DeleteCancel,
+                AccountTarget::DeleteConfirm,
+            ],
+        }
+        .into_iter()
+        .map(SettingsTarget::Account)
+        .collect()
+    }
+
+    /// Escape or a backdrop click. Before a code is emailed this is a plain
+    /// cancel; after it, the code is real and a stray click must not throw
+    /// it away, so only the explicit Cancel button ends the flow.
+    pub(super) fn dismiss_delete_dialog(&mut self, cx: &mut Context<Self>) {
+        if self.account.delete == DeleteFlow::Acknowledging {
+            self.cancel_account_deletion(cx);
+        }
     }
 
     /// Step one: the user typed DELETE; ask the server to email a code.
@@ -312,7 +335,10 @@ impl SettingsScreen {
             |this, result, cx| {
                 this.account.delete_busy = false;
                 match result {
-                    Ok(secret) => this.account.delete = DeleteFlow::CodeSent { secret },
+                    Ok(secret) => {
+                        this.account.delete = DeleteFlow::CodeSent { secret };
+                        this.account.delete_focus_pending = true;
+                    }
                     Err(message) => this.account.delete_error = Some(message.into()),
                 }
                 this.reconcile_application_vim_target();
@@ -432,37 +458,56 @@ impl SettingsScreen {
     }
 
     pub(super) fn render_account_pane(&self, cx: &mut Context<Self>) -> Div {
-        let mut pane = div()
-            .flex()
-            .flex_col()
-            .gap_4()
-            .child(section_title(&tr("settings-account-account")));
+        let mut pane = div().flex().flex_col().gap_4().child(page_header(
+            &tr("settings-section-account"),
+            &tr("settings-account-subtitle"),
+        ));
         let Some(info) = self.account.info.as_ref() else {
-            // Sign out stays reachable while the account loads or after it
-            // failed to load: Settings has no other way out of the session.
-            return pane
-                .child(
-                    div()
-                        .text_sm()
-                        .text_color(gpui::rgb(theme::text_faint()))
-                        .child(match &self.account.load_error {
-                            Some(message) => message.resolve(),
-                            None => tr("settings-account-loading-account"),
-                        }),
-                )
-                .child(self.render_sign_out(cx));
+            pane = pane.child(
+                div()
+                    .text_sm()
+                    .text_color(gpui::rgb(theme::text_faint()))
+                    .child(match &self.account.load_error {
+                        Some(message) => message.resolve(),
+                        None => tr("settings-account-loading-account"),
+                    }),
+            );
+            // Sign out and the local encryption controls do not depend on the
+            // profile fetch; an expired or offline session still needs them.
+            pane = pane
+                .child(subsection_title(&tr("settings-account-security-group")))
+                .child(self.render_sign_out_row(cx));
+            if self.advanced_has_content() {
+                pane = pane.child(self.render_advanced(cx));
+            }
+            return pane;
         };
 
         let is_guest = info.login_method == MapleLoginMethod::Guest;
-        pane = pane.child(match &info.email {
-            Some(email) => self.render_email_row(email, info.email_verified, cx),
-            None if is_guest => guest_id_row(&info.user_id, cx),
-            None => info_row(
-                &tr("settings-account-email"),
-                tr("settings-account-no-email-on-this-account").to_string(),
+        let profile_rows = vec![
+            match &info.email {
+                Some(email) => self.render_email_row(email, info.email_verified, cx),
+                None if is_guest => guest_id_row(&info.user_id, cx),
+                None => info_row_content(
+                    &tr("settings-account-email"),
+                    tr("settings-account-no-email-on-this-account").to_string(),
+                )
+                .into_any_element(),
+            },
+            info_row_content(
+                &tr("settings-account-sign-in-method"),
+                super::presentation::login_method(info.login_method),
             )
             .into_any_element(),
-        });
+            info_row_content(
+                &tr("settings-account-member-since"),
+                member_since(&info.created_at, &self.messages),
+            )
+            .into_any_element(),
+        ];
+        pane = pane
+            .child(subsection_title(&tr("settings-account-profile")))
+            .child(widgets::card_stack(profile_rows));
         if let Some(notice) = &self.account.verification_notice {
             pane = pane.child(
                 widgets::banner(theme::bg_sidebar_pill())
@@ -471,24 +516,19 @@ impl SettingsScreen {
                     .child(notice.clone()),
             );
         }
-        pane = pane
-            .child(info_row(
-                &tr("settings-account-sign-in-method"),
-                super::presentation::login_method(info.login_method),
-            ))
-            .child(info_row(
-                &tr("settings-account-member-since"),
-                member_since(&info.created_at, &self.messages),
-            ));
+        pane = pane.child(subsection_title(&tr("settings-account-security-group")));
         if info.login_method.has_password() {
             pane = pane.child(self.render_password_form(cx));
         }
-        pane = pane.child(self.render_sign_out(cx));
-        pane.child(section_title(&tr("settings-account-danger-zone")))
+        pane = pane.child(self.render_sign_out_row(cx));
+        if self.advanced_has_content() {
+            pane = pane.child(self.render_advanced(cx));
+        }
+        pane.child(subsection_title(&tr("settings-account-danger-zone")))
             .child(self.render_delete_account(cx))
     }
 
-    fn render_sign_out(&self, cx: &mut Context<Self>) -> gpui::AnyElement {
+    fn render_sign_out_row(&self, cx: &mut Context<Self>) -> gpui::AnyElement {
         self.application_target(
             || SettingsTarget::Account(AccountTarget::SignOut),
             widgets::card_row()
@@ -502,7 +542,7 @@ impl SettingsScreen {
                 ))
                 .child(
                     widgets::secondary_button("account-sign-out")
-                        .debug_selector(|| "account-sign-out".to_string())
+                        .debug_selector(|| "account-sign-out".into())
                         .flex_none()
                         .py_1p5()
                         .on_click(cx.listener(|_this, _event, _window, cx| {
@@ -513,132 +553,221 @@ impl SettingsScreen {
         )
     }
 
+    /// The row that starts account deletion: quiet at rest, outlined in the
+    /// error color. The weight lives in the dialog it opens.
     fn render_delete_account(&self, cx: &mut Context<Self>) -> Div {
         let busy = self.account.delete_busy;
-        let mut card = widgets::card_row()
+        widgets::card_row()
             .flex()
-            .flex_col()
-            .gap_3()
-            .border_color(gpui::rgb(theme::status_error()));
-        let field = |target: AccountTarget, input: &Entity<TextInput>| {
-            self.application_target(
-                move || SettingsTarget::Account(target),
-                widgets::input_frame().child(input.clone()),
+            .items_center()
+            .justify_between()
+            .gap_4()
+            .child(super::setting_copy(
+                tr("settings-account-delete-account"),
+                tr("settings-account-permanently-deletes-your-account-tasks-and-encrypted-data-this-ca"),
+            ))
+            .child(
+                self.application_target(
+                    || SettingsTarget::Account(AccountTarget::DeleteStart),
+                    widgets::danger_outline_button("account-delete-start")
+                        .flex_none()
+                        .py_1p5()
+                        .when(busy, |el| el.opacity(0.6))
+                        .when(!busy, |el| {
+                            el.on_click(cx.listener(|this, _event, _window, cx| {
+                                this.begin_account_deletion(cx);
+                            }))
+                        })
+                        .child(icon("circle-alert", widgets::ROW_ICON, theme::status_error()))
+                        .child(tr("settings-account-delete-account-more")),
+                ),
             )
+    }
+
+    /// Focus the deletion dialog's current field the first time it draws.
+    pub(super) fn focus_delete_dialog(
+        &mut self,
+        window: &mut gpui::Window,
+        cx: &mut Context<Self>,
+    ) {
+        if !std::mem::take(&mut self.account.delete_focus_pending) {
+            return;
+        }
+        let input = match &self.account.delete {
+            DeleteFlow::Idle => return,
+            DeleteFlow::Acknowledging => &self.account.delete_ack,
+            DeleteFlow::CodeSent { .. } => &self.account.delete_code,
         };
-        let button = |id: &'static str, label: String, danger: bool, target: AccountTarget| {
-            let base = if danger {
-                widgets::danger_button(id)
-            } else {
-                widgets::secondary_button(id)
-            };
-            self.application_target(
-                move || SettingsTarget::Account(target),
-                base.py_1p5()
-                    .when(busy, |el| el.opacity(0.6))
-                    .when(!busy, |el| {
-                        el.on_click(cx.listener(move |this, _event, window, cx| {
-                            this.activate_account_target(target, window, cx);
-                        }))
-                    })
-                    .child(label),
-            )
+        window.focus(&input.read(cx).focus_handle(cx), cx);
+    }
+
+    /// Account deletion as a dialog: step one types the acknowledgement,
+    /// step two enters the emailed code. The destructive button stays
+    /// inert until the field is filled in.
+    pub(super) fn render_delete_dialog(
+        &self,
+        window: &gpui::Window,
+        cx: &mut Context<Self>,
+    ) -> Option<impl IntoElement + use<>> {
+        let busy = self.account.delete_busy;
+        let (title, body, input, input_target, action_label, action_target, ready) = match &self
+            .account
+            .delete
+        {
+            DeleteFlow::Idle => return None,
+            DeleteFlow::Acknowledging => (
+                tr("settings-account-delete-dialog-title"),
+                tr(
+                    "settings-account-this-permanently-deletes-your-account-tasks-and-encrypted-data-ty",
+                ),
+                self.account.delete_ack.clone(),
+                AccountTarget::DeleteAcknowledge,
+                if busy {
+                    tr("settings-account-sending")
+                } else {
+                    tr("settings-account-send-confirmation-code")
+                },
+                AccountTarget::DeleteRequestCode,
+                self.account.delete_ack.read(cx).text().trim() == DELETE_ACKNOWLEDGEMENT,
+            ),
+            DeleteFlow::CodeSent { .. } => (
+                tr("settings-account-confirm-deletion"),
+                tr(
+                    "settings-account-we-emailed-you-a-confirmation-code-enter-it-to-delete-the-account",
+                ),
+                self.account.delete_code.clone(),
+                AccountTarget::DeleteCode,
+                if busy {
+                    tr("settings-account-deleting")
+                } else {
+                    tr("settings-account-delete-my-account")
+                },
+                AccountTarget::DeleteConfirm,
+                !self.account.delete_code.read(cx).text().trim().is_empty(),
+            ),
         };
-        match &self.account.delete {
-            DeleteFlow::Idle => {
-                card = card.child(
+        let width = (window.viewport_size().width - px(48.)).clamp(px(0.), px(480.));
+        Some(
+            div()
+                .id("account-delete-backdrop")
+                .absolute()
+                .inset_0()
+                .size_full()
+                .occlude()
+                .bg(theme::scrim())
+                .flex()
+                .items_center()
+                .justify_center()
+                .on_mouse_down(
+                    gpui::MouseButton::Left,
+                    cx.listener(|this, _event, _window, cx| this.dismiss_delete_dialog(cx)),
+                )
+                .child(
                     div()
+                        .id("account-delete-dialog")
+                        .debug_selector(|| "account-delete-dialog".to_string())
+                        .role(gpui::Role::Dialog)
+                        .aria_label(title.clone())
+                        .key_context("Dialog")
+                        .w(width)
+                        .p_5()
+                        .rounded(theme::RADIUS_XL)
+                        .shadow_lg()
+                        .bg(gpui::rgb(theme::bg_elevated()))
+                        .border_1()
+                        .border_color(gpui::rgb(theme::border()))
                         .flex()
-                        .items_center()
-                        .justify_between()
+                        .flex_col()
                         .gap_4()
-                        .child(super::setting_copy(
-                            tr("settings-account-delete-account"),
-                            tr("settings-account-permanently-deletes-your-account-tasks-and-encrypted-data-this-ca"),
+                        .text_color(gpui::rgb(theme::text_primary()))
+                        .on_mouse_down(gpui::MouseButton::Left, |_event, _window, cx| {
+                            cx.stop_propagation();
+                        })
+                        .on_key_down(cx.listener(
+                            |this, event: &gpui::KeyDownEvent, _window, cx| {
+                                if event.keystroke.key == "escape"
+                                    && !event.keystroke.modifiers.modified()
+                                {
+                                    cx.stop_propagation();
+                                    this.dismiss_delete_dialog(cx);
+                                }
+                            },
                         ))
-                        .child(button(
-                            "account-delete-start",
-                            tr("settings-account-delete-account-more").to_string(),
-                            true,
-                            AccountTarget::DeleteStart,
-                        )),
-                );
-            }
-            DeleteFlow::Acknowledging => {
-                card = card
-                    .child(super::setting_copy(
-                        tr("settings-account-delete-account"),
-                        tr("settings-account-this-permanently-deletes-your-account-tasks-and-encrypted-data-ty"),
-                    ))
-                    .child(field(
-                        AccountTarget::DeleteAcknowledge,
-                        &self.account.delete_ack,
-                    ))
-                    .child(
-                        div()
-                            .flex()
-                            .justify_end()
-                            .gap_2()
-                            .child(button(
-                                "account-delete-cancel",
-                                tr("settings-account-cancel").to_string(),
-                                false,
-                                AccountTarget::DeleteCancel,
-                            ))
-                            .child(button(
-                                "account-delete-request",
-                                if busy {
-                                    tr("settings-account-sending")
-                                } else {
-                                    tr("settings-account-send-confirmation-code")
-                                }
-                                .to_string(),
-                                true,
-                                AccountTarget::DeleteRequestCode,
-                            )),
-                    );
-            }
-            DeleteFlow::CodeSent { .. } => {
-                card = card
-                    .child(super::setting_copy(
-                        tr("settings-account-confirm-deletion"),
-                        tr("settings-account-we-emailed-you-a-confirmation-code-enter-it-to-delete-the-account"),
-                    ))
-                    .child(field(AccountTarget::DeleteCode, &self.account.delete_code))
-                    .child(
-                        div()
-                            .flex()
-                            .justify_end()
-                            .gap_2()
-                            .child(button(
-                                "account-delete-cancel",
-                                tr("settings-account-cancel").to_string(),
-                                false,
-                                AccountTarget::DeleteCancel,
-                            ))
-                            .child(button(
-                                "account-delete-confirm",
-                                if busy {
-                                    tr("settings-account-deleting")
-                                } else {
-                                    tr("settings-account-delete-my-account")
-                                }
-                                .to_string(),
-                                true,
-                                AccountTarget::DeleteConfirm,
-                            )),
-                    );
-            }
-        }
-        if let Some(message) = &self.account.delete_error {
-            card = card.child(
-                div()
-                    .text_sm()
-                    .text_color(gpui::rgb(theme::status_error()))
-                    .child(message.clone()),
-            );
-        }
-        card
+                        .child(
+                            div()
+                                .flex()
+                                .items_center()
+                                .gap_2()
+                                .child(icon("circle-alert", px(18.), theme::status_error()))
+                                .child(
+                                    div()
+                                        .text_lg()
+                                        .font_weight(gpui::FontWeight::SEMIBOLD)
+                                        .child(title),
+                                ),
+                        )
+                        .child(
+                            div()
+                                .text_sm()
+                                .text_color(gpui::rgb(theme::text_secondary()))
+                                .child(gpui::text!(body)),
+                        )
+                        .child(self.application_target(
+                            move || SettingsTarget::Account(input_target),
+                            widgets::input_frame().text_sm().child(input),
+                        ))
+                        .when_some(self.account.delete_error.clone(), |dialog, message| {
+                            dialog.child(
+                                div()
+                                    .text_sm()
+                                    .text_color(gpui::rgb(theme::status_error()))
+                                    .child(message),
+                            )
+                        })
+                        .child(
+                            div()
+                                .flex()
+                                .items_center()
+                                .justify_end()
+                                .gap_2()
+                                .child(
+                                    self.application_target(
+                                        || SettingsTarget::Account(AccountTarget::DeleteCancel),
+                                        widgets::ghost_button("account-delete-cancel")
+                                            .py_1p5()
+                                            .when(!busy, |el| {
+                                                el.on_click(cx.listener(
+                                                    |this, _event, _window, cx| {
+                                                        this.cancel_account_deletion(cx);
+                                                    },
+                                                ))
+                                            })
+                                            .child(tr("settings-account-cancel")),
+                                    ),
+                                )
+                                .child(
+                                    self.application_target(
+                                        move || SettingsTarget::Account(action_target),
+                                        widgets::danger_button("account-delete-action")
+                                            .py_1p5()
+                                            .when(busy || !ready, |el| el.opacity(0.5))
+                                            .when(!busy && ready, |el| {
+                                                el.on_click(cx.listener(
+                                                    move |this, _event, window, cx| {
+                                                        this.activate_account_target(
+                                                            action_target,
+                                                            window,
+                                                            cx,
+                                                        );
+                                                    },
+                                                ))
+                                            })
+                                            .child(action_label),
+                                    ),
+                                ),
+                        ),
+                ),
+        )
     }
 
     fn render_password_form(&self, cx: &mut Context<Self>) -> Div {
@@ -700,7 +829,7 @@ impl SettingsScreen {
             div().flex().justify_end().child(
                 self.application_target(
                     || SettingsTarget::Account(AccountTarget::PasswordSave),
-                    widgets::primary_button("account-password-save")
+                    widgets::default_button("account-password-save")
                         .py_1p5()
                         .when(busy, |el| el.opacity(0.6))
                         .when(!busy, |el| {
@@ -758,7 +887,7 @@ impl SettingsScreen {
                     }),
             );
         }
-        let row = widgets::card_row()
+        let row = div()
             .flex()
             .items_center()
             .justify_between()
@@ -784,7 +913,7 @@ impl SettingsScreen {
 /// Guests sign in with their account id, so it is the thing to show and
 /// copy where an email would be.
 fn guest_id_row(user_id: &str, cx: &mut Context<SettingsScreen>) -> gpui::AnyElement {
-    widgets::card_row()
+    div()
         .flex()
         .items_center()
         .justify_between()

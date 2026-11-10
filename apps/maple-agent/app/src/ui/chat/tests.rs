@@ -3524,7 +3524,8 @@ mod state_tests {
 
     /// Opening a task points the selector at the model it last used without
     /// changing the account default. Its menu offers every model, and a pick
-    /// becomes the account default, as on New Task.
+    /// there is the task's alone; only a pick on New Task becomes the
+    /// account default.
     #[gpui::test]
     fn test_existing_task_opens_on_its_model_and_offers_every_model(cx: &mut TestAppContext) {
         cx.executor().allow_parking();
@@ -3556,9 +3557,14 @@ mod state_tests {
             assert!(this.notice.is_none());
 
             // Reopened before a message, the task is still on its own model.
-            this.set_active_session(glm, Vec::new(), HashMap::new(), cx);
+            this.set_active_session(glm.clone(), Vec::new(), HashMap::new(), cx);
             this.set_active_session(kimi, Vec::new(), HashMap::new(), cx);
             assert_eq!(this.selected_model.as_deref(), Some("kimi-k3"));
+
+            this.set_active_session(glm, Vec::new(), HashMap::new(), cx);
+            this.pick_model("kimi-k3".into(), cx);
+            assert_eq!(this.selected_model.as_deref(), Some("kimi-k3"));
+            assert_eq!(this.default_model.as_deref(), Some("glm-5-3"));
 
             this.new_session(cx);
             assert_eq!(this.selected_model.as_deref(), Some("glm-5-3"));
@@ -3623,7 +3629,7 @@ mod state_tests {
             elsewhere.model = Some("glm-5-3".into());
             this.upsert_session(elsewhere, cx);
             assert_eq!(this.selected_model.as_deref(), Some("glm-5-3"));
-            assert_eq!(this.default_model.as_deref(), Some("kimi-k3"));
+            assert_eq!(this.default_model.as_deref(), Some("glm-5-3"));
         });
     }
 
@@ -13333,6 +13339,7 @@ mod state_tests {
                 this.thinking = Some(AgentThinkingState {
                     levels: vec![ThinkingLevel::Low, ThinkingLevel::High],
                     current: ThinkingLevel::High,
+                    recommended: None,
                 });
                 cx.notify();
             });
@@ -13371,6 +13378,7 @@ mod state_tests {
                 this.thinking = Some(AgentThinkingState {
                     levels: vec![ThinkingLevel::Low, ThinkingLevel::High, ThinkingLevel::Max],
                     current: ThinkingLevel::Max,
+                    recommended: None,
                 });
             });
             let chips = [
@@ -13412,7 +13420,11 @@ mod state_tests {
             chat_window(cx, move |this, _| {
                 this.models = vec!["model-a".to_string(), "model-b".to_string()];
                 this.selected_model = Some("model-a".to_string());
-                this.thinking = Some(AgentThinkingState { levels, current });
+                this.thinking = Some(AgentThinkingState {
+                    levels,
+                    current,
+                    recommended: None,
+                });
                 this.thinking_saving = true;
             })
         }
@@ -13467,12 +13479,13 @@ mod state_tests {
                     this.thinking = Some(AgentThinkingState {
                         levels: levels.clone(),
                         current: High,
+                        recommended: None,
                     });
                 });
                 press(cx, "model-picker");
                 let track = cx.debug_bounds("effort-slider").expect("slider");
                 // The thumb's centre travels between the rounded ends.
-                let end = px(18.);
+                let end = crate::ui::effort_slider::TRACK_HEIGHT / 2.;
                 let at = |fraction: f32| {
                     gpui::point(
                         track.left() + end + (track.size.width - end * 2.) * fraction,
@@ -13492,19 +13505,28 @@ mod state_tests {
             }
         }
 
-        /// Reset goes back to the level the model runs at when nobody picked
-        /// one, and rests while that is the level.
+        /// Reset goes back to the level the host recommends for the model,
+        /// its catalog default (Max, as on Kimi K3.1 Pro), and rests while
+        /// that is the level. A host that names none offers no reset.
         #[gpui::test]
         fn reset_returns_to_the_recommended_level(cx: &mut TestAppContext) {
             use ThinkingLevel::{High, Low, Max};
-            let (chat, cx) = effort_window(cx, vec![Low, High, Max], High);
+            let (chat, cx) = effort_window(cx, vec![Low, High, Max], Max);
             press(cx, "model-picker");
             press(cx, "effort-reset");
-            assert_eq!(queued(&chat, cx), None, "already recommended");
-            cx.simulate_keystrokes("right");
-            assert_eq!(queued(&chat, cx), Some(Max));
+            assert_eq!(queued(&chat, cx), None, "no recommendation");
+            chat.update(cx, |this, cx| {
+                if let Some(state) = &mut this.thinking {
+                    state.recommended = Some(Max);
+                }
+                cx.notify();
+            });
             press(cx, "effort-reset");
+            assert_eq!(queued(&chat, cx), None, "already recommended");
+            cx.simulate_keystrokes("left");
             assert_eq!(queued(&chat, cx), Some(High));
+            press(cx, "effort-reset");
+            assert_eq!(queued(&chat, cx), Some(Max), "the default, not Medium");
         }
 
         /// The catalog decides the sections: its groups in its order, each
@@ -13568,7 +13590,8 @@ mod state_tests {
         }
 
         /// The chip opens the models with the selected one's slider under
-        /// them; a pick closes the panel, and `/model` opens the same one.
+        /// them, no taller than a model row so the list keeps the eye; a
+        /// pick closes the panel, and `/model` opens the same one.
         #[gpui::test]
         fn the_panel_puts_the_models_above_the_slider(cx: &mut TestAppContext) {
             let (chat, cx) = effort_window(
@@ -13580,6 +13603,10 @@ mod state_tests {
             let row = cx.debug_bounds("model-model-b").expect("model row");
             let slider = cx.debug_bounds("effort-slider").expect("slider");
             assert!(row.bottom() <= slider.top(), "models first, effort below");
+            assert!(
+                slider.size.height <= row.size.height,
+                "the slider ({slider:?}) stays within a row's height ({row:?})"
+            );
             press(cx, "model-model-b");
             assert_eq!(open_menu(&chat, cx), "");
             assert_eq!(
@@ -13592,6 +13619,7 @@ mod state_tests {
                 this.thinking = Some(AgentThinkingState {
                     levels: vec![ThinkingLevel::Low, ThinkingLevel::High],
                     current: ThinkingLevel::High,
+                    recommended: None,
                 });
                 assert!(this.try_command(None, "/model", cx));
             });

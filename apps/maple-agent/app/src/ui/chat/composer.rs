@@ -577,7 +577,7 @@ impl ChatScreen {
         menu
     }
 
-    /// The models in their groups, the selected one checked, with its
+    /// The models, the selected one checked, with its
     /// effort slider docked under them. A pick applies from the task's next
     /// message and closes the panel; Left and Right step the effort.
     fn model_menu(&self, cx: &mut Context<Self>) -> Menu<Self> {

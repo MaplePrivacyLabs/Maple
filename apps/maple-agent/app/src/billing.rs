@@ -9,8 +9,11 @@
 pub use maple_billing::{
     BillingClient, BillingError, BillingStatus, CREDITS_PER_DOLLAR, CheckoutRequest,
     CreditPurchaseRequest, MAX_CREDIT_PURCHASE_DOLLARS, MIN_CREDIT_PURCHASE_DOLLARS, PaymentMethod,
-    Product,
+    Product, UsagePrices, UsageQuery, UsageRequestsPage, UsageSummary,
 };
+/// Usage history rows, read only by the desktop Usage page.
+#[cfg(feature = "desktop")]
+pub use maple_billing::{UsageCounts, UsageDayRow, UsageModelLabels, UsageMonthRow, UsageRequest};
 
 /// Where checkout and the customer portal send the browser afterwards.
 /// The desktop app has no URL scheme yet, so these are the web app's

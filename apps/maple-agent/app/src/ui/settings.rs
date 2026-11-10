@@ -39,7 +39,7 @@ mod api_credits;
 mod api_keys;
 mod billing;
 mod general;
-use general::{font_label, theme_label, voice_label};
+use general::{font_label, voice_label};
 mod catalog;
 #[cfg(feature = "proxy")]
 mod local_api;
@@ -48,6 +48,7 @@ mod navigation;
 pub(crate) mod presentation;
 mod shortcut_labels;
 mod tools;
+mod usage;
 
 use self::account::AccountState;
 #[cfg(feature = "acp")]
@@ -57,7 +58,9 @@ use self::billing::BillingState;
 #[cfg(feature = "proxy")]
 use self::local_api::LocalApiUiState;
 use self::mcp::{McpSecretAction, McpSecretField, definition_edit, name_collides};
-use self::navigation::{GeneralTarget, SettingsApplicationVimState, SettingsTarget};
+use self::navigation::{
+    AppearanceTarget, GeneralTarget, SettingsApplicationVimState, SettingsTarget,
+};
 use self::tools::ToolsState;
 pub(crate) use catalog::saved_description;
 
@@ -74,100 +77,193 @@ pub struct AccountDeleted;
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Section {
     General,
-    Account,
-    Billing,
-    Api,
-    #[cfg(feature = "acp")]
-    Acp,
+    Appearance,
     Shortcuts,
-    Prompt,
     Integrations,
+    Apps,
     Tools,
+    Api,
     Remote,
+    Account,
     Usage,
+    Billing,
     About,
-    Advanced,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum NavGroup {
+    Workspace,
+    Connections,
+    Account,
+}
+
+impl NavGroup {
+    const ALL: &[Self] = &[Self::Workspace, Self::Connections, Self::Account];
+
+    fn label(self) -> gpui::SharedString {
+        super::i18n::tr(match self {
+            Self::Workspace => "settings-group-workspace",
+            Self::Connections => "settings-group-connections",
+            Self::Account => "settings-group-account",
+        })
+    }
+}
+
+#[cfg(feature = "acp")]
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(super) enum DeveloperTab {
+    Api,
+    Acp,
 }
 
 impl Section {
     fn id(self) -> &'static str {
         match self {
             Self::General => "General",
-            Self::Account => "Account",
-            Self::Billing => "Billing",
-            Self::Api => "API",
-            #[cfg(feature = "acp")]
-            Self::Acp => "ACP",
+            Self::Appearance => "Appearance",
             Self::Shortcuts => "Keyboard Shortcuts",
-            Self::Prompt => "Additional instructions",
             Self::Integrations => "Integrations",
+            Self::Apps => "Apps",
             Self::Tools => "Tools",
+            Self::Api => "API",
             Self::Remote => "Remote computers",
+            Self::Account => "Account",
             Self::Usage => "Usage",
+            Self::Billing => "Billing",
             Self::About => "About",
-            Self::Advanced => "Privacy & Security",
+        }
+    }
+
+    fn icon(self) -> &'static str {
+        match self {
+            Self::General => "settings",
+            Self::Appearance => "paintbrush",
+            Self::Shortcuts => "keyboard",
+            Self::Integrations => "plug",
+            Self::Apps => "layout-grid",
+            Self::Tools => "wrench",
+            Self::Api => "terminal",
+            Self::Remote => "monitor",
+            Self::Account => "shield-user",
+            Self::Usage => "gauge",
+            Self::Billing => "credit-card",
+            Self::About => "info",
+        }
+    }
+
+    fn group(self) -> Option<NavGroup> {
+        match self {
+            Self::General | Self::Appearance | Self::Shortcuts => Some(NavGroup::Workspace),
+            Self::Integrations | Self::Apps | Self::Tools | Self::Api | Self::Remote => {
+                Some(NavGroup::Connections)
+            }
+            Self::Account | Self::Usage | Self::Billing => Some(NavGroup::Account),
+            Self::About => None,
         }
     }
 
     fn label(self) -> gpui::SharedString {
         super::i18n::tr(match self {
             Self::General => "settings-section-general",
-            Self::Account => "settings-section-account",
-            Self::Billing => "settings-section-billing",
-            Self::Api => "settings-section-api",
-            #[cfg(feature = "acp")]
-            Self::Acp => "settings-section-acp",
+            Self::Appearance => "settings-section-appearance",
             Self::Shortcuts => "settings-section-shortcuts",
-            Self::Prompt => "settings-section-prompt",
             Self::Integrations => "settings-section-integrations",
+            Self::Apps => "settings-section-apps",
             Self::Tools => "settings-section-tools",
+            #[cfg(feature = "acp")]
+            Self::Api => "settings-section-developer",
+            #[cfg(not(feature = "acp"))]
+            Self::Api => "settings-section-api",
             Self::Remote => "settings-section-remote",
+            Self::Account => "settings-section-account",
             Self::Usage => "settings-section-usage",
+            Self::Billing => "settings-section-billing",
             Self::About => "settings-section-about",
-            Self::Advanced => "settings-section-advanced",
+        })
+    }
+
+    fn subtitle(self) -> gpui::SharedString {
+        super::i18n::tr(match self {
+            Self::General => "settings-general-subtitle",
+            Self::Appearance => "settings-appearance-subtitle",
+            Self::Shortcuts => "settings-shortcuts-subtitle",
+            Self::Integrations => {
+                "settings-settings-manage-integrations-here-enable-coding-agents-to-make-them-availa"
+            }
+            Self::Apps => "settings-catalog-intro",
+            Self::Tools => "settings-tools-intro",
+            #[cfg(feature = "acp")]
+            Self::Api => "settings-developer-subtitle",
+            #[cfg(not(feature = "acp"))]
+            Self::Api => "settings-api-intro",
+            Self::Remote => {
+                "settings-remote-work-on-another-computer-or-allow-a-paired-computer-to-work-on-th"
+            }
+            Self::Account => "settings-account-subtitle",
+            Self::Usage => "settings-usage-subtitle",
+            Self::Billing => "settings-billing-subtitle",
+            Self::About => "settings-about-subtitle",
+        })
+    }
+
+    /// Extra filter terms a section answers to beyond its label and
+    /// subtitle: former page names and the controls that moved into it.
+    fn keywords(self) -> gpui::SharedString {
+        super::i18n::tr(match self {
+            Self::General => "settings-keywords-general",
+            Self::Appearance => "settings-keywords-appearance",
+            Self::Shortcuts => "settings-keywords-shortcuts",
+            Self::Integrations => "settings-keywords-integrations",
+            Self::Apps => "settings-keywords-apps",
+            Self::Tools => "settings-keywords-tools",
+            Self::Api => "settings-keywords-developer",
+            Self::Remote => "settings-keywords-remote",
+            Self::Account => "settings-keywords-account",
+            Self::Usage => "settings-keywords-usage",
+            Self::Billing => "settings-keywords-billing",
+            Self::About => "settings-keywords-about",
         })
     }
 
     const ALL: &[Self] = &[
         Self::General,
-        Self::Account,
-        Self::Billing,
-        Self::Api,
-        #[cfg(feature = "acp")]
-        Self::Acp,
+        Self::Appearance,
         Self::Shortcuts,
-        Self::Prompt,
         Self::Integrations,
+        Self::Apps,
         Self::Tools,
+        Self::Api,
         Self::Remote,
+        Self::Account,
         Self::Usage,
-        Self::Advanced,
+        Self::Billing,
         Self::About,
     ];
 }
 
-/// One multi-value General row that selects from a dropdown instead of
-/// toggling.
+/// One multi-value General or Appearance row that selects from a dropdown
+/// instead of toggling.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(super) enum SettingMenu {
-    Appearance,
     Language,
     ChatFont,
     ChatSize,
     Voice,
     SpeechSpeed,
+    /// The Usage page's range: last 30 days or a calendar month.
+    UsageRange,
 }
 
 impl SettingMenu {
     /// Stable id fragment for the popup panel and its rows.
     fn id(self) -> &'static str {
         match self {
-            Self::Appearance => "appearance",
             Self::Language => "language",
             Self::ChatFont => "chat-font",
             Self::ChatSize => "chat-size",
             Self::Voice => "voice",
             Self::SpeechSpeed => "speech-speed",
+            Self::UsageRange => "usage-range",
         }
     }
 }
@@ -192,6 +288,13 @@ pub struct SettingsScreen {
     /// `settings.theme` parsed once; render only reads the label.
     theme: theme::Preference,
     section: Section,
+    #[cfg(feature = "acp")]
+    developer_tab: DeveloperTab,
+    sidebar_filter: Entity<TextInput>,
+    sidebar_query: String,
+    /// `Section::ALL` narrowed by `sidebar_query`; rebuilt on filter and
+    /// locale changes so render only reads it.
+    sidebar_sections: Vec<Section>,
     /// The multi-value row whose dropdown is open, if any.
     popup: Popup<SettingsScreen, SettingMenu>,
     account: AccountState,
@@ -203,9 +306,15 @@ pub struct SettingsScreen {
     acp: AcpUiState,
     /// Plan usage meter, same source as the sidebar card.
     plan: Option<crate::billing::PlanUsage>,
+    /// The Usage page's history, when the account has the full page.
+    usage: usage::UsageState,
     /// Account MCP servers; None until loaded.
     mcp_servers: Option<Vec<McpDefinition>>,
     mcp_editor: Option<McpEditor>,
+    /// Pages left through an in-app link (See all apps, Manage plan). Back
+    /// unwinds these before it closes Settings; choosing a sidebar item
+    /// clears them.
+    section_history: Vec<Section>,
     mcp_address: Option<catalog::McpAddressPrompt>,
     /// The app being tried at its usual address, before asking for another.
     mcp_usual_address: Option<&'static maple_agent::agent::McpCatalogEntry>,
@@ -219,9 +328,10 @@ pub struct SettingsScreen {
     mcp_app_missing: Option<(String, maple_agent::agent::McpAppMissing)>,
     catalog_search: Entity<TextInput>,
     catalog_query: String,
-    catalog_category: Option<maple_agent::agent::McpCatalogCategory>,
     /// The catalog entries showing, worked out when they change.
     catalog_visible: Vec<&'static maple_agent::agent::McpCatalogEntry>,
+    /// The handful of well-known apps shown at the top of Integrations.
+    catalog_featured: Vec<&'static maple_agent::agent::McpCatalogEntry>,
     /// Device-local integrations discovered by the runtime; None until loaded.
     integrations: Option<Vec<AgentIntegration>>,
     integration_notice: Option<UiText>,
@@ -238,6 +348,9 @@ pub struct SettingsScreen {
     shortcut_notice: Option<UiText>,
     shortcut_recorder: Option<ShortcutRecorder>,
     shortcut_interceptor: Option<Subscription>,
+    /// Refetches billing when the window comes back from a portal or checkout
+    /// tab; attached on first render because it needs the window.
+    activation_subscription: Option<Subscription>,
     shortcut_reset_confirmation: bool,
     application_vim: SettingsApplicationVimState,
     application_focus: gpui::FocusHandle,
@@ -312,7 +425,13 @@ struct McpEditor {
     headers: Entity<TextInput>,
     saved_environment: Vec<McpSecretField>,
     saved_headers: Vec<McpSecretField>,
+    /// Focus the name field the first time the dialog draws.
+    focus_pending: bool,
 }
+
+/// Tab indexes for the server dialog's fields: a range of their own so Tab
+/// walks the form in order instead of colliding with the page's stops.
+const MCP_EDITOR_TAB_BASE: isize = 1000;
 
 /// What the target field of the server form asks for.
 fn mcp_target_placeholder(http: bool) -> &'static str {
@@ -381,16 +500,24 @@ impl SettingsScreen {
         cx.notify();
     }
 
-    fn visible_sections(&self) -> Vec<Section> {
-        Section::ALL
+    /// The sections the sidebar shows for the current filter. Computed when
+    /// the filter or locale changes, never in render.
+    fn visible_sections(&self) -> &[Section] {
+        &self.sidebar_sections
+    }
+
+    fn rebuild_sidebar_sections(&mut self) {
+        let query = &self.sidebar_query;
+        self.sidebar_sections = Section::ALL
             .iter()
             .copied()
-            .filter(|&section| {
-                section != Section::Advanced
-                    || self.section == Section::Advanced
-                    || self.advanced_has_content()
+            .filter(|section| {
+                query.is_empty()
+                    || section.label().to_lowercase().contains(query)
+                    || section.subtitle().to_lowercase().contains(query)
+                    || section.keywords().to_lowercase().contains(query)
             })
-            .collect()
+            .collect();
     }
 
     pub fn update_remote_status(
@@ -474,6 +601,15 @@ impl SettingsScreen {
             .application_vim(application_vim_enabled)
             .on_application_escape(move |window, cx| window.focus(&search_application_focus, cx))
         });
+        let sidebar_application_focus = application_focus.clone();
+        let sidebar_filter = cx.new(move |cx| {
+            TextInput::localized("settings-filter-placeholder", cx)
+                .with_tab_index(0)
+                .application_vim(application_vim_enabled)
+                .on_application_escape(move |window, cx| {
+                    window.focus(&sidebar_application_focus, cx)
+                })
+        });
         let catalog_application_focus = application_focus.clone();
         let catalog_search = cx.new(move |cx| {
             TextInput::localized("settings-catalog-search", cx)
@@ -484,6 +620,20 @@ impl SettingsScreen {
                 })
         });
         cx.on_release(|this, _| this.abandon_mcp_sign_in()).detach();
+        cx.observe(&sidebar_filter, |this, search, cx| {
+            this.sidebar_query = search.read(cx).text().trim().to_lowercase();
+            this.rebuild_sidebar_sections();
+            if this.settings.application_vim_enabled
+                && let Some(first) = this.sidebar_sections.first().copied()
+                && !this
+                    .sidebar_sections
+                    .contains(&this.application_vim.section)
+            {
+                this.application_vim.section = first;
+            }
+            cx.notify();
+        })
+        .detach();
         cx.observe(&catalog_search, |this, search, cx| {
             this.catalog_query = search.read(cx).text().trim().to_lowercase();
             this.refresh_catalog();
@@ -504,6 +654,8 @@ impl SettingsScreen {
         let application_anchor = ScrollAnchor::for_handle(pane_scroll.clone());
         let application_vim = SettingsApplicationVimState::new(section);
         let application_focus_pending = settings.application_vim_enabled;
+        let advanced_state =
+            advanced::AdvancedState::new(application_vim_enabled, application_focus.clone(), cx);
         let mut this = Self {
             locale: super::i18n::current_locale(),
             messages: Default::default(),
@@ -516,6 +668,11 @@ impl SettingsScreen {
             settings,
             update: crate::update::Snapshot::initial(),
             section,
+            #[cfg(feature = "acp")]
+            developer_tab: DeveloperTab::Api,
+            sidebar_filter,
+            sidebar_query: String::new(),
+            sidebar_sections: Section::ALL.to_vec(),
             popup: Popup::new(|this| &mut this.popup, cx),
             account: AccountState::new(application_vim_enabled, application_focus.clone(), cx),
             billing: BillingState::new(application_vim_enabled, application_focus.clone(), cx),
@@ -530,8 +687,10 @@ impl SettingsScreen {
             #[cfg(feature = "acp")]
             acp: AcpUiState::new(),
             plan: None,
+            usage: usage::UsageState::new(),
             mcp_servers: None,
             mcp_editor: None,
+            section_history: Vec::new(),
             mcp_address: None,
             mcp_usual_address: None,
             mcp_notice: None,
@@ -541,8 +700,8 @@ impl SettingsScreen {
             mcp_app_missing: None,
             catalog_search,
             catalog_query: String::new(),
-            catalog_category: None,
             catalog_visible: Vec::new(),
+            catalog_featured: Vec::new(),
             integrations: None,
             integration_notice: None,
             integration_saving: HashSet::new(),
@@ -556,6 +715,7 @@ impl SettingsScreen {
             shortcut_notice: None,
             shortcut_recorder: None,
             shortcut_interceptor: None,
+            activation_subscription: None,
             shortcut_reset_confirmation: false,
             application_vim,
             application_focus,
@@ -563,7 +723,7 @@ impl SettingsScreen {
             application_reveal_pending: false,
             pane_scroll,
             application_anchor,
-            advanced: advanced::AdvancedState::new(cx),
+            advanced: advanced_state,
             advanced_subscriptions: Vec::new(),
         };
         this.load_account(cx);
@@ -854,7 +1014,7 @@ impl SettingsScreen {
                 input: field(
                     &tr("settings-settings-enter-a-new-value"),
                     "",
-                    10 + index as isize,
+                    MCP_EDITOR_TAB_BASE + 10 + index as isize,
                     true,
                 ),
             })
@@ -872,7 +1032,7 @@ impl SettingsScreen {
                 input: field(
                     &tr("settings-settings-enter-a-new-value"),
                     "",
-                    200 + index as isize,
+                    MCP_EDITOR_TAB_BASE + 200 + index as isize,
                     true,
                 ),
             })
@@ -886,7 +1046,7 @@ impl SettingsScreen {
             name: field(
                 &tr("settings-settings-my-server"),
                 existing.as_ref().map(|s| s.name.as_str()).unwrap_or(""),
-                1,
+                MCP_EDITOR_TAB_BASE + 1,
                 false,
             ),
             description: field(
@@ -895,14 +1055,25 @@ impl SettingsScreen {
                     .as_ref()
                     .map(|s| s.description.as_str())
                     .unwrap_or(""),
-                2,
+                MCP_EDITOR_TAB_BASE + 2,
                 false,
             ),
-            target: field(mcp_target_placeholder(http), &target, 3, false),
-            environment: field("KEY=value; OTHER=value", "", 4, false),
-            headers: field("Authorization=Bearer …; X-Api-Key=…", "", 5, false),
+            target: field(
+                mcp_target_placeholder(http),
+                &target,
+                MCP_EDITOR_TAB_BASE + 3,
+                false,
+            ),
+            environment: field("KEY=value; OTHER=value", "", MCP_EDITOR_TAB_BASE + 4, false),
+            headers: field(
+                "Authorization=Bearer …; X-Api-Key=…",
+                "",
+                MCP_EDITOR_TAB_BASE + 5,
+                false,
+            ),
             saved_environment,
             saved_headers,
+            focus_pending: true,
         });
         self.mcp_notice = None;
         cx.notify();
@@ -1106,17 +1277,6 @@ impl SettingsScreen {
                     current: self.settings.locale.as_deref() == *locale,
                 })
                 .collect(),
-            SettingMenu::Appearance => [
-                theme::Preference::System,
-                theme::Preference::Dark,
-                theme::Preference::Light,
-            ]
-            .iter()
-            .map(|&preference| SettingOption {
-                label: theme_label(preference).to_string(),
-                current: self.theme == preference,
-            })
-            .collect(),
             SettingMenu::ChatFont => crate::ui::typography::ChatFontFamily::ALL
                 .iter()
                 .map(|&family| SettingOption {
@@ -1149,6 +1309,7 @@ impl SettingsScreen {
                     current: (speed - self.settings.tts_speed).abs() < 0.01,
                 })
                 .collect(),
+            SettingMenu::UsageRange => self.usage_range_options(),
         }
     }
 
@@ -1158,7 +1319,6 @@ impl SettingsScreen {
             SettingMenu::Language => {
                 super::i18n::preference_label(self.settings.locale.as_deref()).to_string()
             }
-            SettingMenu::Appearance => theme_label(self.theme).to_string(),
             SettingMenu::ChatFont => font_label(crate::ui::typography::ChatFontFamily::parse(
                 &self.settings.chat_font_family,
             ))
@@ -1169,6 +1329,9 @@ impl SettingsScreen {
             ),
             SettingMenu::Voice => voice_label(&self.settings.tts_voice),
             SettingMenu::SpeechSpeed => format!("{:.1}\u{d7}", self.settings.tts_speed),
+            SettingMenu::UsageRange => self
+                .usage_range_name(self.usage.range, chrono::Local::now().date_naive())
+                .to_string(),
         }
     }
 
@@ -1206,17 +1369,6 @@ impl SettingsScreen {
                 cx.refresh_windows();
                 self.edit_setting(move |settings| settings.locale = locale, cx);
             }
-            SettingMenu::Appearance => {
-                let Some(preference) = [
-                    theme::Preference::System,
-                    theme::Preference::Dark,
-                    theme::Preference::Light,
-                ]
-                .get(index) else {
-                    return;
-                };
-                self.choose_theme(*preference, cx);
-            }
             SettingMenu::ChatFont => {
                 let Some(family) = crate::ui::typography::ChatFontFamily::ALL.get(index) else {
                     return;
@@ -1244,6 +1396,7 @@ impl SettingsScreen {
                 let speed = *speed;
                 self.edit_setting(move |settings| settings.tts_speed = speed, cx);
             }
+            SettingMenu::UsageRange => self.pick_usage_range(index, cx),
         }
         self.close_setting_menu(cx);
     }
@@ -1356,12 +1509,12 @@ impl SettingsScreen {
             self.popup.render(dropdown, Placement::BelowEnd, window, cx)
         });
         let slug = match menu {
-            SettingMenu::Appearance => "appearance",
             SettingMenu::Language => "language",
             SettingMenu::ChatFont => "chat-font",
             SettingMenu::ChatSize => "text-size",
             SettingMenu::Voice => "speech-voice",
             SettingMenu::SpeechSpeed => "speech-speed",
+            SettingMenu::UsageRange => "usage-range",
         }
         .to_owned();
         let button =
@@ -1373,7 +1526,7 @@ impl SettingsScreen {
                 .gap_1()
                 .child(self.menu_value_label(menu))
                 .child(icon("chevron-down", px(12.), theme::text_muted()));
-        widgets::card_row()
+        div()
             .id(gpui::SharedString::from(format!(
                 "setting-{}",
                 match menu {
@@ -1608,10 +1761,11 @@ impl SettingsScreen {
     }
 
     fn select_section(&mut self, section: Section, cx: &mut Context<Self>) {
+        self.section_history.clear();
         if self.password_operation_busy(cx) {
             return;
         }
-        if section != Section::Advanced {
+        if section != Section::Account {
             self.advanced.form = None;
             self.advanced_subscriptions.clear();
             self.advanced.erase = false;
@@ -1626,11 +1780,29 @@ impl SettingsScreen {
         if section == Section::Api {
             self.refresh_local_api_status(cx);
         }
+        // Billing changes in a browser tab or on another device; refetch on
+        // every visit rather than only when Settings opened.
+        if matches!(section, Section::Billing | Section::Usage) {
+            self.load_billing(cx);
+            self.load_plan(cx);
+        }
         self.remote_screen.update(cx, |screen, cx| {
             screen.set_active(section == Section::Remote, cx)
         });
         if self.settings.application_vim_enabled {
             self.application_vim.section = section;
+            self.reconcile_application_vim_target();
+        }
+        cx.notify();
+    }
+
+    #[cfg(feature = "acp")]
+    pub(super) fn select_developer_tab(&mut self, tab: DeveloperTab, cx: &mut Context<Self>) {
+        if self.developer_tab == tab {
+            return;
+        }
+        self.developer_tab = tab;
+        if self.settings.application_vim_enabled {
             self.reconcile_application_vim_target();
         }
         cx.notify();
@@ -1643,6 +1815,35 @@ impl SettingsScreen {
         self.stop_shortcut_recording();
         cx.emit(SettingsClosed(self.settings.clone()));
     }
+
+    /// Back: return to the page an in-app link was followed from, or close
+    /// Settings when there is none.
+    pub(super) fn go_back(&mut self, cx: &mut Context<Self>) {
+        match self.section_history.pop() {
+            Some(section) => {
+                let history = std::mem::take(&mut self.section_history);
+                self.select_section(section, cx);
+                self.section_history = history;
+            }
+            None => self.close(cx),
+        }
+    }
+
+    /// Follow an in-app link to another page, so Back can return here.
+    pub(super) fn navigate_to(&mut self, section: Section, cx: &mut Context<Self>) {
+        if self.section == section {
+            return;
+        }
+        let from = self.section;
+        let mut history = std::mem::take(&mut self.section_history);
+        self.select_section(section, cx);
+        // A refused navigation (an operation is running) must not record a
+        // hop back to where we already are.
+        if self.section == section {
+            history.push(from);
+        }
+        self.section_history = history;
+    }
 }
 
 fn merge_shortcut_overrides(settings: &mut AppSettings, shortcut_overrides: ShortcutOverrides) {
@@ -1651,10 +1852,19 @@ fn merge_shortcut_overrides(settings: &mut AppSettings, shortcut_overrides: Shor
 
 impl Render for SettingsScreen {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        if self.activation_subscription.is_none() {
+            self.activation_subscription =
+                Some(cx.observe_window_activation(window, |this, window, cx| {
+                    if window.is_window_active() {
+                        this.on_window_activated(cx);
+                    }
+                }));
+        }
         let locale = super::i18n::current_locale();
         if self.locale != locale {
             self.locale = locale;
             self.rebuild_shortcut_list_cache();
+            self.rebuild_sidebar_sections();
             self.refresh_credit_placeholder(cx);
             self.refresh_catalog();
         }
@@ -1679,6 +1889,13 @@ impl Render for SettingsScreen {
             self.api_keys.card_anchor.scroll_to(window, cx);
         }
         self.focus_mcp_address(window, cx);
+        self.focus_mcp_editor(window, cx);
+        self.focus_delete_dialog(window, cx);
+        self.focus_erase_dialog(window, cx);
+        let delete_dialog = self.render_delete_dialog(window, cx);
+        let erase_dialog = self.render_erase_dialog(window, cx);
+        let password_dialog = self.render_password_dialog(window, cx);
+        let mcp_editor = self.render_mcp_editor_dialog(window, cx);
         let mcp_address = self.render_mcp_address(window, cx);
         div()
             .key_context(self.application_vim_context())
@@ -1701,6 +1918,23 @@ impl Render for SettingsScreen {
             .on_action(cx.listener(Self::app_vim_previous_annotation))
             .on_action(cx.listener(Self::app_vim_count))
             .on_action(cx.listener(Self::app_vim_move_region))
+            // Text fields move focus themselves and stop propagation; this
+            // covers Tab from the pills, tabs, and buttons that are tab stops.
+            // An open dropdown keeps the keyboard, so Tab never pulls focus
+            // out from under it.
+            .on_key_down(cx.listener(|this, event: &gpui::KeyDownEvent, window, cx| {
+                let plain = !event.keystroke.modifiers.control
+                    && !event.keystroke.modifiers.alt
+                    && !event.keystroke.modifiers.platform;
+                if plain && event.keystroke.key == "tab" && this.popup.open_key().is_none() {
+                    if event.keystroke.modifiers.shift {
+                        window.focus_prev(cx);
+                    } else {
+                        window.focus_next(cx);
+                    }
+                    cx.stop_propagation();
+                }
+            }))
             .relative()
             .size_full()
             .flex()
@@ -1737,11 +1971,90 @@ impl Render for SettingsScreen {
                             )),
                     ),
             )
+            .children(delete_dialog)
+            .children(erase_dialog)
+            .children(password_dialog)
+            .children(mcp_editor)
             .children(mcp_address)
     }
 }
 
 impl SettingsScreen {
+    fn render_nav_item(&self, section: Section, cx: &mut Context<Self>) -> gpui::Stateful<Div> {
+        let selected = self.section == section;
+        let application_selected = self.application_vim_selects_section(section);
+        let icon_color = if selected {
+            theme::accent()
+        } else {
+            theme::text_muted()
+        };
+        let mut row = div()
+            .id(gpui::SharedString::from(format!(
+                "settings-nav-{}",
+                section.id()
+            )))
+            .debug_selector(move || format!("settings-nav-{}", section.id()))
+            .role(gpui::Role::Tab)
+            .aria_label(section.label())
+            .aria_selected(selected)
+            .when(application_selected, |row| row.aria_active_descendant())
+            .flex()
+            .items_center()
+            .gap_2p5()
+            .px_2p5()
+            .py_2()
+            .rounded(theme::RADIUS_SM)
+            .text_sm()
+            .font_weight(if selected {
+                gpui::FontWeight::SEMIBOLD
+            } else {
+                gpui::FontWeight::MEDIUM
+            })
+            .text_color(gpui::rgb(if selected {
+                theme::text_primary()
+            } else {
+                theme::text_secondary()
+            }))
+            .bg(gpui::rgb(if selected {
+                theme::bg_elevated()
+            } else {
+                theme::bg_sidebar()
+            }))
+            .when(application_selected, |row| {
+                row.border_l_2().border_color(gpui::rgb(theme::accent()))
+            })
+            .hover(|style| style.bg(gpui::rgb(theme::bg_elevated())).cursor_pointer())
+            .on_click(cx.listener(move |this, _event, _window, cx| {
+                this.select_section(section, cx);
+            }))
+            .child(icon(section.icon(), px(15.), icon_color))
+            .child(
+                div()
+                    .flex_1()
+                    .min_w_0()
+                    .truncate()
+                    .child(section.label().to_string()),
+            );
+        if section == Section::About {
+            row = row
+                .child(
+                    div()
+                        .text_xs()
+                        .text_color(gpui::rgb(theme::text_muted()))
+                        .child(format!("v{}", crate::ui::titlebar::TitleBar::version())),
+                )
+                .when(self.update.show_banner, |row| {
+                    row.child(
+                        div()
+                            .size(px(7.))
+                            .rounded_full()
+                            .bg(gpui::rgb(theme::accent())),
+                    )
+                });
+        }
+        row
+    }
+
     /// The task sidebar's column, from the window's top edge. Back sits
     /// where the task screen's toolbar starts and the screen's title where
     /// its wordmark sits: beside traffic lights Back joins them in the
@@ -1812,12 +2125,13 @@ impl SettingsScreen {
             cx.stop_propagation();
         })
         .on_click(cx.listener(|this, _event, _window, cx| {
-            this.close(cx);
+            this.go_back(cx);
         }))
     }
 
     fn render_nav(&self, cx: &mut Context<Self>) -> gpui::Stateful<Div> {
-        div()
+        let visible = &self.sidebar_sections;
+        let mut nav = div()
             .id("settings-nav")
             .role(gpui::Role::TabList)
             .aria_label(super::i18n::tr("settings-sections"))
@@ -1829,44 +2143,69 @@ impl SettingsScreen {
             .gap_1()
             .p_3()
             .bg(gpui::rgb(theme::bg_sidebar()))
-            .children(self.visible_sections().iter().map(|section| {
-                let selected = self.section == *section;
-                let application_selected = self.application_vim_selects_section(*section);
+            .child(
+                widgets::input_frame()
+                    .mb_2()
+                    .px_2p5()
+                    .py_1p5()
+                    .flex()
+                    .items_center()
+                    .gap_2()
+                    .text_xs()
+                    .child(icon("search", px(13.), theme::text_muted()))
+                    .child(div().flex_1().min_w_0().child(self.sidebar_filter.clone())),
+            );
+        if visible.is_empty() {
+            nav = nav.child(
                 div()
-                    .id(gpui::SharedString::from(format!(
-                        "settings-nav-{}",
-                        section.id()
-                    )))
-                    .role(gpui::Role::Tab)
-                    .aria_label(section.label())
-                    .aria_selected(selected)
-                    .when(application_selected, |row| row.aria_active_descendant())
-                    .px_3()
+                    .px_2()
                     .py_2()
-                    .rounded(theme::RADIUS_SM)
-                    .text_sm()
-                    .text_color(gpui::rgb(if selected {
-                        theme::text_primary()
-                    } else {
-                        theme::text_secondary()
-                    }))
-                    .bg(gpui::rgb(if selected {
-                        theme::bg_elevated()
-                    } else {
-                        theme::bg_sidebar()
-                    }))
-                    .when(application_selected, |row| {
-                        row.border_l_2().border_color(gpui::rgb(theme::accent()))
-                    })
-                    .hover(|style| style.bg(gpui::rgb(theme::bg_elevated())).cursor_pointer())
-                    .on_click({
-                        let section = *section;
-                        cx.listener(move |this, _event, _window, cx| {
-                            this.select_section(section, cx);
-                        })
-                    })
-                    .child(section.label().to_string())
-            }))
+                    .text_xs()
+                    .text_color(gpui::rgb(theme::text_muted()))
+                    .child(gpui::text!(tr("settings-filter-empty"))),
+            );
+        } else {
+            for (group_index, &group) in NavGroup::ALL.iter().enumerate() {
+                let items: Vec<Section> = visible
+                    .iter()
+                    .copied()
+                    .filter(|section| section.group() == Some(group))
+                    .collect();
+                if items.is_empty() {
+                    continue;
+                }
+                nav = nav.child(
+                    div()
+                        .when(group_index > 0, |el| el.mt_2())
+                        .px_2p5()
+                        .py_1()
+                        .text_xs()
+                        .font_family(crate::assets::FONT_BODY)
+                        .font_weight(gpui::FontWeight::SEMIBOLD)
+                        .text_color(gpui::rgb(theme::text_muted()))
+                        .child(gpui::text!(
+                            id = ("settings-nav-group", group_index),
+                            group.label().to_string()
+                        )),
+                );
+                nav = nav.children(
+                    items
+                        .into_iter()
+                        .map(|section| self.render_nav_item(section, cx)),
+                );
+            }
+        }
+        nav = nav.child(div().flex_1());
+        if visible.contains(&Section::About) {
+            nav = nav.child(
+                div()
+                    .pt_2()
+                    .border_t_1()
+                    .border_color(gpui::rgb(theme::border_subtle()))
+                    .child(self.render_nav_item(Section::About, cx)),
+            );
+        }
+        nav
     }
 
     fn render_pane(&self, window: &mut Window, cx: &mut Context<Self>) -> gpui::Stateful<Div> {
@@ -1884,33 +2223,32 @@ impl SettingsScreen {
             .track_scroll(&self.pane_scroll)
             .overflow_y_scroll();
         match self.section {
-            Section::Advanced => {
-                pane = pane.child(self.render_advanced(cx));
-            }
             Section::General => {
-                pane = self.render_general(pane, window, cx);
+                pane = pane.child(self.render_general(window, cx));
+            }
+            Section::Appearance => {
+                pane = pane.child(self.render_appearance(window, cx));
             }
             Section::Account => {
                 pane = pane.child(self.render_account_pane(cx));
+            }
+            Section::Usage => {
+                pane = pane.child(self.render_usage_pane(window, cx));
             }
             Section::Billing => {
                 pane = pane.child(self.render_billing_pane(cx));
             }
             Section::Api => {
-                pane = pane.child(self.render_api_pane(cx));
-            }
-            #[cfg(feature = "acp")]
-            Section::Acp => {
-                pane = pane.child(self.render_acp_pane(cx));
+                pane = pane.child(self.render_developer_pane(cx));
             }
             Section::Shortcuts => {
                 pane = pane.child(self.render_shortcuts_pane(cx));
             }
-            Section::Prompt => {
-                pane = pane.child(self.render_prompt_pane(cx));
-            }
             Section::Integrations => {
                 pane = pane.child(self.render_integrations_pane(cx));
+            }
+            Section::Apps => {
+                pane = pane.child(self.render_apps_pane(cx));
             }
             Section::Tools => {
                 pane = pane.child(self.render_tools_pane(cx));
@@ -1918,49 +2256,37 @@ impl SettingsScreen {
             Section::Remote => {
                 pane = pane.child(self.remote_screen.clone());
             }
-            Section::Usage => {
-                pane = pane.child(
-                    div()
-                        .flex()
-                        .items_baseline()
-                        .gap_2()
-                        .child(section_title(&tr("settings-settings-plan")))
-                        .when_some(self.plan.as_ref(), |row, plan| {
-                            row.child(
-                                div()
-                                    .text_sm()
-                                    .font_weight(gpui::FontWeight::MEDIUM)
-                                    .text_color(gpui::rgb(theme::accent()))
-                                    .child(presentation::plan_name(plan, &self.messages)),
-                            )
-                        }),
-                );
-                pane = pane.child(match &self.plan {
-                    Some(plan) => plan_card(plan, &self.messages),
-                    None => div()
-                        .text_sm()
-                        .text_color(gpui::rgb(theme::text_muted()))
-                        .child(tr("settings-settings-plan-usage-unavailable")),
-                });
-            }
             Section::About => {
-                pane = pane
-                    .child(section_title(&tr("settings-settings-about")))
-                    .child(info_row(
+                let about_rows = vec![
+                    info_row_content(
                         &tr("settings-settings-version"),
                         format!("v{}", crate::ui::titlebar::TitleBar::version()),
-                    ))
-                    .child(self.render_update_row(cx))
-                    .child(toggle_row(
+                    )
+                    .into_any_element(),
+                    self.render_update_row(cx).into_any_element(),
+                    toggle_row_content(
                         tr("settings-settings-automatically-download-updates"),
                         tr("settings-settings-download-verified-updates-in-the-background-installation-always-w"),
                         self.settings.automatic_update_downloads,
                         cx.listener(|this, _, _, cx| {
                             let enabled = !this.settings.automatic_update_downloads;
-                            this.edit_setting(move |settings| settings.automatic_update_downloads = enabled, cx);
-                            cx.emit(crate::update::UpdateRequested(crate::update::UpdateAction::AutomaticDownloads(enabled)));
+                            this.edit_setting(
+                                move |settings| settings.automatic_update_downloads = enabled,
+                                cx,
+                            );
+                            cx.emit(crate::update::UpdateRequested(
+                                crate::update::UpdateAction::AutomaticDownloads(enabled),
+                            ));
                         }),
-                    ));
+                    )
+                    .into_any_element(),
+                ];
+                pane = pane
+                    .child(page_header(
+                        &tr("settings-settings-about"),
+                        &tr("settings-about-subtitle"),
+                    ))
+                    .child(widgets::card_stack(about_rows));
             }
         }
         pane
@@ -1968,6 +2294,72 @@ impl SettingsScreen {
 }
 
 impl SettingsScreen {
+    fn render_developer_pane(&self, cx: &mut Context<Self>) -> Div {
+        #[cfg(not(feature = "acp"))]
+        {
+            self.render_api_pane(cx)
+        }
+        #[cfg(feature = "acp")]
+        {
+            let refresh = (self.developer_tab == DeveloperTab::Api)
+                .then(|| self.page_refresh_button("developer-refresh", cx));
+            let tab_button = |tab: DeveloperTab, id: &'static str, label: gpui::SharedString| {
+                self.application_target(
+                    move || SettingsTarget::DeveloperTab(tab),
+                    pane_tab(
+                        id,
+                        label,
+                        self.developer_tab == tab,
+                        PANE_TAB_INDEX + tab as isize,
+                        move |this, cx| this.select_developer_tab(tab, cx),
+                        cx,
+                    ),
+                )
+            };
+            div()
+                .flex()
+                .flex_col()
+                .gap_4()
+                .child(
+                    div()
+                        .flex()
+                        .items_start()
+                        .justify_between()
+                        .gap_4()
+                        .child(page_header(
+                            &tr("settings-section-developer"),
+                            &tr("settings-developer-subtitle"),
+                        ))
+                        .children(refresh),
+                )
+                .child(
+                    div()
+                        .id("developer-tabs")
+                        .role(gpui::Role::TabList)
+                        .aria_label(tr("settings-developer-tabs"))
+                        .flex()
+                        .items_center()
+                        .gap_2()
+                        .pb_2()
+                        .border_b_1()
+                        .border_color(gpui::rgb(theme::border_subtle()))
+                        .child(tab_button(
+                            DeveloperTab::Api,
+                            "developer-tab-api",
+                            tr("settings-section-api"),
+                        ))
+                        .child(tab_button(
+                            DeveloperTab::Acp,
+                            "developer-tab-acp",
+                            tr("settings-section-acp"),
+                        )),
+                )
+                .child(match self.developer_tab {
+                    DeveloperTab::Api => self.render_api_pane(cx),
+                    DeveloperTab::Acp => self.render_acp_pane(cx),
+                })
+        }
+    }
     /// One status and the one thing to do next: a release action when
     /// there is one, otherwise a quiet check. Remote computer cards follow
     /// the same rule.
@@ -2003,7 +2395,7 @@ impl SettingsScreen {
             )
             .when_some(next_update_action(&self.update), |row, action| {
                 row.child(
-                    widgets::primary_button("updates-primary")
+                    widgets::default_button("updates-primary")
                         .on_click(request(action))
                         .child(presentation::update_action(action)),
                 )
@@ -2037,7 +2429,7 @@ impl SettingsScreen {
             });
         let has_actions = update_check(&self.update) != UpdateCheck::Hidden
             || next_update_action(&self.update).is_some();
-        info_row(
+        info_row_content(
             &tr("settings-settings-update"),
             presentation::update_label(&self.update, &self.messages),
         )
@@ -2089,9 +2481,13 @@ impl SettingsScreen {
             .child(
                 div()
                     .flex()
-                    .items_center()
+                    .items_start()
                     .justify_between()
-                    .child(section_title(&tr("settings-settings-keyboard-shortcuts")))
+                    .gap_4()
+                    .child(page_header(
+                        &tr("settings-settings-keyboard-shortcuts"),
+                        &tr("settings-shortcuts-subtitle"),
+                    ))
                     .when(
                         modified_count > 0 || self.shortcut_snapshot.last_error.is_some(),
                         |row| {
@@ -2161,7 +2557,7 @@ impl SettingsScreen {
                         },
                     ))
                     .child(
-                        widgets::primary_button("shortcuts-reset-all-confirm")
+                        widgets::default_button("shortcuts-reset-all-confirm")
                             .on_click(cx.listener(|this, _event, _window, cx| {
                                 this.request_shortcut_change(ShortcutSettingsChange::ResetAll, cx);
                             }))
@@ -2277,7 +2673,7 @@ impl SettingsScreen {
                         .flex()
                         .gap_2()
                         .child(
-                            widgets::primary_button("shortcut-conflict-replace")
+                            widgets::default_button("shortcut-conflict-replace")
                                 .on_click(cx.listener(|this, _event, _window, cx| {
                                     this.save_recorded_shortcut(true, cx);
                                 }))
@@ -2357,8 +2753,10 @@ impl SettingsScreen {
                                         .py_0p5()
                                         .rounded_full()
                                         .text_xs()
+                                        .border_1()
+                                        .border_color(gpui::rgb(theme::accent()))
                                         .bg(gpui::rgb(theme::bg_sidebar_pill()))
-                                        .text_color(gpui::rgb(theme::accent()))
+                                        .text_color(gpui::rgb(theme::text_primary()))
                                         .child(tr("settings-settings-modified")),
                                 )
                             }),
@@ -2460,66 +2858,57 @@ impl SettingsScreen {
         self.application_target(|| SettingsTarget::Shortcut(row.slot_id.clone()), card)
     }
 
-    fn render_prompt_pane(&self, cx: &mut Context<Self>) -> Div {
-        let mut pane = div()
-            .flex()
-            .flex_col()
-            .gap_4()
-            .child(section_title(&tr("settings-settings-additional-instructions")))
-            .child(
+    /// The additional-instructions editor, rendered as the last General
+    /// subsection.
+    pub(super) fn render_prompt_editor_card(&self, cx: &mut Context<Self>) -> Div {
+        widgets::card_stack([
+            self.application_target(
+                || SettingsTarget::PromptEditor,
                 div()
                     .text_sm()
-                    .text_color(gpui::rgb(theme::text_muted()))
-                    .child(
-                        tr("settings-settings-added-to-every-task-after-maple-s-own-system-prompt-use-it-for-pr"),
-                    ),
-            )
-            .child(
-                self.application_target(
-                    || SettingsTarget::PromptEditor,
+                    .text_color(gpui::rgb(theme::text_primary()))
+                    .child(self.prompt_editor.clone()),
+            ),
+            div()
+                .flex()
+                .items_center()
+                .justify_between()
+                .gap_3()
+                .child(
                     div()
-                        .p_3()
-                        .rounded(theme::RADIUS_SM)
-                        .bg(gpui::rgb(theme::bg_input()))
-                        .border_1()
-                        .border_color(gpui::rgb(theme::border()))
                         .text_sm()
-                        .text_color(gpui::rgb(theme::text_primary()))
-                        .child(self.prompt_editor.clone()),
-                ),
-            )
-            .child(
-                div()
-                    .flex()
-                    .gap_2()
-                    .child(self.application_target(
-                        || SettingsTarget::PromptSave,
-                        pill_button(
-                            "prompt-save".to_string(),
-                            tr("settings-settings-save"),
-                            true,
-                            cx.listener(|this, _event, _window, cx| this.save_prompt(cx)),
+                        .text_color(gpui::rgb(theme::text_secondary()))
+                        .children(self.prompt_notice.clone()),
+                )
+                .child(
+                    div()
+                        .flex()
+                        .gap_2()
+                        .child(
+                            self.application_target(
+                                || SettingsTarget::PromptClear,
+                                widgets::secondary_button("prompt-clear")
+                                    .py_1p5()
+                                    .on_click(cx.listener(|this, _event, _window, cx| {
+                                        this.clear_prompt(cx);
+                                    }))
+                                    .child(tr("settings-settings-clear")),
+                            ),
+                        )
+                        .child(
+                            self.application_target(
+                                || SettingsTarget::PromptSave,
+                                widgets::default_button("prompt-save")
+                                    .py_1p5()
+                                    .on_click(cx.listener(|this, _event, _window, cx| {
+                                        this.save_prompt(cx);
+                                    }))
+                                    .child(tr("settings-settings-save")),
+                            ),
                         ),
-                    ))
-                    .child(self.application_target(
-                        || SettingsTarget::PromptClear,
-                        pill_button(
-                            "prompt-clear".to_string(),
-                            tr("settings-settings-clear"),
-                            false,
-                            cx.listener(|this, _event, _window, cx| this.clear_prompt(cx)),
-                        ),
-                    )),
-            );
-        if let Some(notice) = &self.prompt_notice {
-            pane = pane.child(
-                div()
-                    .text_sm()
-                    .text_color(gpui::rgb(theme::text_secondary()))
-                    .child(notice.clone()),
-            );
-        }
-        pane
+                )
+                .into_any_element(),
+        ])
     }
 
     fn render_integrations_pane(&self, cx: &mut Context<Self>) -> Div {
@@ -2527,17 +2916,19 @@ impl SettingsScreen {
             .flex()
             .flex_col()
             .gap_4()
-            .child(section_title(&tr("settings-settings-integrations")))
-            .child(div().text_sm().child(match self.integrations_backend.remote_host() {
-                Some(host) => self.messages.get("settings-execution-computer", [("computer", (host[..host.len().min(10)]).to_string().into())]).to_string(),
-                None => tr("settings-settings-execution-computer-this-computer").to_string(),
-            }))
-            .child(
+            .child(page_header(
+                &tr("settings-settings-integrations"),
+                &tr("settings-settings-manage-integrations-here-enable-coding-agents-to-make-them-availa"),
+            ))
+            .children(self.integrations_backend.remote_host().map(|host| {
                 div()
-                    .text_sm()
+                    .text_xs()
                     .text_color(gpui::rgb(theme::text_muted()))
-                    .child(tr("settings-settings-manage-integrations-here-enable-coding-agents-to-make-them-availa")),
-            );
+                    .child(self.messages.get(
+                        "settings-execution-computer",
+                        [("computer", (host[..host.len().min(10)]).to_string().into())],
+                    ))
+            }));
 
         if let Some(notice) = &self.integration_notice {
             pane = pane.child(widgets::notice(
@@ -2548,6 +2939,14 @@ impl SettingsScreen {
                     cx.notify();
                 }),
             ));
+        }
+
+        if let (Some(notice), None) = (&self.mcp_notice, &self.mcp_editor) {
+            pane = pane.child(widgets::banner(theme::status_warning()).child(notice.clone()));
+        }
+
+        if let Some(featured) = self.render_featured_apps(cx) {
+            pane = pane.child(featured);
         }
 
         pane = pane.child(subsection_title(&tr("settings-built-in")));
@@ -2580,18 +2979,18 @@ impl SettingsScreen {
             }
         }
 
-        match &self.mcp_servers {
-            Some(servers) if !servers.is_empty() => {
-                pane = pane.child(catalog::section_heading(subsection_title(&tr(
-                    "settings-settings-connected",
-                ))));
-                pane = pane.children(servers.iter().map(|server| {
+        // Connected servers, only once there is one to show; the directory
+        // lives on the Apps page, so an empty list needs no placeholder.
+        let connected: Vec<gpui::AnyElement> = match &self.mcp_servers {
+            Some(servers) => servers
+                .iter()
+                .map(|server| {
                     let name = server.name.clone();
                     let summary = match &server.target {
                         McpTarget::Stdio { command } => format!("STDIO · {command}"),
                         McpTarget::StreamableHttp { url } => format!("HTTP · {url}"),
                     };
-                    let card = widgets::card_row()
+                    let card = div()
                         .flex()
                         .items_center()
                         .gap_3()
@@ -2667,11 +3066,56 @@ impl SettingsScreen {
                             )),
                         );
                     self.application_target(|| SettingsTarget::McpServer(server.name.clone()), card)
-                }));
-            }
-            _ => {}
+                })
+                .collect(),
+            None => Vec::new(),
+        };
+        if !connected.is_empty() {
+            pane = pane.child(subsection_title(&tr("settings-settings-connected")));
+            pane = pane.child(widgets::card_stack(connected));
         }
-        pane.child(self.render_app_catalog(cx))
+
+        // A server of one's own, by address or command.
+        pane = pane.child(subsection_title(&tr("settings-catalog-custom")));
+        pane = pane.child(
+            div()
+                .text_sm()
+                .text_color(gpui::rgb(theme::text_muted()))
+                .child(gpui::text!(tr("settings-catalog-custom-description"))),
+        );
+        let add_row = vec![
+            self.application_target(
+                || SettingsTarget::McpAdd,
+                div()
+                    .id("mcp-add")
+                    .debug_selector(|| "mcp-add".into())
+                    .role(gpui::Role::Button)
+                    .tab_index(PANE_TAB_INDEX)
+                    .flex()
+                    .items_center()
+                    .gap_3()
+                    .text_sm()
+                    .text_color(gpui::rgb(theme::text_secondary()))
+                    .focus_visible(widgets::focus_ring)
+                    .hover(|style| {
+                        style
+                            .text_color(gpui::rgb(theme::text_primary()))
+                            .cursor_pointer()
+                    })
+                    .on_click(cx.listener(|this, _event, _window, cx| {
+                        this.open_mcp_editor(None, cx);
+                    }))
+                    .on_key_down(cx.listener(|this, event: &gpui::KeyDownEvent, _, cx| {
+                        if activates(event) {
+                            cx.stop_propagation();
+                            this.open_mcp_editor(None, cx);
+                        }
+                    }))
+                    .child(icon("plus", widgets::ROW_ICON, theme::text_secondary()))
+                    .child(gpui::text!(tr("settings-catalog-add-custom"))),
+            ),
+        ];
+        pane.child(widgets::card_stack(add_row))
     }
 
     fn render_integration_card(
@@ -2736,12 +3180,16 @@ impl SettingsScreen {
                             .child(
                                 div()
                                     .id("cua-project-link")
+                                    .flex()
+                                    .items_center()
+                                    .gap_0p5()
                                     .text_color(gpui::rgb(theme::link()))
                                     .hover(|style| style.underline().cursor_pointer())
                                     .on_click(|_, _, _| {
                                         crate::ui::rich_text::open_link(CUA_PROJECT_URL)
                                     })
-                                    .child(tr("settings-settings-cua-team")),
+                                    .child(tr("settings-settings-cua-team"))
+                                    .child(widgets::external_mark(theme::link())),
                             )
                             .child("."),
                     ),
@@ -2920,22 +3368,6 @@ impl SettingsScreen {
             .flex()
             .flex_col()
             .gap_3()
-            .p_4()
-            .rounded(theme::RADIUS_MD)
-            .bg(gpui::rgb(theme::bg_elevated()))
-            .border_1()
-            .border_color(gpui::rgb(theme::border()))
-            .child(
-                div()
-                    .text_sm()
-                    .font_weight(gpui::FontWeight::MEDIUM)
-                    .text_color(gpui::rgb(theme::text_primary()))
-                    .child(if editor.original_name.is_some() {
-                        tr("settings-settings-edit-server")
-                    } else {
-                        tr("settings-settings-new-server")
-                    }),
-            )
             .child(field(&tr("settings-settings-name"), "", editor.name.clone()))
             .child(field(&tr("settings-settings-description"), "", editor.description.clone()))
             .child(
@@ -2957,7 +3389,6 @@ impl SettingsScreen {
                             .p_1()
                             .rounded(theme::RADIUS_SM)
                             .bg(gpui::rgb(theme::bg_sidebar_chrome()))
-                            .w(px(320.))
                             .child(
                                 transport_segment(
                                     "mcp-transport-stdio",
@@ -3027,19 +3458,34 @@ impl SettingsScreen {
                     editor.headers.clone(),
                 ))
             })
+            .when_some(sign_in_error, |form, message| {
+                form.child(
+                    div()
+                        .text_xs()
+                        .text_color(gpui::rgb(theme::status_error()))
+                        .child(message),
+                )
+            })
+            .when_some(self.mcp_notice.clone(), |form, notice| {
+                form.child(
+                    widgets::banner(theme::status_warning())
+                        .text_sm()
+                        .child(notice),
+                )
+            })
             .child(
                 div()
                     .flex()
                     .items_center()
+                    .justify_end()
                     .gap_2()
-                    .pt_1()
+                    .pt_2()
                     .child(
-                        widgets::primary_button("mcp-save")
-                            .when(self.mcp_saving, |el| el.opacity(0.5))
+                        widgets::ghost_button("mcp-cancel")
                             .on_click(cx.listener(|this, _event, _window, cx| {
-                                this.submit_mcp_editor(cx);
+                                this.close_mcp_editor(cx);
                             }))
-                            .child(tr("settings-settings-save")),
+                            .child(tr("settings-settings-cancel")),
                     )
                     .when(
                         editor.http && editor.original.is_none(),
@@ -3062,30 +3508,159 @@ impl SettingsScreen {
                                         this.sign_in_mcp_editor(cx);
                                     }))
                                     .child(tr("settings-catalog-browser-sign-in"))
+                                    .child(widgets::external_mark(theme::text_secondary()))
                             })
                         },
                     )
                     .child(
-                        widgets::ghost_button("mcp-cancel")
+                        widgets::default_button("mcp-save")
+                            .when(self.mcp_saving, |el| el.opacity(0.5))
                             .on_click(cx.listener(|this, _event, _window, cx| {
-                                if this.mcp_editor_signing_in(cx) {
-                                    this.cancel_mcp_sign_in(cx);
-                                }
-                                this.mcp_editor = None;
-                                this.mcp_notice = None;
-                                cx.notify();
+                                this.submit_mcp_editor(cx);
                             }))
-                            .child(tr("settings-settings-cancel")),
+                            .child(tr("settings-settings-save")),
                     ),
             )
-            .when_some(sign_in_error, |form, message| {
-                form.child(
+    }
+
+    /// Close the server dialog, abandoning any browser sign-in it started.
+    pub(super) fn close_mcp_editor(&mut self, cx: &mut Context<Self>) {
+        if self.mcp_editor_signing_in(cx) {
+            self.cancel_mcp_sign_in(cx);
+        }
+        self.mcp_editor = None;
+        self.mcp_notice = None;
+        self.application_focus_pending = true;
+        self.reconcile_application_vim_target();
+        cx.notify();
+    }
+
+    /// Focus the dialog's name field the first time it draws.
+    fn focus_mcp_editor(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        if let Some(editor) = self.mcp_editor.as_mut()
+            && std::mem::take(&mut editor.focus_pending)
+        {
+            window.focus(&gpui::Focusable::focus_handle(editor.name.read(cx), cx), cx);
+        }
+    }
+
+    /// The add/edit server form as a dialog over the page, so opening it
+    /// never moves the page underneath.
+    fn render_mcp_editor_dialog(
+        &self,
+        window: &Window,
+        cx: &mut Context<Self>,
+    ) -> Option<impl IntoElement + use<>> {
+        let editor = self.mcp_editor.as_ref()?;
+        let editing = editor.original_name.is_some();
+        let title = if editing {
+            tr("settings-settings-edit-server")
+        } else {
+            tr("settings-catalog-add-custom")
+        };
+        let width = (window.viewport_size().width - px(48.)).clamp(px(0.), px(560.));
+        let max_height = (window.viewport_size().height - px(96.)).max(px(240.));
+        Some(
+            div()
+                .id("mcp-editor-backdrop")
+                .absolute()
+                .inset_0()
+                .size_full()
+                .occlude()
+                .bg(theme::scrim())
+                .flex()
+                .items_center()
+                .justify_center()
+                // No backdrop dismissal: the form can hold typed secrets, so
+                // only Escape, the close button, and Cancel leave it.
+                .child(
                     div()
-                        .text_xs()
-                        .text_color(gpui::rgb(theme::status_error()))
-                        .child(message),
-                )
-            })
+                        .id("mcp-editor")
+                        .debug_selector(|| "mcp-editor".to_string())
+                        .role(gpui::Role::Dialog)
+                        .aria_label(title.clone())
+                        .key_context("Dialog")
+                        .w(width)
+                        .max_h(max_height)
+                        .rounded(theme::RADIUS_XL)
+                        .shadow_lg()
+                        .bg(gpui::rgb(theme::bg_elevated()))
+                        .border_1()
+                        .border_color(gpui::rgb(theme::border()))
+                        .flex()
+                        .flex_col()
+                        .text_color(gpui::rgb(theme::text_primary()))
+                        // A press inside is the dialog's, not the backdrop's.
+                        .on_mouse_down(gpui::MouseButton::Left, |_event, _window, cx| {
+                            cx.stop_propagation();
+                        })
+                        .on_key_down(cx.listener(
+                            |this, event: &gpui::KeyDownEvent, _window, cx| {
+                                if event.keystroke.key == "escape"
+                                    && !event.keystroke.modifiers.modified()
+                                {
+                                    cx.stop_propagation();
+                                    this.close_mcp_editor(cx);
+                                }
+                            },
+                        ))
+                        .child(
+                            div()
+                                .flex()
+                                .items_start()
+                                .justify_between()
+                                .gap_4()
+                                .px_5()
+                                .pt_5()
+                                .pb_3()
+                                .child(
+                                    div()
+                                        .flex()
+                                        .flex_col()
+                                        .gap_1()
+                                        .child(
+                                            div()
+                                                .text_lg()
+                                                .font_weight(gpui::FontWeight::SEMIBOLD)
+                                                .child(title),
+                                        )
+                                        .child(
+                                            div()
+                                                .text_sm()
+                                                .text_color(gpui::rgb(theme::text_secondary()))
+                                                .child(gpui::text!(tr(
+                                                    "settings-catalog-custom-description"
+                                                ))),
+                                        ),
+                                )
+                                .child(
+                                    widgets::icon_button(
+                                        "mcp-editor-close",
+                                        "x",
+                                        tr("settings-settings-cancel"),
+                                        widgets::ROW_ICON,
+                                        theme::text_muted(),
+                                    )
+                                    .flex_none()
+                                    .on_click(cx.listener(
+                                        |this, _event, _window, cx| {
+                                            this.close_mcp_editor(cx);
+                                        },
+                                    )),
+                                ),
+                        )
+                        .child(
+                            div()
+                                .id("mcp-editor-body")
+                                .flex_1()
+                                .min_h_0()
+                                .overflow_y_scroll()
+                                .px_5()
+                                .pb_5()
+                                .child(self.render_mcp_editor(editor, cx)),
+                        ),
+                ),
+        )
     }
 }
 
@@ -3318,12 +3893,12 @@ fn pill_button(
         .text_xs()
         .font_weight(gpui::FontWeight::MEDIUM)
         .bg(gpui::rgb(if on {
-            theme::accent()
+            theme::bg_default_button()
         } else {
             theme::bg_sidebar_card()
         }))
         .text_color(gpui::rgb(if on {
-            theme::on_accent()
+            theme::text_on_default_button()
         } else {
             theme::text_secondary()
         }))
@@ -3337,6 +3912,115 @@ fn pill_button(
 fn activates(event: &gpui::KeyDownEvent) -> bool {
     !event.keystroke.modifiers.modified()
         && matches!(event.keystroke.key.as_str(), "enter" | "space" | " ")
+}
+
+/// First tab stop of a pane's horizontal tab bar, after the sidebar filter
+/// (0); each tab takes the next slot in display order.
+const PANE_TAB_INDEX: isize = 1;
+
+/// One tab of a pane's horizontal tab bar (Developer & API):
+/// a pill that is a pointer target, a Tab stop pressed by Enter or Space,
+/// and a `Tab` role for screen readers.
+#[cfg(feature = "acp")]
+fn pane_tab(
+    id: &'static str,
+    label: gpui::SharedString,
+    selected: bool,
+    tab_index: isize,
+    select: impl Fn(&mut SettingsScreen, &mut Context<SettingsScreen>) + Copy + 'static,
+    cx: &Context<SettingsScreen>,
+) -> gpui::Stateful<Div> {
+    div()
+        .id(id)
+        .debug_selector(move || id.to_string())
+        .role(gpui::Role::Tab)
+        .aria_label(label.clone())
+        .aria_selected(selected)
+        .tab_index(tab_index)
+        .px_3()
+        .py_1p5()
+        .rounded_full()
+        .text_xs()
+        .font_weight(gpui::FontWeight::MEDIUM)
+        .bg(gpui::rgb(if selected {
+            theme::bg_default_button()
+        } else {
+            theme::bg_sidebar_card()
+        }))
+        .text_color(gpui::rgb(if selected {
+            theme::text_on_default_button()
+        } else {
+            theme::text_secondary()
+        }))
+        .focus_visible(widgets::focus_ring)
+        .hover(|style| style.opacity(0.88).cursor_pointer())
+        .on_click(cx.listener(move |this, _, _, cx| select(this, cx)))
+        .on_key_down(cx.listener(move |this, event: &gpui::KeyDownEvent, _, cx| {
+            if activates(event) {
+                cx.stop_propagation();
+                select(this, cx);
+            }
+        }))
+        .child(label)
+}
+
+impl SettingsScreen {
+    /// The one refresh control on a page that fetches remote state, drawn at
+    /// the right of the page header.
+    pub(super) fn page_refresh_button(
+        &self,
+        id: &'static str,
+        cx: &mut Context<Self>,
+    ) -> gpui::AnyElement {
+        self.application_target(
+            || SettingsTarget::PageRefresh,
+            widgets::icon_button(
+                id,
+                "rotate-cw",
+                tr("settings-refresh"),
+                widgets::ROW_ICON,
+                theme::text_secondary(),
+            )
+            .debug_selector(move || id.to_string())
+            .flex_none()
+            .mt_1()
+            .on_click(cx.listener(|this, _event, _window, cx| this.refresh_page(cx))),
+        )
+    }
+
+    /// Refetch whatever the current page shows from remote state.
+    pub(super) fn refresh_page(&mut self, cx: &mut Context<Self>) {
+        match self.section {
+            Section::Billing | Section::Usage => self.refresh_billing(cx),
+            Section::Api => {
+                self.load_api_keys(cx);
+                self.load_credit_balance(cx);
+                #[cfg(feature = "proxy")]
+                if self.local_api.can_refresh() {
+                    self.refresh_local_api_status(cx);
+                }
+                cx.notify();
+            }
+            _ => {}
+        }
+    }
+}
+
+fn page_header(title: &str, subtitle: &str) -> Div {
+    div()
+        .flex()
+        .flex_col()
+        .gap_1()
+        .child(section_title(title))
+        .child(
+            div()
+                .text_sm()
+                .text_color(gpui::rgb(theme::text_muted()))
+                .child(gpui::text!(
+                    id = "settings-page-subtitle",
+                    subtitle.to_string()
+                )),
+        )
 }
 
 /// Pane heading in the brand display face, like the section titles of
@@ -3353,11 +4037,11 @@ fn section_title(label: &str) -> Div {
 fn subsection_title(label: &str) -> Div {
     div()
         .text_sm()
+        .font_family(crate::assets::FONT_BODY)
         .font_weight(gpui::FontWeight::SEMIBOLD)
         .text_color(gpui::rgb(theme::text_primary()))
         .child(label.to_string())
 }
-
 fn shortcut_keycap(label: String, bound: bool) -> Div {
     div()
         .px_2p5()
@@ -3496,14 +4180,14 @@ struct SettingOption {
     current: bool,
 }
 
-/// An on/off setting with a switch. The whole row is the click target.
-fn toggle_row(
+/// An on/off setting row for `widgets::card_stack`.
+fn toggle_row_content(
     title: gpui::SharedString,
     description: gpui::SharedString,
     on: bool,
     on_click: impl Fn(&gpui::ClickEvent, &mut Window, &mut App) + 'static,
 ) -> gpui::Stateful<Div> {
-    widgets::card_row()
+    div()
         .id("setting-automatically-download-updates")
         .flex()
         .items_center()
@@ -3521,8 +4205,8 @@ fn toggle_row(
         ))
 }
 
-fn info_row(label: &str, value: String) -> Div {
-    widgets::card_row()
+fn info_row_content(label: &str, value: String) -> Div {
+    div()
         .w_full()
         .min_w_0()
         .flex()

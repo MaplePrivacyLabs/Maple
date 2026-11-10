@@ -106,7 +106,8 @@ stdio MCP server configured in Settings > Integrations.
 | D1 | Tool and thinking summaries | Setting on; run a tool | One-line summaries appear and turn off with the setting |
 | D2 | Image descriptions for text models | Attach an image on a text-only model | The description reaches the model |
 | D3 | Context ring and compaction | A long task | The ring fills toward the model's catalog window and the task compacts by itself before it is full; `/compact` empties it |
-| D4 | Plan meter | Settings > Usage | The plan, percent used and reset date show, nothing else |
+| D4 | Plan meter | Settings > Usage on an account without the `usage_page` flag | The plan, percent used and reset date show, nothing else |
+| D9 | Usage history | Settings > Usage on a Pro, Max or Team account with the `usage_page` flag (or `MAPLE_FORCE_FEATURE_FLAGS=usage_page` locally) | The plan card leads, as in D4, with credits used of the allowance and the pace; below it, the range's totals, daily chart, models, apps, months, requests and prices match the web Usage page for the same range; Load more adds requests; switching the range, Show and Split by redraws without a reload |
 | D5 | Notifications | Finish a task and ask a question with the window in the background | Two notifications, none for permissions |
 | D6 | Appearance, fonts, motion, Vim | Change each setting | Each applies live |
 | D8 | Compaction after a switch to a smaller window | A long task on a large-window model, then a model whose window it exceeds | The task compacts before the next reply, summarized by the previous model (log line "summarized by"), and the reply comes from the new one (**automated**: `a_switch_to_a_smaller_window_compacts_with_the_previous_model`) |
