@@ -1229,7 +1229,7 @@ const MODEL_CONFIGS: &[ModelConfigEntry] = &[
         "Dealign's uncensored DeepSeek 1017 reasoning and tool-use model.",
         ModelAccessTier::Pro,
         ModelCapabilities::chat(true, true),
-        &["Beta", "Popular"],
+        &["Popular"],
         true,
         true,
         false,
@@ -1491,7 +1491,7 @@ mod tests {
             assert_eq!(derivative["provider_id"], id);
             assert_eq!(derivative["context_window"], 1_048_576);
             assert_eq!(derivative["access"], "pro");
-            assert_eq!(derivative["badges"], json!(["Beta", "Popular"]));
+            assert_eq!(derivative["badges"], json!(["Popular"]));
             assert_eq!(catalog["defaults"]["quick"], AUTO_QUICK_MODEL_ID);
             assert_eq!(catalog["defaults"]["powerful"], AUTO_POWERFUL_MODEL_ID);
             assert!(has_model(&catalog, DEEPSEEK_V4_1_FLASH_MODEL_ID));
