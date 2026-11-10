@@ -21,6 +21,20 @@
         overlays = [
           (import rust-overlay)
           (final: prev: {
+            # Use Git's 2026-11-10 security release for development and CI tools.
+            # The pinned nixpkgs snapshot still provides Git 2.56.0; remove
+            # this override once that input has a fixed Git package.
+            git =
+              if prev.git.version == "2.56.0" then
+                prev.git.overrideAttrs (_: rec {
+                  version = "2.56.1";
+                  src = final.fetchurl {
+                    url = "https://www.kernel.org/pub/software/scm/git/git-${version}.tar.xz";
+                    hash = "sha256-8LC/iSZLm9LhxkA2PnUpZDmJ2nYoFgBHPFB0XNNKYH8=";
+                  };
+                })
+              else
+                prev.git;
             # Keep bun on versions.bun (and setup-bun's Windows pin) when nixpkgs moves ahead.
             bun = prev.bun.overrideAttrs (old: rec {
               version = versions.bun;
