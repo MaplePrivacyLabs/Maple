@@ -11,12 +11,19 @@ use std::{
     fs,
     io::{self, Read},
     path::{Component, Path},
+    process::{Command, Stdio},
+    thread,
+    time::{Duration, Instant},
 };
 
 const RECEIPT: &str = ".unpacked";
 const LOCK: &str = ".lock";
 const MAX_ENTRIES: usize = 50_000;
 const MAX_BYTES: u64 = 1024 * 1024 * 1024;
+const WARM_UP_LIMIT: Duration = Duration::from_secs(120);
+/// The standard-library modules the worker imports at startup.
+const WARM_UP: &str = "import ast, asyncio, builtins, codecs, collections, contextvars, inspect, io, \
+     json, linecache, os, platform, signal, struct, sys, threading, time, types";
 
 /// The archive `scripts/prepare-python.py --archive` packed, and its SHA-256.
 #[derive(Clone, Copy, Debug)]
@@ -95,6 +102,7 @@ impl EmbeddedPython {
         fs::write(directory.join(RECEIPT), self.sha256)
             .map_err(|error| failed("finish unpacking", error))?;
         let python = PackagedPython::from_manifest(&manifest)?;
+        warm_up(&python);
         remove_other_copies(root, name);
         drop(lock);
         Ok(python)
@@ -138,6 +146,37 @@ fn remove_other_copies(root: &Path, current: &str) {
 
 fn invalid(message: &str) -> io::Error {
     io::Error::new(io::ErrorKind::InvalidData, message)
+}
+
+/// Runs a new copy's interpreter once. The first start of files Windows has
+/// never run is slow (they are paged in and scanned), and it would otherwise
+/// count against the worker's startup deadline. Failure here is not an error:
+/// the worker reports what is wrong with the runtime.
+fn warm_up(python: &PackagedPython) {
+    let mut command = Command::new(&python.executable);
+    command
+        .args(["-I", "-B", "-c", WARM_UP])
+        .stdin(Stdio::null())
+        .stdout(Stdio::null())
+        .stderr(Stdio::null());
+    #[cfg(windows)]
+    {
+        use std::os::windows::process::CommandExt;
+        const CREATE_NO_WINDOW: u32 = 0x0800_0000;
+        command.creation_flags(CREATE_NO_WINDOW);
+    }
+    let Ok(mut child) = command.spawn() else {
+        return;
+    };
+    let deadline = Instant::now() + WARM_UP_LIMIT;
+    while let Ok(None) = child.try_wait() {
+        if Instant::now() >= deadline {
+            let _ = child.kill();
+            let _ = child.wait();
+            return;
+        }
+        thread::sleep(Duration::from_millis(50));
+    }
 }
 
 /// The archive is Maple's own, but it is still held to what the packer
