@@ -1101,6 +1101,168 @@ async fn password_reset_v2_options_reveals_status_after_proof_without_consuming_
 
 #[tokio::test]
 #[ignore = "requires RECOVERY_TEST_DATABASE_URL (or AEAD_TAMPER_TEST_DATABASE_URL) pointing at disposable migrated local Postgres"]
+async fn password_reset_proof_budget_is_shared_without_charging_valid_options() {
+    let fixture = authenticated_password_fixture("proof-budget").await;
+    let app_state = &fixture.app_state;
+    let project = first_active_project(app_state);
+    let app = login_router(app_state.clone());
+    let code =
+        enroll_recovery_over_authenticated_seed(app_state, &fixture.user, &fixture.auth_context)
+            .await;
+    let proof = proof_fixture(
+        &fixture.email,
+        "RLIMIT01",
+        "proof-budget-secret",
+        project.client_id,
+    );
+    let active = insert_reset_request_fixture(
+        app_state,
+        &project,
+        &fixture.user,
+        &proof.code,
+        &proof.secret,
+        24,
+    );
+    let options = |proof: &ResetProofFixture| {
+        send(
+            app.clone(),
+            v2_request(
+                "POST",
+                "/password-reset/v2/options",
+                Some(proof.request_body()),
+                None,
+            ),
+        )
+    };
+    for _ in 0..8 {
+        let unrelated = proof_fixture(
+            &fixture.email,
+            &proof.code,
+            "unrelated-secret",
+            project.client_id,
+        );
+        assert_generic_bad_request(options(&unrelated).await).await;
+    }
+    let wrong = proof_fixture(&fixture.email, "WRONG001", &proof.secret, project.client_id);
+    for _ in 0..4 {
+        assert_generic_bad_request(options(&wrong).await).await;
+    }
+    // Valid reads must leave the remaining guess available for completion.
+    for _ in 0..8 {
+        assert_eq!(options(&proof).await.status(), StatusCode::OK);
+    }
+    assert!(!reset_request_by_id(app_state, active.id).is_reset);
+    let password = "proof-budget-new-password";
+    assert_eq!(
+        complete_request(
+            app.clone(),
+            complete_body(&proof, password, preserve_mode(&code))
+        )
+        .await
+        .status(),
+        StatusCode::OK
+    );
+    assert!(reset_request_by_id(app_state, active.id).is_reset);
+    let recovery_before = app_state
+        .db
+        .get_recovery_wrap(fixture.user.uuid)
+        .unwrap()
+        .unwrap();
+
+    let exhausted = proof_fixture(
+        &fixture.email,
+        "RLIMIT02",
+        "exhausted-proof-secret",
+        project.client_id,
+    );
+    let selected = insert_reset_request_fixture(
+        app_state,
+        &project,
+        &fixture.user,
+        &exhausted.code,
+        &exhausted.secret,
+        24,
+    );
+    let wrong = proof_fixture(
+        &fixture.email,
+        "WRONG002",
+        &exhausted.secret,
+        project.client_id,
+    );
+    for attempt in 0..5 {
+        let response = match attempt % 3 {
+            0 => options(&wrong).await,
+            1 => {
+                complete_request(
+                    app.clone(),
+                    complete_body(&wrong, password, preserve_mode(&code)),
+                )
+                .await
+            }
+            _ => {
+                legacy_confirm_request(
+                    app.clone(),
+                    legacy_confirm_body(
+                        &wrong.email,
+                        &wrong.code,
+                        &wrong.secret,
+                        wrong.client_id,
+                        password,
+                    ),
+                )
+                .await
+            }
+        };
+        assert_generic_bad_request(response).await;
+    }
+    for response in [
+        options(&exhausted).await,
+        complete_request(
+            app.clone(),
+            complete_body(&exhausted, password, preserve_mode(&code)),
+        )
+        .await,
+        legacy_confirm_request(
+            app.clone(),
+            legacy_confirm_body(
+                &exhausted.email,
+                &exhausted.code,
+                &exhausted.secret,
+                exhausted.client_id,
+                password,
+            ),
+        )
+        .await,
+    ] {
+        assert_eq!(response.status(), StatusCode::TOO_MANY_REQUESTS);
+        assert!(response.headers().contains_key("retry-after"));
+        assert_eq!(
+            response.headers()["x-opensecret-error-code"],
+            "rate_limit_exceeded"
+        );
+    }
+    assert!(!reset_request_by_id(app_state, selected.id).is_reset);
+    assert_recovery_wrap_unchanged(app_state, fixture.user.uuid, &recovery_before);
+    let fresh = proof_fixture(
+        &fixture.email,
+        "RLIMIT03",
+        "fresh-proof-secret",
+        project.client_id,
+    );
+    insert_reset_request_fixture(
+        app_state,
+        &project,
+        &fixture.user,
+        &fresh.code,
+        &fresh.secret,
+        24,
+    );
+    assert_eq!(options(&fresh).await.status(), StatusCode::OK);
+    let _ = app_state.db.delete_user(&fixture.user);
+}
+
+#[tokio::test]
+#[ignore = "requires RECOVERY_TEST_DATABASE_URL (or AEAD_TAMPER_TEST_DATABASE_URL) pointing at disposable migrated local Postgres"]
 async fn password_reset_v2_options_rejects_copied_reset_rows_across_users_and_projects() {
     let fixture = authenticated_password_fixture("v2-copy").await;
     let app_state = &fixture.app_state;

@@ -708,6 +708,7 @@ pub async fn password_reset_confirm(
 /// internal-server errors and never leak into a successful response.
 fn map_reset_proof_error(e: Error) -> ApiError {
     match e {
+        Error::RateLimited(error) => error,
         Error::UserNotFound
         | Error::PasswordResetExpired
         | Error::InvalidPasswordResetSecret

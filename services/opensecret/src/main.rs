@@ -2432,9 +2432,9 @@ impl AppState {
     /// The same proof check shared by the legacy destructive confirm route and
     /// the v2 options route: the alphanumeric code must MAC to an active,
     /// unexpired reset request for the addressed user, and the client reset
-    /// secret must match the stored hash. Read-only by contract — callers own
-    /// every mutation, so repeated proof submission stays safe until the
-    /// request expires or is consumed by a completion.
+    /// secret must match the stored hash. Valid proofs spend no guess budget
+    /// and leave the request unchanged. Failed proofs charge only a budget
+    /// belonging to the submitted account and client secret.
     fn verify_password_reset_proof(
         &self,
         email: String,
@@ -2450,13 +2450,17 @@ impl AppState {
         }
 
         let hashed_plaintext = generate_reset_hash(plaintext_secret);
-        Self::admit_password_reset_attempt(
-            &self.rate_limits.password_reset_attempt,
-            user.uuid,
-            self.db
-                .password_reset_request_exists_for_secret(user.uuid, &hashed_plaintext)?,
-            &hashed_plaintext,
-        )?;
+        if !self
+            .db
+            .password_reset_request_exists_for_secret(user.uuid, &hashed_plaintext)?
+        {
+            return Err(Error::InvalidPasswordResetRequest);
+        }
+        let attempt_key = web::rate_limit::Key::scoped(user.uuid, &[hashed_plaintext.as_bytes()]);
+        let attempts = &self.rate_limits.password_reset_attempt;
+        attempts
+            .check_available(attempt_key)
+            .map_err(Error::RateLimited)?;
 
         // MAC the provided alphanumeric code for lookup, bound to this user/project.
         let reset_code_mac =
@@ -2465,28 +2469,23 @@ impl AppState {
 
         let reset_request = self
             .db
-            .get_password_reset_request_by_user_id_and_code(user.uuid, reset_code_mac.to_vec())?
-            .ok_or(Error::InvalidPasswordResetRequest)?;
-
-        if reset_request.is_expired() {
-            warn!("Password reset expired for user: {}", user.uuid);
-            return Err(Error::PasswordResetExpired);
-        }
-
-        // Compare the hashed values using constant-time comparison
-        if hashed_plaintext
-            .as_bytes()
-            .ct_eq(reset_request.hashed_secret.as_bytes())
-            .into()
-        {
-            Ok((user, reset_request))
-        } else {
-            warn!(
-                "Password verification failed for user {}. Hashes do not match.",
-                user.uuid
-            );
-            Err(Error::InvalidPasswordResetSecret)
-        }
+            .get_password_reset_request_by_user_id_and_code(user.uuid, reset_code_mac.to_vec())?;
+        let failure = match reset_request {
+            Some(request) if request.is_expired() => Error::PasswordResetExpired,
+            Some(request) => {
+                if hashed_plaintext
+                    .as_bytes()
+                    .ct_eq(request.hashed_secret.as_bytes())
+                    .into()
+                {
+                    return Ok((user, request));
+                }
+                Error::InvalidPasswordResetSecret
+            }
+            None => Error::InvalidPasswordResetRequest,
+        };
+        attempts.check(attempt_key).map_err(Error::RateLimited)?;
+        Err(failure)
     }
 
     async fn confirm_password_reset(
