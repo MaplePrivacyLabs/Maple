@@ -4,7 +4,10 @@
 use crate::ui::i18n::{UiText, tr};
 use gpui::{Context, Div, div, prelude::*};
 
-use super::{SettingsScreen, SettingsTarget, plan_card, section_title};
+use super::{
+    Section, SettingsScreen, SettingsTarget, info_row_content, page_header, plan_card,
+    subsection_title,
+};
 use crate::billing::{BillingStatus, BillingStatusExt, PlanTier, Product};
 use crate::ui::theme;
 use crate::ui::widgets;
@@ -12,8 +15,12 @@ use crate::ui::widgets;
 /// Controls in the Billing pane that Application Vim can land on.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub(super) enum BillingTarget {
-    Refresh,
+    /// Change plans in the Stripe portal.
     ManageSubscription,
+    /// The web pricing page, for subscriptions this app cannot change.
+    ViewPlans,
+    /// Usage → Plan & Billing.
+    ManagePlan,
     /// Checkout, or the web pricing page for plans this app cannot start.
     Product(String),
     Credits(super::api_credits::CreditsTarget),
@@ -26,6 +33,12 @@ pub(super) struct BillingState {
     /// True while a portal or checkout link is being minted.
     pub(super) busy: bool,
     pub(super) notice: Option<UiText>,
+    /// When a portal or checkout tab was opened. While recent, every return
+    /// to the window refetches, since payment and webhooks take their time.
+    pub(super) awaiting_browser: Option<std::time::Instant>,
+    /// How many status loads have been issued; lets tests observe a fetch
+    /// without depending on when the backend answers.
+    pub(super) loads: u32,
     pub(super) credits: super::api_credits::CreditsState,
 }
 
@@ -41,6 +54,8 @@ impl BillingState {
             products: None,
             busy: false,
             notice: None,
+            awaiting_browser: None,
+            loads: 0,
             credits: super::api_credits::CreditsState::new(
                 application_vim_enabled,
                 application_focus,
@@ -93,7 +108,8 @@ pub(super) fn product_action(status: &BillingStatus, product: &Product) -> Produ
 }
 
 impl SettingsScreen {
-    pub(super) fn load_billing(&self, cx: &mut Context<Self>) {
+    pub(super) fn load_billing(&mut self, cx: &mut Context<Self>) {
+        self.billing.loads = self.billing.loads.wrapping_add(1);
         self.load_credit_balance(cx);
         let backend = self.backend.clone();
         let user_id = self.user_id.clone();
@@ -142,20 +158,28 @@ impl SettingsScreen {
     }
 
     pub(super) fn billing_targets(&self) -> Vec<SettingsTarget> {
-        let mut targets = vec![SettingsTarget::Billing(BillingTarget::Refresh)];
+        let mut targets = vec![SettingsTarget::PageRefresh];
         if let Some(status) = self.billing.status.as_ref() {
-            if status.has_portal() {
-                targets.push(SettingsTarget::Billing(BillingTarget::ManageSubscription));
+            match plan_action(status) {
+                Some(PlanAction::Portal) => {
+                    targets.push(SettingsTarget::Billing(BillingTarget::ManageSubscription))
+                }
+                Some(PlanAction::Web) => {
+                    targets.push(SettingsTarget::Billing(BillingTarget::ViewPlans))
+                }
+                None => {}
             }
-            for product in self.billing.products.as_deref().unwrap_or_default() {
-                if product_action(status, product) != ProductAction::Current {
-                    targets.push(SettingsTarget::Billing(BillingTarget::Product(
-                        product.id.clone(),
-                    )));
+            if shows_plan_list(status) {
+                for product in self.billing.products.as_deref().unwrap_or_default() {
+                    if product_action(status, product) != ProductAction::Current {
+                        targets.push(SettingsTarget::Billing(BillingTarget::Product(
+                            product.id.clone(),
+                        )));
+                    }
                 }
             }
         }
-        // Credits sit below Plans, which only render once status has loaded.
+        // Credits sit below the plan, which only renders once status has loaded.
         if self.api_access() == Some(true) {
             targets.extend(self.credits_targets());
         }
@@ -169,15 +193,102 @@ impl SettingsScreen {
         cx: &mut Context<Self>,
     ) {
         match target {
-            BillingTarget::Refresh => self.refresh_billing(cx),
             BillingTarget::ManageSubscription => self.open_billing_portal(cx),
+            BillingTarget::ViewPlans => self.open_pricing_page(cx),
+            BillingTarget::ManagePlan => self.navigate_to(Section::Billing, cx),
             BillingTarget::Product(id) => self.choose_product(&id, cx),
             BillingTarget::Credits(target) => self.activate_credits_target(target, window, cx),
         }
     }
 
+    /// Usage: the plan meter and extra-credit balance at a glance; plan
+    /// changes and purchases stay on Plan & Billing.
+    pub(super) fn render_usage_pane(&self, cx: &mut Context<Self>) -> Div {
+        let mut pane = div().flex().flex_col().gap_4().child(
+            div()
+                .flex()
+                .items_start()
+                .justify_between()
+                .gap_4()
+                .child(page_header(
+                    &tr("settings-section-usage"),
+                    &tr("settings-usage-subtitle"),
+                ))
+                .child(self.page_refresh_button("usage-refresh", cx)),
+        );
+        pane = pane.child(subsection_title(&tr("settings-billing-plan")));
+        pane = pane.child(match &self.plan {
+            Some(usage) => plan_card(usage, &self.messages).into_any_element(),
+            None => div()
+                .text_sm()
+                .text_color(gpui::rgb(theme::text_muted()))
+                .child(tr("settings-settings-plan-usage-unavailable"))
+                .into_any_element(),
+        });
+        let mut rows: Vec<gpui::AnyElement> = Vec::new();
+        if self.api_access() != Some(false) {
+            rows.push(
+                info_row_content(
+                    &tr("settings-usage-extra-credits"),
+                    self.billing.credits.balance_label(),
+                )
+                .into_any_element(),
+            );
+        }
+        rows.extend([
+            div()
+                .text_xs()
+                .text_color(gpui::rgb(theme::text_muted()))
+                .child(gpui::text!(tr("settings-usage-what-counts")))
+                .into_any_element(),
+            self.application_target(
+                || SettingsTarget::Billing(BillingTarget::ManagePlan),
+                div()
+                    .flex()
+                    .items_center()
+                    .justify_between()
+                    .gap_4()
+                    .child(super::setting_copy(
+                        tr("settings-usage-manage-plan"),
+                        tr("settings-usage-manage-plan-description"),
+                    ))
+                    .child(
+                        widgets::secondary_button("usage-manage-plan")
+                            .flex_none()
+                            .py_1p5()
+                            .on_click(cx.listener(|this, _event, _window, cx| {
+                                this.navigate_to(Section::Billing, cx);
+                            }))
+                            .child(tr("settings-usage-manage-plan"))
+                            .child(widgets::navigate_mark(theme::text_primary())),
+                    ),
+            ),
+        ]);
+        pane.child(widgets::card_stack(rows))
+    }
+
     pub(super) fn refresh_billing(&mut self, cx: &mut Context<Self>) {
         self.billing.notice = None;
+        self.load_billing(cx);
+        self.load_plan(cx);
+        cx.notify();
+    }
+
+    /// How long after a portal or checkout handoff a return to the window
+    /// still refetches billing.
+    pub(super) const BROWSER_HANDOFF_WINDOW: std::time::Duration =
+        std::time::Duration::from_secs(10 * 60);
+
+    /// The window came back to the front. If a browser handoff is recent,
+    /// refetch billing, keeping the notice that explains what was opened.
+    pub(super) fn on_window_activated(&mut self, cx: &mut Context<Self>) {
+        let Some(since) = self.billing.awaiting_browser else {
+            return;
+        };
+        if since.elapsed() > Self::BROWSER_HANDOFF_WINDOW {
+            self.billing.awaiting_browser = None;
+            return;
+        }
         self.load_billing(cx);
         self.load_plan(cx);
         cx.notify();
@@ -197,6 +308,9 @@ impl SettingsScreen {
             cx,
             |this, result, cx| {
                 this.billing.busy = false;
+                if result.is_ok() {
+                    this.billing.awaiting_browser = Some(std::time::Instant::now());
+                }
                 this.billing.notice = Some(match result {
                     Ok(()) => UiText::key("settings-billing-opened-the-subscription-portal-in-your-browser-refresh-after-maki"),
                     Err(message) => message.into(),
@@ -204,6 +318,20 @@ impl SettingsScreen {
                 cx.notify();
             },
         );
+    }
+
+    pub(super) fn open_pricing_page(&mut self, cx: &mut Context<Self>) {
+        let opened = crate::backend::open_pricing_page_presented();
+        // Plans can change on the pricing page too (Team seats, non-Stripe
+        // subscriptions), so the return to the window refetches.
+        if opened.is_ok() {
+            self.billing.awaiting_browser = Some(std::time::Instant::now());
+        }
+        self.billing.notice = Some(match opened {
+            Ok(()) => UiText::key("settings-billing-opened-the-pricing-page-in-your-browser"),
+            Err(message) => crate::ui::host_errors::failure_text(&message),
+        });
+        cx.notify();
     }
 
     pub(super) fn choose_product(&mut self, product_id: &str, cx: &mut Context<Self>) {
@@ -226,15 +354,7 @@ impl SettingsScreen {
         match product_action(status, product) {
             ProductAction::Current => {}
             ProductAction::Portal => self.open_billing_portal(cx),
-            ProductAction::Web => {
-                self.billing.notice = Some(match crate::backend::open_pricing_page_presented() {
-                    Ok(()) => {
-                        UiText::key("settings-billing-opened-the-pricing-page-in-your-browser")
-                    }
-                    Err(message) => crate::ui::host_errors::failure_text(&message),
-                });
-                cx.notify();
-            }
+            ProductAction::Web => self.open_pricing_page(cx),
             ProductAction::Checkout => {
                 self.billing.busy = true;
                 self.billing.notice = None;
@@ -247,6 +367,9 @@ impl SettingsScreen {
                     cx,
                     |this, result, cx| {
                         this.billing.busy = false;
+                        if result.is_ok() {
+                            this.billing.awaiting_browser = Some(std::time::Instant::now());
+                        }
                         this.billing.notice = Some(match result {
                             Ok(()) => UiText::key("settings-billing-opened-checkout-in-your-browser-refresh-after-paying-to-see-the-n"),
                             Err(message) => message.into(),
@@ -263,20 +386,14 @@ impl SettingsScreen {
         let mut pane = div().flex().flex_col().gap_4().child(
             div()
                 .flex()
-                .items_center()
+                .items_start()
                 .justify_between()
-                .child(section_title(&tr("settings-billing-plan")))
-                .child(
-                    self.application_target(
-                        || SettingsTarget::Billing(BillingTarget::Refresh),
-                        widgets::ghost_button("billing-refresh")
-                            .py_1p5()
-                            .on_click(cx.listener(|this, _event, _window, cx| {
-                                this.refresh_billing(cx);
-                            }))
-                            .child(tr("settings-billing-refresh")),
-                    ),
-                ),
+                .gap_4()
+                .child(page_header(
+                    &tr("settings-section-billing"),
+                    &tr("settings-billing-subtitle"),
+                ))
+                .child(self.page_refresh_button("billing-refresh", cx)),
         );
         let Some(status) = self.billing.status.as_ref() else {
             return pane.child(
@@ -294,106 +411,144 @@ impl SettingsScreen {
             .product_name
             .clone()
             .unwrap_or_else(|| tr("settings-billing-free").to_string());
-        let mut plan = widgets::card_row().flex().flex_col().gap_2().child(
+        let current_product = status.product_id.as_deref().and_then(|id| {
+            self.billing
+                .products
+                .as_deref()
+                .unwrap_or_default()
+                .iter()
+                .find(|product| product.id == id)
+        });
+        let price =
+            current_product.and_then(|product| super::presentation::price(product, &self.messages));
+        let mut summary = div().flex().flex_col().gap_1().child(
             div()
                 .flex()
                 .items_center()
-                .justify_between()
-                .gap_4()
+                .gap_2()
                 .child(
                     div()
-                        .flex()
-                        .items_center()
-                        .gap_2()
-                        .child(
-                            div()
-                                .text_lg()
-                                .font_weight(gpui::FontWeight::SEMIBOLD)
-                                .text_color(gpui::rgb(theme::text_primary()))
-                                .child(plan_name),
-                        )
-                        .when_some(status.subscription_status.as_deref(), |row, state| {
-                            row.child(subscription_badge(state))
-                        }),
+                        .text_lg()
+                        .font_weight(gpui::FontWeight::SEMIBOLD)
+                        .text_color(gpui::rgb(theme::text_primary()))
+                        .child(plan_name),
                 )
-                .when(status.has_portal(), |row| {
-                    row.child(
-                        self.application_target(
-                            || SettingsTarget::Billing(BillingTarget::ManageSubscription),
-                            widgets::secondary_button("billing-portal")
-                                .py_1p5()
-                                .when(busy, |el| el.opacity(0.6))
-                                .when(!busy, |el| {
-                                    el.on_click(cx.listener(|this, _event, _window, cx| {
-                                        this.open_billing_portal(cx);
-                                    }))
-                                })
-                                .child(tr("settings-billing-manage-subscription")),
-                        ),
-                    )
-                }),
+                .when_some(
+                    status
+                        .subscription_status
+                        .as_deref()
+                        .filter(|state| *state != "active"),
+                    |row, state| row.child(subscription_badge(state)),
+                ),
         );
-        if let Some(label) = super::presentation::period_end(status, &self.messages) {
-            plan = plan.child(
+        if let Some(price) = price {
+            summary = summary.child(
                 div()
                     .text_sm()
                     .text_color(gpui::rgb(theme::text_secondary()))
+                    .child(price),
+            );
+        }
+        if let Some(label) = super::presentation::period_end(status, &self.messages) {
+            summary = summary.child(
+                div()
+                    .text_sm()
+                    .text_color(gpui::rgb(theme::text_muted()))
                     .child(label),
             );
         }
         if let Some(provider) = payment_provider_note(status) {
-            plan = plan.child(
+            summary = summary.child(
                 div()
-                    .text_xs()
+                    .text_sm()
                     .text_color(gpui::rgb(theme::text_muted()))
                     .child(provider),
             );
         }
-        pane = pane.child(plan);
-        if let Some(usage) = self.plan.as_ref() {
-            pane = pane.child(plan_card(usage, &self.messages));
-        }
+        let plan_button = match plan_action(status) {
+            Some(PlanAction::Portal) => Some(
+                self.application_target(
+                    || SettingsTarget::Billing(BillingTarget::ManageSubscription),
+                    widgets::secondary_button("billing-portal")
+                        .flex_none()
+                        .py_1p5()
+                        .when(busy, |el| el.opacity(0.6))
+                        .when(!busy, |el| {
+                            el.on_click(cx.listener(|this, _event, _window, cx| {
+                                this.open_billing_portal(cx);
+                            }))
+                        })
+                        .child(tr("settings-billing-change-plan"))
+                        .child(widgets::external_mark(theme::text_primary())),
+                ),
+            ),
+            Some(PlanAction::Web) => Some(
+                self.application_target(
+                    || SettingsTarget::Billing(BillingTarget::ViewPlans),
+                    widgets::secondary_button("billing-view-plans")
+                        .flex_none()
+                        .py_1p5()
+                        .on_click(cx.listener(|this, _event, _window, cx| {
+                            this.open_pricing_page(cx);
+                        }))
+                        .child(tr("settings-billing-view-plans"))
+                        .child(widgets::external_mark(theme::text_primary())),
+                ),
+            ),
+            None => None,
+        };
+        pane = pane.child(subsection_title(&tr("settings-billing-your-plan")));
+        pane = pane.child(
+            widgets::card_row()
+                .flex()
+                .items_center()
+                .justify_between()
+                .gap_4()
+                .child(summary)
+                .children(plan_button),
+        );
         if let Some(notice) = &self.billing.notice {
-            pane = pane.child(
-                widgets::banner(theme::bg_sidebar_pill())
-                    .text_sm()
-                    .text_color(gpui::rgb(theme::text_secondary()))
-                    .child(notice.clone()),
-            );
+            pane = pane.child(widgets::notice(
+                "billing-notice-dismiss",
+                notice.resolve(),
+                cx.listener(|this, _event, _window, cx| {
+                    this.billing.notice = None;
+                    cx.notify();
+                }),
+            ));
         }
 
-        pane = pane.child(section_title(&tr("settings-billing-plans")));
-        match self.billing.products.as_deref() {
-            Some(products) if !products.is_empty() => {
-                for product in products {
-                    pane = pane.child(self.render_product(status, product, cx));
+        // Subscribers change plans in the portal or on the web; only accounts
+        // without a paid plan need the in-app checkout list.
+        if shows_plan_list(status) {
+            pane = pane.child(subsection_title(&tr("settings-billing-choose-a-plan")));
+            match self.billing.products.as_deref() {
+                Some(products) if !products.is_empty() => {
+                    let rows: Vec<_> = products
+                        .iter()
+                        .filter(|product| product_action(status, product) != ProductAction::Current)
+                        .map(|product| self.render_product(status, product, cx))
+                        .collect();
+                    pane = pane.child(widgets::card_stack(rows));
+                }
+                Some(_) => {
+                    pane = pane.child(
+                        div()
+                            .text_sm()
+                            .text_color(gpui::rgb(theme::text_faint()))
+                            .child(tr("settings-billing-no-plans-are-on-sale-right-now")),
+                    );
+                }
+                None => {
+                    pane = pane.child(
+                        div()
+                            .text_sm()
+                            .text_color(gpui::rgb(theme::text_faint()))
+                            .child(tr("settings-billing-loading-plans")),
+                    );
                 }
             }
-            Some(_) => {
-                pane = pane.child(
-                    div()
-                        .text_sm()
-                        .text_color(gpui::rgb(theme::text_faint()))
-                        .child(tr("settings-billing-no-plans-are-on-sale-right-now")),
-                );
-            }
-            None => {
-                pane = pane.child(
-                    div()
-                        .text_sm()
-                        .text_color(gpui::rgb(theme::text_faint()))
-                        .child(tr("settings-billing-loading-plans")),
-                );
-            }
         }
-        pane = pane.child(
-            div()
-                .text_xs()
-                .text_color(gpui::rgb(theme::text_muted()))
-                .child(
-                    tr("settings-billing-payments-open-in-your-browser-bitcoin-payments-and-team-seats-are"),
-                ),
-        );
         if self.api_access() == Some(false) {
             return pane;
         }
@@ -409,34 +564,27 @@ impl SettingsScreen {
         let action = product_action(status, product);
         let busy = self.billing.busy;
         let label = match action {
-            ProductAction::Current => tr("settings-billing-current-plan"),
-            ProductAction::Checkout => tr("settings-billing-choose"),
-            ProductAction::Portal => tr("settings-billing-change-plan"),
+            ProductAction::Current | ProductAction::Checkout | ProductAction::Portal => {
+                tr("settings-billing-choose")
+            }
             ProductAction::Web => tr("settings-billing-see-on-the-web"),
         };
         let id = product.id.clone();
-        let button = match action {
-            ProductAction::Current => widgets::secondary_button(gpui::SharedString::from(format!(
-                "billing-product-{}",
-                product.id
-            )))
-            .py_1p5()
-            .opacity(0.6)
-            .child(label),
-            _ => widgets::primary_button(gpui::SharedString::from(format!(
-                "billing-product-{}",
-                product.id
-            )))
-            .py_1p5()
-            .when(busy, |el| el.opacity(0.6))
-            .when(!busy, |el| {
-                el.on_click(cx.listener(move |this, _event, _window, cx| {
-                    this.choose_product(&id, cx);
-                }))
-            })
-            .child(label),
-        };
-        let row = widgets::card_row()
+        let button = widgets::secondary_button(gpui::SharedString::from(format!(
+            "billing-product-{}",
+            product.id
+        )))
+        .flex_none()
+        .py_1p5()
+        .when(busy, |el| el.opacity(0.6))
+        .when(!busy, |el| {
+            el.on_click(cx.listener(move |this, _event, _window, cx| {
+                this.choose_product(&id, cx);
+            }))
+        })
+        .child(label)
+        .child(widgets::external_mark(theme::text_primary()));
+        let row = div()
             .flex()
             .items_center()
             .justify_between()
@@ -473,23 +621,45 @@ impl SettingsScreen {
                     .when_some(product.description.clone(), |column, description| {
                         column.child(
                             div()
-                                .text_xs()
+                                .text_sm()
                                 .text_color(gpui::rgb(theme::text_muted()))
                                 .child(description),
                         )
                     }),
             )
             .child(button);
-        if action == ProductAction::Current {
-            row.into_any_element()
-        } else {
-            let id = product.id.clone();
-            self.application_target(
-                move || SettingsTarget::Billing(BillingTarget::Product(id)),
-                row,
-            )
-        }
+        let id = product.id.clone();
+        self.application_target(
+            move || SettingsTarget::Billing(BillingTarget::Product(id)),
+            row,
+        )
     }
+}
+
+/// The single action on the "Your plan" card.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(super) enum PlanAction {
+    /// Change plans in the Stripe portal.
+    Portal,
+    /// Non-Stripe subscriptions change on the web pricing page.
+    Web,
+}
+
+pub(super) fn plan_action(status: &BillingStatus) -> Option<PlanAction> {
+    if shows_plan_list(status) {
+        return None;
+    }
+    if status.has_portal() {
+        Some(PlanAction::Portal)
+    } else {
+        Some(PlanAction::Web)
+    }
+}
+
+/// Accounts without a paid plan pick one in the app; subscribers change
+/// plans through the portal or the web instead of an inline list.
+pub(super) fn shows_plan_list(status: &BillingStatus) -> bool {
+    !status.is_subscribed || status.tier() == PlanTier::Free
 }
 
 fn subscription_badge(state: &str) -> Div {

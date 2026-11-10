@@ -19,7 +19,6 @@ pub(super) enum LocalApiTarget {
     Port,
     SavePort,
     CopyUrl,
-    Refresh,
 }
 
 pub(super) struct LocalApiUiState {
@@ -103,7 +102,7 @@ impl LocalApiUiState {
 
     /// Status is pushed, so refreshing by hand is only for recovering from a
     /// read or update that failed.
-    fn can_refresh(&self) -> bool {
+    pub(super) fn can_refresh(&self) -> bool {
         !self.refreshing && !self.saving && (self.status.is_none() || self.notice.is_some())
     }
 }
@@ -283,9 +282,6 @@ impl SettingsScreen {
         if self.local_api.can_configure() {
             targets.push(target(LocalApiTarget::Enabled));
         }
-        if self.local_api.can_refresh() {
-            targets.push(target(LocalApiTarget::Refresh));
-        }
         if self.local_api.status.is_some() {
             targets.push(target(LocalApiTarget::CopyUrl));
         }
@@ -314,7 +310,6 @@ impl SettingsScreen {
             LocalApiTarget::Port => {}
             LocalApiTarget::SavePort => self.save_local_api_port(cx),
             LocalApiTarget::CopyUrl => self.copy_local_api_url(cx),
-            LocalApiTarget::Refresh => self.refresh_local_api_status(cx),
         }
     }
 
@@ -390,21 +385,6 @@ impl SettingsScreen {
             .flex_none()
             .items_center()
             .gap_3()
-            .when(state.can_refresh(), |row| {
-                row.child(
-                    self.application_target(
-                        || SettingsTarget::LocalApi(LocalApiTarget::Refresh),
-                        widgets::ghost_button("local-api-refresh")
-                            .py_1p5()
-                            .tab_index(tab_order::LOCAL_REFRESH)
-                            .on_click(
-                                cx.listener(|this, _, _, cx| this.refresh_local_api_status(cx)),
-                            )
-                            .on_key_down(Self::on_press_key(Self::refresh_local_api_status, cx))
-                            .child(tr("settings-local-api-refresh-status")),
-                    ),
-                )
-            })
             .when_some(status.filter(|_| state.can_retry()), |row, status| {
                 row.child(
                     self.application_target(

@@ -10,7 +10,7 @@ use std::collections::HashSet;
 use gpui::{Context, Div, SharedString, div, prelude::*};
 use maple_agent::agent::AgentToolSwitch;
 
-use super::{SettingsScreen, SettingsTarget, section_title, setting_copy};
+use super::{SettingsScreen, SettingsTarget, page_header, setting_copy};
 use crate::ui::i18n::{UiText, tr};
 use crate::ui::task::Failure;
 use crate::ui::{theme, widgets};
@@ -231,21 +231,14 @@ impl SettingsScreen {
     pub(super) fn render_tools_pane(&self, cx: &mut Context<Self>) -> Div {
         let muted =
             |text: SharedString| div().text_color(gpui::rgb(theme::text_muted())).child(text);
-        let mut pane = div()
-            .flex()
-            .flex_col()
-            .gap_4()
-            .child(section_title(&tr("settings-section-tools")))
-            .child(
-                div()
-                    .text_sm()
-                    .text_color(gpui::rgb(theme::text_secondary()))
-                    .child(if self.integrations_backend.remote_host().is_some() {
-                        tr("settings-tools-intro-remote")
-                    } else {
-                        tr("settings-tools-intro")
-                    }),
-            );
+        let mut pane = div().flex().flex_col().gap_4().child(page_header(
+            &tr("settings-section-tools"),
+            &if self.integrations_backend.remote_host().is_some() {
+                tr("settings-tools-intro-remote")
+            } else {
+                tr("settings-tools-intro")
+            },
+        ));
         if let Some(notice) = &self.tools.notice {
             pane = pane.child(widgets::notice(
                 "tools-notice-close",
@@ -329,12 +322,16 @@ mod tests {
         let screen = screen(cx);
         settle(cx, &screen, |screen| screen.tools.switches.is_some());
         screen.update(cx, |screen, _| {
+            // Tools stays with Integrations: same sidebar group, right
+            // after Integrations and its Apps directory.
             let sections = screen.visible_sections();
             let integrations = sections
                 .iter()
                 .position(|section| *section == Section::Integrations)
                 .unwrap();
-            assert_eq!(sections.get(integrations + 1), Some(&Section::Tools));
+            assert_eq!(sections.get(integrations + 1), Some(&Section::Apps));
+            assert_eq!(sections.get(integrations + 2), Some(&Section::Tools));
+            assert_eq!(Section::Tools.group(), Section::Integrations.group());
             assert_eq!(Section::Tools.id(), "Tools");
             assert_eq!(Section::Tools.label().as_ref(), "Tools");
 

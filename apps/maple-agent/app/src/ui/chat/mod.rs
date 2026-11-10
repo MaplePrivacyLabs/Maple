@@ -7421,6 +7421,7 @@ impl ChatScreen {
                         .flex()
                         .items_center()
                         .gap_2()
+                        .child(icon("gauge", px(14.), theme::text_secondary()))
                         .child(
                             div()
                                 .flex_1()

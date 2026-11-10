@@ -91,7 +91,34 @@ fn pill(id: impl Into<ElementId>) -> Stateful<Div> {
         .focus_visible(focus_ring)
 }
 
-/// Accent-filled action button: coral pill with a light label.
+/// The mark that says a control leaves the app for the browser. Goes after
+/// the label inside any button or link that opens a URL, in that control's
+/// text color.
+pub fn external_mark(color: u32) -> gpui::Svg {
+    icon("external-link", px(12.), color)
+}
+
+/// The mark for a control that navigates within the app (to another page or
+/// section), as opposed to [`external_mark`].
+pub fn navigate_mark(color: u32) -> gpui::Svg {
+    icon("arrow-right", px(12.), color)
+}
+
+/// Accessible default/primary action button: high-contrast neutral inverted pill.
+pub fn default_button(id: impl Into<ElementId>) -> Stateful<Div> {
+    pill(id)
+        .bg(gpui::rgb(theme::bg_default_button()))
+        .text_color(gpui::rgb(theme::text_on_default_button()))
+        .hover(|style| {
+            style
+                .bg(gpui::rgb(theme::bg_default_button_hover()))
+                .cursor_pointer()
+        })
+        .active(|style| press_depth(style.bg(gpui::rgb(theme::bg_default_button_active()))))
+}
+
+/// Legacy accent-filled action button; new and Settings surfaces use
+/// [`default_button`] for WCAG contrast until legacy callers migrate globally.
 pub fn primary_button(id: impl Into<ElementId>) -> Stateful<Div> {
     pill(id)
         .bg(gpui::rgb(theme::accent()))
@@ -99,7 +126,6 @@ pub fn primary_button(id: impl Into<ElementId>) -> Stateful<Div> {
         .hover(|style| style.bg(gpui::rgb(theme::accent_hover())).cursor_pointer())
         .active(|style| press_depth(style.bg(gpui::rgb(theme::send_bottom()))))
 }
-
 /// Neutral pill for the second action beside a [`primary_button`]
 /// (Cancel, Back, alternate sign-in): a pebble fill that darkens on hover.
 pub fn secondary_button(id: impl Into<ElementId>) -> Stateful<Div> {
@@ -135,6 +161,19 @@ pub fn danger_button(id: impl Into<ElementId>) -> Stateful<Div> {
         .text_color(gpui::rgb(theme::on_accent()))
         .hover(|style| style.opacity(0.9).cursor_pointer())
         .active(|style| press_depth(style.opacity(0.85)))
+}
+
+/// A destructive action at rest: outlined in the error color, filled only
+/// on hover. For the row that *starts* a destructive flow; the filled
+/// [`danger_button`] is for the step that commits it.
+pub fn danger_outline_button(id: impl Into<ElementId>) -> Stateful<Div> {
+    let error = theme::status_error();
+    pill(id)
+        .border_1()
+        .border_color(gpui::rgb(error))
+        .text_color(gpui::rgb(error))
+        .hover(move |style| style.bg(gpui::rgba((error << 8) | 0x1f)).cursor_pointer())
+        .active(move |style| press_depth(style.bg(gpui::rgba((error << 8) | 0x33))))
 }
 
 /// Square icon-only button with a hover plate, used in list rows and
