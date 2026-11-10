@@ -13,7 +13,6 @@ const MAX_LIVE_SUMMARIES: usize = 200;
 pub(in crate::ui::chat) enum PageKind {
     Pinned,
     Active,
-    Settled,
     Archived,
     Search,
     Projects,
@@ -72,17 +71,12 @@ mod tests {
             sidebar.pages.enabled = true;
             for complete in [false, true] {
                 if complete {
-                    sidebar.pages.ready.extend([
-                        PageKind::Active,
-                        PageKind::Settled,
-                        PageKind::Pinned,
-                    ]);
+                    sidebar
+                        .pages
+                        .ready
+                        .extend([PageKind::Active, PageKind::Pinned]);
                 }
-                for group in [
-                    SidebarGroup::Project,
-                    SidebarGroup::Status,
-                    SidebarGroup::List,
-                ] {
+                for group in [SidebarGroup::Project, SidebarGroup::List] {
                     sidebar.view.group = group;
                     sidebar.rebuild_sections();
                     assert_eq!(
@@ -219,7 +213,7 @@ mod tests {
             sidebar.sessions = vec![summary("display-only", AgentTaskState::Active)];
             sidebar.pages = SidebarPages {
                 enabled: true,
-                ready: HashSet::from([PageKind::Active, PageKind::Settled, PageKind::Pinned]),
+                ready: HashSet::from([PageKind::Active, PageKind::Pinned]),
                 autoselect_generation: Some(0),
                 ..SidebarPages::default()
             };
@@ -263,7 +257,7 @@ mod tests {
                 .push(summary("active", AgentTaskState::Active));
             sidebar.pages = SidebarPages {
                 enabled: true,
-                ready: HashSet::from([PageKind::Active, PageKind::Settled, PageKind::Pinned]),
+                ready: HashSet::from([PageKind::Active, PageKind::Pinned]),
                 ids: HashMap::from([
                     (PageKind::Archived, archived),
                     (PageKind::Active, vec!["active".into()]),
@@ -315,7 +309,7 @@ mod tests {
                 !sidebar.entries.contains(&note),
                 "unrequested pages are unknown"
             );
-            for kind in [PageKind::Active, PageKind::Settled, PageKind::Pinned] {
+            for kind in [PageKind::Active, PageKind::Pinned] {
                 sidebar.pages.ready.insert(kind);
                 sidebar.rebuild_sections();
                 assert_eq!(sidebar.entries.contains(&note), kind == PageKind::Pinned);
@@ -327,7 +321,7 @@ mod tests {
                 .unwrap();
             assert!(sidebar.vim_by_row[row].is_none());
             assert!(sidebar.entry_sections[row].is_none());
-            for kind in [PageKind::Active, PageKind::Settled, PageKind::Pinned] {
+            for kind in [PageKind::Active, PageKind::Pinned] {
                 sidebar.pages.next.insert(kind, "more".into());
                 sidebar.rebuild_sections();
                 assert!(!sidebar.entries.contains(&note), "continuation is unknown");
@@ -389,18 +383,14 @@ mod tests {
         sidebar.update(cx, |sidebar, cx| {
             sidebar.reset_persisted_for_test();
             sidebar.view = SidebarView {
-                group: SidebarGroup::Status,
+                group: SidebarGroup::List,
                 ..SidebarView::default()
             };
             sidebar.computers = Arc::new(vec![
                 Computer::pending("one".into(), "One".into(), None),
                 Computer::pending("two".into(), "Two".into(), None),
             ]);
-            for state in [
-                AgentTaskState::Active,
-                AgentTaskState::Settled,
-                AgentTaskState::Archived,
-            ] {
+            for state in [AgentTaskState::Active, AgentTaskState::Archived] {
                 sidebar.sessions = vec![
                     AgentSessionSummary {
                         project_root: "/a".into(),
@@ -430,7 +420,7 @@ mod tests {
                 sidebar
                     .pages
                     .ready
-                    .extend([PageKind::Active, PageKind::Settled, PageKind::Pinned]);
+                    .extend([PageKind::Active, PageKind::Pinned]);
                 sidebar.archived_expanded = true;
                 sidebar.rebuild_sections();
                 let shown: Vec<_> = sidebar
@@ -448,11 +438,7 @@ mod tests {
                 assert!(sidebar.archived_rows.is_empty());
                 assert!(sidebar.grouped_project_names().is_empty());
                 assert_eq!(sidebar.active_rows(), [2]);
-                assert!(
-                    sidebar
-                        .entries
-                        .contains(&SidebarEntry::SectionLabel(SidebarSection::Active))
-                );
+                assert!(sidebar.entries.contains(&SidebarEntry::ProjectsHeader));
                 let generation = sidebar.pages.generation;
                 sidebar.set_computers(Arc::new(Vec::new()), cx);
                 assert!(sidebar.project_filter.is_none());
@@ -463,7 +449,7 @@ mod tests {
                     2,
                     "only live A tasks survive refresh"
                 );
-                assert_eq!(sidebar.view.group, SidebarGroup::Status);
+                assert_eq!(sidebar.view.group, SidebarGroup::List);
                 assert!(sidebar.grouped_project_names().is_empty());
                 assert_eq!(
                     sidebar
@@ -552,22 +538,14 @@ mod tests {
                     .iter()
                     .any(|entry| matches!(entry, SidebarEntry::Empty(_)))
             );
-            for group in [SidebarGroup::Status, SidebarGroup::List] {
-                sidebar.view.group = group;
-                sidebar.rebuild_sections();
-                assert!(
-                    !sidebar
-                        .entries
-                        .iter()
-                        .any(|entry| matches!(entry, SidebarEntry::Empty(_)))
-                );
-            }
-            sidebar
-                .pages
-                .ready
-                .extend([PageKind::Active, PageKind::Settled, PageKind::Pinned]);
-            for group in [SidebarGroup::Status, SidebarGroup::List] {
-                sidebar.view.group = group;
+            sidebar.view.group = SidebarGroup::List;
+            for complete in [false, true] {
+                if complete {
+                    sidebar
+                        .pages
+                        .ready
+                        .extend([PageKind::Active, PageKind::Pinned]);
+                }
                 sidebar.rebuild_sections();
                 assert!(
                     !sidebar
@@ -627,13 +605,9 @@ mod tests {
                 ..page_summary(id)
             };
             sidebar.apply_task_page(PageKind::Pinned, vec![row("pin", "/a")], false);
-            sidebar.apply_task_page(PageKind::Active, vec![row("a1", "/a")], false);
             sidebar.apply_task_page(
-                PageKind::Settled,
-                vec![TaskSummary {
-                    state: "settled".into(),
-                    ..row("b1", "/b")
-                }],
+                PageKind::Active,
+                vec![row("a1", "/a"), row("a2", "/a"), row("b1", "/b")],
                 false,
             );
             sidebar.apply_task_page(
@@ -647,7 +621,6 @@ mod tests {
             for kind in [
                 PageKind::Pinned,
                 PageKind::Active,
-                PageKind::Settled,
                 PageKind::Archived,
                 PageKind::Projects,
             ] {
@@ -658,11 +631,7 @@ mod tests {
             assert_eq!(sidebar.grouped_project_names(), ["a", "b"]);
             assert_eq!(sidebar.pinned_rows.len(), 1);
             assert_eq!(sidebar.archived_rows.len(), 1);
-            sidebar.apply_task_page(
-                PageKind::Active,
-                vec![row("a2", "/a"), row("c1", "/c")],
-                true,
-            );
+            sidebar.apply_task_page(PageKind::Active, vec![row("c1", "/c")], true);
             sidebar.rebuild_sections();
             assert_eq!(sidebar.grouped_project_names(), ["a", "b", "c"]);
             assert_eq!(
@@ -671,8 +640,8 @@ mod tests {
                     .iter()
                     .map(|(_, rows)| rows.len())
                     .sum::<usize>(),
-                2,
-                "rows beyond the unread Settled frontier stay cached"
+                3,
+                "the incomplete boundary timestamp remains cached"
             );
             let more = |sidebar: &Sidebar| {
                 sidebar
@@ -688,7 +657,7 @@ mod tests {
                 more(sidebar),
                 [
                     PageKind::Pinned,
-                    PageKind::Settled,
+                    PageKind::Active,
                     PageKind::Projects,
                     PageKind::Archived
                 ]
@@ -702,19 +671,15 @@ mod tests {
                     .any(|entry| matches!(entry, SidebarEntry::Empty(_)))
             );
             sidebar.set_projects_expanded(true, cx);
-            assert_eq!(sidebar.pages.ids[&PageKind::Active], ["a1", "a2", "c1"]);
+            assert_eq!(
+                sidebar.pages.ids[&PageKind::Active],
+                ["a1", "a2", "b1", "c1"]
+            );
             assert_eq!(sidebar.pages.next[&PageKind::Active], "continuation");
-            sidebar.view.group = SidebarGroup::Status;
-            sidebar.rebuild_sections();
-            sidebar.toggle_section_expanded(SidebarSection::Active, cx);
-            assert!(!more(sidebar).contains(&PageKind::Active));
-            assert!(more(sidebar).contains(&PageKind::Settled));
             sidebar.view.group = SidebarGroup::List;
             sidebar.rebuild_sections();
-            assert_eq!(sidebar.pages.ids[&PageKind::Settled], ["b1"]);
-            assert!(more(sidebar).contains(&PageKind::Settled));
-            assert!(!more(sidebar).contains(&PageKind::Active));
-            assert_eq!(sidebar.section_rows(SidebarSection::List).len(), 2);
+            assert!(more(sidebar).contains(&PageKind::Active));
+            assert_eq!(sidebar.section_rows(SidebarSection::List).len(), 3);
         });
     }
 
@@ -737,38 +702,51 @@ mod tests {
                     sidebar.selected = None;
                     sidebar.activity.running.clear();
                     let original: Vec<_> = (0..count).map(|i| format!("loaded-{i}")).collect();
-                    sidebar.sessions = original
+                    let initial_page: Vec<_> = original
                         .iter()
-                        .map(|id| summary(id, AgentTaskState::Active))
+                        .enumerate()
+                        .map(|(index, id)| TaskSummary {
+                            updated_ms: (count - index) as i64,
+                            ..page_summary(id)
+                        })
                         .collect();
-                    sidebar.pages.ids.insert(PageKind::Active, original.clone());
+                    sidebar.apply_task_page(PageKind::Active, initial_page.clone(), false);
                     if has_more {
                         sidebar
                             .pages
                             .next
                             .insert(PageKind::Active, "continuation".into());
                     }
-                    // Moving a task from another section and then updating an
-                    // already loaded task must leave the old cursor row visible.
+                    // Moving a task from Archive and updating an existing row
+                    // must preserve the loaded coverage through the cursor.
                     sidebar
                         .pages
                         .ids
-                        .insert(PageKind::Settled, vec!["moved".into()]);
+                        .insert(PageKind::Archived, vec!["moved".into()]);
                     sidebar
                         .sessions
-                        .push(summary("moved", AgentTaskState::Settled));
-                    sidebar.apply_live_summary(summary("moved", AgentTaskState::Active), cx);
-                    sidebar.apply_live_summary(summary("new", AgentTaskState::Active), cx);
+                        .push(summary("moved", AgentTaskState::Archived));
+                    for id in ["moved", "new"] {
+                        sidebar.apply_live_summary(
+                            AgentSessionSummary {
+                                updated_ms: 1000,
+                                ..summary(id, AgentTaskState::Active)
+                            },
+                            cx,
+                        );
+                    }
                     sidebar.pinned_tasks.push("pinned".into());
                     sidebar.apply_live_summary(summary("pinned", AgentTaskState::Active), cx);
-                    sidebar.apply_live_summary(summary(&original[0], AgentTaskState::Active), cx);
+                    sidebar.apply_live_summary(
+                        AgentSessionSummary {
+                            updated_ms: 1000,
+                            ..summary(&original[0], AgentTaskState::Active)
+                        },
+                        cx,
+                    );
                     // The first-page read began before the pushed move. Its
                     // older snapshot must not erase the newer membership.
-                    sidebar.apply_task_page(
-                        PageKind::Active,
-                        original.iter().map(|id| page_summary(id)).collect(),
-                        false,
-                    );
+                    sidebar.apply_task_page(PageKind::Active, initial_page, false);
                     sidebar.rebuild_sections();
                     let loaded = &sidebar.pages.ids[&PageKind::Active];
                     assert_eq!(loaded.len(), count + 3);
@@ -776,10 +754,13 @@ mod tests {
                         assert!(loaded.contains(id), "lost loaded boundary {id}");
                         assert!(sidebar.sessions.iter().any(|row| &row.id == id));
                     }
-                    assert_eq!(sidebar.active_rows().len(), count + 2);
+                    assert_eq!(
+                        sidebar.active_rows().len(),
+                        count + 2 - usize::from(has_more)
+                    );
                     assert_eq!(sidebar.pinned_rows.len(), 1);
                     assert_eq!(sidebar.pages.next.contains_key(&PageKind::Active), has_more);
-                    assert!(!sidebar.pages.ids[&PageKind::Settled].contains(&"moved".into()));
+                    assert!(!sidebar.pages.ids[&PageKind::Archived].contains(&"moved".into()));
                 });
             }
         }
@@ -811,7 +792,6 @@ impl PageKind {
         match self {
             Self::Pinned => "pinned tasks",
             Self::Active => "active tasks",
-            Self::Settled => "settled tasks",
             Self::Archived => "archived tasks",
             Self::Search => "search results",
             Self::Projects => "projects",
@@ -845,10 +825,6 @@ impl SidebarPages {
             .is_some_and(|ids| ids.iter().any(|current| current == id))
     }
 
-    pub(super) fn kind_complete(&self, kind: PageKind) -> bool {
-        !self.has_more(kind)
-    }
-
     pub(super) fn is_live(&self, id: &str) -> bool {
         self.live.contains_key(id)
     }
@@ -862,7 +838,7 @@ impl SidebarPages {
     /// Full coverage for the tasks shown in project folders, including pins.
     pub(super) fn non_archived_complete(&self) -> bool {
         !self.enabled
-            || [PageKind::Active, PageKind::Settled, PageKind::Pinned]
+            || [PageKind::Active, PageKind::Pinned]
                 .into_iter()
                 .all(|kind| self.ready.contains(&kind) && !self.has_more(kind))
     }
@@ -964,7 +940,7 @@ impl Sidebar {
     }
 
     fn pages_ready(&mut self, cx: &mut Context<Self>) {
-        if ![PageKind::Active, PageKind::Settled, PageKind::Pinned]
+        if ![PageKind::Active, PageKind::Pinned]
             .iter()
             .all(|kind| self.pages.ready.contains(kind))
         {
@@ -1015,7 +991,6 @@ impl Sidebar {
             self.pages.retain_loaded = true;
             if self.filter.is_empty() {
                 self.load_page(PageKind::Active, cx);
-                self.load_page(PageKind::Settled, cx);
                 self.load_page(PageKind::Pinned, cx);
                 self.load_page(PageKind::Archived, cx);
             } else {
@@ -1050,7 +1025,6 @@ impl Sidebar {
         });
         if self.filter.is_empty() {
             self.load_page(PageKind::Active, cx);
-            self.load_page(PageKind::Settled, cx);
             // The first archived page decides whether its collapsed heading exists.
             self.load_page(PageKind::Archived, cx);
         } else if self.backend.remote_host().is_none() {
@@ -1116,7 +1090,6 @@ impl Sidebar {
         for kind in [
             PageKind::Pinned,
             PageKind::Active,
-            PageKind::Settled,
             PageKind::Archived,
             PageKind::Search,
             PageKind::Projects,
@@ -1143,9 +1116,6 @@ impl Sidebar {
                     (PageKind::Active, true, _) => "chat-page-active-loading",
                     (PageKind::Active, false, true) => "chat-page-active-retry",
                     (PageKind::Active, false, false) => "chat-page-active-more",
-                    (PageKind::Settled, true, _) => "chat-page-settled-loading",
-                    (PageKind::Settled, false, true) => "chat-page-settled-retry",
-                    (PageKind::Settled, false, false) => "chat-page-settled-more",
                     (PageKind::Archived, true, _) => "chat-page-archived-loading",
                     (PageKind::Archived, false, true) => "chat-page-archived-retry",
                     (PageKind::Archived, false, false) => "chat-page-archived-more",
@@ -1175,7 +1145,6 @@ impl Sidebar {
         self.pages.live.insert(id.clone(), summary.clone());
         let target = match summary.state {
             AgentTaskState::Active => PageKind::Active,
-            AgentTaskState::Settled => PageKind::Settled,
             AgentTaskState::Archived => PageKind::Archived,
         };
         let visible = summary.message_count > 0
@@ -1183,7 +1152,7 @@ impl Sidebar {
                 .project_filter
                 .as_ref()
                 .is_none_or(|root| root == &summary.project_root);
-        for kind in [PageKind::Active, PageKind::Settled, PageKind::Archived] {
+        for kind in [PageKind::Active, PageKind::Archived] {
             if let Some(ids) = self.pages.ids.get_mut(&kind) {
                 ids.retain(|current| current != &id);
             }
@@ -1291,7 +1260,6 @@ impl Sidebar {
                 } else {
                     let section = TaskSection::State(match kind {
                         PageKind::Archived => TaskState::Archived,
-                        PageKind::Settled => TaskState::Settled,
                         _ => TaskState::Active,
                     });
                     catalog::TaskQuery::Tasks(NavigationTaskQuery {
@@ -1689,7 +1657,7 @@ impl Sidebar {
 }
 
 #[cfg(test)]
-mod merged_prefix_tests {
+mod prefix_tests {
     use super::*;
 
     fn summary(id: &str, state: &str, updated: i64) -> TaskSummary {
@@ -1723,9 +1691,7 @@ mod merged_prefix_tests {
     }
 
     #[gpui::test]
-    fn loading_more_appends_to_the_merged_list_instead_of_filling_gaps(
-        cx: &mut gpui::TestAppContext,
-    ) {
+    fn loading_more_appends_to_the_active_list(cx: &mut gpui::TestAppContext) {
         let _settings = crate::settings::SETTINGS_IO_LOCK.lock();
         cx.executor().allow_parking();
         let backend =
@@ -1742,69 +1708,40 @@ mod merged_prefix_tests {
             sidebar.activity.running.clear();
             sidebar.computers = Arc::new(Vec::new());
             sidebar.pages.enabled = true;
-            for (kind, state, newest) in [
-                (PageKind::Active, "active", 200),
-                (PageKind::Settled, "settled", 1000),
-            ] {
-                sidebar.apply_task_page(
-                    kind,
-                    (0..50)
-                        .map(|ix| summary(&format!("{state}-{ix}"), state, newest - ix))
-                        .collect(),
-                    false,
-                );
-                sidebar.pages.next.insert(kind, "next".into());
-            }
+            sidebar.apply_task_page(
+                PageKind::Active,
+                (0..50)
+                    .map(|ix| summary(&format!("active-{ix}"), "active", 100 - ix))
+                    .collect(),
+                false,
+            );
+            sidebar.pages.next.insert(PageKind::Active, "next".into());
             sidebar.rebuild_sections();
             let first = shown(sidebar);
             assert_eq!(first.len(), 49);
-            assert!(first.iter().all(|id| id.starts_with("settled")));
-            let more = sidebar
-                .entries
-                .iter()
-                .filter_map(|entry| match entry {
-                    SidebarEntry::LoadMore(kind) => Some(*kind),
-                    _ => None,
-                })
-                .collect::<Vec<_>>();
-            assert_eq!(more, [PageKind::Settled]);
-            // A later Settled page belongs ahead of the fetched Active rows.
-            sidebar.apply_task_page(
-                PageKind::Settled,
-                (50..100)
-                    .map(|ix| summary(&format!("settled-{ix}"), "settled", 1000 - ix))
-                    .collect(),
-                true,
-            );
-            sidebar.pages.next.remove(&PageKind::Settled);
-            sidebar.rebuild_sections();
-            let second = shown(sidebar);
-            assert_eq!(&second[..first.len()], first);
-            assert_eq!(second.len(), 149);
-            assert!(second[..100].iter().all(|id| id.starts_with("settled")));
             assert!(
                 sidebar
                     .entries
                     .contains(&SidebarEntry::LoadMore(PageKind::Active))
             );
-            assert!(
-                !sidebar
-                    .entries
-                    .contains(&SidebarEntry::LoadMore(PageKind::Settled))
-            );
-            // Exhausting Active releases the complete remaining merged tail.
+
             sidebar.apply_task_page(
                 PageKind::Active,
                 (50..100)
-                    .map(|ix| summary(&format!("active-{ix}"), "active", 200 - ix))
+                    .map(|ix| summary(&format!("active-{ix}"), "active", 100 - ix))
                     .collect(),
                 true,
             );
             sidebar.pages.next.remove(&PageKind::Active);
             sidebar.rebuild_sections();
-            let third = shown(sidebar);
-            assert_eq!(&third[..second.len()], second);
-            assert_eq!(third.len(), 200);
+            let second = shown(sidebar);
+            assert_eq!(&second[..first.len()], first);
+            assert_eq!(second.len(), 100);
+            assert!(
+                !sidebar
+                    .entries
+                    .contains(&SidebarEntry::LoadMore(PageKind::Active))
+            );
         });
     }
 
@@ -1828,27 +1765,26 @@ mod merged_prefix_tests {
             sidebar.activity.running.clear();
             sidebar.computers = Arc::new(Vec::new());
             sidebar.pages.enabled = true;
-            sidebar.apply_task_page(PageKind::Active, vec![summary("z", "active", 100)], false);
             sidebar.apply_task_page(
-                PageKind::Settled,
-                vec![summary("settled", "settled", 101)],
+                PageKind::Active,
+                vec![summary("newer", "active", 101), summary("z", "active", 100)],
                 false,
             );
             sidebar.pages.next.insert(PageKind::Active, "tie".into());
             sidebar.rebuild_sections();
-            assert_eq!(shown(sidebar), ["settled"]);
+            assert_eq!(shown(sidebar), ["newer"]);
             sidebar.apply_task_page(PageKind::Active, vec![summary("a", "active", 100)], true);
             sidebar.rebuild_sections();
-            assert_eq!(shown(sidebar), ["settled"]);
+            assert_eq!(shown(sidebar), ["newer"]);
             sidebar.pages.next.remove(&PageKind::Active);
             sidebar.rebuild_sections();
-            assert_eq!(shown(sidebar), ["settled", "a", "z"]);
+            assert_eq!(shown(sidebar), ["newer", "a", "z"]);
             // A selected/running task remains reachable outside the prefix.
-            sidebar.pages.next.insert(PageKind::Settled, "more".into());
+            sidebar.pages.next.insert(PageKind::Active, "more".into());
             sidebar.selected = Some("a".into());
             sidebar.activity.running.insert("z".into());
             sidebar.rebuild_sections();
-            assert_eq!(shown(sidebar), ["a", "z"]);
+            assert_eq!(shown(sidebar), ["newer", "a", "z"]);
         });
     }
 }

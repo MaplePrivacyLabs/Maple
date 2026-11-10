@@ -40,7 +40,6 @@ where
 #[serde(rename_all = "lowercase")]
 pub enum SidebarGroup {
     Connection,
-    Status,
     List,
     #[default]
     #[serde(other)]
@@ -1102,6 +1101,7 @@ mod tests {
     #[test]
     fn sidebar_layout_defaults_unknown_and_invalid_choices_independently() {
         for invalid in [
+            serde_json::json!("status"),
             serde_json::json!("future-choice"),
             serde_json::json!(null),
             serde_json::json!(false),

@@ -6,7 +6,7 @@ use serde::{Deserialize, Deserializer, Serialize};
 use std::sync::{Arc, Weak};
 use uuid::Uuid;
 
-pub const PROTOCOL_VERSION: &str = "7.1.0";
+pub const PROTOCOL_VERSION: &str = "8.0.0";
 pub const PEER_INFO_CAPABILITY: &str = "peer_info_v1";
 pub const INSTALL_CAPABILITY: &str = "remote_update_install_v1";
 pub const REFRESH_CAPABILITY: &str = "remote_update_refresh_v1";
@@ -495,7 +495,6 @@ mod tests {
     fn a_cached_peer_status_is_not_remote_refresh_support() {
         let mut info = current_peer_for_compatibility();
         assert!(info.supports_remote_refresh());
-        info.protocol.version = "7.0.0".into();
         info.protocol
             .capabilities
             .retain(|value| value != REFRESH_CAPABILITY);
@@ -503,7 +502,7 @@ mod tests {
         assert!(!info.supports_remote_refresh());
         info.protocol.capabilities.push(REFRESH_CAPABILITY.into());
         assert!(info.supports_remote_refresh());
-        info.protocol.version = "6.1.0".into();
+        info.protocol.version = "7.1.0".into();
         assert!(!info.supports_remote_refresh());
     }
 
@@ -623,8 +622,8 @@ mod tests {
         info.update.blocked = Some(BlockedReason::UpdateNotReady);
         assert!(!info.install_requestable());
 
-        // An older host (0.0.14: management 7.1.0 without the capability)
-        // reports Available as not ready. It is still asked, and the
+        // A compatible host without the download capability can report
+        // Available as not ready. It is still asked, and the
         // controller knows its refusal means "download there first".
         info.protocol
             .capabilities
@@ -650,7 +649,7 @@ mod tests {
     #[test]
     fn responses_accept_future_fields_and_unknown_status_without_enabling_mutation() {
         let value = json!({
-            "protocol":{"version":"7.1.0","capabilities":[INSTALL_CAPABILITY,"future_feature"],"future":true},
+            "protocol":{"version":PROTOCOL_VERSION,"capabilities":[INSTALL_CAPABILITY,"future_feature"],"future":true},
             "running":{"version":"0.0.6","source_sha":"a".repeat(40),"platform":"linux-x86_64","future":true},
             "update":{"state":"future_state","future":true},
             "future":true
@@ -660,10 +659,10 @@ mod tests {
         assert_eq!(info.update.state, UpdateState::Unknown);
         assert!(info.supports_remote_updates());
         let mut next_major = info.clone();
-        next_major.protocol.version = "8.0.0".into();
+        next_major.protocol.version = "9.0.0".into();
         assert!(!next_major.supports_remote_updates());
         let mut previous_major = info.clone();
-        previous_major.protocol.version = "6.2.0".into();
+        previous_major.protocol.version = "7.1.0".into();
         assert!(!previous_major.supports_remote_updates());
         let mut no_capability = info;
         no_capability.protocol.capabilities.clear();
@@ -949,18 +948,18 @@ mod tests {
     fn project_folder_support_requires_its_capability_and_current_major() {
         let mut info = current_peer_for_compatibility();
         assert!(info.supports_project_folders());
-        for version in ["7.0.0", "7.1.0", "7.2.0"] {
+        for version in ["8.0.0", "8.1.0", "8.2.0"] {
             info.protocol.version = version.into();
             assert!(
                 info.supports_project_folders(),
                 "explicit capability in {version}"
             );
         }
-        for version in ["6.2.0", "8.0.0", "invalid"] {
+        for version in ["7.1.0", "9.0.0", "invalid"] {
             info.protocol.version = version.into();
             assert!(!info.supports_project_folders());
         }
-        info.protocol.version = "7.0.0".into();
+        info.protocol.version = PROTOCOL_VERSION.into();
         info.protocol.capabilities = vec!["peer_info_v1".into(), "remote_update_install_v1".into()];
         assert!(
             info.supports_remote_updates(),
@@ -970,7 +969,7 @@ mod tests {
             !info.supports_project_folders(),
             "folder support still requires its capability"
         );
-        info.protocol.version = "7.1.0".into();
+        info.protocol.version = "8.1.0".into();
         assert!(
             !info.supports_project_folders(),
             "a minor version alone is not a capability"
@@ -979,25 +978,27 @@ mod tests {
 
     #[test]
     fn input_only_tool_summaries_need_the_capability_and_current_major() {
-        // Agent 0.0.9 (management 7.1.0) answers peer info without the
-        // capability; a viewer keeps the output-based summaries with it.
+        // A wire-7 response still decodes, but enables no capabilities.
         let fixtures: serde_json::Value =
             serde_json::from_str(include_str!("tool_summary_compat.json")).unwrap();
-        let without: PeerInfo =
+        let mut without: PeerInfo =
             serde_json::from_value(fixtures["peer_info_without_tool_summary_start"].clone())
                 .unwrap();
         without.validate().unwrap();
+        assert!(!without.supports_remote_updates());
+        assert!(!without.supports_tool_summary_start());
+        without.protocol.version = PROTOCOL_VERSION.into();
         assert!(without.supports_remote_updates());
         assert!(!without.supports_tool_summary_start());
         let mut info = PeerInfo {
             protocol: ProtocolInfo::current(),
             ..without
         };
-        for version in ["7.0.0", "7.1.0", "7.2.0"] {
+        for version in ["8.0.0", "8.1.0", "8.2.0"] {
             info.protocol.version = version.into();
             assert!(info.supports_tool_summary_start(), "{version}");
         }
-        for version in ["6.2.0", "8.0.0", "invalid"] {
+        for version in ["7.1.0", "9.0.0", "invalid"] {
             info.protocol.version = version.into();
             assert!(!info.supports_tool_summary_start(), "{version}");
         }
@@ -1005,11 +1006,10 @@ mod tests {
 
     #[test]
     fn setting_permission_modes_needs_the_capability_and_current_major() {
-        // Agent 0.0.19 shipped the modes with exactly these capabilities
-        // and refuses the setter; a controller must not send it there.
+        // A compatible host must explicitly advertise the setter.
         let released: PeerInfo = serde_json::from_value(serde_json::json!({
             "protocol": {
-                "version": "7.1.0",
+                "version": PROTOCOL_VERSION,
                 "capabilities": [
                     "peer_info_v1",
                     "remote_update_install_v1",
@@ -1030,11 +1030,11 @@ mod tests {
             protocol: ProtocolInfo::current(),
             ..released
         };
-        for version in ["7.0.0", "7.1.0", "7.2.0"] {
+        for version in ["8.0.0", "8.1.0", "8.2.0"] {
             info.protocol.version = version.into();
             assert!(info.supports_permission_modes(), "{version}");
         }
-        for version in ["6.2.0", "8.0.0", "invalid"] {
+        for version in ["7.1.0", "9.0.0", "invalid"] {
             info.protocol.version = version.into();
             assert!(!info.supports_permission_modes(), "{version}");
         }
@@ -1042,11 +1042,10 @@ mod tests {
 
     #[test]
     fn listing_and_switching_tools_needs_the_capability_and_current_major() {
-        // Agent 0.0.21 shipped exactly these capabilities and no Tools page;
-        // it cannot decode either call, so a controller must not send them.
+        // A compatible host must explicitly advertise the Tools methods.
         let released: PeerInfo = serde_json::from_value(serde_json::json!({
             "protocol": {
-                "version": "7.1.0",
+                "version": PROTOCOL_VERSION,
                 "capabilities": [
                     "peer_info_v1",
                     "remote_update_install_v1",
@@ -1068,11 +1067,11 @@ mod tests {
             protocol: ProtocolInfo::current(),
             ..released
         };
-        for version in ["7.0.0", "7.1.0", "7.2.0"] {
+        for version in ["8.0.0", "8.1.0", "8.2.0"] {
             info.protocol.version = version.into();
             assert!(info.supports_tool_switches(), "{version}");
         }
-        for version in ["6.2.0", "8.0.0", "invalid"] {
+        for version in ["7.1.0", "9.0.0", "invalid"] {
             info.protocol.version = version.into();
             assert!(!info.supports_tool_switches(), "{version}");
         }

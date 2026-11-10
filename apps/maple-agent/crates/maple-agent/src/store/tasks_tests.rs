@@ -127,7 +127,7 @@ fn foreign_account_cannot_resolve_or_mutate_task_metadata() {
                 title: Some("My renamed task".to_owned()),
                 title_user_set: Some(true),
                 project_root: Some(project_root!("/projects/moved").to_owned()),
-                state: Some(TaskState::Settled),
+                state: Some(TaskState::Archived),
                 web_enabled: Some(false),
                 settings: Some(json!({"mcpServers": {"example": false}})),
                 ..TaskPatch::default()
@@ -137,7 +137,7 @@ fn foreign_account_cannot_resolve_or_mutate_task_metadata() {
         .unwrap();
     assert_eq!(updated.title, "My renamed task");
     assert!(updated.title_user_set);
-    assert_eq!(updated.state, TaskState::Settled);
+    assert_eq!(updated.state, TaskState::Archived);
     assert!(!updated.web_enabled);
     assert_eq!(updated.settings, json!({"mcpServers": {"example": false}}));
     assert_ne!(updated.project, task.project);
@@ -809,16 +809,6 @@ fn archive_candidate_pages_bound_scanned_metadata_and_continue_past_ineligible_r
         .unwrap();
     store
         .mark_task_deleted(alice, &created[2].uuid, 10)
-        .unwrap();
-    store
-        .update_task(
-            alice,
-            &created[4].uuid,
-            &TaskPatch {
-                state: Some(TaskState::Settled),
-                ..TaskPatch::default()
-            },
-        )
         .unwrap();
     let foreign = store.create_task(bob, &new_task(106, root, 100)).unwrap();
     let elsewhere = store

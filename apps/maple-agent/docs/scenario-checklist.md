@@ -16,7 +16,7 @@ stdio MCP server configured in Settings > Integrations.
 |---|---|---|---|
 | T1 | Automatic then semantic title | Start a task with a one-line prompt | The sidebar shows a generated title at once and a semantic one after the first reply |
 | T2 | Rename | Rename the task from its sidebar menu | The new name survives a relaunch |
-| T3 | Settle and archive | Settle a finished task, archive it, then restore it | It moves between Active, Settled and Archived and comes back with its history |
+| T3 | Archive and reopen | Archive a finished task, then reopen it from Archived | It moves into Archived and comes back with its history |
 | T4 | Delete | Delete a task | It disappears from every list and its folder of attachments is gone |
 | T5 | Pin | `/pin` a task, then unpin it | The pin shows in the sidebar and clears |
 | T6 | Projects and recent folders | Create a task in a second folder | The project switcher lists both roots; the task runs in its own root |
@@ -31,7 +31,7 @@ stdio MCP server configured in Settings > Integrations.
 | C4 | Attachments | Attach an image by picker and by paste, then send | The model sees the image (vision model) or a `read_image` reference (text model) |
 | C5 | Voice input | Dictate a message | The transcript of the dictation lands in the composer |
 | C6 | Per-task pickers | Switch the model and an integration on the draft, then send | The created task carries both choices |
-| C7 | Switch models mid-task | In a task with history, pick another model and send; reopen the task after a restart | The reply comes from the new model with the earlier context, the transcript shows "Switched to …", and the task reopens on the new model (**automated**: `a_run_wakes_a_settled_task_and_a_started_task_switches_models`) |
+| C7 | Switch models mid-task | In a task with history, pick another model and send; reopen the task after a restart | The reply comes from the new model with the earlier context, the transcript shows "Switched to …", and the task reopens on the new model (**automated**: `a_started_task_switches_models`) |
 
 ## Slash commands and skills
 

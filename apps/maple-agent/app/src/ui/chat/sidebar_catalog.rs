@@ -46,13 +46,6 @@ pub(super) struct ManualOrder {
 }
 
 impl ManualOrder {
-    /// Used after independently read active/settled prefixes are combined.
-    /// Callers run their summary preparation on the backend executor.
-    pub(super) fn sort(&self, tasks: &mut [TaskSummary]) {
-        let ranks = Ranks::new(self);
-        tasks.sort_by_cached_key(|task| ranks.position(task));
-    }
-
     fn validate(&self) -> Result<(), UiFailure> {
         if self.cutoff < 0 || self.tasks.len() > 8192 {
             return Err(UiFailure::Local(
@@ -111,7 +104,7 @@ impl TaskQuery {
             }
             Self::Search(query) => {
                 query.cursor = cursor;
-                // Protocol seven bounds search pages to one hundred rows.
+                // The host bounds search pages to one hundred rows.
                 query.limit = 100;
             }
             Self::Pinned(query) => {
@@ -539,38 +532,6 @@ impl Reader {
             tasks: Arc::new(tasks),
             bytes,
         });
-    }
-
-    /// Derive an exact continuation for a prefix of this same returned page.
-    /// Group projection can merge two state prefixes without a second scan.
-    pub(super) fn prefix_cursor(
-        &self,
-        backend: &Arc<AgentBackend>,
-        user: &str,
-        query: &TaskQuery,
-        order: &ManualOrder,
-        page: &NavigationTaskPage,
-        keep: usize,
-    ) -> Result<Option<String>, UiFailure> {
-        self.authorize(backend, user)?;
-        order.validate()?;
-        if keep > page.tasks.len() {
-            return Err(UiFailure::Local(
-                BAD_CURSOR,
-                "The sidebar order changed; refresh this list",
-            ));
-        }
-        if keep == page.tasks.len() && page.next_cursor.is_none() {
-            return Ok(None);
-        }
-        let (_, scope) = scopes(backend, user, query, order)?;
-        let after = if let Some(task) = keep.checked_sub(1).and_then(|index| page.tasks.get(index))
-        {
-            Some(Ranks::new(order).position(task))
-        } else {
-            decode_cursor(query.cursor(), scope)?
-        };
-        encode_cursor(scope, after).map(Some)
     }
 
     async fn scan_slot(&self) -> Result<tokio::sync::OwnedSemaphorePermit, UiFailure> {

@@ -34,7 +34,7 @@ use super::timeline::{LiveTimeline, MAPLE_NOTICE_ENTRY, STOPPED_NOTICE_TEXT, err
 use super::{
     AgentDesktopQueueSnapshot, AgentEventDispatcher, AgentQueueControlRequest, AgentQueuedMessage,
     AgentRunEvent, AgentRunTerminal, AgentRunUsage, AgentRuntimeHandle, AgentSendMessageRequest,
-    AgentServiceEvent, AgentTaskState, AgentTimelineItem, emit_agent_event,
+    AgentServiceEvent, AgentTimelineItem, emit_agent_event,
 };
 
 mod live;
@@ -1427,38 +1427,10 @@ impl AgentRuntime {
                             return Err(format!("Agent task {session_id} is not open"));
                         }
                     };
-                    if let Err(error) = self.wake(session_id) {
-                        self.forget_run(&run.run_id);
-                        return Err(error);
-                    }
                     return self.launch_run(session_id, run, session).map(|_| ());
                 }
             }
         }
-    }
-
-    /// A run is new activity: it wakes a settled task, which stays active
-    /// until it is settled again by hand.
-    fn wake(&self, session_id: &str) -> Result<(), String> {
-        let settled = self
-            .store
-            .get(session_id)?
-            .is_some_and(|row| row.state == AgentTaskState::Settled);
-        if settled
-            && let Some(woken) = self
-                .store
-                .update(session_id, |row| row.state = AgentTaskState::Active)?
-        {
-            emit_agent_event(
-                &self.host.events,
-                AgentServiceEvent::SessionUpdated {
-                    session_id: session_id.to_string(),
-                    run_id: None,
-                    session: woken.summary(),
-                },
-            );
-        }
-        Ok(())
     }
 
     /// Start a registered run on the task's session.
@@ -1532,7 +1504,7 @@ impl AgentRuntime {
         })
     }
 
-    /// The task's session for a run, with the task woken and named.
+    /// The task's session for a run, with the task named from its first prompt.
     async fn prepare_run_session(
         &self,
         request: &AgentSendMessageRequest,
@@ -1562,7 +1534,6 @@ impl AgentRuntime {
             events.publish_entry_row(&entry_id, notice);
         }
         self.failures.clear(session_id);
-        self.wake(session_id)?;
         // Named from the first message with text: images alone say nothing,
         // and a hidden message is not the user's.
         if super::tasks::names_from_prompt(&row)

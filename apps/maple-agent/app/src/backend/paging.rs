@@ -132,7 +132,6 @@ pub fn summary_to_session(summary: TaskSummary) -> AgentSessionSummary {
             summary.permission_mode.as_deref(),
         ),
         state: match summary.state.as_str() {
-            "settled" => AgentTaskState::Settled,
             "archived" => AgentTaskState::Archived,
             _ => AgentTaskState::Active,
         },
@@ -831,6 +830,112 @@ pub(crate) async fn dispatch(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[tokio::test]
+    async fn local_and_remote_project_pages_share_one_active_cursor() {
+        use maple_agent::store::{
+            NavigationGroupPage, NewTask, TaskFacts, TaskKind, TaskPatch, TaskState,
+        };
+        use serde_json::json;
+
+        let directory = tempfile::tempdir().unwrap();
+        let mut backend = LocalBackend::isolated_for_test(directory.path());
+        backend.ui_fixture = true;
+        let store = backend.store().unwrap();
+        let user = "paging-fixture";
+        let account = store.upsert_account(user, 1).unwrap();
+        let project = if cfg!(windows) {
+            "C:/paging"
+        } else {
+            "/paging"
+        };
+        let mut tasks = Vec::new();
+        for (created_ms, state) in [
+            (1, TaskState::Active),
+            (2, TaskState::Active),
+            (3, TaskState::Archived),
+        ] {
+            let uuid = uuid::Uuid::now_v7().to_string();
+            store
+                .create_task_with_patch(
+                    account,
+                    &NewTask {
+                        uuid: uuid.clone(),
+                        project_root: project.into(),
+                        kind: TaskKind::Desktop,
+                        title: format!("Task {created_ms}"),
+                        provisional: false,
+                        model: None,
+                        created_ms,
+                    },
+                    &TaskPatch {
+                        state: Some(state),
+                        ..Default::default()
+                    },
+                )
+                .unwrap();
+            store
+                .refresh_task_facts(
+                    account,
+                    &uuid,
+                    &TaskFacts {
+                        message_count: 1,
+                        ..Default::default()
+                    },
+                )
+                .unwrap();
+            tasks.push(uuid);
+        }
+        let request = |method: &str, params| Request {
+            id: 1,
+            method: method.into(),
+            send_id: None,
+            params,
+        };
+        let group_request = || request("list_project_groups", json!([user, {"perProject": 1}]));
+        let local = super::super::dispatch_presented(&backend, group_request())
+            .await
+            .unwrap();
+        let remote = super::super::dispatch_remote_inner_presented(&backend, group_request())
+            .await
+            .unwrap();
+        // The receiving sidebar must decode a single opaque string, including
+        // when the remote wire transports this reply as a generic JSON value.
+        assert!(remote["groups"][0]["more"].is_string());
+        let local: NavigationGroupPage = serde_json::from_value(local).unwrap();
+        let remote: NavigationGroupPage = serde_json::from_value(remote).unwrap();
+        assert_eq!(local.archived_count, 1);
+        assert_eq!(remote.archived_count, 1);
+        for group in [&local.groups[0], &remote.groups[0]] {
+            assert_eq!(group.tasks.len(), 1);
+            assert_eq!(group.tasks[0].uuid, tasks[1]);
+        }
+        let continuation = super::super::dispatch_remote_inner_presented(
+            &backend,
+            request(
+                "list_tasks",
+                json!([user, {
+                    "section": "active",
+                    "project": project,
+                    "pins": "ignore",
+                    "cursor": remote.groups[0].more,
+                }]),
+            ),
+        )
+        .await
+        .unwrap();
+        let continuation: maple_agent::store::NavigationTaskPage =
+            serde_json::from_value(continuation).unwrap();
+        assert_eq!(continuation.tasks.len(), 1);
+        assert_eq!(continuation.tasks[0].uuid, tasks[0]);
+        assert!(continuation.next_cursor.is_none());
+
+        let legacy = request("list_tasks", json!([user, {"section": "settled"}]));
+        let failure = super::super::dispatch_remote_inner_presented(&backend, legacy)
+            .await
+            .unwrap_err();
+        assert_eq!(failure.code, "paging-request");
+    }
 
     #[test]
     fn empty_workspace_is_paged_and_an_explicit_removal_is_preserved() {

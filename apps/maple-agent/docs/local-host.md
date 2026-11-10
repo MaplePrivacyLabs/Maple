@@ -65,10 +65,11 @@ Explicit `maple-agent host stop` can stop the
 owner of the same storage namespace even when its build or backend settings
 differ; this exception does not allow other commands. Hosts predating that stop
 exception must be stopped using their matching build/configuration. Quit the old
-build before switching versions. A replacement waits for a shutting-down host to
-release its ownership lock before opening shared state. Rebuilds of uncommitted
-source share a source version, so stop
-the development host before rebuilding.
+build before switching versions. Protocol version 4 uses one task cursor per
+project after the removal of the Settled state. A replacement waits for a
+shutting-down host to release its ownership lock before opening shared state.
+Rebuilds of uncommitted source share a source version, so stop the development
+host before rebuilding.
 
 Unix uses an owner-only socket inside a private directory and checks peer UID.
 Windows uses a local named pipe restricted to its owner and SYSTEM and verifies

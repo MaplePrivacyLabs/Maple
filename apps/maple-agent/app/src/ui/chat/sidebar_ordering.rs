@@ -360,13 +360,7 @@ impl Sidebar {
         self.order_loaded && self.filter.is_empty() && self.rename.is_none()
     }
 
-    fn task_group(
-        &self,
-        target: ProjectTarget,
-        id: &str,
-        state: AgentTaskState,
-        pinned: bool,
-    ) -> TaskGroup {
+    fn task_group(&self, target: ProjectTarget, state: AgentTaskState, pinned: bool) -> TaskGroup {
         if state == AgentTaskState::Archived {
             TaskGroup::Archived
         } else if pinned {
@@ -374,17 +368,6 @@ impl Sidebar {
         } else {
             match self.view.group {
                 SidebarGroup::Project | SidebarGroup::Connection => TaskGroup::Project(target),
-                SidebarGroup::Status => {
-                    let running = if target.computer.as_deref() == self.backend.remote_host() {
-                        self.activity.running.contains(id)
-                    } else {
-                        self.computers
-                            .iter()
-                            .find(|computer| computer.key == target.computer)
-                            .is_some_and(|computer| computer.activity.running.contains(id))
-                    };
-                    TaskGroup::Status(state == AgentTaskState::Settled && !running)
-                }
                 SidebarGroup::List => TaskGroup::List,
             }
         }
@@ -423,12 +406,8 @@ impl Sidebar {
                             computer: target.computer.clone(),
                             id: session.id.clone(),
                         };
-                        row.task_group = Some(self.task_group(
-                            target.clone(),
-                            &session.id,
-                            session.state,
-                            task.pinned,
-                        ));
+                        row.task_group =
+                            Some(self.task_group(target.clone(), session.state, task.pinned));
                         row.task = Some(key);
                         if matches!(
                             self.view.group,
@@ -446,12 +425,8 @@ impl Sidebar {
                             computer: task.request.computer.clone(),
                             path: task.session.project_root.clone(),
                         };
-                        row.task_group = Some(self.task_group(
-                            target.clone(),
-                            &task.session.id,
-                            task.session.state,
-                            task.pinned,
-                        ));
+                        row.task_group =
+                            Some(self.task_group(target.clone(), task.session.state, task.pinned));
                         row.task = Some(SidebarItemKey {
                             computer: target.computer.clone(),
                             id: task.session.id.clone(),

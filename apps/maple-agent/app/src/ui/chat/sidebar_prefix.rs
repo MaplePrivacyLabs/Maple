@@ -1,5 +1,5 @@
-//! Merge independently paged task states without displaying rows beyond an
-//! unread state's frontier. Cursors and summaries stay on the viewing desktop.
+//! Merge task pages across computers without displaying rows beyond an
+//! unread stream's frontier. Cursors and summaries stay on the viewing desktop.
 use super::*;
 
 pub(super) type Position = ((u8, i64), Option<String>, String);
@@ -68,7 +68,7 @@ impl<T> Prefix<T> {
             if self.exact {
                 position <= boundary
             } else {
-                // Protocol seven orders timestamp ties by its private row id.
+                // The host orders timestamp ties by its private row id.
                 // Drain the boundary timestamp before exposing its UUID order.
                 position.0 < boundary.0
             }
@@ -91,19 +91,18 @@ impl Sidebar {
         )
     }
 
-    pub(super) fn local_task_prefix(&self) -> Option<Prefix<paging::PageKind>> {
-        if !self.pages.enabled || !self.filter.is_empty() || self.view.group == SidebarGroup::Status
-        {
+    pub(super) fn local_task_prefix(&self) -> Option<Prefix<()>> {
+        if !self.pages.enabled || !self.filter.is_empty() {
             return None;
         }
         let computer = self.backend.remote_host().map(str::to_owned);
         Some(Prefix::new(
-            [PageKind::Active, PageKind::Settled].map(|kind| Stream {
-                source: kind,
+            [Stream {
+                source: (),
                 end: self
                     .sessions
                     .iter()
-                    .filter(|task| self.pages.kind_contains(kind, &task.id))
+                    .filter(|task| self.pages.kind_contains(PageKind::Active, &task.id))
                     .map(|task| {
                         self.task_prefix_position(
                             &computer,
@@ -113,8 +112,8 @@ impl Sidebar {
                         )
                     })
                     .max(),
-                complete: self.pages.kind_complete(kind),
-            }),
+                complete: !self.pages.has_more(PageKind::Active),
+            }],
             self.view.sort == SidebarSort::Manual,
         ))
     }
@@ -129,16 +128,16 @@ mod tests {
     }
 
     #[test]
-    fn a_merged_page_holds_rows_behind_the_earliest_unread_state() {
+    fn a_merged_page_holds_rows_behind_the_earliest_unread_stream() {
         let prefix = Prefix::new(
             [
                 Stream {
-                    source: "active",
+                    source: "local",
                     end: Some(position(10, "a")),
                     complete: false,
                 },
                 Stream {
-                    source: "settled",
+                    source: "remote",
                     end: Some(position(100, "s")),
                     complete: false,
                 },
@@ -147,20 +146,20 @@ mod tests {
         );
         assert!(prefix.allows(&position(110, "new")));
         assert!(!prefix.allows(&position(90, "older-loaded")));
-        assert_eq!(prefix.next, ["settled"]);
+        assert_eq!(prefix.next, ["remote"]);
     }
 
     #[test]
-    fn exhausting_a_state_releases_the_other_states_loaded_prefix() {
+    fn exhausting_a_stream_releases_the_other_loaded_prefix() {
         let prefix = Prefix::new(
             [
                 Stream {
-                    source: "active",
+                    source: "local",
                     end: Some(position(10, "a")),
                     complete: false,
                 },
                 Stream {
-                    source: "settled",
+                    source: "remote",
                     end: Some(position(100, "s")),
                     complete: true,
                 },
@@ -168,14 +167,14 @@ mod tests {
             false,
         );
         assert!(prefix.allows(&position(90, "older-loaded")));
-        assert_eq!(prefix.next, ["active"]);
+        assert_eq!(prefix.next, ["local"]);
     }
 
     #[test]
     fn timestamp_ties_wait_until_their_host_cursor_is_drained() {
         let prefix = Prefix::new(
             [Stream {
-                source: "active",
+                source: "local",
                 end: Some(position(100, "z")),
                 complete: false,
             }],
@@ -206,7 +205,7 @@ mod tests {
     fn manual_positions_are_exact_and_unknown_streams_advance_first() {
         let prefix = Prefix::new(
             [Stream {
-                source: "active",
+                source: "local",
                 end: Some(position(100, "b")),
                 complete: false,
             }],
@@ -218,19 +217,19 @@ mod tests {
         let unknown = Prefix::new(
             [
                 Stream {
-                    source: "active",
+                    source: "local",
                     end: Some(position(100, "a")),
                     complete: false,
                 },
                 Stream {
-                    source: "settled",
+                    source: "remote",
                     end: None,
                     complete: false,
                 },
             ],
             true,
         );
-        assert_eq!(unknown.next, ["settled"]);
+        assert_eq!(unknown.next, ["remote"]);
         assert!(!unknown.allows(&position(101, "a")));
     }
 }

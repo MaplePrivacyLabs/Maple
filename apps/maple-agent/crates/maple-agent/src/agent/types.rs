@@ -959,17 +959,13 @@ pub enum SideQuestionEvent {
     Error(String),
 }
 
-/// Where a task sits on the ladder active, settled, archived. The
-/// runtime owns this: it persists with the session, a run that starts on
-/// a settled task makes it active again, and archived tasks keep their
-/// history and stay listed so a UI can show them apart. Deleted is not
-/// a state; a deleted task is gone.
+/// A task can be active or archived. Archived tasks keep their history
+/// and can return to the active list. Deletion removes the task entirely.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub enum AgentTaskState {
     #[default]
     Active,
-    Settled,
     Archived,
 }
 

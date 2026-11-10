@@ -25,7 +25,7 @@ keeps the current window alive; returning shows the same code and remaining time
 with Cancel available. Navigation never renews its deadline or attempt.
 
 The sidebar's **View options** menu groups tasks by **Project**, **Connection**,
-**Status**, or **In one list**. Connection becomes available after another
+or **In one list**. Connection becomes available after another
 computer is added, including while it is offline; enabling remote access on
 this computer alone does not add that choice. Project and Connection views keep
 known empty projects visible. Project view shows the computer name beside remote
@@ -44,15 +44,14 @@ to the viewing desktop's signed-in account; grouping and sorting choices are
 saved on that desktop.
 
 Pinned tasks have their own presentation order, so dragging them does not
-change where they return when unpinned. Dragging in Status or In one list
+change where they return when unpinned. Dragging in **In one list**
 moves only that task; the relative order of other tasks stays intact. The
 initial Manual order includes loaded tasks in folded groups too.
 
 Manual refreshes coalesce repeated activity into one trailing reload, and
-replacing a reload cancels its stale scans. Pagination exposes a complete
-sorted prefix across Active and Settled; loading more extends that prefix
-instead of inserting older-state pages into gaps above existing rows. These
-are viewing-desktop behaviors and do not require a different remote protocol.
+replacing a reload cancels its stale scans. Pagination loads active tasks in
+order and extends the visible list as more tasks are loaded. Archive history
+has its own pages.
 
 Project display names belong to the execution computer and the signed-in account.
 **Rename project** in a sidebar project's menu updates that one name from
@@ -229,12 +228,13 @@ Maple explicitly clears public address lookup and builds Iroh without its
 port-mapping feature. The Minimal preset alone is not the port-mapping policy.
 There is no second encryption tunnel or custom routing layer. The remote
 protocol keeps the `maple-agent/remote/1` ALPN family and currently advertises
-wire version 7 with minimum version 7, independent of application builds. Its
-shared project names, bounded navigation/history pages, stable row identities,
-attachment ranges, and per-connection task subscriptions remain unchanged.
+wire version 8 with minimum version 8, independent of application builds.
+Task state is active or archived, and project groups carry a single active-task
+cursor. The execution computer migrates previously settled tasks to active
+when it upgrades its store.
 Project-change events carry only changed metadata; snapshots and project pages
 provide authoritative names, revisions, and default-workspace flags.
-Version 6 and earlier peers receive an explicit version refusal. Bounded frames
+Version 7 and earlier peers receive an explicit version refusal. Bounded frames
 and an explicit task-operation allowlist apply.
 The viewing desktop applies sidebar grouping and manual ordering to summaries
 received through the existing navigation and project APIs. These preferences
@@ -244,7 +244,7 @@ Account operations and arbitrary whole-host administration cannot be forwarded.
 The narrow experimental update capability uses the host's own signed updater;
 it does not expose the ordinary host-stop command.
 
-Optional discovery reports protocol version `7.1.0` and explicit capabilities
+Optional discovery reports protocol version `8.0.0` and explicit capabilities
 over separate request streams. The acknowledgement shape and ALPN remain
 readable across the required version transition. Bounded folder browsing and single-folder creation require
 the `project_folders_v1` capability. The controller checks support before sending
@@ -264,13 +264,11 @@ separate from ordinary requests, range reads and urgent replies; generic files
 are limited to 30 MiB each, while
 composer images retain their 10 MiB limit. See [local storage](local-store.md).
 
-Both computers must use wire 7 for remote access, including remote update
+Both computers must use wire 8 for remote access, including remote update
 management. Upgrade the execution computer first while the old pair is still
-compatible, then update the controller locally. A wire-7 controller stops
+compatible, then update the controller locally. A wire-8 controller stops
 automatic reconnection after an explicit version refusal and shows **Update
 required**, without treating ordinary offline errors as version mismatches.
-Released wire-6 controllers keep their shipped behavior during the gap: cold
-computer discovery can retry, and Settings can report the peer as unreachable.
 Existing pairing records are retained. A disconnect alone does not confirm an
 installation; check the running identity and retained receipt after reconnecting.
 If the controller was updated first, update the execution computer directly,

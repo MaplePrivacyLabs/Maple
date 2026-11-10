@@ -159,7 +159,7 @@ agent runtime; its desktop Agent page points users to Maple Work.
   Renaming from its desktop or a paired controller updates connected views and
   persists across restarts without changing the folder path. The owner supplies
   the default workspace label too. Personal pins remain desktop preferences.
-- Sidebar organization by Project, Connection, Status, or In one list, with
+- Sidebar organization by Project, Connection, or In one list, with
   Last updated or Manual order for tasks. Connection becomes available after
   another computer is added, including while it is offline. Project views keep
   known empty projects visible. Project and connection order stays stable;
@@ -169,7 +169,9 @@ agent runtime; its desktop Agent page points users to Maple Work.
   tasks sit above the grouping header; their own drag order does not change
   the position they return to when unpinned. Sidebar menus open toward the
   main pane so the list stays visible. Tasks also support rename, archive,
-  and restore. Unknown or malformed View preferences fall back to defaults.
+  and restore. Previously settled tasks appear with active tasks after upgrading.
+  The former Status grouping preference falls back to Project.
+  Unknown or malformed View preferences fall back to defaults.
 - Settings: General (appearance, tool call details, desktop notifications,
   tool call summaries, composer Vim, application Vim, and the speech voice
   and speed), Keyboard Shortcuts, Additional instructions, Integrations

@@ -244,7 +244,7 @@ fn search_is_unicode_folded_and_cursor_binds_search_terms() {
 }
 
 #[test]
-fn group_flatten_cap_retains_empty_group_section_cursors() {
+fn group_flatten_cap_retains_start_cursors_for_empty_groups() {
     let (_dir, store, alice, _bob) = fixture();
     for project in 0..5 {
         for item in 1..=50 {
@@ -278,7 +278,7 @@ fn group_flatten_cap_retains_empty_group_section_cursors() {
     );
     let last = &page.groups[4];
     assert!(last.tasks.is_empty());
-    assert!(last.more.active.is_some());
+    assert!(last.more.is_some());
     let tasks = store
         .list_task_summaries(
             alice,
@@ -286,7 +286,7 @@ fn group_flatten_cap_retains_empty_group_section_cursors() {
                 section: TaskSection::State(TaskState::Active),
                 project: Some(last.project.root.clone()),
                 pins: PinFilter::Ignore,
-                cursor: last.more.active.clone(),
+                cursor: last.more.clone(),
                 limit: 50,
             },
             PageTransport::Local,
@@ -296,64 +296,74 @@ fn group_flatten_cap_retains_empty_group_section_cursors() {
 }
 
 #[test]
-fn mixed_group_sections_keep_independent_continuations() {
+fn project_groups_page_active_tasks_and_keep_archive_separate() {
     let (_dir, store, alice, _bob) = fixture();
     let project = root("mixed");
-    task(&store, alice, 1, &project, "active one");
-    task(&store, alice, 2, &project, "active two");
-    let settled = task(&store, alice, 3, &project, "settled");
-    store
-        .update_task(
-            alice,
-            &settled,
-            &TaskPatch {
-                state: Some(TaskState::Settled),
-                ..TaskPatch::default()
-            },
-        )
-        .unwrap();
+    let older = task(&store, alice, 1, &project, "active one");
+    let newer = task(&store, alice, 2, &project, "active two");
+    let archived = task(&store, alice, 3, &project, "archived");
+    let other = task(
+        &store,
+        alice,
+        4,
+        &root("archive-only"),
+        "archived elsewhere",
+    );
+    for uuid in [&archived, &other] {
+        store
+            .update_task(
+                alice,
+                uuid,
+                &TaskPatch {
+                    state: Some(TaskState::Archived),
+                    ..TaskPatch::default()
+                },
+            )
+            .unwrap();
+    }
     let groups = store
         .list_project_group_summaries(
             alice,
             &NavigationGroupQuery {
-                limit_groups: 1,
+                limit_groups: 2,
                 per_project: 1,
                 cursor: None,
             },
             PageTransport::Remote,
         )
         .unwrap();
+    assert_eq!(groups.groups.len(), 1);
+    assert_eq!(groups.archived_count, 2);
+    assert!(groups.next_cursor.is_none());
     let group = &groups.groups[0];
     assert_eq!(group.tasks.len(), 1);
+    assert_eq!(group.tasks[0].uuid, newer);
+    let mut query = NavigationTaskQuery {
+        section: TaskSection::State(TaskState::Active),
+        project: Some(project),
+        pins: PinFilter::Ignore,
+        cursor: group.more.clone(),
+        limit: 50,
+    };
+    assert!(query.cursor.is_some());
     let active = store
-        .list_task_summaries(
-            alice,
-            &NavigationTaskQuery {
-                section: TaskSection::State(TaskState::Active),
-                project: Some(project.clone()),
-                pins: PinFilter::Ignore,
-                cursor: group.more.active.clone(),
-                limit: 50,
-            },
-            PageTransport::Remote,
-        )
-        .unwrap();
-    let settled = store
-        .list_task_summaries(
-            alice,
-            &NavigationTaskQuery {
-                section: TaskSection::State(TaskState::Settled),
-                project: Some(project),
-                pins: PinFilter::Ignore,
-                cursor: group.more.settled.clone(),
-                limit: 50,
-            },
-            PageTransport::Remote,
-        )
+        .list_task_summaries(alice, &query, PageTransport::Remote)
         .unwrap();
     assert_eq!(active.tasks.len(), 1);
-    assert_eq!(settled.tasks.len(), 1);
-    assert_ne!(active.tasks[0].uuid, group.tasks[0].uuid);
+    assert_eq!(active.tasks[0].uuid, older);
+    assert!(active.next_cursor.is_none());
+
+    query.section = TaskSection::State(TaskState::Archived);
+    assert!(matches!(
+        store.list_task_summaries(alice, &query, PageTransport::Remote),
+        Err(StoreError::InvalidInput)
+    ));
+    query.cursor = None;
+    let archive = store
+        .list_task_summaries(alice, &query, PageTransport::Remote)
+        .unwrap();
+    assert_eq!(archive.tasks.len(), 1);
+    assert_eq!(archive.tasks[0].uuid, archived);
 }
 
 #[test]
@@ -363,7 +373,7 @@ fn remote_group_byte_cap_keeps_all_groups_and_unloaded_tasks_reachable() {
     for project in 0..4 {
         // Owner-resolved default names repeat the basename in both the group
         // and each task summary. This size leaves room for a later empty group
-        // but not its first task, deliberately exercising section continuations.
+        // but not its first task, deliberately exercising the start cursor.
         let project_root = root(&format!("{}-{project}", "\u{1}".repeat(6_000)));
         for item in 1..=3 {
             expected.insert(task(
@@ -393,12 +403,12 @@ fn remote_group_byte_cap_keeps_all_groups_and_unloaded_tasks_reachable() {
             if group.tasks.is_empty() {
                 saw_empty = true;
                 assert!(
-                    group.more.active.is_some(),
+                    group.more.is_some(),
                     "an empty group retains its task continuation"
                 );
             }
             actual.extend(group.tasks.into_iter().map(|row| row.uuid));
-            let mut cursor = group.more.active;
+            let mut cursor = group.more;
             while cursor.is_some() {
                 let tasks = store
                     .list_task_summaries(

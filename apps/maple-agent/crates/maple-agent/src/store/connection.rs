@@ -164,21 +164,7 @@ mod tests {
         let paths = StorePaths::new(temp.path()).prepare().unwrap();
         paths.precreate_database().unwrap();
         let mut connection = connect(&paths, &|connection| initialize(connection, keyed)).unwrap();
-        connection
-            .pragma_update(None, "application_id", schema::APPLICATION_ID)
-            .unwrap();
-        if version == 1 {
-            connection.execute_batch(schema::REFERENCE_DDL).unwrap();
-            connection
-                .execute(
-                    "INSERT INTO store_meta(key,value) VALUES ('schema_epoch',?1)",
-                    [schema::SCHEMA_EPOCH],
-                )
-                .unwrap();
-            connection.pragma_update(None, "user_version", 1).unwrap();
-        } else {
-            schema::migrate(&mut connection, 1).unwrap();
-        }
+        schema::migrate_to_version(&mut connection, 1, version).unwrap();
         change(&mut connection);
         let mode: String = connection
             .query_row("PRAGMA journal_mode = DELETE", [], |row| row.get(0))
@@ -299,6 +285,89 @@ mod tests {
                     .pragma_query_value::<i64, _>(None, "user_version", |row| row.get(0))
                     .unwrap(),
                 schema::VERSION
+            );
+        }
+    }
+
+    #[test]
+    fn plain_and_keyed_v5_restore_settled_tasks_and_keep_their_history() {
+        for keyed in [false, true] {
+            let (_temp, paths) = fixture(keyed, 5, |connection| {
+                connection
+                    .execute_batch(
+                        "INSERT INTO accounts(id,user_key,user_id,created_ms,last_seen_ms)
+                           VALUES (1,'a','A',1,1);
+                         INSERT INTO projects(id,account_id,root,last_used_ms)
+                           VALUES (1,1,'/project',1);
+                         INSERT INTO tasks(id,uuid,account_id,project_id,kind,state,title,title_fold,
+                                           created_ms,updated_ms,message_count,deleted_ms)
+                           VALUES (1,'former',1,1,'desktop','settled','Former','former',1,20,1,NULL),
+                                  (2,'active',1,1,'desktop','active','Active','active',1,10,1,NULL),
+                                  (3,'archive',1,1,'desktop','archived','Archive','archive',1,30,1,NULL),
+                                  (4,'deleted',1,1,'desktop','settled','Deleted','deleted',1,40,1,41);
+                         INSERT INTO entries(task_id,seq,entry_id,kind,created_ms,bytes,payload)
+                           VALUES (1,1,'00000001','message',20,2,x'7b7d');",
+                    )
+                    .unwrap();
+            });
+            let mut writer =
+                open_initializing_writer(&paths, &|connection| initialize(connection, keyed))
+                    .unwrap();
+            schema::migrate(&mut writer, 2).unwrap();
+            assert_eq!(schema::preflight(&writer, false).unwrap(), 6);
+
+            let mut active = writer
+                .prepare(
+                    "SELECT id,uuid,updated_ms FROM tasks INDEXED BY tasks_project_section
+                     WHERE account_id=1 AND project_id=1 AND state='active'
+                     AND provisional=0 AND message_count>0 AND deleted_ms IS NULL
+                     ORDER BY updated_ms DESC,id DESC",
+                )
+                .unwrap();
+            let active = active
+                .query_map([], |row| {
+                    Ok((
+                        row.get::<_, i64>(0)?,
+                        row.get::<_, String>(1)?,
+                        row.get::<_, i64>(2)?,
+                    ))
+                })
+                .unwrap()
+                .collect::<rusqlite::Result<Vec<_>>>()
+                .unwrap();
+            assert_eq!(
+                active,
+                [(1, "former".to_owned(), 20), (2, "active".to_owned(), 10)]
+            );
+            assert_eq!(
+                writer
+                    .query_row("SELECT state FROM tasks WHERE id=3", [], |row| row
+                        .get::<_, String>(0))
+                    .unwrap(),
+                "archived"
+            );
+            assert_eq!(
+                writer
+                    .query_row("SELECT deleted_ms FROM tasks WHERE id=4", [], |row| row
+                        .get::<_, i64>(0))
+                    .unwrap(),
+                41
+            );
+            assert_eq!(
+                writer
+                    .query_row("SELECT entry_id FROM entries WHERE task_id=1", [], |row| {
+                        row.get::<_, String>(0)
+                    })
+                    .unwrap(),
+                "00000001"
+            );
+            assert_eq!(
+                writer
+                    .query_row("SELECT count(*) FROM pragma_foreign_key_check", [], |row| {
+                        row.get::<_, i64>(0)
+                    })
+                    .unwrap(),
+                0
             );
         }
     }
