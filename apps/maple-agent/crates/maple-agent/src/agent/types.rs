@@ -282,6 +282,28 @@ pub struct AgentSetupIntegrationRequest {
     pub id: String,
 }
 
+/// One switch of Settings → Tools: whether the account's tasks on this
+/// host offer the model a tool.
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct AgentToolSwitch {
+    /// The tool's name, or `shell` for the task's shell tool (`bash`, or
+    /// `powershell` on Windows without Git Bash).
+    pub id: String,
+    pub enabled: bool,
+    pub enabled_by_default: bool,
+    /// False when this host cannot offer the tool: `python` in a build
+    /// without its bundled CPython.
+    pub available: bool,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct AgentSetToolEnabledRequest {
+    pub id: String,
+    pub enabled: bool,
+}
+
 pub(super) fn default_mcp_timeout_seconds() -> u64 {
     DEFAULT_MCP_TIMEOUT_SECONDS
 }

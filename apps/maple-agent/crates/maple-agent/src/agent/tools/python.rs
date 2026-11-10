@@ -44,6 +44,8 @@ const FRESH_REASON: &str = "This is a fresh Python scratchpad: Maple restarted o
 const MAKE_ROOM_REASON: &str =
     "Python state was discarded to make room for another task's scratchpad";
 pub(crate) const ARCHIVED_REASON: &str = "Python state was discarded when this task was archived";
+pub(crate) const SWITCHED_OFF_REASON: &str =
+    "Python state was discarded when Python was switched off in Settings → Tools";
 pub(crate) const PROJECT_REMOVED_REASON: &str =
     "Python state was discarded when this task's project was archived or removed";
 const UNLOADED_REASON: &str = "This task was unloaded";
@@ -79,20 +81,30 @@ pub(crate) struct PythonWorkers {
     tasks: Mutex<HashMap<String, Weak<TaskPython>>>,
 }
 
+/// The CPython bundled beside this executable.
+fn bundled_python() -> Result<PackagedPython, Error> {
+    std::env::current_exe()
+        .map_err(|error| Error::Unavailable(error.to_string()))
+        .and_then(PackagedPython::for_application_executable)
+}
+
 impl PythonWorkers {
     /// The CPython bundled beside this executable, or `None` in a build
     /// without one, which then offers no `python` tool.
     pub(crate) fn bundled() -> Option<Arc<Self>> {
-        let python = std::env::current_exe()
-            .map_err(|error| Error::Unavailable(error.to_string()))
-            .and_then(PackagedPython::for_application_executable);
-        match python {
+        match bundled_python() {
             Ok(python) => Some(Self::new(python)),
             Err(error) => {
                 log::info!("The python tool is unavailable: {error}");
                 None
             }
         }
+    }
+
+    /// Whether this executable has the bundled CPython the `python` tool
+    /// needs. Starts nothing.
+    pub(crate) fn is_bundled() -> bool {
+        bundled_python().is_ok()
     }
 
     pub(crate) fn new(python: PackagedPython) -> Arc<Self> {
@@ -144,6 +156,22 @@ impl PythonWorkers {
         if let Some(task) = task {
             observe(task.reset(reason.to_string())).await;
         }
+    }
+
+    /// Discard every task's scratchpad, background work included. Each
+    /// binding stays usable: a later call starts fresh and reports `reason`.
+    pub(crate) async fn discard_all(&self, reason: &str) {
+        let tasks = self
+            .tasks
+            .lock()
+            .unwrap()
+            .values()
+            .filter_map(Weak::upgrade)
+            .collect::<Vec<_>>();
+        let cleanups = tasks
+            .iter()
+            .map(|task| observe(task.reset(reason.to_string())));
+        futures_util::future::join_all(cleanups).await;
     }
 
     /// Discard the scratchpads of every loaded task in a project.
@@ -363,8 +391,10 @@ impl TaskPython {
     }
 }
 
-/// The tool. Its calls run one at a time because they share one interpreter.
-pub(crate) fn python_tool(task: Arc<TaskPython>) -> RegisteredTool {
+/// The tool, declared to the model while `active`: its switch in Settings →
+/// Tools, off by default. Its calls run one at a time because they share one
+/// interpreter.
+pub(crate) fn python_tool(task: Arc<TaskPython>, active: bool) -> RegisteredTool {
     RegisteredTool {
         tool: Arc::new(PythonTool {
             declaration: declaration(&task.workers.python.version),
@@ -376,9 +406,7 @@ pub(crate) fn python_tool(task: Arc<TaskPython>) -> RegisteredTool {
                 "Use python for calculations, data processing and multi-step scripts that benefit from keeping state between calls; use the shell for project commands, tests and long-running processes.".to_string(),
             ],
         },
-        // Registered switched off: nothing declares it to the model until
-        // the tool is turned on.
-        active: false,
+        active,
         extension: None,
     }
 }
@@ -919,6 +947,40 @@ mod tests {
         assert!(text(&result).contains("value:\nFalse"), "{}", text(&result));
         assert!(text(&result).contains(ARCHIVED_REASON), "{}", text(&result));
         task.retire(UNLOADED_REASON).await;
+        workers.shutdown().await;
+    }
+
+    #[tokio::test]
+    async fn switching_python_off_discards_every_scratchpad() {
+        let workers = PythonWorkers::new(fixture());
+        let root = tempfile::tempdir().unwrap();
+        let tasks = ["first", "second"].map(|key| task(&workers, key, root.path(), false));
+        for task in &tasks {
+            let result = task
+                .call(params("kept = 1", false), CancellationToken::new())
+                .await;
+            assert!(!result.is_error, "{}", text(&result));
+        }
+        workers.discard_all(SWITCHED_OFF_REASON).await;
+        assert!(
+            workers.runtime.snapshot().holders.is_empty(),
+            "no interpreter outlives the switch"
+        );
+        for task in &tasks {
+            let result = task
+                .call(
+                    params("'kept' in globals()", false),
+                    CancellationToken::new(),
+                )
+                .await;
+            assert!(text(&result).contains("value:\nFalse"), "{}", text(&result));
+            assert!(
+                text(&result).contains(SWITCHED_OFF_REASON),
+                "{}",
+                text(&result)
+            );
+            task.retire(UNLOADED_REASON).await;
+        }
         workers.shutdown().await;
     }
 }

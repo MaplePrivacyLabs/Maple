@@ -1,17 +1,18 @@
 //! A task's tools: Pi's built-in tools, set up for Maple, and Maple's own.
 //!
-//! Pi's session gives every task `read`, `bash`, `edit` and `write`, or
-//! `powershell` in place of `bash` on Windows without Git Bash. Maple sets up
-//! how their commands start: from the login shell's PATH, with the task's id.
-//! `MAPLE_SHELL` names the bash to run.
+//! Pi's session registers its built-in tools in every task: `read`, `bash`
+//! (or `powershell` in its place on Windows without Git Bash), `edit` and
+//! `write`, on by default, and `grep`, `find` and `ls`, off by default.
+//! Maple sets up how their commands start: from the login shell's PATH, with
+//! the task's id. `MAPLE_SHELL` names the bash to run.
 //!
 //! Maple's own tools join these: every task gets `read_image`, desktop tasks
 //! get the plan the user watches (`todo_write`) and questions the user
 //! answers (`request_user_input`), and every task gets `web_search` and
 //! `open_url` while its web switch is on. For an image, `read` sends a model
 //! that cannot see images to `read_image`, which describes it. A build that
-//! bundles CPython also registers `python`, a persistent scratchpad,
-//! switched off by default.
+//! bundles CPython also registers `python`, a persistent scratchpad, off by
+//! default. Settings → Tools switches each of these but the web tools.
 
 mod desktop;
 mod python;
@@ -21,7 +22,8 @@ pub(crate) mod web;
 
 pub(super) use desktop::parse_user_questions;
 pub(crate) use python::{
-    ARCHIVED_REASON, PROJECT_REMOVED_REASON, PythonWorkers, python_extension, python_tool,
+    ARCHIVED_REASON, PROJECT_REMOVED_REASON, PythonWorkers, SWITCHED_OFF_REASON, python_extension,
+    python_tool,
 };
 pub(crate) use read_image::ReadImageFor;
 
@@ -37,6 +39,7 @@ use pi_coding_agent::tools::{
 
 use super::questions::QuestionBroker;
 use super::store::TaskKind;
+use super::tool_settings::{ToolSwitch, ToolSwitches};
 use crate::maple_api::MapleWebTransport;
 
 /// The developer's choice of bash.
@@ -47,6 +50,9 @@ pub(crate) struct TaskTools {
     pub(crate) options: ToolsOptions,
     /// The built-in tools the model gets.
     pub(crate) builtin: Vec<String>,
+    /// The task's shell tool: `bash`, or `powershell` on Windows without Git
+    /// Bash.
+    pub(crate) shell: &'static str,
     /// Maple's own tools.
     pub(crate) maple: Vec<RegisteredTool>,
     /// Keeps the images the model meets consistent with what it can see.
@@ -66,10 +72,13 @@ pub(crate) struct TaskToolsFor {
     /// The task's web switch.
     pub(crate) web_enabled: bool,
     pub(crate) read_image: ReadImageFor,
+    /// The account's switches in Settings → Tools.
+    pub(crate) switches: ToolSwitches,
 }
 
 /// A task's tools.
 pub(crate) fn task_tools(task: TaskToolsFor) -> TaskTools {
+    let switches = task.switches;
     let shell_path = std::env::var_os(SHELL_ENV)
         .filter(|path| !path.is_empty())
         .map(PathBuf::from);
@@ -91,21 +100,52 @@ pub(crate) fn task_tools(task: TaskToolsFor) -> TaskTools {
         } else {
             "bash"
         };
-    TaskTools {
-        options,
-        builtin: ["read", shell, "edit", "write"]
-            .iter()
-            .map(|name| name.to_string())
-            .collect(),
-        extension: read_image::read_image_extension(task.read_image.clone()),
-        maple: std::iter::once(read_image::read_image_tool(task.read_image))
+    let mut maple: Vec<RegisteredTool> =
+        std::iter::once(read_image::read_image_tool(task.read_image.clone()))
             .chain(match task.kind {
                 TaskKind::Desktop => desktop::desktop_tools(&task.session_id, task.questions),
                 TaskKind::Acp => Vec::new(),
             })
             .chain(web::web_tools(task.web, task.web_enabled))
-            .collect(),
+            .collect();
+    for tool in &mut maple {
+        if let Some(switch) = ToolSwitch::for_maple_tool(tool.tool.name()) {
+            tool.active = switches.enabled(switch);
+        }
     }
+    TaskTools {
+        options,
+        builtin: ToolSwitch::BUILTIN
+            .into_iter()
+            .filter(|switch| switches.enabled(*switch))
+            .map(|switch| switch.tool_name(shell).to_string())
+            .collect(),
+        shell,
+        extension: read_image::read_image_extension(task.read_image),
+        maple,
+    }
+}
+
+/// Switch the tool `name` on or off in a session that registered it, as Pi
+/// does within a session: the change is declared with the session's next
+/// request, even during a run, and its transcript records it. The other
+/// tools stay as they are.
+pub(crate) fn set_tool_active(session: &AgentSession, name: &str, active: bool) {
+    let current = session.active_tools();
+    if current.iter().any(|tool| tool == name) == active
+        || !session.all_tools().iter().any(|tool| tool.name == name)
+    {
+        return;
+    }
+    let next: Vec<String> = if active {
+        current
+            .into_iter()
+            .chain(std::iter::once(name.to_string()))
+            .collect()
+    } else {
+        current.into_iter().filter(|tool| tool != name).collect()
+    };
+    session.set_active_tools(&next);
 }
 
 /// Declare the web tools to the model while the task's web switch is on.

@@ -96,13 +96,14 @@ agent runtime; its desktop Agent page points users to Maple Work.
   must still choose the correct folder and bounded scope, and deliberately
   detached processes can escape a Unix process group. `head` bounds output,
   not runtime.
-- A build that bundles CPython registers `python`, switched off by default: a
-  persistent scratchpad with one interpreter per loaded task, started on first
-  use in the task's folder with the shell's PATH, keeping variables, imports
-  and background asyncio work between calls, which run one at a time. At most
-  four run per host; another task's need discards the least recently used idle
-  one, and archiving, unloading or restarting discards it too, with the model
-  told on its next call. See [Python scratchpad](docs/python-code-mode.md).
+- A build that bundles CPython registers `python`, switched off by default;
+  turn it on in Settings → Tools. It is a persistent scratchpad with one
+  interpreter per loaded task, started on first use in the task's folder with
+  the shell's PATH, keeping variables, imports and background asyncio work
+  between calls, which run one at a time. At most four run per host; another
+  task's need discards the least recently used idle one, and archiving,
+  unloading or restarting discards it too, with the model told on its next
+  call. See [Python scratchpad](docs/python-code-mode.md).
 - Slash commands in the composer: `/btw` asks a side question the task
   never sees, plus `/compact`, `/new`, `/pin`, `/web`, `/model`, and
   `/help`. Skills and prompt templates appear in the same list.
@@ -172,8 +173,10 @@ agent runtime; its desktop Agent page points users to Maple Work.
 - Settings: General (web tools, appearance, tool call details, desktop
   notifications, tool call summaries, composer Vim, application Vim, and the
   speech voice and speed), Keyboard Shortcuts, Additional instructions, Integrations
-  (detected built-ins and custom MCP servers), Usage (the plan meter from
-  the billing API), and About.
+  (detected built-ins and custom MCP servers), Tools (which of Maple's tools
+  tasks offer the model; a change reaches open tasks from their next request,
+  and the page asks for a paired computer running an older Maple to be updated),
+  Usage (the plan meter from the billing API), and About.
 - Dark and light themes; the default follows the system.
   On Linux, the protected GUI starts a portal-only child of the same executable
   (`--internal-theme-watch`). The child receives only desktop-bus environment,

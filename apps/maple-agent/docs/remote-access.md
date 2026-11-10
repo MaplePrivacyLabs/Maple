@@ -112,9 +112,10 @@ Remote control frames remain limited to 16 MiB, including encoding overhead;
 file uploads use separate bounded raw-byte streams and do not count against a
 send's control frame.
 Microphone, playback, billing and account operations stay on the controller.
-The Integrations pane manages the selected execution computer and labels it;
-account and application preference panes still use this computer. Native
-permission setup must be performed on the execution computer.
+The Integrations pane manages the selected execution computer and labels it,
+and the Tools pane switches that computer's tools; account and application
+preference panes still use this computer. Native permission setup must be
+performed on the execution computer.
 
 Closing a window with remote access enabled or an unlocked password store keeps the application available
 (macOS Dock; Windows/Linux tray Open/Quit). On a desktop without a usable tray,
@@ -294,6 +295,12 @@ for the remote computer to be updated; their tasks keep the mode they have.
 Answering a permission request needs no capability, since it is an ordinary
 question. A controller rechecks account and grant authority after this
 discovery, as it does for folders.
+Listing and switching tools in Settings → Tools requires `tool_switches_v1`.
+Agent 0.0.21 and earlier cannot decode either call, so a controller refuses
+both itself and the page asks for the remote computer to be updated; its tasks
+keep the tools they have. The host needs the same account and pairing
+authority for these calls as for listing and switching integrations, and the
+controller rechecks it after this discovery.
 
 Four pre-admission handshakes and eight paired control connections have capacity
 separate from local IPC. Each control connection bounds ordinary calls and keeps

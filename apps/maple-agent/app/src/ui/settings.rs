@@ -1,6 +1,6 @@
 //! Settings screen: left navigation with content panes, following Maple's
 //! settings layout. Sections: General (defaults), Account, Additional instructions,
-//! Integrations, Keyboard Shortcuts, Usage, About.
+//! Integrations, Tools, Keyboard Shortcuts, Usage, About.
 
 use crate::ui::i18n::{UiText, tr};
 use std::collections::HashSet;
@@ -47,6 +47,7 @@ mod mcp;
 mod navigation;
 pub(crate) mod presentation;
 mod shortcut_labels;
+mod tools;
 
 use self::account::AccountState;
 #[cfg(feature = "acp")]
@@ -57,6 +58,7 @@ use self::billing::BillingState;
 use self::local_api::LocalApiUiState;
 use self::mcp::{McpSecretAction, McpSecretField, definition_edit, name_collides};
 use self::navigation::{GeneralTarget, SettingsApplicationVimState, SettingsTarget};
+use self::tools::ToolsState;
 pub(crate) use catalog::saved_description;
 
 /// Emitted when the user leaves settings.
@@ -80,6 +82,7 @@ pub enum Section {
     Shortcuts,
     Prompt,
     Integrations,
+    Tools,
     Remote,
     Usage,
     About,
@@ -98,6 +101,7 @@ impl Section {
             Self::Shortcuts => "Keyboard Shortcuts",
             Self::Prompt => "Additional instructions",
             Self::Integrations => "Integrations",
+            Self::Tools => "Tools",
             Self::Remote => "Remote computers",
             Self::Usage => "Usage",
             Self::About => "About",
@@ -116,6 +120,7 @@ impl Section {
             Self::Shortcuts => "settings-section-shortcuts",
             Self::Prompt => "settings-section-prompt",
             Self::Integrations => "settings-section-integrations",
+            Self::Tools => "settings-section-tools",
             Self::Remote => "settings-section-remote",
             Self::Usage => "settings-section-usage",
             Self::About => "settings-section-about",
@@ -133,6 +138,7 @@ impl Section {
         Self::Shortcuts,
         Self::Prompt,
         Self::Integrations,
+        Self::Tools,
         Self::Remote,
         Self::Usage,
         Self::Advanced,
@@ -220,6 +226,8 @@ pub struct SettingsScreen {
     integrations: Option<Vec<AgentIntegration>>,
     integration_notice: Option<UiText>,
     integration_saving: HashSet<String>,
+    /// The execution computer's tool switches.
+    tools: ToolsState,
     /// Editor for the user's additional instructions (harness instructions).
     prompt_editor: Entity<TextInput>,
     prompt_notice: Option<UiText>,
@@ -538,6 +546,7 @@ impl SettingsScreen {
             integrations: None,
             integration_notice: None,
             integration_saving: HashSet::new(),
+            tools: ToolsState::default(),
             prompt_editor,
             prompt_notice: None,
             shortcut_snapshot,
@@ -564,6 +573,7 @@ impl SettingsScreen {
         this.refresh_catalog();
         this.load_mcp_servers(cx);
         this.load_integrations(cx);
+        this.load_tools(cx);
         this.load_advanced_status(cx);
         #[cfg(feature = "proxy")]
         let this = {
@@ -1906,6 +1916,9 @@ impl SettingsScreen {
             }
             Section::Integrations => {
                 pane = pane.child(self.render_integrations_pane(cx));
+            }
+            Section::Tools => {
+                pane = pane.child(self.render_tools_pane(cx));
             }
             Section::Remote => {
                 pane = pane.child(self.remote_screen.clone());
