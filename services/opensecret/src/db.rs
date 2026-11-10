@@ -244,6 +244,11 @@ pub trait DBConnection {
         user_id: Uuid,
         encrypted_code: Vec<u8>,
     ) -> Result<Option<PasswordResetRequest>, DBError>;
+    fn password_reset_request_exists_for_secret(
+        &self,
+        user_id: Uuid,
+        hashed_secret: &str,
+    ) -> Result<bool, DBError>;
     fn update_user_password_and_seed_wrap(
         &self,
         user: &User,
@@ -525,6 +530,12 @@ pub trait DBConnection {
         user_id: Uuid,
         encrypted_code: Vec<u8>,
     ) -> Result<Option<PlatformPasswordResetRequest>, DBError>;
+
+    fn platform_password_reset_request_is_active_for_secret(
+        &self,
+        user_id: Uuid,
+        hashed_secret: &str,
+    ) -> Result<bool, DBError>;
 
     fn mark_platform_password_reset_as_complete(
         &self,
@@ -1071,6 +1082,24 @@ impl DBConnection for PostgresConnection {
             .map_err(DBError::from);
         if let Err(ref e) = result {
             error!("Failed to get password reset request: {:?}", e);
+        }
+        result
+    }
+
+    fn password_reset_request_exists_for_secret(
+        &self,
+        user_id: Uuid,
+        hashed_secret: &str,
+    ) -> Result<bool, DBError> {
+        let conn = &mut self.db.get().map_err(|_| DBError::ConnectionError)?;
+        let result = PasswordResetRequest::unconsumed_exists_for_user_id_and_secret(
+            conn,
+            user_id,
+            hashed_secret,
+        )
+        .map_err(DBError::from);
+        if let Err(ref e) = result {
+            error!("Failed to look up password reset request: {:?}", e);
         }
         result
     }
@@ -2128,6 +2157,24 @@ impl DBConnection for PostgresConnection {
                 .map_err(DBError::from);
         if let Err(ref e) = result {
             error!("Failed to get platform password reset request: {:?}", e);
+        }
+        result
+    }
+
+    fn platform_password_reset_request_is_active_for_secret(
+        &self,
+        user_id: Uuid,
+        hashed_secret: &str,
+    ) -> Result<bool, DBError> {
+        let conn = &mut self.db.get().map_err(|_| DBError::ConnectionError)?;
+        let result = PlatformPasswordResetRequest::active_exists_for_user_id_and_secret(
+            conn,
+            user_id,
+            hashed_secret,
+        )
+        .map_err(DBError::from);
+        if let Err(ref e) = result {
+            error!("Failed to look up platform password reset request: {:?}", e);
         }
         result
     }

@@ -38,6 +38,25 @@ impl PasswordResetRequest {
             .map_err(PasswordResetError::DatabaseError)
     }
 
+    /// Whether the account has an unconsumed request created with this reset
+    /// secret. A confirmation can only ever complete such a request, whatever
+    /// code it submits. Like the code lookup, this leaves expiry to the
+    /// caller, which reports an expired request as such.
+    pub fn unconsumed_exists_for_user_id_and_secret(
+        conn: &mut PgConnection,
+        lookup_user_id: Uuid,
+        lookup_hashed_secret: &str,
+    ) -> Result<bool, PasswordResetError> {
+        diesel::select(diesel::dsl::exists(
+            password_reset_requests::table
+                .filter(password_reset_requests::user_id.eq(lookup_user_id))
+                .filter(password_reset_requests::hashed_secret.eq(lookup_hashed_secret))
+                .filter(password_reset_requests::is_reset.eq(false)),
+        ))
+        .get_result(conn)
+        .map_err(PasswordResetError::DatabaseError)
+    }
+
     pub fn mark_as_reset(&self, conn: &mut PgConnection) -> Result<(), PasswordResetError> {
         diesel::update(password_reset_requests::table)
             .filter(password_reset_requests::id.eq(self.id))

@@ -1328,70 +1328,103 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn account_rate_limit_is_an_encrypted_429_without_capacity_recovery() {
-        let test = test_session(17);
-        let sessions = Arc::new(SessionStore::new(NonZeroUsize::new(2).unwrap()));
-        sessions.insert(Arc::clone(&test.server)).unwrap();
-        let limiter = Arc::new(crate::web::inference_rate_limit::InferenceRateLimiter::default());
+    async fn rate_limits_are_encrypted_429s_without_capacity_recovery() {
+        use crate::web::rate_limit::{Key, RateLimits};
+
+        let limits = RateLimits::default();
         let account = uuid::Uuid::new_v4();
-        for _ in 0..100 {
-            limiter.check(account).unwrap();
+        // The second case has no caller identity: an unauthenticated route
+        // charges the account its decrypted body names.
+        let cases = [
+            (
+                "/v1/embeddings",
+                limits.inference.clone(),
+                Key::account(account),
+                100,
+                "60",
+                true,
+            ),
+            (
+                "/platform/password-reset/confirm",
+                limits.platform_password_reset_attempt.clone(),
+                Key::scoped(account, &[b"reset-secret-hash"]),
+                5,
+                "86400",
+                false,
+            ),
+        ];
+
+        for (marker, (path, limiter, key, admissions, retry_after, openai_shaped)) in
+            cases.into_iter().enumerate()
+        {
+            let marker = 17 + marker as u8;
+            let test = test_session(marker);
+            let sessions = Arc::new(SessionStore::new(NonZeroUsize::new(2).unwrap()));
+            sessions.insert(Arc::clone(&test.server)).unwrap();
+            for _ in 0..admissions {
+                limiter.check(key).unwrap();
+            }
+            let application = Router::new().route(
+                path,
+                any(move || {
+                    let limiter = limiter.clone();
+                    async move {
+                        limiter.check(key)?;
+                        Ok::<_, crate::ApiError>("should not be dispatched")
+                    }
+                }),
+            );
+            let router = request_router(application, sessions);
+            let request_id = RequestId::from_bytes([0xa0 + marker; 16]);
+            let response = router
+                .oneshot(outer_request(
+                    test.server.id(),
+                    &test.routing_key,
+                    seal_request(&test.client, request_id, path, None),
+                ))
+                .await
+                .unwrap();
+            assert_eq!(response.status(), StatusCode::OK);
+            assert!(!response.headers().contains_key(header::RETRY_AFTER));
+            assert!(!response.headers().contains_key(crate::ERROR_CODE_HEADER));
+            let records = decrypt_records(&test.client, request_id, response).await;
+            let ResponseRecord::Start(start) = &records[0] else {
+                panic!("missing response start")
+            };
+            assert_eq!(start.status(), 429);
+            assert!(start
+                .headers()
+                .iter()
+                .any(|header| header.name() == "retry-after" && header.value() == retry_after));
+            assert!(start
+                .headers()
+                .iter()
+                .any(|header| header.name() == crate::ERROR_CODE_HEADER
+                    && header.value() == "rate_limit_exceeded"));
+            assert!(!start
+                .headers()
+                .iter()
+                .any(|header| header.name() == crate::CLIENT_REPLAY_HEADER));
+            let body: Vec<u8> = records
+                .iter()
+                .filter_map(|record| match record {
+                    ResponseRecord::Chunk(bytes) => Some(&bytes[..]),
+                    _ => None,
+                })
+                .flatten()
+                .copied()
+                .collect();
+            let body: serde_json::Value = serde_json::from_slice(&body).unwrap();
+            assert_eq!(body["status"], 429);
+            if openai_shaped {
+                assert_eq!(body["error"]["code"], "rate_limit_exceeded");
+                assert_eq!(body["error"]["type"], "rate_limit_error");
+            } else {
+                assert_eq!(body["message"], "Too many requests. Try again later.");
+                assert!(body.get("error").is_none());
+            }
+            assert!(matches!(records.last(), Some(ResponseRecord::End)));
         }
-        let application = Router::new().route(
-            "/v1/embeddings",
-            any(move || {
-                let limiter = limiter.clone();
-                async move {
-                    limiter.check(account)?;
-                    Ok::<_, crate::ApiError>("should not be dispatched")
-                }
-            }),
-        );
-        let router = request_router(application, sessions);
-        let request_id = RequestId::from_bytes([0xa7; 16]);
-        let response = router
-            .oneshot(outer_request(
-                test.server.id(),
-                &test.routing_key,
-                seal_request(&test.client, request_id, "/v1/embeddings", None),
-            ))
-            .await
-            .unwrap();
-        assert_eq!(response.status(), StatusCode::OK);
-        assert!(!response.headers().contains_key(header::RETRY_AFTER));
-        assert!(!response.headers().contains_key(crate::ERROR_CODE_HEADER));
-        let records = decrypt_records(&test.client, request_id, response).await;
-        let ResponseRecord::Start(start) = &records[0] else {
-            panic!("missing response start")
-        };
-        assert_eq!(start.status(), 429);
-        assert!(start
-            .headers()
-            .iter()
-            .any(|header| header.name() == "retry-after" && header.value() == "60"));
-        assert!(start
-            .headers()
-            .iter()
-            .any(|header| header.name() == crate::ERROR_CODE_HEADER
-                && header.value() == "rate_limit_exceeded"));
-        assert!(!start
-            .headers()
-            .iter()
-            .any(|header| header.name() == crate::CLIENT_REPLAY_HEADER));
-        let body: Vec<u8> = records
-            .iter()
-            .filter_map(|record| match record {
-                ResponseRecord::Chunk(bytes) => Some(&bytes[..]),
-                _ => None,
-            })
-            .flatten()
-            .copied()
-            .collect();
-        let body: serde_json::Value = serde_json::from_slice(&body).unwrap();
-        assert_eq!(body["status"], 429);
-        assert_eq!(body["error"]["code"], "rate_limit_exceeded");
-        assert_eq!(body["error"]["type"], "rate_limit_error");
-        assert!(matches!(records.last(), Some(ResponseRecord::End)));
     }
 
     #[tokio::test]
