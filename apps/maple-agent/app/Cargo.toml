@@ -79,6 +79,8 @@ notify = { version = "8", optional = true }
 spellbook = { version = "0.4", optional = true }
 rusqlite = { workspace = true }
 chrono = "0.4"
+# The IANA zone the Usage page asks billing to bucket days in.
+iana-time-zone = "0.1"
 clap = { version = "4", features = ["derive", "env"] }
 # Hidden password prompt for `maple-agent login`.
 rpassword = "7"

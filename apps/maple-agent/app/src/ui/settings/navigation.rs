@@ -208,10 +208,7 @@ impl SettingsScreen {
             .map(SettingsTarget::Appearance)
             .collect(),
             Section::Account => self.account_targets(),
-            Section::Usage => vec![
-                SettingsTarget::PageRefresh,
-                SettingsTarget::Billing(BillingTarget::ManagePlan),
-            ],
+            Section::Usage => self.usage_targets(),
             Section::Billing => self.billing_targets(),
             Section::Api => {
                 #[cfg(feature = "acp")]

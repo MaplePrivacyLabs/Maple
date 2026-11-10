@@ -859,6 +859,211 @@ settings-month-november = November
 settings-month-december = December
 # $month is a translated month name; $day and $year are numbers.
 settings-date = { $month } { $day }, { $year }
+settings-usage-scope = Your whole account: Maple Chat and Maple Work on every device, plus requests made with your API keys. Not just this computer.
+settings-usage-loading = Loading usage…
+settings-usage-retry = Try again
+# $left is a formatted number of credits.
+settings-usage-left = { $left } left
+# $used and $allowance are formatted numbers of credits.
+settings-usage-plan-amount = { $used } of { $allowance } plan credits used
+# $used and $allowance are formatted numbers of credits.
+settings-usage-team-amount = { $used } of { $allowance } team credits used
+# $credits is a formatted number.
+settings-usage-team-you = You { $credits }
+# $credits is a formatted number.
+settings-usage-team-rest = Rest of team { $credits }
+settings-usage-team-footer = Everything below is your own usage. The pool above includes the whole team.
+# $reset is a short date such as Dec 1.
+settings-usage-pace-exhausted = Plan credits ran out. Add Extra credits to keep going before the reset on { $reset }.
+# $reset is a short date such as Dec 1.
+settings-usage-pace-exhausted-extra = Plan credits ran out. Extra credits cover usage while your balance lasts. Plan credits reset on { $reset }.
+# $reset is a short date such as Dec 1.
+settings-usage-pace-team-exhausted = The team pool ran out. Team usage pauses until the reset on { $reset }.
+# $pace is a formatted number of credits and $count the same number for plurals; $allowance is a formatted number such as 20,000; $date is a short date.
+settings-usage-pace-runs-out = About { $pace } { $count ->
+    [one] credit
+   *[other] credits
+} a day reaches { $allowance } around { $date }. After that, you need Extra credits until the reset.
+# $pace is a formatted number of credits and $count the same number for plurals; $allowance is a formatted number such as 20,000; $date is a short date.
+settings-usage-pace-runs-out-extra = About { $pace } { $count ->
+    [one] credit
+   *[other] credits
+} a day reaches { $allowance } around { $date }. After that, Extra credits cover the rest.
+# $pace is a formatted number of credits and $count the same number for plurals; $allowance is a formatted number such as 20,000; $date is a short date.
+settings-usage-pace-team-runs-out = About { $pace } { $count ->
+    [one] credit
+   *[other] credits
+} a day reaches { $allowance } around { $date }. After that, team usage pauses until the reset.
+# $pace is a formatted number of credits and $count the same number for plurals; $projected and $allowance are formatted numbers such as 18,000; $reset is a short date.
+settings-usage-pace-on-track = About { $pace } { $count ->
+    [one] credit
+   *[other] credits
+} a day comes to roughly { $projected } of { $allowance } by { $reset }.
+settings-usage-history-title = Usage history
+settings-usage-range-picker = Usage range
+settings-usage-range-last-30-days = Last 30 days
+settings-usage-range-this-month = This month
+# $dates is a span of dates such as Nov 1 – Nov 8.
+settings-usage-range-this-month-dates = This month · { $dates }
+settings-usage-range-previous = Previous months
+# $dates is a span of dates such as Nov 1 – Nov 8.
+settings-usage-range-month-to-date = { $dates }, month to date
+settings-usage-range-error = Couldn't load usage for this range.
+settings-usage-tile-credits = Credits used
+settings-usage-tile-requests = Requests
+settings-usage-tile-active = Active days
+# $active and $days are numbers: days with usage, and days in the range.
+settings-usage-tile-active-value = { $active } of { $days }
+settings-usage-show = Show
+settings-usage-split-by = Split by
+settings-usage-metric-credits = Credits
+settings-usage-metric-requests = Requests
+settings-usage-metric-tokens = Tokens
+settings-usage-split-model = Model
+settings-usage-split-app = App
+settings-usage-split-pool = Plan / Extra
+settings-usage-split-token = Token type
+settings-usage-split-word-model = model
+settings-usage-split-word-app = app
+settings-usage-split-word-pool = which balance paid
+settings-usage-split-word-token = input, cached input and output
+settings-usage-daily-title-credits = Daily credits
+settings-usage-daily-title-requests = Daily requests
+settings-usage-daily-title-tokens = Daily tokens
+# $title is the chart's heading, such as Daily credits; $split is how bars are split, such as model.
+settings-usage-daily-label = { $title }, split by { $split }
+settings-usage-marker-reset = Plan credits reset
+settings-usage-extra-span = Plan credits ran out · Extra credits used
+settings-usage-no-usage = No usage in this range.
+settings-usage-apps-title = By app
+settings-usage-apps-description = Credits by the app that sent each request.
+# $percent is a percentage such as 12%.
+settings-usage-apps-api-share = { $percent } through API keys, in any app
+settings-usage-models-title = By model
+settings-usage-models-description = Every model that ran for your account in this range, including background requests Maple makes for you.
+settings-usage-col-model = Model
+settings-usage-col-requests = Requests
+settings-usage-col-input = Input
+settings-usage-col-cached = Cached input
+settings-usage-col-output = Output
+settings-usage-col-credits = Credits
+settings-usage-col-share = Share
+settings-usage-col-time = Time
+settings-usage-col-source = Source
+settings-usage-col-app = App
+# $count is a number of further apps.
+settings-usage-origin-more = { $count } more
+# $percent is a percentage such as 62%; $origin is an app such as Chat.
+settings-usage-origin-share = { $percent } { $origin }
+settings-usage-origin-chat = Chat
+settings-usage-origin-work = Work
+settings-usage-origin-proxy = Proxy
+settings-usage-origin-api = API keys
+settings-usage-token-input = Input
+settings-usage-token-cached = Cached input
+settings-usage-token-output = Output
+settings-usage-more-models = More models
+settings-usage-pool-plan = Plan credits
+settings-usage-pool-extra = Extra credits
+settings-usage-months-title = Last 12 months
+settings-usage-months-description = Credits per calendar month by app. The current month is shown so far.
+settings-usage-months-label = Credits per calendar month by app
+settings-usage-requests-title = Recent requests
+settings-usage-requests-description = Every request your account made, newest first.
+settings-usage-requests-loading = Loading requests…
+settings-usage-requests-error = Couldn't load recent requests.
+settings-usage-requests-empty = No requests yet.
+settings-usage-requests-more-error = Couldn't load more requests.
+settings-usage-load-more = Load more
+settings-usage-source-api-key = API key
+# $app is an app name: Chat, Work or Proxy.
+settings-usage-source-with-key = { $app } · API key
+settings-usage-paid-extra = Extra
+settings-usage-prices-title = Current model prices
+settings-usage-prices-description = Credits per 1 million tokens, as charged today. 1,000 credits is $1 at list price.
+settings-usage-prices-loading = Loading prices…
+settings-usage-prices-error = Couldn't load prices.
+settings-usage-price-same-as-input = Same as input
+settings-usage-prices-note = Usage above shows the credits actually charged at the time, so older requests may not match today's prices.
+settings-usage-prices-unlisted = Models marked — no longer have a listed price.
+settings-usage-prices-vary = * Depends on the provider that served the request; the default is shown.
+settings-usage-about-title = About these numbers
+settings-usage-about-account-title = Your whole account
+settings-usage-about-account = Maple Chat, Maple Work and Maple Proxy on every device, plus your API keys.
+settings-usage-about-apps-title = Apps and API keys
+settings-usage-about-apps = Each request counts toward the app that sent it, even when it used an API key, including the Local Proxy in Chat and the Local API in Work. API keys on their own are requests that named no app, such as direct API calls. Requests from before apps reported their name count as Chat unless they used an API key.
+settings-usage-about-credits-title = Credits
+# $plan is a product name such as Pro, not translated; $allowance is a formatted number.
+settings-usage-about-credits-plan = Credits measure usage at our API list prices: 1,000 credits is $1 of usage. Your { $plan } plan includes { $allowance } credits each billing period. Extra credits are used only after plan credits run out, and they don't expire.
+# $allowance is a formatted number.
+settings-usage-about-credits-unnamed = Credits measure usage at our API list prices: 1,000 credits is $1 of usage. Your plan includes { $allowance } credits each billing period. Extra credits are used only after plan credits run out, and they don't expire.
+# $allowance is a formatted number.
+settings-usage-about-credits-team = Credits measure usage at our API list prices: 1,000 credits is $1 of usage. Your team shares { $allowance } credits each billing period.
+settings-usage-about-background-title = Background requests
+settings-usage-about-background = Maple also sends requests for you, for example to name chats, summarize tool results, choose a model for Auto, or shorten long conversations. They run on whichever model Maple uses for that job, which can change, and they count toward your usage. They are listed under that model.
+settings-usage-about-auto-title = Auto, Quick and Powerful
+settings-usage-about-auto = These choose a model for each request. Usage is listed under the model that actually ran.
+settings-usage-about-tokens-title = Input, cached input and output
+settings-usage-about-tokens = Input is new prompt text. Cached input is prompt text the model reused from a recent request; models that support it charge less for it, and some models don't report it (shown as —). Output is what the model wrote. The three add up to your total tokens.
+settings-usage-about-prices-title = Prices
+settings-usage-about-prices = The price table shows today's prices. Usage shows the credits actually charged at the time.
+settings-usage-about-free-title = Not counted
+settings-usage-about-free = Voice input, read aloud and web search don't use credits.
+settings-usage-about-zone-title = Time zone
+# $zone is a time zone name such as America/Chicago.
+settings-usage-about-zone = Days are shown in your time zone ({ $zone }).
+# $month is a short month name such as Oct; $day is a number.
+settings-usage-short-date = { $month } { $day }
+# $weekday is a short weekday name such as Wed; $date is a short date such as Oct 14.
+settings-usage-weekday-date = { $weekday }, { $date }
+# $month is a month name such as October; $year is a number.
+settings-usage-month-year = { $month } { $year }
+settings-usage-month-jan = Jan
+settings-usage-month-feb = Feb
+settings-usage-month-mar = Mar
+settings-usage-month-apr = Apr
+settings-usage-month-may = May
+settings-usage-month-jun = Jun
+settings-usage-month-jul = Jul
+settings-usage-month-aug = Aug
+settings-usage-month-sep = Sep
+settings-usage-month-oct = Oct
+settings-usage-month-nov = Nov
+settings-usage-month-dec = Dec
+settings-usage-weekday-mon = Mon
+settings-usage-weekday-tue = Tue
+settings-usage-weekday-wed = Wed
+settings-usage-weekday-thu = Thu
+settings-usage-weekday-fri = Fri
+settings-usage-weekday-sat = Sat
+settings-usage-weekday-sun = Sun
+# $time is a clock time such as 2:41 PM.
+settings-usage-time-today = Today { $time }
+# $time is a clock time such as 2:41 PM.
+settings-usage-time-yesterday = Yesterday { $time }
+# $date is a date such as Oct 20; $time is a clock time such as 3:05 PM.
+settings-usage-time-date = { $date }, { $time }
+# $value is a formatted number and $count the same number for plurals.
+settings-usage-tip-credits = { $value } { $count ->
+    [one] credit
+   *[other] credits
+}
+# $value is a short number such as 1.2M and $count the number for plurals.
+settings-usage-tip-tokens = { $value } { $count ->
+    [one] token
+   *[other] tokens
+}
+# $models lists model names with short amounts, separated by dots.
+settings-usage-tip-more-models = More models: { $models }
+# $requests is a formatted number and $count the same number for plurals.
+settings-usage-tip-requests = { $count ->
+    [one] { $requests } request
+   *[other] { $requests } requests
+}
+# $credits is a formatted number.
+settings-usage-tip-extra = { $credits } from Extra credits
+# $label is a month and year such as November 2026.
+settings-usage-tip-so-far = { $label } (so far)
 # $name is a product name such as Pro, not translated.
 settings-plan-name = { $name } Plan
 settings-reset-monthly = Monthly
