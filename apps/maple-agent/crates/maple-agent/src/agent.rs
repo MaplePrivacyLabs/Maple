@@ -69,6 +69,13 @@ pub use surface::{
     AGENT_SURFACE_INACTIVE_ERROR, AgentSurfaceAccess, AgentSurfaceLease, AgentSurfaceSession,
 };
 pub use tasks::NOTHING_TO_COMPACT_ERROR;
+
+/// Run one cell in this build's bundled CPython, unpacking it first where it
+/// travels inside the executable, and return the interpreter's version and
+/// path. `paths` is the profile's store; nothing in the store is opened.
+pub async fn check_bundled_python(paths: &crate::store::StorePaths) -> Result<String, String> {
+    tools::check_bundled_python(paths).await
+}
 pub use types::*;
 
 /// The model a new task starts on when the user has not picked one and the

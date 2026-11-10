@@ -200,6 +200,27 @@ impl StorePaths {
         Ok(Some(directory))
     }
 
+    /// A private directory beside `store-v1` for a runtime this build unpacks
+    /// for itself. It holds no application state: a backup of the store
+    /// leaves it out, and deleting it only costs unpacking it again.
+    pub fn prepare_runtime_directory(&self, name: &str) -> StoreResult<PathBuf> {
+        let mut components = Path::new(name).components();
+        if !self.root.is_absolute()
+            || !matches!(components.next(), Some(std::path::Component::Normal(_)))
+            || components.next().is_some()
+        {
+            return Err(StoreError::UnsafePath);
+        }
+        let parent = self.root.parent().ok_or(StoreError::UnsafePath)?;
+        fs::create_dir_all(parent)?;
+        let directory = parent.join(name);
+        if directory == self.root {
+            return Err(StoreError::UnsafePath);
+        }
+        private_directory(&directory)?;
+        Ok(directory)
+    }
+
     /// Prepare only this namespace's control and diagnostic directories.
     /// Frontends may resolve IPC before acquiring ownership, including while
     /// the owner has temporarily renamed db/. Never create that directory here.
@@ -1130,6 +1151,24 @@ mod tests {
         assert!(paths.prepare_resource_directory(&["accounts"]).is_err());
         assert!(!prior.join("accounts").exists());
         assert_eq!(fs::read(prior.join("sentinel")).unwrap(), b"unchanged");
+    }
+
+    #[test]
+    fn a_runtime_directory_is_private_and_sits_beside_the_store() {
+        let root = tempfile::tempdir().unwrap();
+        let root = root.path().canonicalize().unwrap();
+        let paths = StorePaths::new(root.join("profile"));
+        let directory = paths.prepare_runtime_directory("python-runtime").unwrap();
+        assert_eq!(directory, root.join("profile/python-runtime"));
+        verify_private_path(&directory, true).unwrap();
+        // A second preparation adopts it; a name is never a path.
+        assert_eq!(
+            paths.prepare_runtime_directory("python-runtime").unwrap(),
+            directory
+        );
+        for name in ["", "..", "store-v1", "store-v1/db", "/absolute"] {
+            assert!(paths.prepare_runtime_directory(name).is_err(), "{name}");
+        }
     }
 
     #[cfg(unix)]

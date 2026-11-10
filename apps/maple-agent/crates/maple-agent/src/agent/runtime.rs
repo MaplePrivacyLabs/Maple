@@ -143,6 +143,7 @@ impl AgentRuntime {
             runtime.spawn(login_path::login_search_path());
         }
         let lifetime = CancellationToken::new();
+        let python = tools::PythonWorkers::bundled(parts.store.store().paths());
         Arc::new_cyclic(|runtime| Self {
             external_agents: Arc::new(ExternalAgentRegistry::new(ExternalAgentHost {
                 events: parts.host.events.clone(),
@@ -164,7 +165,7 @@ impl AgentRuntime {
             surfaces: Mutex::new(HashMap::new()),
             runs: Runs::default(),
             failures: Failures::default(),
-            python: tools::PythonWorkers::bundled(),
+            python,
         })
     }
 

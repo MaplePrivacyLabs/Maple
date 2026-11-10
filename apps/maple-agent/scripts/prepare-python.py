@@ -3,6 +3,7 @@
 
 import argparse
 import contextlib
+import gzip
 import hashlib
 import json
 import os
@@ -230,6 +231,35 @@ def prepare_pbs(target, destination, cache, worker, offline=False):
     return destination / "runtime.json"
 
 
+def write_archive(runtime, archive):
+    """Pack a prepared runtime for embedding in the Windows executable.
+
+    The archive holds the runtime's files under their relative names, sorted and
+    without timestamps or owners, so the same runtime always gives the same bytes.
+    """
+    files = inventory(runtime)
+    if any("link" in entry for entry in files.values()):
+        raise ValueError("An embedded Python runtime cannot contain links")
+    archive.parent.mkdir(parents=True, exist_ok=True)
+    with tempfile.NamedTemporaryFile(dir=archive.parent, suffix=".archive", delete=False) as temporary:
+        temporary_path = Path(temporary.name)
+        try:
+            with gzip.GzipFile(fileobj=temporary, mode="wb", filename="", mtime=0, compresslevel=9) as compressed:
+                with tarfile.open(fileobj=compressed, mode="w", format=tarfile.PAX_FORMAT) as target:
+                    for name in sorted(files):
+                        entry = tarfile.TarInfo(name)
+                        entry.size = (runtime / name).stat().st_size
+                        entry.mode = 0o755 if files[name]["executable"] else 0o644
+                        with (runtime / name).open("rb") as data:
+                            target.addfile(entry, data)
+        except BaseException:
+            temporary.close()
+            temporary_path.unlink(missing_ok=True)
+            raise
+    os.replace(temporary_path, archive)
+    print(f"Packed Python runtime: {archive} ({digest(archive)})")
+
+
 def verify_nix(manifest_path):
     if not manifest_path or not Path(manifest_path).is_absolute():
         raise ValueError("Nix fixture requires explicit MAPLE_CODE_MODE_RUNTIME_MANIFEST from nix develop")
@@ -260,14 +290,19 @@ def main():
     parser.add_argument("--worker", type=Path, default=REPO / "crates/maple-code-mode/python/worker.py")
     parser.add_argument("--manifest", default=os.environ.get("MAPLE_CODE_MODE_RUNTIME_MANIFEST"))
     parser.add_argument("--offline", action="store_true")
+    parser.add_argument("--archive", type=Path, help="also pack the prepared runtime into this .tar.gz, for embedding")
     args = parser.parse_args()
     try:
         if sys.version_info < (3, 13):
             raise ValueError("Preparation requires build Python 3.13; use nix develop -c just python-prepare")
         if args.distribution == "nix":
+            if args.archive:
+                raise ValueError("Only a Python Build Standalone runtime can be packed")
             verify_nix(args.manifest)
         else:
-            prepare_pbs(args.target or host_target(), args.destination.resolve(), args.cache.resolve(), args.worker.resolve(), args.offline)
+            manifest = prepare_pbs(args.target or host_target(), args.destination.resolve(), args.cache.resolve(), args.worker.resolve(), args.offline)
+            if args.archive:
+                write_archive(manifest.parent, args.archive.resolve())
     except (OSError, ValueError, tarfile.TarError) as error:
         parser.exit(1, f"Python preparation failed: {error}\n")
 
