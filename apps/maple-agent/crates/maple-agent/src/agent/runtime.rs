@@ -988,9 +988,7 @@ impl AgentRuntime {
         };
         self.models.register_models([model.clone()]);
         session.set_model(model).await;
-        let Some(level) = level else {
-            return None;
-        };
+        let level = level?;
         session.set_thinking_level(level).await;
         if row.message_count == 0 {
             return None;
