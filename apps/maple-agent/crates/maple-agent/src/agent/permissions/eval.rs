@@ -4,7 +4,7 @@
 //! It is live and optional. `just permission-eval` runs it; see
 //! `docs/permissions.md` for its settings, and for adding a case when a call
 //! gets judged wrongly. Answers are kept by what was asked, so changing a
-//! threshold sends nothing, and changing a question sends only that question.
+//! threshold sends nothing, and changing a question sends every case again.
 //! Requests go one at a time at a low rate: these are shared providers.
 
 use std::collections::HashMap;
