@@ -1441,9 +1441,15 @@ async fn require_current_password(
     let reauthenticated = match data
         .authenticate_user(email, Some(user.uuid), current_password, user.project_id)
         .await
-        .map_err(|e| {
-            error!("Recovery password step-up failed: {:?}", e);
-            ApiError::InternalServerError
+        .map_err(|e| match e {
+            // A credential change can retire the password wrap while the
+            // blocking password check is in flight. This is a stale credential,
+            // just like a password that no longer verifies.
+            Error::AuthenticationError => ApiError::InvalidUsernameOrPassword,
+            other => {
+                error!("Recovery password step-up failed: {:?}", other);
+                ApiError::InternalServerError
+            }
         })? {
         Some(reauthenticated) if reauthenticated.user.uuid == user.uuid => reauthenticated,
         _ => return Err(ApiError::InvalidUsernameOrPassword),

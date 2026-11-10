@@ -833,6 +833,15 @@ async fn recovery_handlers_reject_v1_session_before_any_database_side_effect() {
 #[tokio::test]
 #[ignore = "requires RECOVERY_TEST_DATABASE_URL (or AEAD_TAMPER_TEST_DATABASE_URL) pointing at disposable migrated local Postgres"]
 async fn recovery_error_responses_are_sanitized() {
+    use crate::web::{
+        encryption_middleware::Decrypted,
+        protected_routes::{
+            disable_recovery, enroll_recovery, rotate_recovery, DisableRecoveryRequest,
+            EnrollRecoveryRequest, RotateRecoveryRequest,
+        },
+    };
+    use axum::{extract::State, response::IntoResponse, Extension};
+
     let fixture = authenticated_password_fixture("sanitized").await;
     let app_state = &fixture.app_state;
     let token = v2_access_token(app_state, &fixture.user, &fixture.auth_context);
@@ -872,6 +881,62 @@ async fn recovery_error_responses_are_sanitized() {
         }),
         "unauthorized error responses must stay generic"
     );
+
+    // Deterministically reproduce the failed-authentication result of a reset
+    // retiring the password wrap while the blocking password check is in flight.
+    enroll_recovery_over_authenticated_seed(app_state, &fixture.user, &fixture.auth_context).await;
+    let recovery_before = app_state
+        .db
+        .get_recovery_wrap(fixture.user.uuid)
+        .unwrap()
+        .expect("recovery should be enrolled");
+    {
+        let conn = &mut app_state.db.get_pool().get().unwrap();
+        UserSeedWrapping::delete_for_user_and_kind(conn, fixture.user.uuid, "password")
+            .expect("password wrap should be retired");
+    }
+    // Call the handlers with the already-admitted context: running JWT
+    // middleware again would reject the retired wrap before reaching step-up.
+    let session = TransportSession::v2(SessionId::from_bytes([0xAA; 16]));
+    for result in [
+        enroll_recovery(
+            State(app_state.clone()),
+            Extension(fixture.user.clone()),
+            Extension(fixture.auth_context.clone()),
+            Extension(session.clone()),
+            Decrypted(EnrollRecoveryRequest {
+                current_password: fixture.password.to_string(),
+            }),
+        )
+        .await,
+        rotate_recovery(
+            State(app_state.clone()),
+            Extension(fixture.user.clone()),
+            Extension(fixture.auth_context.clone()),
+            Extension(session.clone()),
+            Decrypted(RotateRecoveryRequest {
+                current_password: fixture.password.to_string(),
+            }),
+        )
+        .await,
+        disable_recovery(
+            State(app_state.clone()),
+            Extension(fixture.user.clone()),
+            Extension(fixture.auth_context.clone()),
+            Extension(session),
+            Decrypted(DisableRecoveryRequest {
+                current_password: fixture.password.to_string(),
+            }),
+        )
+        .await,
+    ] {
+        let response = result
+            .expect_err("step-up must reject a retired credential")
+            .into_response();
+        assert_eq!(response.status(), StatusCode::UNAUTHORIZED);
+        assert_eq!(response_json(response).await, error_body);
+        assert_recovery_wrap_unchanged(app_state, fixture.user.uuid, &recovery_before);
+    }
 
     let _ = app_state.db.delete_user(&fixture.user);
 }
