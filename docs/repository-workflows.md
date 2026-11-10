@@ -289,7 +289,15 @@ CI image does not raise the shipped deployment targets: Research supports
 macOS 13.4 and iOS 16.0.
 
 Research Linux packaging builds AppImage and DEB with Tauri, then the RPM from
-the normalized DEB payload. `scripts/ci/sccache-stats.sh` reports compiler-cache
+the normalized DEB payload. AppImage staging bundles libglvnd's GL/GLES dispatch
+libraries, leaving GPU vendor drivers on the host. The existing string patcher
+rewrites libepoxy's Nix fallback directory to `$ORIGIN` and literal Nix library
+filenames (including GStreamer's libsoup loader) to bundled sonames before closure
+repair. The patcher retains its build interpreter until these rewrites finish,
+then receives the distributable interpreter. Portability verification rejects those paths in ELF runtime constants
+(`.rodata`), separately from DT_NEEDED and RPATH checks; obsolete dynamic strings
+and source locations are not runtime dependencies. Plugin search directories and
+patterns are outside this literal-library check. `scripts/ci/sccache-stats.sh` reports compiler-cache
 statistics with the build's own cache configuration.
 The packaged executable runs on the host's glibc, so it links against zig's
 glibc `LINUX_GLIBC_FLOOR` (`scripts/ci/_common.sh`; 2.39, Ubuntu 24.04) through
@@ -307,6 +315,18 @@ of failing in the dynamic loader. Package verification scans every ELF file in
 the AppImage and fails when the bundle needs more or less than the declared
 floor, so a nixpkgs bump that moves it must change the constant in the same
 change. Raising it drops the distributions below it for AppImage users.
+The AppImage also bundles what its libraries find only at runtime, which the
+`DT_NEEDED` closure cannot see: `glib-networking`'s TLS module, without which
+every webview HTTPS request fails, and GTK3's compiled GSettings schemas, without
+which a file dialog aborts the process. `AppRun` sets `GIO_MODULE_DIR` to the
+bundled module. The dev shell sets its own, so only package verification can catch
+a gap: `scripts/ci/appimage_gio_runtime.py` loads the extracted AppImage's libraries
+and fails unless they have a TLS backend and the file chooser's schema and template.
+GPU-facing libraries go the other way: like glibc, `libgbm` and `libdrm` come from
+the host, because they must match its GPU drivers and kernel. A bundled `libgbm`
+searches only its build's driver directory (`/run/opengl-driver` from nixpkgs),
+so WebKit's GPU renderer fails and the window stays blank. `linuxdeploy` already
+excludes both, and the runtime-closure check rejects an AppImage that bundles them.
 The RPM builder preserves explicit `bundle.linux.rpm.depends` from the Tauri
 configuration. WebKitGTK (`webkit2gtk4.1`) is required on Fedora, including KDE;
 package verification rejects RPMs missing that requirement. Install a downloaded
