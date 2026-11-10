@@ -11,6 +11,8 @@ use maple_agent::store::{
 };
 use serde_json::Value;
 
+use super::account::AccountTarget;
+use super::navigation::SettingsTarget;
 use super::{Section, SettingsScreen, TextInput, subsection_title, theme, widgets};
 use crate::ui::store_gate::{
     ConfirmationRequest, ERASE_COPY, PasswordAction, PasswordForm, PasswordFormFinished,
@@ -431,9 +433,12 @@ impl SettingsScreen {
                                 .child(gpui::text!(tr(ERASE_COPY))),
                         )
                         .child(
-                            widgets::input_frame()
-                                .text_sm()
-                                .child(self.advanced.confirmation.clone()),
+                            self.application_target(
+                                || SettingsTarget::Account(AccountTarget::EraseWord),
+                                widgets::input_frame()
+                                    .text_sm()
+                                    .child(self.advanced.confirmation.clone()),
+                            ),
                         )
                         .when_some(self.advanced.notice.clone(), |dialog, notice| {
                             dialog.child(
@@ -450,25 +455,33 @@ impl SettingsScreen {
                                 .justify_end()
                                 .gap_2()
                                 .child(
-                                    widgets::ghost_button("advanced-erase-cancel")
-                                        .py_1p5()
-                                        .on_click(cx.listener(|this, _event, _window, cx| {
-                                            this.close_erase_dialog(cx);
-                                        }))
-                                        .child(tr("settings-advanced-cancel")),
+                                    self.application_target(
+                                        || SettingsTarget::Account(AccountTarget::EraseCancel),
+                                        widgets::ghost_button("advanced-erase-cancel")
+                                            .py_1p5()
+                                            .on_click(cx.listener(|this, _event, _window, cx| {
+                                                this.close_erase_dialog(cx);
+                                            }))
+                                            .child(tr("settings-advanced-cancel")),
+                                    ),
                                 )
                                 .child(
-                                    widgets::danger_button("advanced-erase-confirm")
-                                        .py_1p5()
-                                        .when(busy || !ready, |el| el.opacity(0.5))
-                                        .when(!busy && ready, |el| {
-                                            el.on_click(cx.listener(|this, _event, _window, cx| {
-                                                this.erase_local_store(cx)
-                                            }))
-                                        })
-                                        .child(tr(
-                                            "settings-advanced-erase-this-version-s-local-data",
-                                        )),
+                                    self.application_target(
+                                        || SettingsTarget::Account(AccountTarget::EraseConfirm),
+                                        widgets::danger_button("advanced-erase-confirm")
+                                            .py_1p5()
+                                            .when(busy || !ready, |el| el.opacity(0.5))
+                                            .when(!busy && ready, |el| {
+                                                el.on_click(cx.listener(
+                                                    |this, _event, _window, cx| {
+                                                        this.erase_local_store(cx)
+                                                    },
+                                                ))
+                                            })
+                                            .child(tr(
+                                                "settings-advanced-erase-this-version-s-local-data",
+                                            )),
+                                    ),
                                 ),
                         ),
                 ),

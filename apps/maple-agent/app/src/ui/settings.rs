@@ -1887,7 +1887,7 @@ impl Render for SettingsScreen {
         }
         if self.application_reveal_pending {
             self.application_reveal_pending = false;
-            if self.application_vim.target.is_some() {
+            if self.application_vim.target.is_some() && !self.dialog_open() {
                 // The selected row attaches this anchor later in the same render.
                 // ScrollAnchor defers until the fresh layout origin is available.
                 self.application_anchor.scroll_to(window, cx);
