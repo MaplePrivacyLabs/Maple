@@ -152,12 +152,21 @@ impl Limiter {
 
     /// Charges one admission to `key`, or says how long the key is blocked.
     pub(crate) fn check(&self, key: impl Into<Key>) -> Result<(), ApiError> {
+        self.check_inner(key.into(), true)
+    }
+
+    /// Checks an existing budget without spending it or allocating a new key.
+    pub(crate) fn check_available(&self, key: impl Into<Key>) -> Result<(), ApiError> {
+        self.check_inner(key.into(), false)
+    }
+
+    fn check_inner(&self, key: Key, charge: bool) -> Result<(), ApiError> {
         let mut buckets = self
             .buckets
             .lock()
             .map_err(|_| ApiError::InternalServerError)?;
         // Sample time under the lock so concurrent admissions stay ordered.
-        self.admit(&mut buckets, key.into(), Instant::now())
+        self.admit(&mut buckets, key, Instant::now(), charge)
     }
 
     fn admit(
@@ -165,7 +174,11 @@ impl Limiter {
         buckets: &mut HashMap<Key, Bucket>,
         key: Key,
         now: Instant,
+        charge: bool,
     ) -> Result<(), ApiError> {
+        if !charge && !buckets.contains_key(&key) {
+            return Ok(());
+        }
         let Policy {
             limit,
             window,
@@ -215,8 +228,10 @@ impl Limiter {
             tracing::info!(limiter = self.name, "rate limit reached");
             return Err(self.reject(until.duration_since(now)));
         }
-        bucket.admitted.push_back(now);
-        bucket.retain_until = bucket.retain_until.max(now + window);
+        if charge {
+            bucket.admitted.push_back(now);
+            bucket.retain_until = bucket.retain_until.max(now + window);
+        }
         Ok(())
     }
 
@@ -358,7 +373,7 @@ mod tests {
     }
 
     fn check_at(limiter: &Limiter, key: impl Into<Key>, now: Instant) -> Result<(), ApiError> {
-        limiter.admit(&mut limiter.buckets.lock().unwrap(), key.into(), now)
+        limiter.admit(&mut limiter.buckets.lock().unwrap(), key.into(), now, true)
     }
 
     fn inference_retry_seconds(result: Result<(), ApiError>) -> u64 {
@@ -585,5 +600,36 @@ mod tests {
             let last_moment = now + PASSWORD_RESET_REQUEST_LIFETIME - Duration::from_secs(1);
             assert_eq!(retry_seconds(check_at(attempts, request, last_moment)), 1);
         }
+    }
+
+    #[test]
+    fn checking_available_budget_does_not_spend_or_allocate_it() {
+        let limiter = rolling(2, Duration::from_secs(60), 1);
+        let key = Key::account(Uuid::new_v4());
+        let now = Instant::now();
+        for _ in 0..10 {
+            limiter.check_available(key).unwrap();
+        }
+        assert!(limiter.buckets.lock().unwrap().is_empty());
+        check_at(&limiter, key, now).unwrap();
+        for _ in 0..10 {
+            limiter.check_available(key).unwrap();
+        }
+        check_at(&limiter, key, now).unwrap();
+        for _ in 0..2 {
+            assert_eq!(
+                retry_seconds(limiter.admit(&mut limiter.buckets.lock().unwrap(), key, now, false)),
+                60
+            );
+        }
+        limiter
+            .admit(
+                &mut limiter.buckets.lock().unwrap(),
+                key,
+                now + Duration::from_secs(60),
+                false,
+            )
+            .unwrap();
+        check_at(&limiter, key, now + Duration::from_secs(60)).unwrap();
     }
 }
