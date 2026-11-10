@@ -72,7 +72,7 @@ fn version_string() -> &'static str {
 #[cfg_attr(all(feature = "desktop", target_os = "windows"), command(group(clap::ArgGroup::new("windows_installer").args(["internal_windows_installer_preflight", "internal_windows_installer_prepare", "internal_windows_installer_activate", "internal_windows_installer_install"]))))]
 struct Cli {
     /// Print the immutable build profile as JSON and exit without opening state.
-    #[arg(long, conflicts_with = "desktop_args")]
+    #[arg(long)]
     build_info: bool,
     /// Internal read-only checker. Key material is accepted only on stdin.
     #[arg(
@@ -84,37 +84,32 @@ struct Cli {
     internal_store_integrity_check: Option<std::path::PathBuf>,
     /// Internal Linux desktop-portal watcher; never opens application state.
     #[cfg(all(feature = "desktop", target_os = "linux"))]
-    #[arg(long, hide = true, conflicts_with_all = ["build_info", "internal_store_integrity_check", "desktop_args"])]
+    #[arg(long, hide = true, conflicts_with_all = ["build_info", "internal_store_integrity_check"])]
     internal_theme_watch: bool,
     /// Credential-free native installer admission before any installed write.
     #[cfg(all(feature = "desktop", target_os = "windows"))]
-    #[arg(long, hide = true, value_name = "INSTALL_ROOT", conflicts_with_all = ["build_info", "internal_store_integrity_check", "desktop_args", "internal_windows_installer_activate", "internal_windows_uninstall_cleanup", "internal_windows_restart"])]
+    #[arg(long, hide = true, value_name = "INSTALL_ROOT", conflicts_with_all = ["build_info", "internal_store_integrity_check", "internal_windows_installer_activate", "internal_windows_uninstall_cleanup", "internal_windows_restart"])]
     internal_windows_installer_preflight: Option<std::path::PathBuf>,
     #[cfg(all(feature = "desktop", target_os = "windows"))]
-    #[arg(long, hide = true, num_args = 2, value_names = ["INSTALL_ROOT", "GENERATION"], conflicts_with_all = ["build_info", "internal_store_integrity_check", "desktop_args", "internal_windows_installer_preflight", "internal_windows_installer_activate", "internal_windows_uninstall_cleanup", "internal_windows_restart"])]
+    #[arg(long, hide = true, num_args = 2, value_names = ["INSTALL_ROOT", "GENERATION"], conflicts_with_all = ["build_info", "internal_store_integrity_check", "internal_windows_installer_preflight", "internal_windows_installer_activate", "internal_windows_uninstall_cleanup", "internal_windows_restart"])]
     internal_windows_installer_prepare: Vec<std::ffi::OsString>,
     #[cfg(all(feature = "desktop", target_os = "windows"))]
-    #[arg(long, hide = true, value_name = "GENERATION", conflicts_with_all = ["build_info", "internal_store_integrity_check", "desktop_args", "internal_windows_uninstall_cleanup", "internal_windows_restart"])]
+    #[arg(long, hide = true, value_name = "GENERATION", conflicts_with_all = ["build_info", "internal_store_integrity_check", "internal_windows_uninstall_cleanup", "internal_windows_restart"])]
     internal_windows_installer_activate: Option<String>,
     #[cfg(all(feature = "desktop", target_os = "windows"))]
-    #[arg(long, hide = true, conflicts_with_all = ["build_info", "internal_store_integrity_check", "desktop_args", "internal_windows_restart"])]
+    #[arg(long, hide = true, conflicts_with_all = ["build_info", "internal_store_integrity_check", "internal_windows_restart"])]
     internal_windows_uninstall_cleanup: bool,
     #[cfg(all(feature = "desktop", target_os = "windows"))]
-    #[arg(long, hide = true, value_name = "PROCESS_IDENTITY", conflicts_with_all = ["build_info", "internal_store_integrity_check", "desktop_args"])]
+    #[arg(long, hide = true, value_name = "PROCESS_IDENTITY", conflicts_with_all = ["build_info", "internal_store_integrity_check"])]
     internal_windows_restart: Option<String>,
     #[cfg(all(feature = "desktop", target_os = "windows"))]
     #[arg(long, hide = true, requires = "windows_installer")]
     internal_windows_installer_report: Option<std::path::PathBuf>,
     #[cfg(all(feature = "desktop", target_os = "windows"))]
-    #[arg(long, hide = true, num_args = 2, value_names = ["INSTALL_ROOT", "GENERATION"], conflicts_with_all = ["build_info", "internal_store_integrity_check", "desktop_args", "internal_windows_uninstall_cleanup", "internal_windows_restart"])]
+    #[arg(long, hide = true, num_args = 2, value_names = ["INSTALL_ROOT", "GENERATION"], conflicts_with_all = ["build_info", "internal_store_integrity_check", "internal_windows_uninstall_cleanup", "internal_windows_restart"])]
     internal_windows_installer_install: Vec<std::ffi::OsString>,
     #[command(subcommand)]
     mode: Option<Mode>,
-    /// Arguments a desktop launcher may append (file paths, `%u` expansions).
-    /// They are ignored so the window still opens, except for a leading bare
-    /// word, which is a mistyped command: see `unrecognized_command`.
-    #[arg(trailing_var_arg = true, allow_hyphen_values = true, hide = true)]
-    desktop_args: Vec<String>,
 }
 
 #[derive(Debug, Subcommand, PartialEq, Eq)]
@@ -281,17 +276,6 @@ pub(crate) fn startup_elapsed() -> u128 {
         .unwrap_or(0)
 }
 
-/// A leading bare word (`begin-pairing`, `stauts`) is a mistyped command, not
-/// something a desktop launcher appends: those are flags, URLs or file paths.
-fn unrecognized_command(desktop_args: &[String]) -> Option<&str> {
-    let word = desktop_args.first()?;
-    let bare = word.starts_with(|c: char| c.is_ascii_alphanumeric())
-        && word
-            .chars()
-            .all(|c| c.is_ascii_alphanumeric() || c == '-' || c == '_');
-    bare.then_some(word.as_str())
-}
-
 /// The full path of a nested command with this name, such as
 /// `remote begin-pairing` for `begin-pairing`.
 fn nested_command_path(command: &clap::Command, word: &str) -> Option<String> {
@@ -306,15 +290,34 @@ fn nested_command_path(command: &clap::Command, word: &str) -> Option<String> {
         })
 }
 
-fn unrecognized_command_message(word: &str) -> String {
-    let command = <Cli as clap::CommandFactory>::command();
-    match nested_command_path(&command, word) {
-        Some(path) => format!(
-            "unrecognized command '{word}'\n\n  tip: did you mean '{} {path}'?",
-            command.get_name()
-        ),
-        None => format!("unrecognized command '{word}'"),
-    }
+/// Parse the command line. Clap rejects unknown input and suggests top-level
+/// typos itself; it does not look into nested commands, so an unknown word
+/// that names one (`begin-pairing`) gets its full path as the tip.
+fn parse_cli<I, T>(args: I) -> Result<Cli, clap::Error>
+where
+    I: IntoIterator<Item = T>,
+    T: Into<std::ffi::OsString> + Clone,
+{
+    use clap::error::{ContextKind, ContextValue, ErrorKind};
+    Cli::try_parse_from(args).map_err(|mut error| {
+        if error.kind() != ErrorKind::InvalidSubcommand
+            || error.get(ContextKind::SuggestedSubcommand).is_some()
+        {
+            return error;
+        }
+        let Some(ContextValue::String(word)) = error.get(ContextKind::InvalidSubcommand) else {
+            return error;
+        };
+        let command = <Cli as clap::CommandFactory>::command();
+        if let Some(path) = nested_command_path(&command, word) {
+            let tip = format!("did you mean '{} {path}'?", command.get_name());
+            error.insert(
+                ContextKind::Suggested,
+                ContextValue::StyledStrs(vec![tip.into()]),
+            );
+        }
+        error
+    })
 }
 
 fn main() {
@@ -331,15 +334,7 @@ fn main() {
             }
         }
     }
-    let cli = Cli::parse();
-    if let Some(word) = unrecognized_command(&cli.desktop_args) {
-        <Cli as clap::CommandFactory>::command()
-            .error(
-                clap::error::ErrorKind::InvalidSubcommand,
-                unrecognized_command_message(word),
-            )
-            .exit();
-    }
+    let cli = parse_cli(std::env::args_os()).unwrap_or_else(|error| error.exit());
     #[cfg(all(feature = "desktop", target_os = "windows"))]
     {
         // The stable launcher and installer modes never open application data,
@@ -919,7 +914,7 @@ mod tests {
     use clap::Parser;
 
     fn parse(args: &[&str]) -> Result<Option<Mode>, clap::Error> {
-        Cli::try_parse_from(std::iter::once("maple-agent").chain(args.iter().copied()))
+        super::parse_cli(std::iter::once("maple-agent").chain(args.iter().copied()))
             .map(|cli| cli.mode)
     }
 
@@ -1047,7 +1042,6 @@ mod tests {
         let cli = Cli::try_parse_from(["maple-agent", "--build-info"]).unwrap();
         assert!(cli.build_info);
         assert!(cli.mode.is_none());
-        assert!(cli.desktop_args.is_empty());
         assert!(parse(&["--build-info", "login"]).is_err());
         assert!(parse(&["--build-info", "some/file.txt"]).is_err());
     }
@@ -1132,52 +1126,49 @@ mod tests {
     }
 
     #[test]
-    fn other_arguments_keep_desktop_startup() {
+    fn no_arguments_start_the_desktop_app() {
         assert!(matches!(parse(&[]), Ok(None)));
-        assert!(matches!(parse(&["--unknown"]), Ok(None)));
-        assert!(matches!(parse(&["some/file.txt"]), Ok(None)));
-        for launcher_args in [
-            vec![],
-            vec!["--unknown"],
-            vec!["some/file.txt"],
-            vec!["notes.txt"],
-            vec!["/home/user/notes"],
-            vec!["file:///home/user/notes", "status"],
-            vec!["maple://open"],
+    }
+
+    #[test]
+    fn unknown_arguments_are_errors_not_desktop_startup() {
+        use clap::error::ErrorKind;
+        for (args, kind) in [
+            (vec!["frobnicate"], ErrorKind::InvalidSubcommand),
+            (vec!["begin-pairing"], ErrorKind::InvalidSubcommand),
+            (vec!["some/file.txt"], ErrorKind::InvalidSubcommand),
+            (
+                vec!["file:///home/user/notes"],
+                ErrorKind::InvalidSubcommand,
+            ),
+            (vec!["--unknown"], ErrorKind::UnknownArgument),
         ] {
-            let cli =
-                Cli::try_parse_from(std::iter::once("maple-agent").chain(launcher_args)).unwrap();
-            assert_eq!(super::unrecognized_command(&cli.desktop_args), None);
+            let error = parse(&args).expect_err("unknown input must not parse");
+            assert_eq!(error.kind(), kind, "{args:?}");
+            assert_eq!(error.exit_code(), 2);
         }
     }
 
     #[test]
-    fn a_bare_word_is_an_unrecognized_command_not_desktop_startup() {
-        for (args, word) in [
-            (vec!["begin-pairing"], "begin-pairing"),
-            (vec!["stauts"], "stauts"),
-            (vec!["frobnicate", "--flag"], "frobnicate"),
-        ] {
-            let cli = Cli::try_parse_from(std::iter::once("maple-agent").chain(args)).unwrap();
-            assert!(cli.mode.is_none());
-            assert_eq!(super::unrecognized_command(&cli.desktop_args), Some(word));
-        }
+    fn an_unknown_word_naming_a_nested_command_gets_its_full_path() {
+        let tip = |word: &str| {
+            let rendered = parse(&[word]).expect_err("unknown").to_string();
+            rendered
+                .lines()
+                .find_map(|line| line.trim().strip_prefix("tip: ").map(str::to_owned))
+        };
         assert_eq!(
-            super::unrecognized_command_message("begin-pairing"),
-            "unrecognized command 'begin-pairing'\n\n  tip: did you mean 'maple-agent remote begin-pairing'?"
+            tip("begin-pairing").as_deref(),
+            Some("did you mean 'maple-agent remote begin-pairing'?")
         );
         assert_eq!(
-            super::unrecognized_command_message("stop"),
-            "unrecognized command 'stop'\n\n  tip: did you mean 'maple-agent host stop'?"
+            tip("stop").as_deref(),
+            Some("did you mean 'maple-agent host stop'?")
         );
-        // Hidden commands are not suggested.
-        assert_eq!(
-            super::unrecognized_command_message("serve"),
-            "unrecognized command 'serve'"
-        );
-        assert_eq!(
-            super::unrecognized_command_message("frobnicate"),
-            "unrecognized command 'frobnicate'"
-        );
+        // Hidden commands are not suggested, and nothing is invented.
+        assert_eq!(tip("serve"), None);
+        assert_eq!(tip("frobnicate"), None);
+        // Clap's own suggestion for a top-level typo is kept.
+        assert!(tip("remot").is_some_and(|tip| tip.contains("'remote'")));
     }
 }

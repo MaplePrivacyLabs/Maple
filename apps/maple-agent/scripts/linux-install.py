@@ -206,7 +206,7 @@ def install(source, home):
     wrapper = ("#!/bin/sh\n# maple-agent-user-install-v1\nexec "
                + shlex.quote(str(paths["bundle"] / "AppRun")) + ' "$@"\n').encode()
     desktop = ("[Desktop Entry]\nType=Application\n" + f"Name={display}\n"
-               + "Exec=" + desktop_argument(str(paths["wrapper"])) + " %U\n"
+               + "Exec=" + desktop_argument(str(paths["wrapper"])) + "\n"
                + f"Icon={bundle_id}\nTerminal=false\nCategories=Office;Utility;\n"
                + f"StartupWMClass={bundle_id}\n").encode()
     icon = source / "usr/share/icons/hicolor/256x256/apps" / (bundle_id + ".png")
