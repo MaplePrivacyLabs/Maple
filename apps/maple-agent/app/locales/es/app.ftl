@@ -1515,7 +1515,6 @@ chat-select-all = Seleccionar todo
 chat-close = Cerrar
 chat-settings-menu-update = Menú de configuración, actualización disponible
 chat-settings-menu = Menú de configuración
-chat-account = Cuenta
 chat-all-settings = Toda la configuración
 chat-update-error = Falló la actualización
 chat-update-restart = Reiniciar para terminar la actualización

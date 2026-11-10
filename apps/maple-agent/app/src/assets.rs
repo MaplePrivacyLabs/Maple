@@ -101,7 +101,6 @@ assets!(
     "icons/terminal.svg",
     "icons/trash-2.svg",
     "icons/undo-2.svg",
-    "icons/user.svg",
     "icons/users.svg",
     "icons/volume-2.svg",
     "icons/wrench.svg",

@@ -7524,14 +7524,15 @@ impl ChatScreen {
                     )
                 }))
                 .item(
+                    // Shows the label of the Settings section it opens.
                     MenuItem::new(
                         "settings-menu-account",
-                        tr("chat-account"),
+                        tr("settings-section-account"),
                         |_: &mut Self, _, cx| {
                             cx.emit(OpenSettingsSection(Section::Account));
                         },
                     )
-                    .icon("user"),
+                    .icon("shield-user"),
                 )
                 .item(
                     MenuItem::new(
