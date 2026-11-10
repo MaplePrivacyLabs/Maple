@@ -42,6 +42,25 @@ impl PlatformPasswordResetRequest {
             .map_err(PlatformPasswordResetError::DatabaseError)
     }
 
+    /// Whether the account has a live request created with this reset
+    /// secret. A confirmation can only ever complete such a request, whatever
+    /// code it submits.
+    pub fn active_exists_for_user_id_and_secret(
+        conn: &mut PgConnection,
+        lookup_user_id: Uuid,
+        lookup_hashed_secret: &str,
+    ) -> Result<bool, PlatformPasswordResetError> {
+        diesel::select(diesel::dsl::exists(
+            platform_password_reset_requests::table
+                .filter(platform_password_reset_requests::platform_user_id.eq(lookup_user_id))
+                .filter(platform_password_reset_requests::hashed_secret.eq(lookup_hashed_secret))
+                .filter(platform_password_reset_requests::is_reset.eq(false))
+                .filter(platform_password_reset_requests::expiration_time.gt(Utc::now())),
+        ))
+        .get_result(conn)
+        .map_err(PlatformPasswordResetError::DatabaseError)
+    }
+
     pub fn mark_as_reset(&self, conn: &mut PgConnection) -> Result<(), PlatformPasswordResetError> {
         diesel::update(platform_password_reset_requests::table)
             .filter(platform_password_reset_requests::id.eq(self.id))

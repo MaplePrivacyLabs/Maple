@@ -1675,8 +1675,8 @@ pub fn router(app_state: Arc<AppState>) -> Router<()> {
             "/v1/chat/completions",
             post(proxy_openai)
                 .layer(axum::middleware::from_fn_with_state(
-                    app_state.inference_rate_limiter.clone(),
-                    super::inference_rate_limit::enforce,
+                    app_state.rate_limits.inference.clone(),
+                    super::rate_limit::enforce_user,
                 ))
                 .layer(axum::middleware::from_fn_with_state(
                     app_state.clone(),
@@ -1708,8 +1708,8 @@ pub fn router(app_state: Arc<AppState>) -> Router<()> {
             "/v1/embeddings",
             post(proxy_embeddings)
                 .layer(axum::middleware::from_fn_with_state(
-                    app_state.inference_rate_limiter.clone(),
-                    super::inference_rate_limit::enforce,
+                    app_state.rate_limits.inference.clone(),
+                    super::rate_limit::enforce_user,
                 ))
                 .layer(axum::middleware::from_fn_with_state(
                     app_state.clone(),
