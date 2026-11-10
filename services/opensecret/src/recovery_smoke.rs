@@ -3,7 +3,11 @@
 //! this is not an SDK or Nitro attestation verifier.
 use crate::{
     db::{setup_test_db, DBConnection},
-    models::{org_projects::OrgProject, password_reset::PasswordResetRequest, users::User},
+    models::{
+        org_projects::OrgProject,
+        password_reset::{NewPasswordResetRequest, PasswordResetRequest},
+        users::User,
+    },
     seed_wrapping::password_reset_code_mac,
     transport_v2::{
         crypto::{
@@ -14,7 +18,7 @@ use crate::{
     },
 };
 use base64::{engine::general_purpose::STANDARD, Engine};
-use diesel::{ExpressionMethods, QueryDsl, RunQueryDsl};
+use diesel::{ExpressionMethods, OptionalExtension, QueryDsl, RunQueryDsl};
 use rand_core::OsRng;
 use serde_json::{json, Value};
 use std::{sync::Arc, time::Duration};
@@ -209,12 +213,13 @@ struct Fixture {
     user: User,
     root: Vec<u8>,
     secrets: Vec<String>,
+    requests_sent: usize,
 }
 
 impl Fixture {
-    // Exercise the real reset-request endpoint first. Since local runs have no
-    // email credentials, replace only this test user's new reset-code MAC with
-    // a known random fixture, preserving the server-created row and secret hash.
+    // Exercise real initiation, including its email cap. The remaining recovery
+    // scenarios use local proof rows once that cap prevents creating a request.
+    // No email credentials are used; every proof uses a known random code MAC.
     async fn proof(&mut self, client: &Client) -> Value {
         use crate::models::schema::password_reset_requests as r;
         let secret = Uuid::new_v4().to_string();
@@ -231,14 +236,27 @@ impl Fixture {
                 200,
             )
             .await;
+        self.requests_sent += 1;
         let conn = &mut self.db.get_pool().get().unwrap();
         let row = r::table
             .filter(r::user_id.eq(self.user.uuid))
             .filter(r::hashed_secret.eq(&hash))
             .first::<PasswordResetRequest>(conn)
-            .expect("request endpoint must create the reset row");
+            .optional()
+            .expect("reset request lookup should succeed");
         let mac =
             password_reset_code_mac(&self.root, self.project.id, self.user.uuid, &code).unwrap();
+        let row = if self.requests_sent <= 5 {
+            row.expect("an admitted initiation must create the reset row")
+        } else {
+            assert!(
+                row.is_none(),
+                "throttled initiation must not create a reset row"
+            );
+            NewPasswordResetRequest::new(self.user.uuid, hash, mac.to_vec(), 24)
+                .insert(conn)
+                .expect("local recovery proof fixture should insert")
+        };
         assert_eq!(
             diesel::update(
                 r::table
@@ -313,6 +331,7 @@ async fn encrypted_account_flow() {
         user,
         root,
         secrets: vec![password.clone(), next_password.clone()],
+        requests_sent: 0,
     };
     fixture.remember(&auth);
     let old_token = auth["access_token"].as_str().unwrap();
