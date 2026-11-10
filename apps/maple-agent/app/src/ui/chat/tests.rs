@@ -902,6 +902,10 @@ mod state_tests {
                     .any(|entry| matches!(entry, SidebarEntry::Task(_)))
             );
             this.set_sidebar_filter("", cx);
+            // The folder picker is a new task's: a saved task's folder is in
+            // the sidebar.
+            this.selected_session = None;
+            cx.notify();
         });
         press(cx, "root-picker");
         press(cx, "computer-1-project-0");
@@ -1128,23 +1132,12 @@ mod state_tests {
             chat.composer = Some(composer);
             chat.notice = Some(UiText::key("chat-compacted"));
             let generation = chat.selection_generation;
-            for (locale, title, notice, description) in [
-                (
-                    "es",
-                    "Nueva tarea",
-                    "Conversación compactada",
-                    "Resume la conversación",
-                ),
-                (
-                    "en",
-                    "New Task",
-                    "Conversation compacted",
-                    "Summarize the conversation",
-                ),
+            for (locale, notice, description) in [
+                ("es", "Conversación compactada", "Resume la conversación"),
+                ("en", "Conversation compacted", "Summarize the conversation"),
             ] {
                 crate::ui::i18n::apply_preference(Some(locale));
                 chat.refresh_locale(cx);
-                assert_eq!(chat.selected_title.as_ref(), title);
                 assert_eq!(chat.notice.as_ref().unwrap().resolve().as_ref(), notice);
                 assert_eq!(chat.composer.as_ref().unwrap().read(cx).text_ref(), "/comp");
                 assert_eq!(chat.selected_session.as_deref(), Some("chosen"));
@@ -1173,7 +1166,6 @@ mod state_tests {
                 let after = chat.list_state.logical_scroll_top();
                 assert_eq!(after.item_ix, anchor.item_ix);
                 assert_eq!(after.offset_in_item, anchor.offset_in_item);
-                assert_eq!(chat.selected_title.as_ref(), "User title: Configuración");
                 assert_eq!(chat.timeline[7].text.as_deref(), Some("User content"));
                 assert_eq!(chat.composer.as_ref().unwrap().read(cx).text_ref(), "/comp");
             }
@@ -2014,7 +2006,12 @@ mod state_tests {
             this.booting = false;
         });
         assert_eq!(cx.debug_bounds("host-reconnecting"), None);
-        let title = cx.debug_bounds("header-title").unwrap();
+        // A saved task's top bar names neither the task nor its folder: the
+        // sidebar lists it under its project.
+        for absent in ["header-title", "root-picker", "project-branch"] {
+            assert_eq!(cx.debug_bounds(absent), None, "{absent}");
+        }
+        let slot = cx.debug_bounds("navigation-loading-slot").unwrap();
         screen.update(cx, |this, cx| {
             assert_eq!(this.host_reconnect_status(), None);
             this.handle_service_event(AgentServiceEvent::HostReconnecting, cx);
@@ -2051,7 +2048,7 @@ mod state_tests {
             header.right() - px(8.),
             "the row's far end"
         );
-        assert_eq!(cx.debug_bounds("header-title"), Some(title));
+        assert_eq!(cx.debug_bounds("navigation-loading-slot"), Some(slot));
 
         // Hovering is how to find out what is going on, and the tooltip
         // stays on screen although the spinner is at the window's edge.
@@ -3451,26 +3448,6 @@ mod state_tests {
         });
     }
 
-    /// The header names what the pane shows: an empty pane is a new task
-    /// even while the list still marks a row.
-    #[gpui::test]
-    fn test_header_says_new_task_while_the_pane_is_empty(cx: &mut TestAppContext) {
-        cx.executor().allow_parking();
-        let screen = screen(cx);
-        screen.update(cx, |this, _cx| {
-            this.sessions = vec![summary_at("s1", "Hello", "/work/alpha")];
-            this.selected_session = Some("s1".to_string());
-            this.replace_timeline(Vec::new());
-            assert_eq!(this.selected_title.as_ref(), "New Task");
-
-            this.replace_timeline(vec![user_item("u1", "hi")]);
-            assert_eq!(this.selected_title.as_ref(), "Hello");
-
-            this.replace_timeline(Vec::new());
-            assert_eq!(this.selected_title.as_ref(), "New Task");
-        });
-    }
-
     /// While a project selection is landing, neither "New Task" nor a
     /// first send may run ahead of it.
     #[gpui::test]
@@ -3516,7 +3493,6 @@ mod state_tests {
             assert!(this.pending_first_send.is_none());
             assert!(this.timeline.is_empty());
             assert_eq!(this.loading_session, None);
-            assert_eq!(this.selected_title.as_ref(), "New Task");
             assert_eq!(this.project_root.as_deref(), Some("/work/alpha"));
             assert!(
                 this.selection_generation > generation,
@@ -5354,7 +5330,6 @@ mod state_tests {
 
             assert_eq!(this.selected_session, None);
             assert!(!this.session_setup_pending);
-            assert_eq!(this.selected_title.as_ref(), "New Task");
             assert!(this.draft, "the fallback is a draft like any other");
 
             // On a fresh screen (the draft left), a task with a message
@@ -7844,14 +7819,163 @@ mod state_tests {
         assert_eq!(cx.debug_bounds("sidebar-wordmark"), Some(wordmark));
     }
 
-    /// The collapsed header keeps its commands before the title in both
-    /// pane layouts; expanding keeps only the toggle. Beside traffic lights
+    /// Draft project context stays with the composer in both pane layouts,
+    /// while the shared trigger keeps pointer and shortcut menu behavior.
+    #[gpui::test]
+    fn draft_project_picker_stays_above_composer(cx: &mut TestAppContext) {
+        cx.update(|cx| cx.set_reduce_motion(true));
+        let (chat, cx) = chat_window(cx, |this, _| {
+            this.selected_session = None;
+            this.project_label =
+                "A very long project name that should stay inside the composer context row".into();
+            this.branch_label = Some("(feature/draft-context)".into());
+        });
+        for has_history in [false, true] {
+            for collapsed in [false, true] {
+                for expanded in [false, true] {
+                    for pending_create in [false, true] {
+                        chat.update(cx, |this, cx| {
+                            this.session_setup_pending = pending_create;
+                            this.replace_timeline(if has_history {
+                                vec![user_item("u1", "hi")]
+                            } else {
+                                Vec::new()
+                            });
+                            this.composer_expanded = expanded;
+                            this.set_sidebar_collapsed(collapsed, cx);
+                            cx.notify();
+                        });
+                        cx.run_until_parked();
+                        let project = cx.debug_bounds("root-picker").expect("draft project");
+                        let branch = cx.debug_bounds("project-branch").expect("draft branch");
+                        let composer = cx.debug_bounds("composer-box").expect("composer");
+                        let header = cx.debug_bounds("chat-header").expect("header");
+                        assert!(cx.debug_bounds("header-title").is_none());
+                        assert!(
+                            project.top() >= header.bottom(),
+                            "history={has_history}, collapsed={collapsed}, expanded={expanded}, pending={pending_create}: project={project:?}, header={header:?}, composer={composer:?}"
+                        );
+                        assert_eq!(project.left(), composer.left());
+                        assert!(project.bottom() <= composer.top());
+                        assert!(composer.top() - project.bottom() <= px(12.));
+                        assert!(project.size.width <= px(260.));
+                        assert!(branch.right() <= composer.right());
+                        assert!((branch.center().y - project.center().y).abs() <= px(0.5));
+                        assert!(composer.size.height > px(0.));
+                        if expanded {
+                            assert!(
+                                composer.size.height > px(300.),
+                                "expanded composer: {composer:?}"
+                            );
+                        }
+
+                        press(cx, "root-picker");
+                        assert_eq!(open_menu(&chat, cx), "Project");
+                        let menu = cx.debug_bounds("project-menu").expect("project menu");
+                        assert!(!menu.contains(&project.center()));
+                        cx.simulate_keystrokes("escape");
+                        assert_eq!(open_menu(&chat, cx), "");
+                        cx.simulate_keystrokes("secondary-p");
+                        assert_eq!(open_menu(&chat, cx), "Project");
+                        cx.simulate_keystrokes("escape");
+                    }
+                }
+            }
+        }
+
+        // Saved, the task keeps neither: the sidebar lists it under its
+        // project, and the top bar carries no title.
+        chat.update(cx, |this, cx| {
+            this.selected_session = Some("s1".into());
+            this.replace_timeline(vec![user_item("u1", "hi")]);
+            cx.notify();
+        });
+        cx.run_until_parked();
+        assert!(cx.debug_bounds("composer-box").is_some());
+        for absent in ["root-picker", "project-branch", "header-title"] {
+            assert!(cx.debug_bounds(absent).is_none(), "{absent}");
+        }
+    }
+
+    #[gpui::test]
+    fn draft_project_context_fits_a_narrow_window(cx: &mut TestAppContext) {
+        struct ChatHost {
+            chat: Entity<ChatScreen>,
+        }
+        impl Render for ChatHost {
+            fn render(&mut self, _: &mut Window, _: &mut Context<Self>) -> impl IntoElement {
+                div().size_full().flex().flex_col().child(self.chat.clone())
+            }
+        }
+        cx.executor().allow_parking();
+        cx.update(|cx| cx.set_reduce_motion(true));
+        let chat = cx.new(|cx| {
+            let _guard = SETTINGS_LOCK.lock();
+            crate::desktop::register_key_bindings(cx);
+            let backend = Arc::new(
+                AgentBackend::for_test("http://127.0.0.1:9".into(), String::new()).unwrap(),
+            );
+            let mut chat = ChatScreen::new_without_start(backend, "user".into(), cx);
+            chat.booting = false;
+            chat.trust_prompts = false;
+            chat.project_label = "A long project name that must fit beside its branch".into();
+            chat.branch_label = Some("(feature/a-long-branch-name-that-must-also-fit)".into());
+            chat.sidebar
+                .update(cx, |sidebar, _| sidebar.reset_persisted_for_test());
+            chat
+        });
+        let (_host, cx) = cx.add_window_view(|_, _| ChatHost { chat: chat.clone() });
+        cx.simulate_resize(gpui::size(px(640.), px(480.)));
+        cx.update(|window, _| window.activate_window());
+        for has_history in [false, true] {
+            for collapsed in [false, true] {
+                for expanded in [false, true] {
+                    chat.update(cx, |this, cx| {
+                        this.replace_timeline(if has_history {
+                            vec![user_item("u1", "hi")]
+                        } else {
+                            Vec::new()
+                        });
+                        this.composer_expanded = expanded;
+                        this.set_sidebar_collapsed(collapsed, cx);
+                        cx.notify();
+                    });
+                    cx.run_until_parked();
+                    let project = cx.debug_bounds("root-picker").expect("project");
+                    let branch = cx.debug_bounds("project-branch").expect("branch");
+                    let composer = cx.debug_bounds("composer-box").expect("composer");
+                    assert_eq!(project.left(), composer.left());
+                    assert!(
+                        project.right() <= composer.right() && branch.right() <= composer.right(),
+                        "history={has_history}, collapsed={collapsed}, expanded={expanded}: project={project:?}, branch={branch:?}, composer={composer:?}"
+                    );
+                    assert!(project.bottom() <= composer.top());
+                    assert!(composer.top() - project.bottom() <= px(12.));
+                    assert!(composer.size.height > px(0.));
+                    assert!(composer.bottom() <= px(480.));
+                    assert!(cx.debug_bounds("header-title").is_none());
+                    press(cx, "root-picker");
+                    assert_eq!(open_menu(&chat, cx), "Project");
+                    let menu = cx.debug_bounds("project-menu").expect("project menu");
+                    assert!(!menu.contains(&project.center()));
+                    assert!(menu.left() >= px(0.) && menu.right() <= px(640.));
+                    cx.simulate_keystrokes("escape");
+                }
+            }
+        }
+    }
+
+    /// The collapsed header keeps its commands before the loading slot in
+    /// both pane layouts; expanding keeps only the toggle. A saved task's
+    /// header names neither the task nor its folder. Beside traffic lights
     /// the toggle stays put and the logo sits under them; without them the
     /// logo moves up into their corner and the toolbar follows it.
     #[gpui::test]
     fn collapsed_sidebar_header_toolbar(cx: &mut TestAppContext) {
         cx.update(|cx| cx.set_reduce_motion(true));
         let (chat, cx) = chat_window(cx, |this, cx| {
+            this.branch_label = Some("(main)".into());
+            this.selected_session = Some("s1".into());
             this.sessions = vec![summary("s1", "One")];
             this.sync_sidebar(cx);
         });
@@ -7867,16 +7991,20 @@ mod state_tests {
             cx.run_until_parked();
             let toggle = cx.debug_bounds("header-sidebar-toggle").expect("toggle");
             let new_task = cx.debug_bounds("header-new-task").expect("new task");
-            let title = cx.debug_bounds("header-title").expect("title");
-            let project = cx.debug_bounds("root-picker").expect("project");
+            let slot = cx
+                .debug_bounds("navigation-loading-slot")
+                .expect("loading slot");
+            for absent in ["header-title", "root-picker", "project-branch"] {
+                assert!(cx.debug_bounds(absent).is_none(), "{absent}");
+            }
             assert_eq!(
                 cx.debug_bounds("sidebar-rail").unwrap().top(),
                 cx.debug_bounds("chat-header").unwrap().bottom()
             );
             assert_eq!(toggle.left(), header_toolbar_left(0.));
             assert!(toggle.right() < new_task.left());
-            assert!(title.right() < project.left());
-            assert_eq!(toggle.center().y, title.center().y);
+            assert!(new_task.right() < slot.left());
+            assert!((toggle.center().y - slot.center().y).abs() <= px(0.5));
             let mark = cx.debug_bounds("show-sidebar").expect("mark");
             if crate::ui::titlebar::TRANSPARENT_TITLEBAR {
                 assert!(mark.top() > toggle.bottom());
@@ -7900,9 +8028,11 @@ mod state_tests {
                 assert!(wordmark.right() < expanded.left());
             }
             assert!(cx.debug_bounds("header-new-task").is_none());
-            assert!(cx.debug_bounds("root-picker").is_some());
+            for absent in ["header-title", "root-picker", "project-branch"] {
+                assert!(cx.debug_bounds(absent).is_none(), "{absent}");
+            }
             assert_eq!(
-                cx.debug_bounds("header-title").unwrap().left(),
+                cx.debug_bounds("navigation-loading-slot").unwrap().left(),
                 SIDEBAR_WIDTH + px(16.)
             );
         }
@@ -8441,7 +8571,6 @@ mod state_tests {
         chat.update(cx, |this, _| {
             assert!(this.sidebar_collapsed);
             assert_eq!(this.selected_session, None);
-            assert_eq!(this.selected_title.as_ref(), "New Task");
             assert!(this.timeline.is_empty());
             assert!(!this.session_setup_pending);
             assert_eq!(this.sessions.len(), 1);
@@ -8569,6 +8698,13 @@ mod state_tests {
             ("mcp-menu", "Integrations"),
             ("root-picker", "Project"),
         ] {
+            if trigger == "root-picker" {
+                // The folder picker is a new task's.
+                chat.update(cx, |this, cx| {
+                    this.selected_session = None;
+                    cx.notify();
+                });
+            }
             press(cx, trigger);
             assert_eq!(open_menu(&chat, cx), menu, "{trigger} opens its menu");
             press(cx, trigger);
@@ -8600,7 +8736,7 @@ mod state_tests {
             ("model-picker", "menu-session-s1", "Task(s1)"),
             ("model-picker", "view-options", "View"),
             ("menu-session-s1", "view-options", "View"),
-            ("root-picker", "mcp-menu", "Integrations"),
+            ("view-options", "mcp-menu", "Integrations"),
         ] {
             press(cx, first);
             if first == "menu-session-s1" && then == "model-picker" {
@@ -8653,7 +8789,11 @@ mod state_tests {
         });
 
         // A menu opened without the pointer closes the open one too: it
-        // takes the focus.
+        // takes the focus. The project menu is a new task's.
+        chat.update(cx, |this, cx| {
+            this.selected_session = None;
+            cx.notify();
+        });
         press(cx, "menu-session-s1");
         cx.simulate_keystrokes("secondary-p");
         assert_eq!(open_menu(&chat, cx), "Project");
@@ -8695,11 +8835,13 @@ mod state_tests {
         );
     }
 
-    /// The header's project menu closes on a press outside it, like every
+    /// A new task's project menu closes on a press outside it, like every
     /// other menu. It used to stay open.
     #[gpui::test]
     fn test_the_project_menu_closes_on_an_outside_press(cx: &mut TestAppContext) {
         let (chat, cx) = chat_window(cx, |this, cx| {
+            // The folder picker is a new task's; a saved one has none.
+            this.selected_session = None;
             this.recent_roots = vec![recent_root(&absolute_fixture_root("one"))];
             this.sync_sidebar(cx);
         });
@@ -8707,6 +8849,47 @@ mod state_tests {
         assert_eq!(open_menu(&chat, cx), "Project");
         cx.simulate_click(gpui::point(px(900.), px(500.)), gpui::Modifiers::default());
         assert_eq!(open_menu(&chat, cx), "");
+    }
+
+    /// A saved task has no folder picker, so choosing a project from it
+    /// starts a new task with the menu open on that task's chip. While a
+    /// first send is creating its task, the task stays and no menu opens.
+    #[gpui::test]
+    fn choose_project_on_a_saved_task_opens_the_picker_in_a_new_task(cx: &mut TestAppContext) {
+        let (chat, cx) = chat_window(cx, |this, cx| {
+            this.sessions = vec![summary("s1", "One")];
+            this.recent_roots = vec![recent_root(&absolute_fixture_root("one"))];
+            this.replace_timeline(vec![user_item("u1", "hi")]);
+            this.sync_sidebar(cx);
+        });
+        assert!(cx.debug_bounds("root-picker").is_none());
+        let choose = |cx: &mut gpui::VisualTestContext| {
+            cx.update(|window, app| {
+                chat.update(app, |this, cx| {
+                    this.execute_command(commands::ChatCommand::ChooseProject, window, cx)
+                })
+            });
+            cx.run_until_parked();
+        };
+
+        chat.update(cx, |this, _| this.session_setup_pending = true);
+        choose(cx);
+        assert_eq!(open_menu(&chat, cx), "");
+        chat.update(cx, |this, _| {
+            assert_eq!(this.selected_session.as_deref(), Some("s1"));
+            this.session_setup_pending = false;
+        });
+
+        choose(cx);
+        chat.update(cx, |this, _| {
+            assert_eq!(this.selected_session, None);
+            assert!(this.draft);
+        });
+        assert_eq!(open_menu(&chat, cx), "Project");
+        let project = cx.debug_bounds("root-picker").expect("draft project");
+        let composer = cx.debug_bounds("composer-box").expect("composer");
+        assert!(project.bottom() <= composer.top());
+        assert!(cx.debug_bounds("project-menu").is_some());
     }
 
     /// Folder browsing is a separate modal; typing and Enter stay out of
@@ -11516,14 +11699,22 @@ mod state_tests {
         );
 
         // Once no focus transition consumes Escape, the same central route
-        // still reaches Chat's legacy menu-close behavior.
-        chat.update(cx, |this, cx| this.toggle_root_menu(cx));
+        // still reaches Chat's legacy menu-close behavior. The project menu
+        // is a new task's, so open it in one.
+        chat.update(cx, |this, cx| {
+            this.selected_session = None;
+            this.toggle_root_menu(cx);
+        });
         assert!(cx.update(|_window, app| { chat.read(app).popup.is_open(&ChatPopup::Project) }));
         cx.simulate_keystrokes("escape");
         assert_eq!(
             cx.update(|_window, app| chat.read(app).popup.open_key().copied()),
             None
         );
+        chat.update(cx, |this, cx| {
+            this.selected_session = Some("s1".to_string());
+            cx.notify();
+        });
 
         // ga from composer Normal selects the newest assistant and returns
         // focus to the application proxy rather than leaving a stale chord
@@ -11863,7 +12054,8 @@ mod state_tests {
             );
             crate::desktop::register_key_bindings(cx);
             let mut chat = ChatScreen::new_without_start(backend, "user".to_string(), cx);
-            chat.selected_session = Some("s1".to_string());
+            // The project menu belongs to a new task.
+            chat.selected_session = None;
             chat.recent_roots = vec![
                 recent_root(&absolute_fixture_root("one")),
                 recent_root(&absolute_fixture_root("two")),
@@ -12920,9 +13112,11 @@ mod state_tests {
                     })
                 );
             }
-            chat.update(cx, |this, _| {
+            // Without draft intent the same row browses ordinarily. A saved
+            // task shows no folder picker, so the pane stays unselected.
+            chat.update(cx, |this, cx| {
                 this.draft = false;
-                this.selected_session = Some("existing".into());
+                cx.notify();
             });
             press(cx, "root-picker");
             press(cx, "computer-1-project-0");

@@ -94,7 +94,6 @@ impl ChatScreen {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) -> gpui::Stateful<Div> {
-        let title = self.selected_title.clone();
         let collapsed_progress = 1. - sidebar_expansion;
         let sidebar_width = super::SIDEBAR_RAIL_WIDTH
             + (super::SIDEBAR_WIDTH - super::SIDEBAR_RAIL_WIDTH) * sidebar_expansion;
@@ -191,28 +190,6 @@ impl ChatScreen {
                     }),
                 ),
         )
-        .when(collapsed_progress > 0., |row| {
-            row.child(
-                div()
-                    .absolute()
-                    .left(toolbar_left + toolbar_width + header_gap)
-                    .top((titlebar::TITLE_BAR_HEIGHT - window.rem_size()) / 2.)
-                    .w(px(1.))
-                    .h_4()
-                    .opacity(collapsed_progress)
-                    .bg(gpui::rgb(theme::border())),
-            )
-        })
-        .child(
-            titlebar::title(title)
-                .debug_selector(|| "header-title".to_string())
-                // Sized by its text, like the chips: nowrap gives it a
-                // real intrinsic width (a clamped, shrinkable title
-                // measured as 0 px and vanished). The cap keeps a long
-                // title from pushing the chips out of the pane.
-                .flex_none()
-                .max_w(gpui::relative(0.6)),
-        )
         .child(
             div()
                 .flex_none()
@@ -224,45 +201,6 @@ impl ChatScreen {
                     |slot| slot.child(spinner("navigation-loading", px(14.), theme::text_muted())),
                 ),
         )
-        .child(
-            self.with_menu(
-                ChatPopup::Project,
-                chip(
-                    "root-picker",
-                    Some(if self.backend.remote_host().is_some() {
-                        "globe"
-                    } else {
-                        "folder-open"
-                    }),
-                    self.project_label.clone(),
-                    true,
-                    self.popup.is_open(&ChatPopup::Project),
-                )
-                // Outside the composer box, so the standalone radius.
-                .rounded(theme::RADIUS_SM)
-                // The header is a window drag region; a press here is the
-                // chip's.
-                .on_mouse_down(gpui::MouseButton::Left, |_event, _window, cx| {
-                    cx.stop_propagation();
-                }),
-                Placement::BelowStart,
-                window,
-                cx,
-                Self::project_menu,
-            )
-            .flex_none(),
-        )
-        .when_some(self.branch_label.clone(), |row, branch| {
-            row.child(
-                div()
-                    .flex_none()
-                    .text_xs()
-                    .font_weight(gpui::FontWeight::MEDIUM)
-                    .text_color(gpui::rgb(theme::status_error()))
-                    .whitespace_nowrap()
-                    .child(branch),
-            )
-        })
         .child(div().flex_1())
         .when_some(self.host_reconnect_status(), |row, status| {
             row.child(
@@ -281,6 +219,54 @@ impl ChatScreen {
                     .child(spinner("host-reconnecting", px(14.), theme::text_muted())),
             )
         })
+    }
+
+    /// A new task's folder and branch, above the composer. A saved task's
+    /// folder is in the sidebar, so the top bar carries neither.
+    fn render_project_context(&self, window: &mut Window, cx: &mut Context<Self>) -> Div {
+        div()
+            .flex()
+            .items_center()
+            .gap_3()
+            .min_w_0()
+            .max_w_full()
+            .child(
+                self.with_menu(
+                    ChatPopup::Project,
+                    chip(
+                        "root-picker",
+                        Some(if self.backend.remote_host().is_some() {
+                            "globe"
+                        } else {
+                            "folder-open"
+                        }),
+                        self.project_label.clone(),
+                        true,
+                        self.popup.is_open(&ChatPopup::Project),
+                    )
+                    // Outside the composer box, so the standalone radius.
+                    .rounded(theme::RADIUS_SM),
+                    Placement::AboveStart,
+                    window,
+                    cx,
+                    Self::project_menu,
+                )
+                .min_w_0()
+                .max_w_full(),
+            )
+            .when_some(self.branch_label.clone(), |row, branch| {
+                row.child(
+                    div()
+                        .flex_none()
+                        .text_xs()
+                        .font_weight(gpui::FontWeight::MEDIUM)
+                        .text_color(gpui::rgb(theme::status_error()))
+                        .max_w(px(200.))
+                        .truncate()
+                        .debug_selector(|| "project-branch".to_string())
+                        .child(branch),
+                )
+            })
     }
 
     /// `button` as the opener of `popup`, with `menu` attached below or
@@ -309,7 +295,7 @@ impl ChatScreen {
             .children(menu)
     }
 
-    /// A press on a chip: the header's project chip runs the command it
+    /// A press on a chip: the project chip runs the command it
     /// shares with its shortcut; a composer chip opens or closes its menu.
     fn press_chip(&mut self, popup: ChatPopup, window: &mut Window, cx: &mut Context<Self>) {
         match popup {
@@ -1233,7 +1219,7 @@ impl ChatScreen {
         let upload = self
             .selected_upload()
             .map(|(id, upload)| (id.to_string(), upload.label.clone()));
-        div()
+        let composer_box = div()
             .w_full()
             .flex()
             .flex_col()
@@ -1513,7 +1499,18 @@ impl ChatScreen {
                                 })
                             })
                     }),
-            )
+            );
+        if self.selected_session.is_some() {
+            return composer_box;
+        }
+        div()
+            .w_full()
+            .flex()
+            .flex_col()
+            .gap_2()
+            .when(expanded, |container| container.flex_1().min_h_0())
+            .child(self.render_project_context(window, cx).flex_none())
+            .child(composer_box)
     }
 }
 
@@ -1606,6 +1603,12 @@ fn chip(
         })
         .active(|style| style.bg(gpui::rgb(theme::bg_sidebar_row_selected())))
         .children(leading.map(|name| icon(name, px(16.), color)))
-        .child(div().whitespace_nowrap().child(label))
+        .when(id == "root-picker", |el| el.max_w(px(260.)).min_w_0())
+        .child(
+            div()
+                .whitespace_nowrap()
+                .when(id == "root-picker", |label| label.min_w_0().truncate())
+                .child(label),
+        )
         .when(chevron, |el| el.child(icon("chevron-down", px(14.), color)))
 }
