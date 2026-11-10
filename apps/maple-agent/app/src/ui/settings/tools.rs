@@ -68,6 +68,10 @@ fn tool_copy(id: &str) -> Option<(SharedString, SharedString)> {
             tr("settings-tools-request-user-input"),
             tr("settings-tools-request-user-input-description"),
         ),
+        "web" => (
+            tr("settings-tools-web"),
+            tr("settings-tools-web-description"),
+        ),
         "python" => (
             tr("settings-tools-python"),
             tr("settings-tools-python-description"),
@@ -352,7 +356,8 @@ mod tests {
                     "write",
                     "read_image",
                     "todo_write",
-                    "request_user_input"
+                    "request_user_input",
+                    "web"
                 ]
             );
         });

@@ -498,6 +498,9 @@ mod tests {
             "create_project_folder",
             "list_tools",
             "set_tool_enabled",
+            // Controllers on older builds still send it; the host saves the
+            // task's legacy flag.
+            "set_session_web_enabled",
         ] {
             assert_eq!(Method::parse(name).unwrap().name(), name);
         }

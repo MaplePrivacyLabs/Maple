@@ -3228,7 +3228,8 @@ impl LocalBackend {
             .await
     }
 
-    /// Turn the web tools on or off for a session (next turn onward).
+    /// Refused: controllers on older builds send it, and web access is one
+    /// switch for all tasks in Settings → Tools now.
     pub async fn set_session_web_enabled(
         &self,
         user_id: &str,

@@ -709,10 +709,9 @@ impl AgentRuntime {
             } else {
                 None
             };
-            // The web switch and the external agents may have changed since
-            // the last run.
-            tools::sync_web_tools(session, row.web_enabled);
             permissions.set(row.permission_mode());
+            // The external agents may have changed since the last run; the
+            // switches of Settings → Tools reach the session as they change.
             sync_external_agent_tools(session, agents, providers);
             if let Some(resources) = resources {
                 session.set_resources(resources);
@@ -763,7 +762,6 @@ impl AgentRuntime {
             login_path: search_path.clone(),
             questions: self.questions.clone(),
             web: self.api.clone(),
-            web_enabled: row.web_enabled,
             read_image: tools::ReadImageFor {
                 session_id: row.id.clone(),
                 cwd: PathBuf::from(&row.project_root),
@@ -853,9 +851,9 @@ impl AgentRuntime {
     }
 
     /// Bring a switch of Settings → Tools to every loaded task that
-    /// registered its tool, as the account has the switch now. Only that
-    /// tool changes, from the task's next model request; see
-    /// [`tools::set_tool_active`].
+    /// registered its tools, as the account has the switch now. Only those
+    /// tools change, from the task's next model request; see
+    /// [`tools::set_tools_active`].
     pub(super) async fn apply_tool_switch(&self, switch: ToolSwitch) {
         let enabled = {
             let sessions = self.sessions.lock().await;
@@ -863,7 +861,7 @@ impl AgentRuntime {
             // race, the last to get here applies the last one saved.
             let enabled = tool_switches(&self.host.paths, &self.user_id).enabled(switch);
             for task in sessions.values() {
-                tools::set_tool_active(&task.session, switch.tool_name(task.shell), enabled);
+                tools::set_tools_active(&task.session, &switch.tool_names(task.shell), enabled);
             }
             enabled
         };

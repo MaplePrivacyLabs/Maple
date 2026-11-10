@@ -34,6 +34,9 @@ pub(super) const ACP_SESSION_FALLBACK_TITLE: &str = "Maple ACP";
 /// Why `/compact` did nothing: the history is all recent enough to keep.
 pub const NOTHING_TO_COMPACT_ERROR: &str = "There is nothing to compact yet";
 const HISTORY_PREPARATION_BUDGET: Duration = Duration::from_secs(5);
+/// What a controller on an older build hears when it switches web access
+/// for one task: it is one switch for all tasks now.
+pub(crate) const WEB_SWITCH_MOVED: &str = "Web access is now one switch for all tasks, in Settings → Tools. Update Maple to change it there.";
 const HISTORY_PREPARING: &str =
     "Maple is preparing this task's saved history. Try opening it again shortly.";
 
@@ -777,29 +780,16 @@ impl AgentRuntimeHandle {
         ))
     }
 
-    /// Turn the web tools on or off for one task, from its next turn.
+    /// Refuse the per-task web switch that a controller on an older build
+    /// still sends. Every task follows the web switch of Settings → Tools,
+    /// so saving a flag no tool follows would let that controller show web
+    /// access as off while the tools stay on. Its chip returns to the task's
+    /// state and shows why.
     pub async fn set_session_web_enabled(
         &self,
-        request: AgentSetSessionWebRequest,
+        _request: AgentSetSessionWebRequest,
     ) -> Result<AgentSessionSummary, String> {
-        self.verify_generation().await?;
-        self.ensure_accepting_new_work()?;
-        let session_id = session_id_argument(&request.session_id)?;
-        let row = self
-            .store()?
-            .update(&session_id, |row| row.web_enabled = request.enabled)?
-            .ok_or_else(|| format!("Failed to load Agent task: {session_id} was not found"))?;
-        // Every window showing the task follows, here and on paired computers.
-        let summary = row.summary();
-        emit_agent_event(
-            &self.service.host.events,
-            AgentServiceEvent::SessionUpdated {
-                session_id,
-                run_id: None,
-                session: summary.clone(),
-            },
-        );
-        Ok(summary)
+        Err(WEB_SWITCH_MOVED.into())
     }
 
     /// Set what a task may do without asking, from its next tool call.

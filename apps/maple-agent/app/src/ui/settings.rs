@@ -1248,11 +1248,6 @@ impl SettingsScreen {
         self.close_setting_menu(cx);
     }
 
-    fn toggle_web_default(&mut self, cx: &mut Context<Self>) {
-        let next = !self.settings.default_web_enabled;
-        self.edit_setting(move |settings| settings.default_web_enabled = next, cx);
-    }
-
     fn choose_theme(&mut self, preference: theme::Preference, cx: &mut Context<Self>) {
         self.theme = preference;
         self.edit_setting(
@@ -3675,8 +3670,8 @@ mod tests {
     #[test]
     fn shortcut_result_preserves_unrelated_general_setting() {
         let mut settings = AppSettings::default();
-        settings.default_web_enabled = !settings.default_web_enabled;
-        let expected_web_enabled = settings.default_web_enabled;
+        settings.tool_details = !settings.tool_details;
+        let expected_tool_details = settings.tool_details;
         settings
             .shortcut_overrides
             .insert("chat.focus_search".into(), None);
@@ -3687,7 +3682,7 @@ mod tests {
 
         merge_shortcut_overrides(&mut settings, overrides.clone());
 
-        assert_eq!(settings.default_web_enabled, expected_web_enabled);
+        assert_eq!(settings.tool_details, expected_tool_details);
         assert_eq!(settings.shortcut_overrides, overrides);
     }
 

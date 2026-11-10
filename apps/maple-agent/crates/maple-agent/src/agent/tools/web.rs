@@ -23,7 +23,7 @@ use crate::maple_api::MapleWebTransport;
 
 pub(crate) const WEB_SEARCH_TOOL_NAME: &str = "web_search";
 pub(crate) const OPEN_URL_TOOL_NAME: &str = "open_url";
-/// The tools a task's web switch turns on and off.
+/// The tools the web switch of Settings → Tools turns on and off together.
 pub(crate) const WEB_TOOL_NAMES: [&str; 2] = [WEB_SEARCH_TOOL_NAME, OPEN_URL_TOOL_NAME];
 const MAX_PUBLIC_URL_CHARS: usize = 2_048;
 const MAX_QUERY_CHARS: usize = 512;
@@ -54,11 +54,9 @@ struct OpenUrlParams {
     purpose: String,
 }
 
-/// The web tools, declared to the model while the task's web switch is on.
-pub(super) fn web_tools(
-    transport: Arc<dyn MapleWebTransport>,
-    web_enabled: bool,
-) -> Vec<RegisteredTool> {
+/// The web tools. The account's web switch decides whether a task declares
+/// them to the model.
+pub(super) fn web_tools(transport: Arc<dyn MapleWebTransport>) -> Vec<RegisteredTool> {
     let search = {
         let transport = transport.clone();
         FnTool::new(web_search_declaration(), move |invocation| {
@@ -86,28 +84,19 @@ pub(super) fn web_tools(
         registered(
             Arc::new(search),
             "Search the public web for links, titles and short snippets",
-            web_enabled,
         ),
-        registered(
-            Arc::new(open),
-            "Read one public HTTPS page as text",
-            web_enabled,
-        ),
+        registered(Arc::new(open), "Read one public HTTPS page as text"),
     ]
 }
 
-fn registered(
-    tool: Arc<dyn pi_agent_core::AgentTool>,
-    snippet: &str,
-    active: bool,
-) -> RegisteredTool {
+fn registered(tool: Arc<dyn pi_agent_core::AgentTool>, snippet: &str) -> RegisteredTool {
     RegisteredTool {
         tool,
         prompt: ToolPrompt {
             snippet: Some(snippet.to_string()),
             guidelines: Vec::new(),
         },
-        active,
+        active: true,
         extension: None,
     }
 }

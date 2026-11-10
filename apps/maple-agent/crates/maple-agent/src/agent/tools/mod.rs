@@ -9,10 +9,10 @@
 //! Maple's own tools join these: every task gets `read_image`, desktop tasks
 //! get the plan the user watches (`todo_write`) and questions the user
 //! answers (`request_user_input`), and every task gets `web_search` and
-//! `open_url` while its web switch is on. For an image, `read` sends a model
-//! that cannot see images to `read_image`, which describes it. A build that
-//! bundles CPython also registers `python`, a persistent scratchpad, off by
-//! default. Settings → Tools switches each of these but the web tools.
+//! `open_url`. For an image, `read` sends a model that cannot see images to
+//! `read_image`, which describes it. A build that bundles CPython also
+//! registers `python`, a persistent scratchpad, off by default. Settings →
+//! Tools switches each of these, with one switch for both web tools.
 
 mod desktop;
 mod python;
@@ -69,8 +69,6 @@ pub(crate) struct TaskToolsFor {
     pub(crate) questions: QuestionBroker,
     /// Maple's web provider.
     pub(crate) web: Arc<dyn MapleWebTransport>,
-    /// The task's web switch.
-    pub(crate) web_enabled: bool,
     pub(crate) read_image: ReadImageFor,
     /// The account's switches in Settings → Tools.
     pub(crate) switches: ToolSwitches,
@@ -106,10 +104,10 @@ pub(crate) fn task_tools(task: TaskToolsFor) -> TaskTools {
                 TaskKind::Desktop => desktop::desktop_tools(&task.session_id, task.questions),
                 TaskKind::Acp => Vec::new(),
             })
-            .chain(web::web_tools(task.web, task.web_enabled))
+            .chain(web::web_tools(task.web))
             .collect();
     for tool in &mut maple {
-        if let Some(switch) = ToolSwitch::for_maple_tool(tool.tool.name()) {
+        if let Some(switch) = ToolSwitch::for_tool(tool.tool.name(), shell) {
             tool.active = switches.enabled(switch);
         }
     }
@@ -118,7 +116,8 @@ pub(crate) fn task_tools(task: TaskToolsFor) -> TaskTools {
         builtin: ToolSwitch::BUILTIN
             .into_iter()
             .filter(|switch| switches.enabled(*switch))
-            .map(|switch| switch.tool_name(shell).to_string())
+            .flat_map(|switch| switch.tool_names(shell))
+            .map(str::to_string)
             .collect(),
         shell,
         extension: read_image::read_image_extension(task.read_image),
@@ -126,46 +125,30 @@ pub(crate) fn task_tools(task: TaskToolsFor) -> TaskTools {
     }
 }
 
-/// Switch the tool `name` on or off in a session that registered it, as Pi
-/// does within a session: the change is declared with the session's next
-/// request, even during a run, and its transcript records it. The other
-/// tools stay as they are.
-pub(crate) fn set_tool_active(session: &AgentSession, name: &str, active: bool) {
+/// Switch the tools `names` on or off together in a session that registered
+/// them, as Pi does within a session: the change is declared with the
+/// session's next request, even during a run, and its transcript records it.
+/// The other tools stay as they are.
+pub(crate) fn set_tools_active(session: &AgentSession, names: &[&str], active: bool) {
     let current = session.active_tools();
-    if current.iter().any(|tool| tool == name) == active
-        || !session.all_tools().iter().any(|tool| tool.name == name)
-    {
-        return;
-    }
-    let next: Vec<String> = if active {
-        current
-            .into_iter()
-            .chain(std::iter::once(name.to_string()))
-            .collect()
-    } else {
-        current.into_iter().filter(|tool| tool != name).collect()
-    };
-    session.set_active_tools(&next);
-}
-
-/// Declare the web tools to the model while the task's web switch is on.
-/// The change is declared with the session's next request.
-pub(crate) fn sync_web_tools(session: &AgentSession, web_enabled: bool) {
-    let active = session.active_tools();
-    let has_web = web::WEB_TOOL_NAMES
+    let mut next: Vec<String> = current
         .iter()
-        .all(|name| active.iter().any(|active| active == name));
-    if has_web == web_enabled {
-        return;
-    }
-    let mut next: Vec<String> = active
-        .into_iter()
-        .filter(|name| !web::WEB_TOOL_NAMES.contains(&name.as_str()))
+        .filter(|tool| active || !names.contains(&tool.as_str()))
+        .cloned()
         .collect();
-    if web_enabled {
-        next.extend(web::WEB_TOOL_NAMES.map(str::to_string));
+    if active {
+        let registered = session.all_tools();
+        next.extend(
+            names
+                .iter()
+                .filter(|name| !current.iter().any(|tool| tool == **name))
+                .filter(|name| registered.iter().any(|tool| tool.name == **name))
+                .map(|name| name.to_string()),
+        );
     }
-    session.set_active_tools(&next);
+    if next != current {
+        session.set_active_tools(&next);
+    }
 }
 
 /// How every command of the task starts: on the login PATH, with the task's

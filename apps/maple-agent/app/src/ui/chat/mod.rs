@@ -313,14 +313,13 @@ struct ProjectMcpSave {
 /// Applied before the first send.
 #[derive(Debug, Clone, PartialEq, Eq)]
 struct NewSessionChanges {
-    web: Option<bool>,
     mode: Option<AgentPermissionMode>,
     mcp: Vec<DraftMcpChange>,
 }
 
 impl NewSessionChanges {
     fn is_empty(&self) -> bool {
-        self.web.is_none() && self.mode.is_none() && self.mcp.is_empty()
+        self.mode.is_none() && self.mcp.is_empty()
     }
 }
 
@@ -694,10 +693,6 @@ pub struct ChatScreen {
     /// Whether a running runtime has been seen, so the skills list is
     /// re-read once Goose knows the account's skills directory.
     runtime_running_seen: bool,
-    /// Web tools on for the selected task (mirrors the session record).
-    web_enabled: bool,
-    /// Settings default applied to newly created tasks.
-    default_web_enabled: bool,
     /// What the selected task may do without asking (mirrors its record).
     permission_mode: AgentPermissionMode,
     /// The mode a new task starts in: the last one picked for a new task.
@@ -1518,8 +1513,6 @@ impl ChatScreen {
             session_mcp: Vec::new(),
             mcp_enabled_count: 0,
             composer_expanded: false,
-            web_enabled: true,
-            default_web_enabled: settings.default_web_enabled,
             permission_mode: settings.new_task_permission_mode.unwrap_or_default(),
             new_task_permission_mode: settings.new_task_permission_mode.unwrap_or_default(),
             markdown_cache: MarkdownCache::default(),
@@ -2479,7 +2472,6 @@ impl ChatScreen {
         self.clear_selected_session_presentation(cx);
         self.draft = true;
         // The draft starts from this project's defaults.
-        self.web_enabled = self.default_web_enabled;
         self.permission_mode = self.new_task_permission_mode;
         self.refresh_draft_mcp(cx);
         self.refresh_selected_title();
@@ -2714,7 +2706,7 @@ impl ChatScreen {
     }
 
     /// The settings the composer shows that `session`, just created, does
-    /// not have: web access and the integration rows whose switch differs
+    /// not have: the mode and the integration rows whose switch differs
     /// from `task_mcp`. Chips flipped while the create was in flight show
     /// up here like any other.
     fn new_session_changes(
@@ -2723,7 +2715,6 @@ impl ChatScreen {
         task_mcp: &[DraftMcpChange],
     ) -> NewSessionChanges {
         NewSessionChanges {
-            web: (self.web_enabled != session.web_enabled).then_some(self.web_enabled),
             mode: (self.permission_mode != session.permission_mode).then_some(self.permission_mode),
             mcp: self
                 .session_mcp
@@ -2751,7 +2742,7 @@ impl ChatScreen {
     /// only once everything has applied select the task and run the first
     /// send. Nothing is sent on a failure: the task is kept and opened,
     /// the text stays in the composer, and the error is shown, so a task
-    /// meant to run without web access or a server never runs with it.
+    /// meant to run without a server never runs with it.
     fn settle_new_session(
         &mut self,
         session: AgentSessionSummary,
@@ -2776,21 +2767,6 @@ impl ChatScreen {
         self.call_semantic(
             async move {
                 let mut session = session;
-                if let Some(enabled) = changes.web {
-                    session = backend
-                        .call_presented::<maple_agent::agent::AgentSessionSummary>(
-                            "set_session_web_enabled",
-                            (&user_id, &session.id, enabled),
-                        )
-                        .await
-                        .map_err(UiFailure::from)
-                        .map_err(|failure| {
-                            let fallback = failure
-                                .raw_message()
-                                .map(|raw| format!("Could not change web access: {raw}"));
-                            failure.with_context("chat-web-change-error", vec![], fallback)
-                        })?;
-                }
                 if let Some(mode) = changes.mode {
                     session = backend
                         .call_presented::<maple_agent::agent::AgentSessionSummary>(
@@ -3207,12 +3183,6 @@ impl ChatScreen {
         cx: &mut Context<Self>,
     ) {
         self.tool_details = settings.tool_details;
-        self.default_web_enabled = settings.default_web_enabled;
-        if self.selected_session.is_none() {
-            // The draft has no record of its own; the chip shows the
-            // default the task will be created with.
-            self.web_enabled = settings.default_web_enabled;
-        }
         self.apply_notification_settings(settings);
         self.summaries_enabled = settings.tool_summaries;
         self.composer_vim_enabled = settings.composer_vim_enabled;
@@ -3554,7 +3524,6 @@ impl ChatScreen {
         }
         self.refresh_selected_title();
         self.set_queue(Vec::new());
-        self.web_enabled = session.web_enabled;
         self.permission_mode = session.permission_mode;
         self.apply_session_model(&session, cx);
         self.replace_timeline(timeline);
@@ -3953,53 +3922,6 @@ impl ChatScreen {
                     Ok(()) => {}
                 }
                 this.save_next_project_mcp(cx);
-            },
-        );
-    }
-
-    /// Persist the web flag for the selected task; the runtime applies it
-    /// on the next turn. On the draft it is only screen state, applied
-    /// when the task is created.
-    fn set_web_enabled(&mut self, enabled: bool, cx: &mut Context<Self>) {
-        let Some(session_id) = self.selected_session.clone() else {
-            self.web_enabled = enabled;
-            cx.notify();
-            return;
-        };
-        let previous = self.web_enabled;
-        self.web_enabled = enabled;
-        cx.notify();
-        let backend = self.backend.clone();
-        let user_id = self.user_id.clone();
-        let target = session_id.clone();
-        self.call_semantic(
-            async move {
-                backend
-                    .call_presented::<maple_agent::agent::AgentSessionSummary>(
-                        "set_session_web_enabled",
-                        (&user_id, &target, enabled),
-                    )
-                    .await
-                    .map_err(UiFailure::from)
-            },
-            cx,
-            move |this, result, cx| {
-                match result {
-                    Ok(session) => {
-                        this.upsert_session(session, cx);
-                    }
-                    Err(message) => {
-                        if this.selected_session.as_deref() == Some(session_id.as_str()) {
-                            this.web_enabled = previous;
-                        }
-                        this.notice = Some(UiText::context(
-                            "chat-web-failed",
-                            "message",
-                            message.into(),
-                        ));
-                    }
-                }
-                cx.notify();
             },
         );
     }
@@ -4960,11 +4882,6 @@ impl ChatScreen {
                     self.notice = Some(UiText::key("chat-no-task"));
                     cx.notify();
                 }
-                true
-            }
-            "web" => {
-                let next = !self.web_enabled;
-                self.set_web_enabled(next, cx);
                 true
             }
             "model" => {
@@ -6076,7 +5993,6 @@ impl ChatScreen {
             }
             let mut switched = None;
             if self.selected_session.as_deref() == Some(session.id.as_str()) {
-                self.web_enabled = session.web_enabled;
                 self.permission_mode = session.permission_mode;
                 // Follow a switch the task made, here or on another surface;
                 // a pick waiting for the next message stays.

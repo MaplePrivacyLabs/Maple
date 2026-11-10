@@ -597,61 +597,52 @@ async fn the_model_shows_its_plan_and_asks_the_user() {
     );
 }
 
+/// Every task follows the web switch of Settings → Tools. A task's web flag
+/// saved before the switch moved changes nothing, and the per-task setter a
+/// controller on an older build still sends is refused, so that controller
+/// never shows web access as off while the tools stay on.
 #[tokio::test]
-async fn the_web_tools_follow_the_tasks_web_switch() {
+async fn the_web_tools_follow_the_account_switch_not_the_tasks_flag() {
     let harness = Harness::new().await;
+    let handle = &harness.handle;
     let task = harness.create_task().await;
-    let declared = |request: &pi_ai::faux::FauxRequest| -> Vec<String> {
-        pi_ai::transcript::current_tools(&request.context.messages)
-            .into_iter()
-            .map(|tool| tool.name)
-            .collect()
+    let web = |request: &pi_ai::faux::FauxRequest| {
+        let tools = pi_ai::transcript::current_tools(&request.context.messages);
+        ["web_search", "open_url"].map(|name| tools.iter().any(|tool| tool.name == name))
     };
-    let switch = |enabled| AgentSetSessionWebRequest {
-        session_id: task.clone(),
-        enabled,
-    };
-    for (enabled, reply) in [(true, "On."), (false, "Off."), (true, "On again.")] {
-        harness
-            .handle
-            .set_session_web_enabled(switch(enabled))
+    for enabled in [false, true] {
+        let refused = handle
+            .set_session_web_enabled(AgentSetSessionWebRequest {
+                session_id: task.clone(),
+                enabled,
+            })
             .await
-            .unwrap();
-        assert!(
-            harness.recorder.events().iter().any(|event| matches!(
-                event,
-                AgentServiceEvent::SessionUpdated { session_id, session, .. }
-                    if session_id == &task && session.web_enabled == enabled
-            )),
-            "every window showing the task hears of the change"
-        );
-        harness.faux.push_text(reply);
-        let mut run = harness.send(&task, "Look it up").await;
-        assert_eq!(finished(&mut run).await, AgentRunTerminal::Completed);
+            .unwrap_err();
+        assert_eq!(refused, super::tasks::WEB_SWITCH_MOVED);
     }
-    let requests = harness.faux.requests();
-    let tools: Vec<Vec<String>> = requests.iter().map(declared).collect();
-    for name in ["todo_write", "request_user_input"] {
-        assert!(
-            tools
-                .iter()
-                .all(|tools| tools.iter().any(|tool| tool == name))
-        );
-    }
-    let has_web = |tools: &[String]| {
-        ["web_search", "open_url"]
-            .iter()
-            .all(|name| tools.iter().any(|tool| tool == name))
-    };
-    assert!(has_web(&tools[0]), "{:?}", tools[0]);
-    assert!(
-        !tools[1]
-            .iter()
-            .any(|tool| tool == "web_search" || tool == "open_url"),
-        "{:?}",
-        tools[1]
-    );
-    assert!(has_web(&tools[2]), "{:?}", tools[2]);
+
+    // A flag saved off before the switch moved.
+    handle
+        .store()
+        .unwrap()
+        .update(&task, |row| row.web_enabled = false)
+        .unwrap();
+    harness.faux.push_text("Found.");
+    let mut run = harness.send(&task, "Look it up").await;
+    assert_eq!(finished(&mut run).await, AgentRunTerminal::Completed);
+    assert_eq!(web(&harness.faux.requests()[0]), [true, true]);
+
+    handle
+        .set_tool_enabled(AgentSetToolEnabledRequest {
+            id: "web".to_string(),
+            enabled: false,
+        })
+        .await
+        .unwrap();
+    harness.faux.push_text("Not looked up.");
+    let mut run = harness.send(&task, "Look it up again").await;
+    assert_eq!(finished(&mut run).await, AgentRunTerminal::Completed);
+    assert_eq!(web(&harness.faux.requests()[1]), [false, false]);
 }
 
 #[tokio::test]

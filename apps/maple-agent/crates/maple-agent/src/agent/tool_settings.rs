@@ -7,8 +7,8 @@
 //! model request, as Pi's `setActiveTools` does within a session, and their
 //! transcripts record it.
 //!
-//! The web tools follow each task's web switch; external agents, MCP servers
-//! and computer use have their switches in Integrations.
+//! One switch covers both web tools. External agents, MCP servers and
+//! computer use have their switches in Integrations.
 
 use std::collections::BTreeMap;
 
@@ -16,6 +16,7 @@ use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
 use super::config::account_store;
+use super::tools::web::WEB_TOOL_NAMES;
 use super::{
     AgentPathLayout, AgentRuntimeHandle, AgentSetToolEnabledRequest, AgentToolSwitch, tools,
 };
@@ -37,11 +38,13 @@ pub(crate) enum ToolSwitch {
     ReadImage,
     TodoWrite,
     RequestUserInput,
+    /// Both web tools, `web_search` and `open_url`.
+    Web,
     Python,
 }
 
 impl ToolSwitch {
-    pub(crate) const ALL: [Self; 11] = [
+    pub(crate) const ALL: [Self; 12] = [
         Self::Read,
         Self::Shell,
         Self::Edit,
@@ -52,6 +55,7 @@ impl ToolSwitch {
         Self::ReadImage,
         Self::TodoWrite,
         Self::RequestUserInput,
+        Self::Web,
         Self::Python,
     ];
 
@@ -67,7 +71,7 @@ impl ToolSwitch {
     ];
 
     /// The switch's id, in the host API and the saved setting: its tool's
-    /// name, or `shell`.
+    /// name, `shell` or `web`.
     pub(crate) fn id(self) -> &'static str {
         match self {
             Self::Read => "read",
@@ -80,6 +84,7 @@ impl ToolSwitch {
             Self::ReadImage => "read_image",
             Self::TodoWrite => "todo_write",
             Self::RequestUserInput => "request_user_input",
+            Self::Web => "web",
             Self::Python => "python",
         }
     }
@@ -88,9 +93,12 @@ impl ToolSwitch {
         Self::ALL.into_iter().find(|switch| switch.id() == id)
     }
 
-    /// The switch of one of Maple's own tools, by the tool's name.
-    pub(crate) fn for_maple_tool(name: &str) -> Option<Self> {
-        Self::from_id(name).filter(|switch| !Self::BUILTIN.contains(switch))
+    /// The switch that turns on the tool `name` in a task whose shell tool
+    /// is `shell`.
+    pub(crate) fn for_tool(name: &str, shell: &'static str) -> Option<Self> {
+        Self::ALL
+            .into_iter()
+            .find(|switch| switch.tool_names(shell).contains(&name))
     }
 
     /// Whether the switch is on for an account that has not changed it. The
@@ -100,11 +108,13 @@ impl ToolSwitch {
         !matches!(self, Self::Grep | Self::Find | Self::Ls | Self::Python)
     }
 
-    /// The tool this switch turns on in a task whose shell tool is `shell`.
-    pub(crate) fn tool_name(self, shell: &'static str) -> &'static str {
+    /// The tools this switch turns on in a task whose shell tool is `shell`:
+    /// one, or both web tools.
+    pub(crate) fn tool_names(self, shell: &'static str) -> Vec<&'static str> {
         match self {
-            Self::Shell => shell,
-            switch => switch.id(),
+            Self::Shell => vec![shell],
+            Self::Web => WEB_TOOL_NAMES.to_vec(),
+            switch => vec![switch.id()],
         }
     }
 }

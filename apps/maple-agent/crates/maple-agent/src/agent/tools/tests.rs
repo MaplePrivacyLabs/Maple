@@ -41,8 +41,8 @@ impl MapleWebTransport for NoWeb {
     }
 }
 
-/// A task of `kind`: no login PATH, a broker nobody answers, and the web
-/// switch on.
+/// A task of `kind`: no login PATH, a broker nobody answers, and the
+/// default switches.
 fn task(kind: TaskKind) -> (tempfile::TempDir, TaskToolsFor) {
     let dir = tempfile::tempdir().unwrap();
     let attachments = Arc::new(crate::agent::attachments::fixture_attachment_store(
@@ -57,7 +57,6 @@ fn task(kind: TaskKind) -> (tempfile::TempDir, TaskToolsFor) {
             login_path: None,
             questions: broker(),
             web: Arc::new(NoWeb),
-            web_enabled: true,
             read_image: ReadImageFor {
                 session_id: TASK_ID.to_string(),
                 cwd: PathBuf::from("/work"),
@@ -141,21 +140,22 @@ fn the_switches_choose_the_tools() {
         (ToolSwitch::Ls, true),
         (ToolSwitch::ReadImage, false),
         (ToolSwitch::RequestUserInput, false),
+        (ToolSwitch::Web, false),
     ] {
         switches.set(switch, enabled);
     }
     let tools = task_tools(TaskToolsFor { switches, ..first });
     assert_eq!(tools.builtin, ["read", "edit", "write", "grep", "ls"]);
     let tool = |name: &str, active| (name.to_string(), active);
-    // The web tools follow the task's web switch alone.
+    // The web switch turns both web tools off.
     assert_eq!(
         maple_tool_names(&tools),
         [
             tool("read_image", false),
             tool("todo_write", true),
             tool("request_user_input", false),
-            tool("web_search", true),
-            tool("open_url", true)
+            tool("web_search", false),
+            tool("open_url", false)
         ]
     );
 
@@ -204,17 +204,10 @@ fn every_task_reads_images_and_the_web_and_desktop_tasks_plan_and_ask() {
         ]
     );
     let (_acp_dir, task) = task(TaskKind::Acp);
-    let acp = task_tools(TaskToolsFor {
-        web_enabled: false,
-        ..task
-    });
+    let acp = task_tools(task);
     assert_eq!(
         maple_tool_names(&acp),
-        [
-            on("read_image"),
-            ("web_search".to_string(), false),
-            ("open_url".to_string(), false)
-        ]
+        [on("read_image"), on("web_search"), on("open_url")]
     );
 }
 
