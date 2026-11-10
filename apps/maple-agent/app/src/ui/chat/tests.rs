@@ -8157,6 +8157,59 @@ mod state_tests {
         }
     }
 
+    /// On a paired computer the chip names the computer and the folder. A
+    /// long computer name gives way first: the folder, which tells projects
+    /// apart, keeps its full width until the name is down to its ellipsis.
+    #[gpui::test]
+    fn project_chip_shortens_the_computer_before_the_folder(cx: &mut TestAppContext) {
+        cx.update(|cx| cx.set_reduce_motion(true));
+        let (chat, cx) = chat_window(cx, |this, _| {
+            this.selected_session = None;
+            this.project_label = "maple-dev-env".into();
+        });
+        cx.run_until_parked();
+        let alone = cx.debug_bounds("project-name").expect("folder").size.width;
+        assert!(cx.debug_bounds("project-computer").is_none());
+
+        chat.update(cx, |this, cx| {
+            this.project_computer = Some((
+                "A very long name for the paired computer in the studio".into(),
+                "A very long name for the paired computer in the studio · maple-dev-env".into(),
+            ));
+            cx.notify();
+        });
+        cx.run_until_parked();
+        let chip = cx.debug_bounds("root-picker").expect("chip");
+        let computer = cx.debug_bounds("project-computer").expect("computer");
+        let folder = cx.debug_bounds("project-name").expect("folder");
+        assert!(chip.size.width <= px(260.), "{chip:?}");
+        assert!(
+            (folder.size.width - alone).abs() <= px(0.5),
+            "the folder keeps its width: {folder:?}, alone {alone:?}"
+        );
+        assert!(computer.size.width >= px(24.), "{computer:?}");
+        assert!(computer.right() < folder.left());
+        assert!(folder.right() < chip.right());
+
+        // With both long the folder shortens too, and the chip stays bounded.
+        chat.update(cx, |this, cx| {
+            this.project_label =
+                "A very long project name that cannot fit beside any computer name".into();
+            cx.notify();
+        });
+        cx.run_until_parked();
+        let chip = cx.debug_bounds("root-picker").expect("chip");
+        let computer = cx.debug_bounds("project-computer").expect("computer");
+        let folder = cx.debug_bounds("project-name").expect("folder");
+        assert!(chip.size.width <= px(260.), "{chip:?}");
+        assert!(
+            (computer.size.width - px(24.)).abs() <= px(0.5),
+            "{computer:?}"
+        );
+        assert!(folder.size.width > computer.size.width);
+        assert!(folder.right() < chip.right());
+    }
+
     #[gpui::test]
     fn draft_project_context_fits_a_narrow_window(cx: &mut TestAppContext) {
         struct ChatHost {

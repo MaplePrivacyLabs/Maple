@@ -234,18 +234,16 @@ impl ChatScreen {
             .child(
                 self.with_menu(
                     ChatPopup::Project,
-                    chip(
-                        "root-picker",
-                        Some(if self.scratch_project {
+                    project_chip(
+                        if self.scratch_project {
                             "folder-plus"
                         } else if self.backend.remote_host().is_some() {
                             "globe"
                         } else {
                             "folder-open"
-                        }),
+                        },
+                        self.project_computer.clone(),
                         self.project_label.clone(),
-                        None,
-                        true,
                         self.popup.is_open(&ChatPopup::Project),
                     )
                     // Outside the composer box, so the standalone radius.
@@ -268,7 +266,7 @@ impl ChatScreen {
                         .max_w(px(200.))
                         .truncate()
                         .debug_selector(|| "project-branch".to_string())
-                        .child(branch),
+                        .child(gpui::text!(branch)),
                 )
             })
     }
@@ -1673,24 +1671,93 @@ fn chip(
     chevron: bool,
     active: bool,
 ) -> gpui::Stateful<Div> {
-    let color = if active {
+    let label = label.into();
+    let shrinks = detail.is_some();
+    chip_frame(id, leading, label.clone(), active)
+        .when(shrinks, |el| el.min_w_0())
+        .child(
+            div()
+                .whitespace_nowrap()
+                .when(shrinks, |label| label.min_w_0().truncate())
+                .child(label),
+        )
+        // The detail morphs from one value to the next (High to Maximum).
+        .children(detail.map(|(detail, color)| {
+            div()
+                .flex_none()
+                .whitespace_nowrap()
+                .child(crate::ui::morph_text::morph_text((id, 1usize), detail).color(color))
+        }))
+        .when(chevron, |el| {
+            el.child(icon("chevron-down", px(14.), chip_color(active)).flex_none())
+        })
+}
+
+/// A new task's project chip. It sits outside the composer's row, so it is
+/// bounded and its text gives way: on a paired computer the computer's
+/// name shortens first, and the folder, which tells projects apart, only
+/// once the name is down to its ellipsis.
+fn project_chip(
+    leading: &'static str,
+    computer: Option<(SharedString, SharedString)>,
+    project: SharedString,
+    active: bool,
+) -> gpui::Stateful<Div> {
+    let (computer, name) = match computer {
+        Some((computer, caption)) => (Some(computer), caption),
+        None => (None, project.clone()),
+    };
+    chip_frame("root-picker", Some(leading), name, active)
+        .max_w(px(260.))
+        .min_w_0()
+        .when_some(computer, |el, computer| {
+            el.child(
+                div()
+                    .min_w(px(24.))
+                    .flex_shrink(1000.)
+                    .truncate()
+                    .debug_selector(|| "project-computer".to_string())
+                    .child(computer),
+            )
+            .child(div().flex_none().child("·"))
+        })
+        .child(
+            div()
+                .min_w_0()
+                .truncate()
+                .debug_selector(|| "project-name".to_string())
+                .child(project),
+        )
+        .child(icon("chevron-down", px(14.), chip_color(active)))
+}
+
+fn chip_color(active: bool) -> u32 {
+    if active {
         theme::text_primary()
     } else {
         theme::text_secondary()
-    };
-    let label = label.into();
-    let shrinks = detail.is_some();
+    }
+}
+
+/// What every chip shares: the button, its accessible name, its states and
+/// its leading icon.
+fn chip_frame(
+    id: &'static str,
+    leading: Option<&'static str>,
+    name: SharedString,
+    active: bool,
+) -> gpui::Stateful<Div> {
+    let color = chip_color(active);
     div()
         .id(id)
         .debug_selector(|| id.to_string())
         .role(gpui::Role::Button)
-        .aria_label(label.clone())
+        .aria_label(name)
         .h_8()
         .flex()
         .items_center()
         .gap_1()
         .px_2()
-        .when(shrinks, |el| el.min_w_0())
         // Concentric with the composer box: 24px radius minus the 8px inset.
         .rounded(theme::RADIUS_LG)
         .text_xs()
@@ -1704,25 +1771,6 @@ fn chip(
         })
         .active(|style| style.bg(gpui::rgb(theme::bg_sidebar_row_selected())))
         .children(leading.map(|name| icon(name, px(16.), color)))
-        .when(id == "root-picker", |el| el.max_w(px(260.)).min_w_0())
-        .child(
-            div()
-                .whitespace_nowrap()
-                .when(shrinks || id == "root-picker", |label| {
-                    label.min_w_0().truncate()
-                })
-                .child(label),
-        )
-        // The detail morphs from one value to the next (High to Maximum).
-        .children(detail.map(|(detail, color)| {
-            div()
-                .flex_none()
-                .whitespace_nowrap()
-                .child(crate::ui::morph_text::morph_text((id, 1usize), detail).color(color))
-        }))
-        .when(chevron, |el| {
-            el.child(icon("chevron-down", px(14.), color).flex_none())
-        })
 }
 
 /// The Popular badge on a model row: coral on dark, grey on light (see

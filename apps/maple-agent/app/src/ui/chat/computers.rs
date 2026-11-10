@@ -439,18 +439,19 @@ impl ChatScreen {
 
     pub(super) fn refresh_project_caption(&mut self, cx: &gpui::App) {
         let project = self.project_label(cx);
-        self.project_label = match self.backend.remote_host() {
-            Some(host) => {
-                let name = self
-                    .computers
-                    .iter()
-                    .find(|c| c.key.as_deref() == Some(host))
-                    .map(|c| c.label.clone())
-                    .unwrap_or_else(|| tr("chat-remote-computer"));
-                format!("{name} · {project}").into()
-            }
-            None => project.into(),
-        };
+        // The computer and the folder stay separate so a long computer
+        // name gives way before the folder does.
+        self.project_computer = self.backend.remote_host().map(|host| {
+            let name = self
+                .computers
+                .iter()
+                .find(|c| c.key.as_deref() == Some(host))
+                .map(|c| c.label.clone())
+                .unwrap_or_else(|| tr("chat-remote-computer"));
+            let caption = format!("{name} · {project}").into();
+            (name, caption)
+        });
+        self.project_label = project.into();
     }
 
     pub(crate) fn navigate(&mut self, destination: Destination, cx: &mut Context<Self>) {
@@ -569,7 +570,6 @@ impl ChatScreen {
 
     pub(super) fn refresh_picker_projects(&mut self, cx: &mut Context<Self>) {
         self.picker_projects_generation += 1;
-        self.picker_projects.clear();
         #[cfg(test)]
         if let Some(projects) = self.picker_projects_fixture.clone() {
             self.install_picker_projects(projects);
@@ -598,6 +598,10 @@ impl ChatScreen {
                 epoch,
             )]
         };
+        // The last list stays up while each computer answers, so reopening
+        // the menu does not blink. Only a computer that left is dropped now.
+        self.picker_projects
+            .retain(|(key, _)| sources.iter().any(|(source, _, _)| source == key));
         for (key, backend, source_epoch) in sources {
             let user = user.clone();
             let request_user = user.clone();
@@ -628,6 +632,10 @@ impl ChatScreen {
                     if !current {
                         return;
                     }
+                    // This computer's answer replaces its last list.
+                    if result.is_ok() {
+                        this.picker_projects.retain(|(host, _)| host != &key);
+                    }
                     match result {
                         Ok(PickerProjectResponse::Recent(roots)) => {
                             this.merge_picker_projects(key, roots);
@@ -638,7 +646,13 @@ impl ChatScreen {
                                 legacy_picker_projects(tasks, names.map(|c| &c.project_names));
                             this.merge_picker_projects(key, roots);
                         }
-                        Err(error) => this.notice = Some(error.into()),
+                        // Recent projects are a convenience. A computer that
+                        // is slow or away keeps its last list and the menu
+                        // stays usable; nothing here needs the user to act.
+                        Err(error) => {
+                            log::warn!("Cannot read recent projects: {error:?}");
+                            return;
+                        }
                     }
                     cx.notify();
                 },
@@ -663,14 +677,7 @@ impl ChatScreen {
             .application_vim(self.application_vim_enabled);
         for (index, computer) in self.computers.iter().enumerate() {
             if index > 0 {
-                menu = menu.child(
-                    div()
-                        .w_full()
-                        .flex_none()
-                        .my_1()
-                        .h(px(1.))
-                        .bg(gpui::rgb(theme::border())),
-                );
+                menu = menu.separator();
             }
             menu = menu.child(
                 div()
