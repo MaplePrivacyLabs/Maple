@@ -91,15 +91,15 @@ impl EmbeddedPython {
             .open(root.join(LOCK))
             .and_then(|file| file.lock().map(|()| file))
             .map_err(|error| failed("lock", error))?;
-        if fs::read_to_string(directory.join(RECEIPT)).is_ok_and(|receipt| receipt == self.sha256)
+        if complete(&directory, self.sha256)
             && let Ok(python) = PackagedPython::from_manifest(&manifest)
         {
             return Ok(python);
         }
         remove_tree(&directory).map_err(|error| failed("replace", error))?;
-        extract(self.archive, &directory).map_err(|error| failed("unpack", error))?;
+        let files = extract(self.archive, &directory).map_err(|error| failed("unpack", error))?;
         // Written last: a copy without it is incomplete.
-        fs::write(directory.join(RECEIPT), self.sha256)
+        fs::write(directory.join(RECEIPT), format!("{}\n{files}", self.sha256))
             .map_err(|error| failed("finish unpacking", error))?;
         let python = PackagedPython::from_manifest(&manifest)?;
         warm_up(&python);
@@ -107,6 +107,25 @@ impl EmbeddedPython {
         drop(lock);
         Ok(python)
     }
+}
+
+/// Whether the copy's receipt names this archive and every file it lists is
+/// still there at its unpacked size. Contents are not read again: the check
+/// runs before every worker start, and the folder is the user's own.
+fn complete(directory: &Path, sha256: &str) -> bool {
+    let Ok(receipt) = fs::read_to_string(directory.join(RECEIPT)) else {
+        return false;
+    };
+    let mut lines = receipt.lines();
+    lines.next() == Some(sha256)
+        && lines.all(|line| {
+            line.split_once('\t').is_some_and(|(size, name)| {
+                let mut path = directory.to_path_buf();
+                path.extend(Path::new(name).components());
+                fs::symlink_metadata(path)
+                    .is_ok_and(|file| file.is_file() && size.parse() == Ok(file.len()))
+            })
+        })
 }
 
 fn remove_tree(directory: &Path) -> io::Result<()> {
@@ -181,8 +200,10 @@ fn warm_up(python: &PackagedPython) {
 
 /// The archive is Maple's own, but it is still held to what the packer
 /// writes: regular files under plain relative names.
-fn extract(archive: &[u8], directory: &Path) -> io::Result<()> {
+/// Unpacks the archive and returns its files, one `size<TAB>name` line each.
+fn extract(archive: &[u8], directory: &Path) -> io::Result<String> {
     fs::create_dir(directory)?;
+    let mut files = String::new();
     let mut archive = tar::Archive::new(flate2::read::GzDecoder::new(archive));
     let mut entries = 0usize;
     let mut bytes = 0u64;
@@ -219,14 +240,15 @@ fn extract(archive: &[u8], directory: &Path) -> io::Result<()> {
             .write(true)
             .create_new(true)
             .open(&target)?;
-        io::copy(&mut entry.by_ref().take(MAX_BYTES), &mut file)?;
+        let written = io::copy(&mut entry.by_ref().take(MAX_BYTES), &mut file)?;
+        files.push_str(&format!("{written}\t{}\n", path.display()));
         #[cfg(unix)]
         if entry.header().mode()? & 0o111 != 0 {
             use std::os::unix::fs::PermissionsExt;
             file.set_permissions(fs::Permissions::from_mode(0o755))?;
         }
     }
-    Ok(())
+    Ok(files)
 }
 
 #[cfg(test)]
@@ -282,12 +304,9 @@ mod tests {
         assert_eq!(python.executable, directory.join("python.exe"));
         assert_eq!(fs::read(directory.join("Lib/json/marker")).unwrap(), b"one");
         // A later start must not write the files again.
-        fs::write(directory.join("Lib/json/marker"), b"kept").unwrap();
+        fs::write(directory.join("Lib/json/marker"), b"own").unwrap();
         assert_eq!(runtime(b"one").unpack(root.path()).unwrap(), python);
-        assert_eq!(
-            fs::read(directory.join("Lib/json/marker")).unwrap(),
-            b"kept"
-        );
+        assert_eq!(fs::read(directory.join("Lib/json/marker")).unwrap(), b"own");
     }
 
     #[test]
@@ -302,6 +321,12 @@ mod tests {
         fs::remove_file(directory.join("worker.py")).unwrap();
         runtime(b"one").unpack(root.path()).unwrap();
         assert!(directory.join("worker.py").is_file());
+        // Any other file counts too, lost or cut short.
+        fs::remove_file(directory.join("Lib/json/marker")).unwrap();
+        runtime(b"one").unpack(root.path()).unwrap();
+        fs::write(directory.join("Lib/json/marker"), b"").unwrap();
+        runtime(b"one").unpack(root.path()).unwrap();
+        assert_eq!(fs::read(directory.join("Lib/json/marker")).unwrap(), b"one");
     }
 
     #[test]
