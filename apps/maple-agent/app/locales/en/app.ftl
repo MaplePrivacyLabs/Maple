@@ -16,8 +16,6 @@ settings-defaults = Defaults
 settings-chat-appearance = Chat appearance
 settings-editing = Editing
 settings-voice = Voice
-settings-web = New tasks can use the web
-settings-web-description = Offers web_search and open_url to the model. Each task can switch web access on or off from its composer.
 settings-appearance = Appearance
 settings-appearance-description = Follow the system theme, or force dark or light.
 settings-chat-font = Chat font
@@ -58,6 +56,7 @@ settings-section-billing = Plan & Billing
 settings-section-developer = Developer & API
 settings-section-shortcuts = Keyboard Shortcuts
 settings-section-integrations = Integrations
+settings-section-tools = Tools
 settings-section-remote = Remote computers
 settings-section-about = About
 settings-group-workspace = Workspace
@@ -66,10 +65,11 @@ settings-group-account = Account & System
 settings-filter-placeholder = Filter settings…
 settings-filter-empty = No matching sections.
 # Hidden filter terms per section: former page names and the controls that moved there. Comma-separated, matched as plain substrings.
-settings-keywords-general = defaults, web, language, notifications, vim, voice, speech, agent instructions, system prompt
+settings-keywords-general = defaults, language, notifications, vim, voice, speech, agent instructions, system prompt
 settings-keywords-appearance = theme, dark, light, system, motion, font, text size, tool details, summaries
 settings-keywords-shortcuts = keyboard, bindings, hotkeys
 settings-keywords-integrations = mcp, servers, coding agents, computer use, custom server
+settings-keywords-tools = web, python, terminal, shell, files, read, write, edit, search
 settings-keywords-developer = api, acp, keys, local api, proxy, editors, credits
 settings-keywords-remote = pairing, computers, devices
 settings-keywords-account = privacy, security, password, sign out, encryption, local data, delete account, profile
@@ -94,7 +94,7 @@ settings-usage-manage-plan-description = Change plans, manage the subscription, 
 settings-billing-subtitle = Subscription, plans on sale, and prepaid API credits.
 settings-about-subtitle = Application version and background update downloads.
 settings-shortcuts-subtitle = Search and customize built-in keyboard bindings.
-settings-back = ← Back
+settings-back = Back
 settings-title = Settings
 settings-sections = Settings sections
 settings-theme-label-system = System
@@ -1227,8 +1227,6 @@ chat-toggle-sidebar = Toggle sidebar
 chat-search = Search
 chat-new-task = New task
 chat-integrations = Integrations
-chat-web = Web
-chat-web-off = Web off
 chat-mode = Permissions
 chat-mode-read-only = Read only
 chat-mode-read-only-note = Reads and builds run. Maple asks before anything else.
@@ -1396,7 +1394,6 @@ chat-slash-btw = Ask a side question; the task does not see it
 chat-slash-compact = Summarize the conversation to free context
 chat-slash-new = Start a new task
 chat-slash-pin = Pin or unpin this project
-chat-slash-web = Toggle web tools for this task
 chat-slash-model = Pick the model; add a name to filter
 chat-slash-help = Show the available commands
 chat-new-task-title = New Task
@@ -1404,7 +1401,7 @@ chat-choose-folder = Choose folder
 chat-feedback-invalid-length = Please enter between 1 and 5,000 characters.
 chat-send-switched-recall = Message not sent: another task was opened first. Press Up in the composer to recall it
 chat-send-switched-restored = Message not sent: another task was opened first. It is back in the composer
-chat-commands-help = Type / to list commands. Built-ins: /btw, /compact, /new, /pin, /web, /model, /help. Skills appear as /name.
+chat-commands-help = Type / to list commands. Built-ins: /btw, /compact, /new, /pin, /model, /help. Skills appear as /name.
 chat-skill-send-restored = Skill not sent while the previous send is settling. The command is restored; send it again when ready.
 chat-skill-send-retained = Skill not sent while the previous send is settling. The command is retained; press Up in an empty composer to recall it.
 chat-wait-upload = Wait for the current file upload or cancel it before sending more files. Text can still be queued or sent to the running task.
@@ -1420,8 +1417,6 @@ chat-compaction-failed = Compaction failed: { $message }
 chat-no-model-match = No model matches “{ $query }”
 # $message is the underlying error, which may be untranslated.
 chat-answer-failed = Could not deliver the answer: { $message }
-# $message is the underlying error, which may be untranslated.
-chat-web-failed = Could not change web access: { $message }
 # $message is the underlying error, which may be untranslated.
 chat-mode-failed = Could not change the mode: { $message }
 chat-copy-link = Copy Link
@@ -1664,6 +1659,8 @@ runtime-error-host-updated = Maple has been updated. Quit and reopen Maple to co
 runtime-error-local-desktop = Store lifecycle commands require the local desktop
 runtime-error-remote-permissions-unsupported = Update Maple on the remote computer first.
 runtime-error-remote-permissions-unconfirmed = Could not check the remote computer. Try again, or update Maple there.
+runtime-error-remote-tools-unsupported = Update Maple on the remote computer to choose its tools from here.
+runtime-error-remote-tools-unconfirmed = Could not check the remote computer's tools. Try again, or update Maple there.
 
 # $name is a model name, not translated.
 runtime-timeline-model-switched = Switched to { $name }
@@ -1966,8 +1963,6 @@ chat-staging-open-failed = Could not open the attachment: { $error }
 # $error is an untranslated diagnostic.
 chat-subscribe-history-failed = Could not subscribe to task history: { $error }
 # $error is an untranslated diagnostic.
-chat-web-change-error = Could not change web access: { $error }
-# $error is an untranslated diagnostic.
 chat-mode-change-error = Could not change the mode: { $error }
 # $name is an integration name; $error is an untranslated diagnostic.
 chat-integration-change-error = Could not change { $name }: { $error }
@@ -2164,3 +2159,33 @@ settings-integration-install-codex = Install the Codex CLI and make sure `codex`
 
 # Keep the command and PATH unchanged.
 settings-integration-install-claude = Install Claude Code and make sure `claude` is on PATH, then reopen this page.
+
+# Settings → Tools: a label and a one-line description for each tool the model can be offered.
+settings-tools-intro = Choose which tools the model can use in tasks on this computer. Changes apply to open tasks from their next request.
+settings-tools-intro-remote = Choose which tools the model can use in tasks on the selected computer. Changes apply to its open tasks from their next request.
+settings-tools-loading = Loading tools…
+settings-tools-elsewhere = External agents, MCP servers and computer use are in Integrations.
+settings-tools-read = Read files
+settings-tools-read-description = Read text files and images.
+settings-tools-shell = Terminal
+settings-tools-shell-description = Run commands in the task's folder.
+settings-tools-edit = Edit files
+settings-tools-edit-description = Change parts of existing files.
+settings-tools-write = Write files
+settings-tools-write-description = Create files, or replace what they contain.
+settings-tools-grep = Search file contents
+settings-tools-grep-description = Search inside files for text, without running commands.
+settings-tools-find = Find files
+settings-tools-find-description = Find files by name, without running commands.
+settings-tools-ls = List files
+settings-tools-ls-description = List what a folder contains, without running commands.
+settings-tools-read-image = Look at images
+settings-tools-read-image-description = View images from attachments, files and links.
+settings-tools-todo-write = Task plan
+settings-tools-todo-write-description = Keep the task's steps above the message box while it works.
+settings-tools-request-user-input = Questions for you
+settings-tools-request-user-input-description = Stop to ask you short questions and wait for your answers.
+settings-tools-web = Web
+settings-tools-web-description = Search the web and read public pages.
+settings-tools-python = Python
+settings-tools-python-description = Run Python in a scratchpad that keeps its variables between calls.

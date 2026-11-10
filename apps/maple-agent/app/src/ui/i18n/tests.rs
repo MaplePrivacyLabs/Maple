@@ -461,6 +461,7 @@ fn converted_modules_do_not_reintroduce_inline_labels() {
     visitor.visit_file(&syn::parse_file(include_str!("../settings/mcp.rs")).unwrap());
     visitor.visit_file(&syn::parse_file(include_str!("../settings/catalog.rs")).unwrap());
     visitor.visit_file(&syn::parse_file(include_str!("../settings/acp.rs")).unwrap());
+    visitor.visit_file(&syn::parse_file(include_str!("../settings/tools.rs")).unwrap());
     visitor.visit_file(&syn::parse_file(include_str!("../remote.rs")).unwrap());
     visitor.visit_file(&syn::parse_file(include_str!("../login.rs")).unwrap());
     visitor.visit_file(&syn::parse_file(include_str!("../plan_gate.rs")).unwrap());

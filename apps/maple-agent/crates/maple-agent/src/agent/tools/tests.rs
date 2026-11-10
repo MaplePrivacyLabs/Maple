@@ -41,8 +41,8 @@ impl MapleWebTransport for NoWeb {
     }
 }
 
-/// A task of `kind`: no login PATH, a broker nobody answers, and the web
-/// switch on.
+/// A task of `kind`: no login PATH, a broker nobody answers, and the
+/// default switches.
 fn task(kind: TaskKind) -> (tempfile::TempDir, TaskToolsFor) {
     let dir = tempfile::tempdir().unwrap();
     let attachments = Arc::new(crate::agent::attachments::fixture_attachment_store(
@@ -57,7 +57,6 @@ fn task(kind: TaskKind) -> (tempfile::TempDir, TaskToolsFor) {
             login_path: None,
             questions: broker(),
             web: Arc::new(NoWeb),
-            web_enabled: true,
             read_image: ReadImageFor {
                 session_id: TASK_ID.to_string(),
                 cwd: PathBuf::from("/work"),
@@ -67,6 +66,7 @@ fn task(kind: TaskKind) -> (tempfile::TempDir, TaskToolsFor) {
                 )),
                 describe: false,
             },
+            switches: ToolSwitches::default(),
         },
     )
 }
@@ -121,15 +121,50 @@ fn without_a_login_path_commands_keep_the_path_they_start_with() {
 fn the_model_gets_read_a_shell_edit_and_write() {
     let (_dir, task) = task(TaskKind::Desktop);
     let tools = task_tools(task);
-    let shell = if cfg!(windows) {
-        tools.builtin[1].as_str()
-    } else {
-        "bash"
-    };
-    assert_eq!(tools.builtin, ["read", shell, "edit", "write"]);
+    if !cfg!(windows) {
+        assert_eq!(tools.shell, "bash");
+    }
+    assert_eq!(tools.builtin, ["read", tools.shell, "edit", "write"]);
     assert!(tools.options.powershell.spawn_hook.is_some());
     assert!(tools.options.bash.operations.is_some());
     assert!(tools.options.powershell.operations.is_some());
+}
+
+#[test]
+fn the_switches_choose_the_tools() {
+    let (_dir, first) = task(TaskKind::Desktop);
+    let mut switches = ToolSwitches::default();
+    for (switch, enabled) in [
+        (ToolSwitch::Shell, false),
+        (ToolSwitch::Grep, true),
+        (ToolSwitch::Ls, true),
+        (ToolSwitch::ReadImage, false),
+        (ToolSwitch::RequestUserInput, false),
+        (ToolSwitch::Web, false),
+    ] {
+        switches.set(switch, enabled);
+    }
+    let tools = task_tools(TaskToolsFor { switches, ..first });
+    assert_eq!(tools.builtin, ["read", "edit", "write", "grep", "ls"]);
+    let tool = |name: &str, active| (name.to_string(), active);
+    // The web switch turns both web tools off.
+    assert_eq!(
+        maple_tool_names(&tools),
+        [
+            tool("read_image", false),
+            tool("todo_write", true),
+            tool("request_user_input", false),
+            tool("web_search", false),
+            tool("open_url", false)
+        ]
+    );
+
+    // The shell's switch names the task's shell tool.
+    let (_other_dir, second) = task(TaskKind::Desktop);
+    let mut switches = ToolSwitches::default();
+    switches.set(ToolSwitch::Read, false);
+    let tools = task_tools(TaskToolsFor { switches, ..second });
+    assert_eq!(tools.builtin, [tools.shell, "edit", "write"]);
 }
 
 fn tool(tools: &TaskTools, name: &str) -> Arc<dyn pi_agent_core::AgentTool> {
@@ -169,17 +204,10 @@ fn every_task_reads_images_and_the_web_and_desktop_tasks_plan_and_ask() {
         ]
     );
     let (_acp_dir, task) = task(TaskKind::Acp);
-    let acp = task_tools(TaskToolsFor {
-        web_enabled: false,
-        ..task
-    });
+    let acp = task_tools(task);
     assert_eq!(
         maple_tool_names(&acp),
-        [
-            on("read_image"),
-            ("web_search".to_string(), false),
-            ("open_url".to_string(), false)
-        ]
+        [on("read_image"), on("web_search"), on("open_url")]
     );
 }
 

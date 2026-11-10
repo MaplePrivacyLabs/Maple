@@ -1,6 +1,6 @@
 //! Settings screen: left navigation with content panes, following Maple's
 //! settings layout. Sections: General (defaults), Account, Additional instructions,
-//! Integrations, Keyboard Shortcuts, Usage, About.
+//! Integrations, Tools, Keyboard Shortcuts, Usage, About.
 
 use crate::ui::i18n::{UiText, tr};
 use std::collections::HashSet;
@@ -47,6 +47,7 @@ mod mcp;
 mod navigation;
 pub(crate) mod presentation;
 mod shortcut_labels;
+mod tools;
 
 use self::account::AccountState;
 #[cfg(feature = "acp")]
@@ -59,12 +60,13 @@ use self::mcp::{McpSecretAction, McpSecretField, definition_edit, name_collides}
 use self::navigation::{
     AppearanceTarget, GeneralTarget, SettingsApplicationVimState, SettingsTarget,
 };
+use self::tools::ToolsState;
 pub(crate) use catalog::saved_description;
 
 /// Emitted when the user leaves settings.
 pub struct SettingsClosed(pub AppSettings);
 
-/// Emitted when the user clicks Sign out in the settings header.
+/// Emitted when the user clicks Sign out in the Account section.
 pub struct SignOutRequested;
 
 /// Emitted after the server confirmed the account is deleted and the
@@ -78,6 +80,7 @@ pub enum Section {
     Shortcuts,
     Integrations,
     Apps,
+    Tools,
     Api,
     Remote,
     Account,
@@ -120,6 +123,7 @@ impl Section {
             Self::Shortcuts => "Keyboard Shortcuts",
             Self::Integrations => "Integrations",
             Self::Apps => "Apps",
+            Self::Tools => "Tools",
             Self::Api => "API",
             Self::Remote => "Remote computers",
             Self::Account => "Account",
@@ -136,6 +140,7 @@ impl Section {
             Self::Shortcuts => "keyboard",
             Self::Integrations => "plug",
             Self::Apps => "layout-grid",
+            Self::Tools => "wrench",
             Self::Api => "terminal",
             Self::Remote => "monitor",
             Self::Account => "shield-user",
@@ -148,7 +153,7 @@ impl Section {
     fn group(self) -> Option<NavGroup> {
         match self {
             Self::General | Self::Appearance | Self::Shortcuts => Some(NavGroup::Workspace),
-            Self::Integrations | Self::Apps | Self::Api | Self::Remote => {
+            Self::Integrations | Self::Apps | Self::Tools | Self::Api | Self::Remote => {
                 Some(NavGroup::Connections)
             }
             Self::Account | Self::Usage | Self::Billing => Some(NavGroup::Account),
@@ -163,6 +168,7 @@ impl Section {
             Self::Shortcuts => "settings-section-shortcuts",
             Self::Integrations => "settings-section-integrations",
             Self::Apps => "settings-section-apps",
+            Self::Tools => "settings-section-tools",
             #[cfg(feature = "acp")]
             Self::Api => "settings-section-developer",
             #[cfg(not(feature = "acp"))]
@@ -184,6 +190,7 @@ impl Section {
                 "settings-settings-manage-integrations-here-enable-coding-agents-to-make-them-availa"
             }
             Self::Apps => "settings-catalog-intro",
+            Self::Tools => "settings-tools-intro",
             #[cfg(feature = "acp")]
             Self::Api => "settings-developer-subtitle",
             #[cfg(not(feature = "acp"))]
@@ -207,6 +214,7 @@ impl Section {
             Self::Shortcuts => "settings-keywords-shortcuts",
             Self::Integrations => "settings-keywords-integrations",
             Self::Apps => "settings-keywords-apps",
+            Self::Tools => "settings-keywords-tools",
             Self::Api => "settings-keywords-developer",
             Self::Remote => "settings-keywords-remote",
             Self::Account => "settings-keywords-account",
@@ -222,6 +230,7 @@ impl Section {
         Self::Shortcuts,
         Self::Integrations,
         Self::Apps,
+        Self::Tools,
         Self::Api,
         Self::Remote,
         Self::Account,
@@ -321,6 +330,8 @@ pub struct SettingsScreen {
     integrations: Option<Vec<AgentIntegration>>,
     integration_notice: Option<UiText>,
     integration_saving: HashSet<String>,
+    /// The execution computer's tool switches.
+    tools: ToolsState,
     /// Editor for the user's additional instructions (harness instructions).
     prompt_editor: Entity<TextInput>,
     prompt_notice: Option<UiText>,
@@ -687,6 +698,7 @@ impl SettingsScreen {
             integrations: None,
             integration_notice: None,
             integration_saving: HashSet::new(),
+            tools: ToolsState::default(),
             prompt_editor,
             prompt_notice: None,
             shortcut_snapshot,
@@ -714,6 +726,7 @@ impl SettingsScreen {
         this.refresh_catalog();
         this.load_mcp_servers(cx);
         this.load_integrations(cx);
+        this.load_tools(cx);
         this.load_advanced_status(cx);
         #[cfg(feature = "proxy")]
         let this = {
@@ -1376,11 +1389,6 @@ impl SettingsScreen {
         self.close_setting_menu(cx);
     }
 
-    fn toggle_web_default(&mut self, cx: &mut Context<Self>) {
-        let next = !self.settings.default_web_enabled;
-        self.edit_setting(move |settings| settings.default_web_enabled = next, cx);
-    }
-
     fn choose_theme(&mut self, preference: theme::Preference, cx: &mut Context<Self>) {
         self.theme = preference;
         self.edit_setting(
@@ -1917,50 +1925,32 @@ impl Render for SettingsScreen {
             .relative()
             .size_full()
             .flex()
-            .flex_col()
+            .flex_row()
             .bg(gpui::rgb(theme::bg_app()))
-            .child(crate::ui::titlebar::drag_region(
-                div()
-                    .id("settings-header")
-                    .flex()
-                    .items_center()
-                    .gap_3()
-                    .pl(crate::ui::titlebar::top_row_inset(px(16.)))
-                    .pr_4()
-                    .py_3()
-                    .border_b_1()
-                    .border_color(gpui::rgb(theme::border()))
-                    .child(
-                        widgets::ghost_button("settings-back")
-                            .on_mouse_down(gpui::MouseButton::Left, |_event, _window, cx| {
-                                cx.stop_propagation();
-                            })
-                            .on_click(cx.listener(|this, _event, _window, cx| {
-                                this.go_back(cx);
-                            }))
-                            .child(super::i18n::tr("settings-back")),
-                    )
-                    .child(
-                        div()
-                            .font_weight(gpui::FontWeight::BOLD)
-                            .text_color(gpui::rgb(theme::text_primary()))
-                            .child(super::i18n::tr("settings-title")),
-                    )
-                    .child(div().flex_1()),
-            ))
+            .child(self.render_sidebar(cx))
             .child(
                 div()
                     .flex_1()
-                    .min_h_0()
+                    .min_w_0()
+                    .h_full()
                     .flex()
-                    .flex_row()
-                    .child(self.render_nav(cx))
+                    .flex_col()
+                    .bg(gpui::rgb(theme::bg_app()))
+                    // The title bar's row, on the canvas: the screen's
+                    // title heads the sidebar instead.
+                    .child(crate::ui::titlebar::drag_region(
+                        div()
+                            .id("settings-header")
+                            .flex_none()
+                            .h(crate::ui::titlebar::TITLE_BAR_HEIGHT),
+                    ))
                     .child(
                         div()
+                            .debug_selector(|| "settings-content".to_string())
                             .relative()
                             .flex_1()
-                            .min_w_0()
-                            .h_full()
+                            .min_h_0()
+                            .bg(gpui::rgb(theme::bg_app()))
                             .child(self.render_pane(window, cx))
                             .child(crate::ui::scrollbar::scrollbar(
                                 "settings-scrollbar",
@@ -2052,6 +2042,80 @@ impl SettingsScreen {
         row
     }
 
+    /// The task sidebar's column, from the window's top edge. Back sits
+    /// where the task screen's toolbar starts and the screen's title where
+    /// its wordmark sits: beside traffic lights Back joins them in the
+    /// title bar; without them it leads the title's row.
+    fn render_sidebar(&self, cx: &mut Context<Self>) -> gpui::Stateful<Div> {
+        let back_in_title_bar = crate::ui::titlebar::TRANSPARENT_TITLEBAR;
+        let back = self.render_back(cx);
+        let (row_back, bar_back) = if back_in_title_bar {
+            (None, Some(back))
+        } else {
+            (Some(back), None)
+        };
+        div()
+            .id("settings-sidebar")
+            .relative()
+            .flex_none()
+            .w(super::chat::SIDEBAR_WIDTH)
+            .h_full()
+            .flex()
+            .flex_col()
+            .bg(gpui::rgb(theme::bg_sidebar()))
+            .child(crate::ui::titlebar::drag_region(
+                div()
+                    .id("settings-sidebar-top-row")
+                    .flex_none()
+                    .px_3()
+                    .pt(crate::ui::titlebar::sidebar_row_top())
+                    .pb_2()
+                    .child(
+                        div()
+                            .h(crate::ui::titlebar::SIDEBAR_ROW_HEIGHT)
+                            .flex()
+                            .items_center()
+                            .gap_1()
+                            .children(row_back)
+                            .child(
+                                crate::ui::titlebar::title(super::i18n::tr("settings-title"))
+                                    .debug_selector(|| "settings-title".to_string())
+                                    // On the section labels' edge.
+                                    .when(back_in_title_bar, |title| title.pl_3())
+                                    .min_w_0(),
+                            ),
+                    ),
+            ))
+            .child(self.render_nav(cx))
+            .children(bar_back.map(|back| {
+                div()
+                    .absolute()
+                    .left(crate::ui::titlebar::TRAFFIC_LIGHT_TOOLBAR_LEFT)
+                    .top(crate::ui::titlebar::title_bar_row_top())
+                    .child(back)
+            }))
+    }
+
+    /// Back to the task screen: an arrow like the task screen's toolbar
+    /// buttons, named by its tooltip.
+    fn render_back(&self, cx: &mut Context<Self>) -> gpui::Stateful<Div> {
+        widgets::icon_button(
+            "settings-back",
+            "arrow-left",
+            super::i18n::tr("settings-back"),
+            px(16.),
+            theme::text_secondary(),
+        )
+        .debug_selector(|| "settings-back".to_string())
+        // In or over a drag region: a press here is a click, not a drag.
+        .on_mouse_down(gpui::MouseButton::Left, |_event, _window, cx| {
+            cx.stop_propagation();
+        })
+        .on_click(cx.listener(|this, _event, _window, cx| {
+            this.go_back(cx);
+        }))
+    }
+
     fn render_nav(&self, cx: &mut Context<Self>) -> gpui::Stateful<Div> {
         let visible = &self.sidebar_sections;
         let mut nav = div()
@@ -2059,14 +2123,12 @@ impl SettingsScreen {
             .role(gpui::Role::TabList)
             .aria_label(super::i18n::tr("settings-sections"))
             .aria_orientation(gpui::Orientation::Vertical)
-            .w(gpui::px(236.))
-            .h_full()
+            .flex_1()
+            .min_h_0()
             .flex()
             .flex_col()
             .gap_1()
             .p_3()
-            .border_r_1()
-            .border_color(gpui::rgb(theme::border()))
             .bg(gpui::rgb(theme::bg_sidebar()))
             .child(
                 widgets::input_frame()
@@ -2174,6 +2236,9 @@ impl SettingsScreen {
             }
             Section::Apps => {
                 pane = pane.child(self.render_apps_pane(cx));
+            }
+            Section::Tools => {
+                pane = pane.child(self.render_tools_pane(cx));
             }
             Section::Remote => {
                 pane = pane.child(self.remote_screen.clone());
@@ -4276,8 +4341,8 @@ mod tests {
     #[test]
     fn shortcut_result_preserves_unrelated_general_setting() {
         let mut settings = AppSettings::default();
-        settings.default_web_enabled = !settings.default_web_enabled;
-        let expected_web_enabled = settings.default_web_enabled;
+        settings.tool_details = !settings.tool_details;
+        let expected_tool_details = settings.tool_details;
         settings
             .shortcut_overrides
             .insert("chat.focus_search".into(), None);
@@ -4288,7 +4353,7 @@ mod tests {
 
         merge_shortcut_overrides(&mut settings, overrides.clone());
 
-        assert_eq!(settings.default_web_enabled, expected_web_enabled);
+        assert_eq!(settings.tool_details, expected_tool_details);
         assert_eq!(settings.shortcut_overrides, overrides);
     }
 

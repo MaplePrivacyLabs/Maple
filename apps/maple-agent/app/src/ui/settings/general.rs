@@ -6,18 +6,6 @@ impl SettingsScreen {
     pub(super) fn render_general(&self, window: &mut Window, cx: &mut Context<Self>) -> Div {
         let defaults_rows = vec![
             self.application_target(
-                || SettingsTarget::General(GeneralTarget::Web),
-                localized_toggle_row(
-                    "new-tasks-can-use-the-web",
-                    &tr("settings-web"),
-                    &tr("settings-web-description"),
-                    self.settings.default_web_enabled,
-                    cx.listener(|this, _event, _window, cx| {
-                        this.toggle_web_default(cx);
-                    }),
-                ),
-            ),
-            self.application_target(
                 || SettingsTarget::General(GeneralTarget::Language),
                 self.setting_menu_row(
                     &crate::ui::i18n::tr("settings-language"),

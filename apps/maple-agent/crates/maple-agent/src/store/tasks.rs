@@ -80,6 +80,8 @@ pub struct TaskRecord {
     pub title: String,
     pub title_user_set: bool,
     pub pinned_ms: Option<i64>,
+    /// Legacy: the task's own web flag, kept for peers on older builds. No
+    /// tool follows it.
     pub web_enabled: bool,
     pub settings: Value,
     pub created_ms: i64,

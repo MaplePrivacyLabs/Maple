@@ -84,10 +84,196 @@ impl fmt::Display for WindowsStorageGuard {
 }
 impl std::error::Error for WindowsStorageGuard {}
 
+/// A storage guard refusal plus, where the guard inspected an object, what it
+/// found. The detail is built only from fixed words and numbers: the kind of
+/// account an entry names (never its name, SID or domain), an access mask, a
+/// reparse tag or a path depth. It never contains a path or a user name.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct WindowsGuardFailure {
+    pub guard: WindowsStorageGuard,
+    pub detail: Option<String>,
+}
+
+impl WindowsGuardFailure {
+    pub fn new(guard: WindowsStorageGuard) -> Self {
+        Self {
+            guard,
+            detail: None,
+        }
+    }
+
+    /// An effective allow entry grants a write right to an account outside
+    /// the installing user, SYSTEM and Administrators.
+    pub fn foreign_writer(
+        sid: &[u8],
+        user: Option<&[u8]>,
+        access: u32,
+        inherited: bool,
+        directory: bool,
+    ) -> Self {
+        Self {
+            guard: WindowsStorageGuard::ForeignWriter,
+            detail: Some(format!(
+                "account: {}; access: 0x{access:08X}; inherited: {}; object: {}",
+                sid_class(sid, user),
+                if inherited { "yes" } else { "no" },
+                if directory { "folder" } else { "file" },
+            )),
+        }
+    }
+
+    pub fn owner(sid: &[u8], user: Option<&[u8]>, directory: bool) -> Self {
+        Self {
+            guard: WindowsStorageGuard::Owner,
+            detail: Some(format!(
+                "owner: {}; object: {}",
+                sid_class(sid, user),
+                if directory { "folder" } else { "file" },
+            )),
+        }
+    }
+
+    /// `depth` is the 1-based position of the linked folder in the path and
+    /// the path's component count, counting the drive root.
+    pub fn reparse(tag: Option<u32>, depth: Option<(usize, usize)>) -> Self {
+        let mut detail = format!("link: {}", tag.map_or("unknown".into(), reparse_tag_name));
+        if let Some((position, count)) = depth {
+            detail.push_str(&format!("; path component: {position} of {count}"));
+        }
+        Self {
+            guard: WindowsStorageGuard::ReparsePoint,
+            detail: Some(detail),
+        }
+    }
+}
+
+impl fmt::Display for WindowsGuardFailure {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        self.guard.fmt(f)
+    }
+}
+impl std::error::Error for WindowsGuardFailure {}
+
+/// Classify a binary SID by the kind of account it names. Domain and machine
+/// identifiers are dropped; only relative IDs of well-known accounts and
+/// groups remain. `user` is the current user's SID, which tells another
+/// account on this computer or domain apart from one from elsewhere, such as a
+/// profile copied from an old computer.
+pub fn sid_class(sid: &[u8], user: Option<&[u8]>) -> String {
+    let Some((authority, subs)) = parse_sid(sid) else {
+        return "malformed-sid".into();
+    };
+    let class = match (authority, subs.as_slice()) {
+        (1, [0]) => "everyone",
+        (2, [0]) => "local-logon",
+        (2, [1]) => "console-logon",
+        (3, [0]) => "creator-owner",
+        (3, [1]) => "creator-group",
+        (3, [4]) => "owner-rights",
+        (5, [1]) => "dialup",
+        (5, [2]) => "network",
+        (5, [3]) => "batch",
+        (5, [4]) => "interactive",
+        (5, [5, ..]) => "logon-session",
+        (5, [6]) => "service",
+        (5, [7]) => "anonymous",
+        (5, [10]) => "self",
+        (5, [11]) => "authenticated-users",
+        (5, [12]) => "restricted",
+        (5, [13]) => "terminal-server-users",
+        (5, [14]) => "remote-interactive",
+        (5, [15]) => "this-organization",
+        (5, [17]) => "iusr",
+        (5, [18]) => "system",
+        (5, [19]) => "local-service",
+        (5, [20]) => "network-service",
+        (5, [113]) => "local-account",
+        (5, [114]) => "local-administrator-account",
+        (5, [32, 544]) => "administrators",
+        (5, [32, 545]) => "users",
+        (5, [32, 546]) => "guests",
+        (5, [32, 547]) => "power-users",
+        (5, [32, 551]) => "backup-operators",
+        (5, [32, 555]) => "remote-desktop-users",
+        (5, [32, 568]) => "iis-users",
+        (5, [32, rid]) => return format!("builtin-group-rid-{rid}"),
+        (5, [21, a, b, c, rid]) => {
+            let user = user.and_then(parse_sid);
+            let scope = match &user {
+                None => "domain",
+                Some((5, user)) if user.len() == 5 && user[..4] == [21, *a, *b, *c] => {
+                    if user[4] == *rid {
+                        return "current-user".into();
+                    }
+                    "same-domain"
+                }
+                Some(_) => "other-domain",
+            };
+            let name = match rid {
+                500 => "-administrator",
+                501 => "-guest",
+                512 => "-domain-admins",
+                513 => "-domain-users",
+                514 => "-domain-guests",
+                515 => "-domain-computers",
+                _ => "",
+            };
+            return format!("{scope}-account-rid-{rid}{name}");
+        }
+        (5, [80, ..]) => "service-account",
+        (5, [82, ..]) => "iis-app-pool",
+        (5, [83, ..]) => "virtual-machine",
+        (5, [90, ..]) => "window-manager",
+        (5, [96, ..]) => "font-driver-host",
+        (12, [1, ..]) => "entra-id-account",
+        (15, [2, 1]) => "all-application-packages",
+        (15, [2, 2]) => "all-restricted-application-packages",
+        (15, [2, ..]) => "application-package",
+        (15, [3, ..]) => "capability",
+        (16, _) => "integrity-label",
+        (authority, [first, ..]) => return format!("authority-{authority}-subauthority-{first}"),
+        (authority, []) => return format!("authority-{authority}"),
+    };
+    class.into()
+}
+
+fn parse_sid(sid: &[u8]) -> Option<(u64, Vec<u32>)> {
+    let (&revision, rest) = sid.split_first()?;
+    let (&count, rest) = rest.split_first()?;
+    if revision != 1 || count > 15 || rest.len() < 6 + 4 * count as usize {
+        return None;
+    }
+    let authority = rest[..6]
+        .iter()
+        .fold(0u64, |value, byte| (value << 8) | u64::from(*byte));
+    let subs = rest[6..6 + 4 * count as usize]
+        .as_chunks::<4>()
+        .0
+        .iter()
+        .map(|chunk| u32::from_le_bytes(*chunk))
+        .collect();
+    Some((authority, subs))
+}
+
+fn reparse_tag_name(tag: u32) -> String {
+    match tag {
+        0xA000_0003 => "junction".into(),
+        0xA000_000C => "symbolic-link".into(),
+        0x8000_001B => "app-execution-alias".into(),
+        0x8000_0013 => "deduplicated-file".into(),
+        0x8000_0018 | 0x9000_1018 => "container-layer".into(),
+        0x8000_0017 => "wof-compressed-file".into(),
+        0x8000_0023 => "af-unix-socket".into(),
+        tag if tag & 0xFFFF_0FFF == 0x9000_001A => "cloud-file".into(),
+        tag => format!("tag-0x{tag:08X}"),
+    }
+}
+
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct WindowsInstallerDiagnostic {
     pub operation: Option<WindowsInstallOperation>,
     reason: String,
+    detail: Option<String>,
     pub native_error: Option<u32>,
     pub mutations_started: Option<bool>,
 }
@@ -97,6 +283,7 @@ impl WindowsInstallerDiagnostic {
         Self {
             operation: None,
             reason: "checker-unavailable".into(),
+            detail: None,
             native_error: None,
             mutations_started: None,
         }
@@ -126,52 +313,71 @@ impl InstallError {
                 result.operation = Some(WindowsInstallOperation::Activation);
                 return result;
             }
-            Self::Io(error) => WindowsInstallerDiagnostic {
-                operation: None,
-                mutations_started: None,
-                reason: error
-                    .get_ref()
-                    .and_then(|e| e.downcast_ref::<WindowsStorageGuard>())
-                    .map(ToString::to_string)
-                    .unwrap_or_else(|| io_reason(error)),
-                native_error: error
-                    .raw_os_error()
-                    .filter(|code| *code != 0)
-                    .map(|code| code as u32),
-            },
+            Self::Io(error) => {
+                let inner = error.get_ref();
+                let failure = inner
+                    .and_then(|e| e.downcast_ref::<WindowsGuardFailure>())
+                    .cloned()
+                    .or_else(|| {
+                        inner
+                            .and_then(|e| e.downcast_ref::<WindowsStorageGuard>())
+                            .map(|guard| WindowsGuardFailure::new(*guard))
+                    });
+                WindowsInstallerDiagnostic {
+                    operation: None,
+                    mutations_started: None,
+                    reason: failure
+                        .as_ref()
+                        .map(|f| f.guard.to_string())
+                        .unwrap_or_else(|| io_reason(error)),
+                    detail: failure.and_then(|f| f.detail),
+                    native_error: error
+                        .raw_os_error()
+                        .filter(|code| *code != 0)
+                        .map(|code| code as u32),
+                }
+            }
             Self::WindowsCodeSignature { status } => WindowsInstallerDiagnostic {
                 operation: None,
                 mutations_started: None,
                 reason: "code-trust".into(),
+                detail: None,
                 native_error: Some(*status),
             },
             Self::CodeSignature => WindowsInstallerDiagnostic {
                 operation: None,
                 mutations_started: None,
                 reason: "code-identity".into(),
+                detail: None,
                 native_error: None,
             },
             Self::Busy => WindowsInstallerDiagnostic {
                 operation: None,
                 mutations_started: None,
                 reason: "installation-busy".into(),
+                detail: None,
                 native_error: None,
             },
             Self::Invalid(_) => WindowsInstallerDiagnostic {
                 operation: None,
                 mutations_started: None,
                 reason: "invalid-installation".into(),
+                detail: None,
                 native_error: None,
             },
             Self::NotifyOnly(_) => WindowsInstallerDiagnostic {
                 operation: None,
                 mutations_started: None,
                 reason: "manual-installation-required".into(),
+                detail: None,
                 native_error: None,
             },
         };
         // Guard future changes against unbounded/non-ASCII support output.
         result.reason.truncate(128);
+        if let Some(detail) = &mut result.detail {
+            detail.truncate(160);
+        }
         result
     }
 }
@@ -227,8 +433,13 @@ fn render_report(
         .and_then(|f| f.native_error)
         .map(|code| format!("0x{code:08X}"))
         .unwrap_or_else(|| "none".into());
+    // The support code stays stable; the detail line says what the guard saw.
+    let detail = failure
+        .and_then(|f| f.detail.as_deref())
+        .map(|d| format!("detail: {d}\r\n"))
+        .unwrap_or_default();
     let mut text = report_header(build, system);
-    text.push_str(&format!("phase: {phase}\r\noperation: {operation}\r\nreason: {reason}\r\nWindows error: {native}\r\nsupport code: MWI/{phase}/{operation}/{reason}\r\nelapsed ms: {}\r\ninstallation changes: {}\r\n", elapsed.as_millis(), if phase == "preflight" || failure.is_some_and(|f| f.mutations_started == Some(false)) { "none" } else if failure.is_none() { "phase completed" } else { "may be partial; retained for safe retry" }));
+    text.push_str(&format!("phase: {phase}\r\noperation: {operation}\r\nreason: {reason}\r\n{detail}Windows error: {native}\r\nsupport code: MWI/{phase}/{operation}/{reason}\r\nelapsed ms: {}\r\ninstallation changes: {}\r\n", elapsed.as_millis(), if phase == "preflight" || failure.is_some_and(|f| f.mutations_started == Some(false)) { "none" } else if failure.is_none() { "phase completed" } else { "may be partial; retained for safe retry" }));
     text
 }
 
@@ -646,5 +857,100 @@ mod tests {
             InstallError::Io(io::Error::from_raw_os_error(5)).windows_installer_diagnostic();
         assert_ne!(denied.reason, "file-in-use");
         assert!(denied.reason.starts_with("io-"));
+    }
+
+    fn sid(authority: u64, subs: &[u32]) -> Vec<u8> {
+        let mut bytes = vec![1, subs.len() as u8];
+        bytes.extend_from_slice(&authority.to_be_bytes()[2..]);
+        for sub in subs {
+            bytes.extend_from_slice(&sub.to_le_bytes());
+        }
+        bytes
+    }
+
+    #[test]
+    fn sid_classes_name_the_kind_of_account_without_its_identity() {
+        let user = sid(5, &[21, 111, 222, 333, 1001]);
+        let user = Some(user.as_slice());
+        for (subject, expected) in [
+            (sid(1, &[0]), "everyone"),
+            (sid(5, &[11]), "authenticated-users"),
+            (sid(5, &[32, 545]), "users"),
+            (sid(5, &[32, 544]), "administrators"),
+            (sid(5, &[32, 999]), "builtin-group-rid-999"),
+            (sid(5, &[21, 111, 222, 333, 1001]), "current-user"),
+            (
+                sid(5, &[21, 111, 222, 333, 1002]),
+                "same-domain-account-rid-1002",
+            ),
+            (
+                sid(5, &[21, 111, 222, 333, 512]),
+                "same-domain-account-rid-512-domain-admins",
+            ),
+            // A profile copied from another computer keeps its old owner.
+            (
+                sid(5, &[21, 7, 8, 9, 1001]),
+                "other-domain-account-rid-1001",
+            ),
+            (sid(12, &[1, 5, 6, 7, 8]), "entra-id-account"),
+            (sid(15, &[2, 1]), "all-application-packages"),
+            (sid(15, &[3, 1024, 1, 2]), "capability"),
+            (sid(5, &[80, 1, 2, 3, 4, 5]), "service-account"),
+            (sid(9, &[4]), "authority-9-subauthority-4"),
+        ] {
+            assert_eq!(sid_class(&subject, user), expected);
+        }
+        assert_eq!(
+            sid_class(&sid(5, &[21, 7, 8, 9, 1001]), None),
+            "domain-account-rid-1001"
+        );
+        for malformed in [&[][..], &[1], &[1, 2, 0, 0, 0, 0, 0, 5, 1, 0, 0, 0]] {
+            assert_eq!(sid_class(malformed, user), "malformed-sid");
+        }
+    }
+
+    #[test]
+    fn installer_report_says_which_account_could_write_without_naming_it() {
+        let user = sid(5, &[21, 111, 222, 333, 1001]);
+        let cases = [
+            (
+                WindowsGuardFailure::foreign_writer(
+                    &sid(5, &[11]),
+                    Some(&user),
+                    0x0013_01BF,
+                    true,
+                    false,
+                ),
+                "detail: account: authenticated-users; access: 0x001301BF; inherited: yes; object: file",
+            ),
+            (
+                WindowsGuardFailure::owner(&sid(5, &[21, 7, 8, 9, 1001]), Some(&user), true),
+                "detail: owner: other-domain-account-rid-1001; object: folder",
+            ),
+            (
+                WindowsGuardFailure::reparse(Some(0xA000_0003), Some((3, 7))),
+                "detail: link: junction; path component: 3 of 7",
+            ),
+        ];
+        for (failure, line) in cases {
+            let label = failure.guard.to_string();
+            let error = InstallError::Io(io::Error::new(io::ErrorKind::PermissionDenied, failure))
+                .during(WindowsInstallOperation::Checker);
+            let detail = error.windows_installer_diagnostic();
+            assert_eq!(detail.reason, label);
+            let report = render_report(
+                "installation",
+                &serde_json::json!({"version":"0.0.21","git_revision":"abcdef0","profile":"prod"}),
+                Some(&detail),
+                Duration::from_millis(5),
+                "Windows build: fixture",
+            );
+            assert!(report.contains(&format!("{line}\r\n")), "{report}");
+            // The support code users paste stays the same as before.
+            assert!(report.contains(&format!(
+                "support code: MWI/installation/verify-checker-image/{label}\r\n"
+            )));
+            assert!(!report.contains("111") && !report.contains("S-1-"));
+        }
     }
 }

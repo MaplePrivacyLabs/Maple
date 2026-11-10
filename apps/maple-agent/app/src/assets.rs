@@ -104,6 +104,7 @@ assets!(
     "icons/user.svg",
     "icons/users.svg",
     "icons/volume-2.svg",
+    "icons/wrench.svg",
     "icons/x.svg",
     "icons/zap.svg",
 );

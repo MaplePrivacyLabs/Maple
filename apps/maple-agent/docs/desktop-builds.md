@@ -64,17 +64,24 @@ coexist with Maple Research.
 
 **Windows:** run the `-setup.exe` installer as your desktop user. x64 needs
 Windows 10 version 1703 or later; ARM64 needs Windows 11. Dev and Prod install
-separately, per user. Uninstalling keeps account, settings and task data.
+separately, per user, under `%LOCALAPPDATA%\Programs`; the installer has no
+folder page. Uninstalling keeps account, settings and task data.
 
 If a Windows installation fails, press **Ctrl+C** in its error dialog to copy
 the support report. Native installer checks record the operation, fixed guard
 category, Windows build and native error without application data or account
-identifiers. The last ten installer logs are kept in
+identifiers. A permission refusal adds a detail line with the kind of account
+involved (such as `authenticated-users` or `other-domain-account-rid-1001`),
+the access mask and whether the entry is inherited, never a name or SID. The last ten installer logs are kept in
 `%LOCALAPPDATA%\Maple Work Installer Logs`; logging failure does not change the
 installation result. Early NSIS extraction/launch failures still show their
 installer stage and process status. Legacy helper commands and activation exit
-codes remain compatible. New installers extract a payload and call one native
-transaction, which owns copying, registration, shortcuts and pointer activation.
+codes remain compatible. New installers load no code from `TEMP`, which may be
+a shared folder such as `C:\Temp`: NSIS's plug-in DLLs go into a folder under
+`%LOCALAPPDATA%\Maple Work Installer Staging`, and the payload into a per-run
+folder there, created with a protected ACL so extra profile permissions cannot
+reach it either. The installer then calls one native transaction, which owns
+copying, registration, shortcuts and pointer activation.
 It records durable checkpoints before major operations so a crashed helper
 still leaves its last operation in the support log.
 Interrupted attempts retain recoverable state; failures before activation restore
