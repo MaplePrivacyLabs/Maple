@@ -133,3 +133,15 @@ entitlements in `app/packaging/macos-python-entitlements.plist`: library
 validation is off for it, so native extensions of wheels the tool installs can
 load. `just debug-app` bundles it the same way with ad hoc signatures and runs
 the worker smoke from inside the bundle.
+
+Linux bundles stage it into `usr/share/maple-agent/python` when the AppDir is
+built. The Nix package points at the locked nixpkgs `python314` (the same
+version as the pin), built with pip so the install recipe above works there too.
+
+Every runtime leaves out Tcl/Tk, tkinter, IDLE and turtledemo: the worker has no
+use for Tk GUIs, and Python Build Standalone's Linux Tcl/Tk libraries carry an
+absolute build-host library path. The macOS and Linux runtimes also leave out
+`libpython`: their interpreter has it built in, and only programs that embed
+Python load it. On Linux, a C extension built from source can link `libpython`
+and then fail to import; install binary wheels as described above. Linux
+runtimes also leave out the terminfo database and man pages.
