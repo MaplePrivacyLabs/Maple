@@ -83,7 +83,9 @@ Sources: [1Password source](https://github.com/1Password/cpace),
 A paired controller has the ordinary host agent's tool authority, including shell
 and computer use. Each task's [permission mode](permissions.md) applies as it does
 locally, and a controller can answer its prompts and, on a host that
-advertises `permission_modes_v1`, change the mode. Remote
+advertises `permission_modes_v1`, change the mode. On a host that advertises
+`tool_switches_v1`, it can turn the account's tools on or off, with the
+account and pairing checks of integration switches. Remote
 API account/auth/billing/API-key/host-stop commands are excluded. Protocol versions,
 identity scope, grant checks and account fences are checked before dispatch;
 account-local receipt lookup cannot expose another account's outcome.

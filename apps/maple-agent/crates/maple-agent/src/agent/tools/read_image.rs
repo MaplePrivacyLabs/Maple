@@ -107,7 +107,13 @@ pub(super) fn read_image_extension(setup: ReadImageFor) -> Arc<dyn Extension> {
                 .content
                 .iter()
                 .any(|block| matches!(block, Content::Image(_)));
-            if event.tool_name != "read" || event.is_error || !blind || !image {
+            // Switched off in Settings → Tools, read_image cannot help: `read`
+            // keeps Pi's own note that the model cannot see the image.
+            let offered = context
+                .active_tools()
+                .iter()
+                .any(|tool| tool == "read_image");
+            if event.tool_name != "read" || event.is_error || !blind || !image || !offered {
                 return Ok(None);
             }
             let path = event

@@ -282,6 +282,29 @@ pub struct AgentSetupIntegrationRequest {
     pub id: String,
 }
 
+/// One switch of Settings → Tools: whether the account's tasks on this
+/// host offer the model a tool.
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct AgentToolSwitch {
+    /// The tool's name, `shell` for the task's shell tool (`bash`, or
+    /// `powershell` on Windows without Git Bash), or `web` for both
+    /// `web_search` and `open_url`.
+    pub id: String,
+    pub enabled: bool,
+    pub enabled_by_default: bool,
+    /// False when this host cannot offer the tool: `python` in a build
+    /// without its bundled CPython.
+    pub available: bool,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct AgentSetToolEnabledRequest {
+    pub id: String,
+    pub enabled: bool,
+}
+
 pub(super) fn default_mcp_timeout_seconds() -> u64 {
     DEFAULT_MCP_TIMEOUT_SECONDS
 }
@@ -653,6 +676,8 @@ pub enum AgentRunSurface {
     CallingSurface,
 }
 
+/// A task's legacy web flag, which controllers on older builds still set.
+/// Tools no longer follow it.
 #[derive(Debug, Clone, Deserialize, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct AgentSetSessionWebRequest {
@@ -968,7 +993,9 @@ pub struct AgentSessionSummary {
     pub updated_ms: i64,
     pub message_count: usize,
     pub model: Option<String>,
-    /// Whether the task can use `web_search` / `open_url`.
+    /// Legacy: the task's own web flag, kept for peers on older builds. The
+    /// web switch of Settings → Tools decides whether a task has
+    /// `web_search` and `open_url`.
     pub web_enabled: bool,
     /// What the task may do without asking.
     #[serde(default = "full_access", skip_serializing_if = "is_full_access")]

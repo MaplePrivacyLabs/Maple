@@ -105,6 +105,7 @@ AGENT_PACKAGING = tuple("apps/maple-agent/" + glob for glob in (
     "scripts/macos-build-info.py", "scripts/macos-release-*", "scripts/linux-*",
     "release-profiles.json", "release_profile.rs", "app/build.rs",
     "app/packaging/**", "flake.nix", "flake.lock",
+    "scripts/prepare-python.py", "scripts/python-runtime.json", "scripts/python-licenses/**",
 )) + (".github/workflows/agent-desktop-build.yml",)
 # The Windows packaging lane's Windows-specific inputs: the Windows packaging scripts,
 # the build script's Windows branch, the release identity the installer and the
@@ -257,13 +258,14 @@ LANES: Tuple[Lane, ...] = (
     Lane("agent-full-macos", AGENT, also=RUST_SDK + PROXY_RUNTIME + APPLE_TOOLCHAIN, pr_paths=(),
          run="python3 scripts/test_git_metadata.py"
              f" && cargo build --workspace --all-targets --locked {RUNTIME_SHADERS}"
-             f" && ./scripts/macos-debug-app.sh && cargo test --workspace --locked {RUNTIME_SHADERS}",
+             " && ./scripts/macos-debug-app.sh && python3 scripts/prepare-python.py"
+             f" && cargo test --workspace --locked {RUNTIME_SHADERS}",
          cache="agent-full-macos", timeout=45, gate=False, **AGENT_MACOS),
     # The native Windows suite: nightly (which saves its cache) and by label, on the free runner.
     Lane("agent-full-windows", AGENT, also=RUST_SDK + PROXY_RUNTIME, pr_paths=(), labels=("ci:windows", "ci:full"),
          events=PR_AND_NIGHTLY,
          run="python3 scripts/test_git_metadata.py && cargo build --workspace --all-targets --locked"
-             " && cargo test --workspace --locked",
+             " && python3 scripts/prepare-python.py && cargo test --workspace --locked",
          cache="agent-full-windows", timeout=90, gate=False, **dict(AGENT_WIN, runner=GITHUB_WINDOWS_FREE)),
     # Pinned SQLCipher sources, per-target advisories and bans.
     Lane("agent-supply-chain", AGENT_DEPENDENCIES, run="just supply-chain", timeout=30, **AGENT_CARGO_HOME),

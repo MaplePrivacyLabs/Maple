@@ -56,8 +56,12 @@ store-v1/
 
 Directories and files are private to the OS user. Unix opens reject unsafe
 ownership, permissions, links and nonregular database files. Windows creates a
-protected owner-only directory ACL. The authoritative lock is inside the store,
-so removal of a temporary IPC socket cannot create a second database owner.
+protected owner-only directory ACL. An existing Windows store object that only
+the user, SYSTEM or Administrators could have written, such as a SQLite file an
+elevated run left owned by Administrators, is restored to that ACL; one another
+account could write is refused and the log names the account's SID. The
+authoritative lock is inside the store, so removal of a temporary IPC socket
+cannot create a second database owner.
 
 New database state includes task metadata, complete source entries, derived timeline
 rows, attachment metadata, preferences and dictionary words, sign-in credentials,

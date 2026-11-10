@@ -39,6 +39,10 @@ use std::{
 use tokio::sync::{Semaphore, broadcast, mpsc, oneshot};
 
 const START_TIMEOUT: Duration = Duration::from_secs(15);
+/// How long a client waits for a host it just spawned to start answering. A
+/// slow or busy PC, or antivirus scanning the large executable on launch, can
+/// take well over 15 seconds just to start the process.
+const SPAWNED_HOST_TIMEOUT: Duration = Duration::from_secs(30);
 const IDLE_GRACE: Duration = Duration::from_secs(2);
 const RECONNECT_TIMEOUT: Duration = Duration::from_secs(15);
 const DISCONNECT_GRACE: Duration = Duration::from_secs(30);
@@ -606,7 +610,7 @@ async fn connect(
         .map_err(|_| "Maple host did not answer".to_string())?;
     }
     spawn_host()?;
-    let deadline = tokio::time::Instant::now() + START_TIMEOUT;
+    let deadline = tokio::time::Instant::now() + SPAWNED_HOST_TIMEOUT;
     loop {
         if let Ok(stream) = endpoint.connect().await {
             let result = tokio::time::timeout_at(
