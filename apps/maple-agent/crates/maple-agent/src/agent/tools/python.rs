@@ -23,8 +23,8 @@ use std::time::Instant;
 
 use async_trait::async_trait;
 use maple_code_mode::{
-    Error, Holder, LaunchSpec, MAX_SOURCE_BYTES, MAX_WORKERS, Outcome, OutcomeStatus,
-    PackagedPython, ResetOutcome, Runtime, TaskHandle, WorkerPhase,
+    EmbeddedPython, Error, Holder, LaunchSpec, MAX_SOURCE_BYTES, MAX_WORKERS, Outcome,
+    OutcomeStatus, PYTHON_VERSION, PackagedPython, ResetOutcome, Runtime, TaskHandle, WorkerPhase,
 };
 use pi_agent_core::{AgentTool, AgentToolResult, ToolError, ToolExecutionMode, ToolInvocation};
 use pi_ai::Tool;
@@ -34,6 +34,8 @@ use pi_coding_agent::extensions::{
 use serde::{Deserialize, Serialize};
 use serde_json::json;
 use tokio_util::sync::CancellationToken;
+
+use crate::store::StorePaths;
 
 pub(crate) const PYTHON_TOOL_NAME: &str = "python";
 const RESULT_VERSION: u8 = 1;
@@ -77,9 +79,25 @@ impl PythonParams {
 /// Maple's bundled CPython and the scratchpads of the loaded tasks.
 pub(crate) struct PythonWorkers {
     runtime: Runtime,
-    python: PackagedPython,
+    python: Bundle,
     tasks: Mutex<HashMap<String, Weak<TaskPython>>>,
 }
+
+/// Where this build's CPython is.
+enum Bundle {
+    /// Beside the executable: macOS and Linux packages, and development builds.
+    Installed(PackagedPython),
+    /// Inside the executable: Windows packages. The first call unpacks it.
+    Embedded {
+        archive: EmbeddedPython,
+        paths: StorePaths,
+        unpacked: tokio::sync::OnceCell<PackagedPython>,
+    },
+}
+
+/// The directory beside `store-v1` that holds the unpacked runtime. The
+/// Windows uninstaller removes it by this name.
+const UNPACKED_DIRECTORY: &str = "python-runtime";
 
 /// The CPython bundled beside this executable.
 fn bundled_python() -> Result<PackagedPython, Error> {
@@ -88,31 +106,115 @@ fn bundled_python() -> Result<PackagedPython, Error> {
         .and_then(PackagedPython::for_application_executable)
 }
 
+/// Run one cell in this build's bundled CPython and return what it printed:
+/// the interpreter's version and path. A runtime inside the executable is
+/// unpacked first, as a task's first call would. Packaging checks run this
+/// through `maple-agent python-check`; it needs no account and no host.
+pub(crate) async fn check_bundled(paths: &StorePaths) -> Result<String, String> {
+    let workers =
+        PythonWorkers::bundled(paths).ok_or("This build has no bundled Python".to_string())?;
+    let python = workers.python().await.map_err(|error| error.to_string())?;
+    let cwd = std::env::temp_dir()
+        .canonicalize()
+        .map_err(|error| format!("Could not open the temporary folder: {error}"))?;
+    let task = workers
+        .runtime
+        .bind(
+            "python-check",
+            LaunchSpec {
+                python,
+                cwd,
+                env: std::env::vars_os().collect(),
+            },
+            CancellationToken::new(),
+        )
+        .map_err(|error| error.to_string())?;
+    let outcome = task
+        .execute(
+            "import asyncio, ctypes, hashlib, pip, sqlite3, ssl, sys, zlib\nprint(sys.version)\nprint(sys.executable)",
+            CancellationToken::new(),
+        )
+        .await;
+    workers.shutdown().await;
+    let outcome = outcome.map_err(|error| error.to_string())?;
+    if outcome.status != OutcomeStatus::Ok {
+        return Err(outcome
+            .traceback
+            .unwrap_or_else(|| "The bundled Python could not run a cell".to_string()));
+    }
+    Ok(outcome.stdout)
+}
+
 impl PythonWorkers {
-    /// The CPython bundled beside this executable, or `None` in a build
-    /// without one, which then offers no `python` tool.
-    pub(crate) fn bundled() -> Option<Arc<Self>> {
-        match bundled_python() {
-            Ok(python) => Some(Self::new(python)),
-            Err(error) => {
-                log::info!("The python tool is unavailable: {error}");
-                None
-            }
-        }
+    /// This build's bundled CPython, or `None` in a build without one, which
+    /// then offers no `python` tool. A runtime inside the executable is
+    /// unpacked beside the store at `paths` by the first call, not here.
+    pub(crate) fn bundled(paths: &StorePaths) -> Option<Arc<Self>> {
+        let python = match bundled_python() {
+            Ok(python) => Bundle::Installed(python),
+            Err(error) => match EmbeddedPython::bundled() {
+                Some(archive) => Bundle::Embedded {
+                    archive,
+                    paths: paths.clone(),
+                    unpacked: tokio::sync::OnceCell::new(),
+                },
+                None => {
+                    log::info!("The python tool is unavailable: {error}");
+                    return None;
+                }
+            },
+        };
+        Some(Self::with_bundle(python))
     }
 
     /// Whether this executable has the bundled CPython the `python` tool
-    /// needs. Starts nothing.
+    /// needs. Starts and unpacks nothing.
     pub(crate) fn is_bundled() -> bool {
-        bundled_python().is_ok()
+        EmbeddedPython::bundled().is_some() || bundled_python().is_ok()
     }
 
+    #[cfg(test)]
     pub(crate) fn new(python: PackagedPython) -> Arc<Self> {
+        Self::with_bundle(Bundle::Installed(python))
+    }
+
+    fn with_bundle(python: Bundle) -> Arc<Self> {
         Arc::new(Self {
             runtime: Runtime::new(Default::default()),
             python,
             tasks: Mutex::default(),
         })
+    }
+
+    /// The runtime to launch. The first call for a runtime inside the
+    /// executable unpacks it, which writes about 2,000 files; a failed
+    /// attempt is retried by the next call.
+    async fn python(&self) -> Result<PackagedPython, Error> {
+        match &self.python {
+            Bundle::Installed(python) => Ok(python.clone()),
+            Bundle::Embedded {
+                archive,
+                paths,
+                unpacked,
+            } => unpacked
+                .get_or_try_init(|| async {
+                    let (archive, paths) = (*archive, paths.clone());
+                    tokio::task::spawn_blocking(move || {
+                        let root = paths
+                            .prepare_runtime_directory(UNPACKED_DIRECTORY)
+                            .map_err(|error| {
+                                Error::Unavailable(format!(
+                                    "Could not prepare a private folder for the bundled Python: {error}"
+                                ))
+                            })?;
+                        archive.unpack(&root)
+                    })
+                    .await
+                    .map_err(|error| Error::Unavailable(error.to_string()))?
+                })
+                .await
+                .cloned(),
+        }
     }
 
     /// The scratchpad of a task being loaded. A task with history is told on
@@ -364,6 +466,8 @@ impl TaskPython {
     }
 
     async fn execute(&self, code: &str, cancel: &CancellationToken) -> Result<Outcome, Error> {
+        // Resolved before the lock: the first call may unpack the runtime.
+        let python = self.workers.python().await?;
         let execution = {
             let mut state = self.state.lock().unwrap();
             if state.closed {
@@ -374,7 +478,7 @@ impl TaskPython {
                 state.handle = Some(self.workers.runtime.bind(
                     self.key.clone(),
                     LaunchSpec {
-                        python: self.workers.python.clone(),
+                        python,
                         cwd: self.root.clone(),
                         env: self.env.clone(),
                     },
@@ -397,7 +501,7 @@ impl TaskPython {
 pub(crate) fn python_tool(task: Arc<TaskPython>, active: bool) -> RegisteredTool {
     RegisteredTool {
         tool: Arc::new(PythonTool {
-            declaration: declaration(&task.workers.python.version),
+            declaration: declaration(PYTHON_VERSION),
             task,
         }),
         prompt: ToolPrompt {
@@ -581,6 +685,23 @@ fn format_outcome(outcome: &Outcome) -> String {
         "Python generation {}, execution {}: {status} ({} ms)",
         outcome.generation, outcome.execution_id, outcome.elapsed_ms
     );
+    let threads = outcome.thread_exceptions;
+    if threads > 0 {
+        let many = threads > 1;
+        let _ = write!(
+            text,
+            "; {threads} {} started by this cell",
+            if many {
+                "exceptions in threads"
+            } else {
+                "exception in a thread"
+            }
+        );
+        if let Some(first) = &outcome.first_thread_exception {
+            let _ = write!(text, " ({}{first})", if many { "first: " } else { "" });
+        }
+        let _ = write!(text, "; traceback{} in stderr", if many { "s" } else { "" });
+    }
     if let Some(runtime) = &outcome.runtime {
         let _ = write!(
             text,
@@ -981,6 +1102,39 @@ mod tests {
             );
             task.retire(UNLOADED_REASON).await;
         }
+        workers.shutdown().await;
+    }
+
+    #[tokio::test]
+    async fn exceptions_in_threads_a_cell_started_reach_its_status_line() {
+        let workers = PythonWorkers::new(fixture());
+        let root = tempfile::tempdir().unwrap();
+        let task = task(&workers, "threads", root.path(), false);
+        let define = "import threading\ndef run(target, *args):\n    thread = threading.Thread(target=target, args=args)\n    thread.start()\n    thread.join()\ndef fail(n):\n    raise TypeError(f'failure {n}')\nfor n in range(3):\n    run(fail, n)";
+        for (code, status, output) in [
+            (
+                define,
+                "; 3 exceptions in threads started by this cell (first: TypeError: failure 0); tracebacks in stderr",
+                "stderr:\nException in thread",
+            ),
+            (
+                "run(fail, 9)",
+                "; 1 exception in a thread started by this cell (TypeError: failure 9); traceback in stderr",
+                "stderr:\nException in thread",
+            ),
+            ("run(print, 'thread output')", "", "stdout:\nthread output"),
+        ] {
+            let result = task
+                .call(params(code, false), CancellationToken::new())
+                .await;
+            let text = text(&result);
+            assert!(!result.is_error, "{text}");
+            let first_line = text.lines().next().unwrap();
+            assert_eq!(first_line.split_once(" ms)").unwrap().1, status, "{text}");
+            assert!(text.contains(output), "{text}");
+            assert!(!text.contains("Background"), "{text}");
+        }
+        task.retire(UNLOADED_REASON).await;
         workers.shutdown().await;
     }
 }

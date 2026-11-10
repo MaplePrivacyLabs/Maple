@@ -4769,8 +4769,8 @@ pub fn router(state: Arc<AppState>) -> Router {
             "/v1/responses",
             post(create_response_stream)
                 .layer(from_fn_with_state(
-                    state.inference_rate_limiter.clone(),
-                    crate::web::inference_rate_limit::enforce,
+                    state.rate_limits.inference.clone(),
+                    crate::web::rate_limit::enforce_user,
                 ))
                 .layer(from_fn_with_state(
                     state.clone(),

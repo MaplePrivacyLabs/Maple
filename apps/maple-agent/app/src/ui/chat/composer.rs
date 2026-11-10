@@ -11,6 +11,7 @@ use maple_agent::agent::{AgentPermissionMode, AgentSlashCommand, SideQuestionTur
 
 use super::cache::MarkdownKind;
 use super::commands::ChatCommand;
+use super::computers::{Destination, Navigate};
 use super::thinking::thinking_label;
 use super::transcript::{render_plan_row, render_subagent_row};
 use super::{
@@ -93,7 +94,6 @@ impl ChatScreen {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) -> gpui::Stateful<Div> {
-        let title = self.selected_title.clone();
         let collapsed_progress = 1. - sidebar_expansion;
         let sidebar_width = super::SIDEBAR_RAIL_WIDTH
             + (super::SIDEBAR_WIDTH - super::SIDEBAR_RAIL_WIDTH) * sidebar_expansion;
@@ -190,28 +190,6 @@ impl ChatScreen {
                     }),
                 ),
         )
-        .when(collapsed_progress > 0., |row| {
-            row.child(
-                div()
-                    .absolute()
-                    .left(toolbar_left + toolbar_width + header_gap)
-                    .top((titlebar::TITLE_BAR_HEIGHT - window.rem_size()) / 2.)
-                    .w(px(1.))
-                    .h_4()
-                    .opacity(collapsed_progress)
-                    .bg(gpui::rgb(theme::border())),
-            )
-        })
-        .child(
-            titlebar::title(title)
-                .debug_selector(|| "header-title".to_string())
-                // Sized by its text, like the chips: nowrap gives it a
-                // real intrinsic width (a clamped, shrinkable title
-                // measured as 0 px and vanished). The cap keeps a long
-                // title from pushing the chips out of the pane.
-                .flex_none()
-                .max_w(gpui::relative(0.6)),
-        )
         .child(
             div()
                 .flex_none()
@@ -223,46 +201,6 @@ impl ChatScreen {
                     |slot| slot.child(spinner("navigation-loading", px(14.), theme::text_muted())),
                 ),
         )
-        .child(
-            self.with_menu(
-                ChatPopup::Project,
-                chip(
-                    "root-picker",
-                    Some(if self.backend.remote_host().is_some() {
-                        "globe"
-                    } else {
-                        "folder-open"
-                    }),
-                    self.project_label.clone(),
-                    None,
-                    true,
-                    self.popup.is_open(&ChatPopup::Project),
-                )
-                // Outside the composer box, so the standalone radius.
-                .rounded(theme::RADIUS_SM)
-                // The header is a window drag region; a press here is the
-                // chip's.
-                .on_mouse_down(gpui::MouseButton::Left, |_event, _window, cx| {
-                    cx.stop_propagation();
-                }),
-                Placement::BelowStart,
-                window,
-                cx,
-                Self::project_menu,
-            )
-            .flex_none(),
-        )
-        .when_some(self.branch_label.clone(), |row, branch| {
-            row.child(
-                div()
-                    .flex_none()
-                    .text_xs()
-                    .font_weight(gpui::FontWeight::MEDIUM)
-                    .text_color(gpui::rgb(theme::status_error()))
-                    .whitespace_nowrap()
-                    .child(branch),
-            )
-        })
         .child(div().flex_1())
         .when_some(self.host_reconnect_status(), |row, status| {
             row.child(
@@ -281,6 +219,57 @@ impl ChatScreen {
                     .child(spinner("host-reconnecting", px(14.), theme::text_muted())),
             )
         })
+    }
+
+    /// A new task's folder and branch, above the composer. A saved task's
+    /// folder is in the sidebar, so the top bar carries neither.
+    fn render_project_context(&self, window: &mut Window, cx: &mut Context<Self>) -> Div {
+        div()
+            .flex()
+            .items_center()
+            .gap_3()
+            .min_w_0()
+            .max_w_full()
+            .child(
+                self.with_menu(
+                    ChatPopup::Project,
+                    chip(
+                        "root-picker",
+                        Some(if self.scratch_project {
+                            "folder-plus"
+                        } else if self.backend.remote_host().is_some() {
+                            "globe"
+                        } else {
+                            "folder-open"
+                        }),
+                        self.project_label.clone(),
+                        None,
+                        true,
+                        self.popup.is_open(&ChatPopup::Project),
+                    )
+                    // Outside the composer box, so the standalone radius.
+                    .rounded(theme::RADIUS_SM),
+                    Placement::AboveStart,
+                    window,
+                    cx,
+                    Self::project_menu,
+                )
+                .min_w_0()
+                .max_w_full(),
+            )
+            .when_some(self.branch_label.clone(), |row, branch| {
+                row.child(
+                    div()
+                        .flex_none()
+                        .text_xs()
+                        .font_weight(gpui::FontWeight::MEDIUM)
+                        .text_color(gpui::rgb(theme::status_error()))
+                        .max_w(px(200.))
+                        .truncate()
+                        .debug_selector(|| "project-branch".to_string())
+                        .child(branch),
+                )
+            })
     }
 
     /// `button` as the opener of `popup`, with `menu` attached below or
@@ -309,7 +298,7 @@ impl ChatScreen {
             .children(menu)
     }
 
-    /// A press on a chip: the header's project chip runs the command it
+    /// A press on a chip: the project chip runs the command it
     /// shares with its shortcut; a composer chip opens or closes its menu.
     fn press_chip(&mut self, popup: ChatPopup, window: &mut Window, cx: &mut Context<Self>) {
         match popup {
@@ -529,25 +518,35 @@ impl ChatScreen {
             .into_any_element()
     }
 
-    /// The header chip's menu: every project, most recent first, then the
-    /// shared folder chooser. A long list scrolls.
-    fn project_menu(&self, cx: &mut Context<Self>) -> Menu<Self> {
-        let mut menu = Menu::new("project-menu", px(480.))
+    /// Explicit new-project choices, followed by at most three recent projects.
+    fn project_menu(&self, _cx: &mut Context<Self>) -> Menu<Self> {
+        let mut menu = Menu::new("project-menu", px(320.))
             .label(tr("chat-projects"))
             .max_height(px(440.))
             .application_vim(self.application_vim_enabled);
         if self.computers.len() > 1 {
             return self.computers_project_menu();
         }
-        let projects = self
-            .recent_roots
-            .iter()
-            .map(|root| {
-                let label = self.sidebar.read(cx).root_name(&root.path);
-                (root.path.clone(), label)
-            })
-            .collect::<Vec<_>>();
-        for (path, label) in &projects {
+        menu = menu.item(self.scratch_project_item(
+            "root-scratch",
+            self.backend.remote_host().map(str::to_owned),
+        ));
+        menu = menu.item(
+            MenuItem::new(
+                "root-choose",
+                tr("chat-choose-folder-menu"),
+                |this: &mut Self, _: &mut Window, cx: &mut Context<Self>| {
+                    this.choose_root_dialog(cx);
+                },
+            )
+            .icon("folder-open"),
+        );
+        if !self.picker_projects.is_empty() {
+            menu = menu.separator().header(tr("chat-recent-projects"));
+        }
+        for (_, root) in &self.picker_projects {
+            let path = &root.path;
+            let label = &root.name;
             let pick = path.clone();
             let mut item = MenuItem::new(
                 SharedString::from(format!("root-{path}")),
@@ -558,22 +557,42 @@ impl ChatScreen {
             )
             .truncate_start()
             .current(self.project_root.as_deref() == Some(path.as_str()));
-            if projects.iter().filter(|(_, name)| name == label).count() > 1 {
+            if self
+                .picker_projects
+                .iter()
+                .filter(|(_, peer)| &peer.name == label)
+                .count()
+                > 1
+            {
                 item = item.note(path.clone());
             }
             menu = menu.item(item);
         }
-        menu = menu.item(
-            MenuItem::new(
-                "root-choose",
-                tr("chat-new-project"),
-                |this: &mut Self, _: &mut Window, cx: &mut Context<Self>| {
-                    this.choose_root_dialog(cx);
-                },
-            )
-            .icon("folder-plus"),
-        );
         menu
+    }
+
+    pub(super) fn scratch_project_item(
+        &self,
+        id: impl Into<gpui::ElementId>,
+        computer: Option<String>,
+    ) -> MenuItem<Self> {
+        let current = self.scratch_project && computer.as_deref() == self.backend.remote_host();
+        MenuItem::new(
+            id,
+            tr("chat-new-project-button"),
+            move |this: &mut Self, _, cx| {
+                if computer.as_deref() == this.backend.remote_host() {
+                    this.select_scratch_project(cx);
+                } else {
+                    cx.emit(Navigate {
+                        computer: computer.clone(),
+                        destination: Destination::ScratchProject,
+                    });
+                }
+            },
+        )
+        .icon("folder-plus")
+        .current(current)
     }
 
     /// The models, the selected one checked, with its
@@ -1261,7 +1280,7 @@ impl ChatScreen {
         let upload = self
             .selected_upload()
             .map(|(id, upload)| (id.to_string(), upload.label.clone()));
-        div()
+        let composer_box = div()
             .w_full()
             .flex()
             .flex_col()
@@ -1543,7 +1562,18 @@ impl ChatScreen {
                                 })
                             })
                     }),
-            )
+            );
+        if self.selected_session.is_some() {
+            return composer_box;
+        }
+        div()
+            .w_full()
+            .flex()
+            .flex_col()
+            .gap_2()
+            .when(expanded, |container| container.flex_1().min_h_0())
+            .child(self.render_project_context(window, cx).flex_none())
+            .child(composer_box)
     }
 }
 
@@ -1641,10 +1671,13 @@ fn chip(
         })
         .active(|style| style.bg(gpui::rgb(theme::bg_sidebar_row_selected())))
         .children(leading.map(|name| icon(name, px(16.), color)))
+        .when(id == "root-picker", |el| el.max_w(px(260.)).min_w_0())
         .child(
             div()
                 .whitespace_nowrap()
-                .when(shrinks, |label| label.min_w_0().truncate())
+                .when(shrinks || id == "root-picker", |label| {
+                    label.min_w_0().truncate()
+                })
                 .child(label),
         )
         // The detail morphs from one value to the next (High to Maximum).

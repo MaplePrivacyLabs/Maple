@@ -378,6 +378,11 @@ impl Store {
             })
     }
 
+    /// The built-in workspace for this installation, without creating it.
+    pub fn maple_workspace_path(&self) -> StoreResult<Option<std::path::PathBuf>> {
+        self.read(|tx| connection::maple_workspace_path(tx))
+    }
+
     pub fn subscribe_changes(&self) -> tokio::sync::broadcast::Receiver<StoreChange> {
         self.changes.subscribe()
     }

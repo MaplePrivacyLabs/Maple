@@ -183,16 +183,25 @@ impl SettingsScreen {
                     .await
             },
             cx,
-            |this, result, cx| {
-                this.usage.flag_loading = false;
-                this.usage.flag_failed = result.is_err();
-                this.usage.enabled = Some(result.unwrap_or(false));
-                if !this.usage.flag_failed && this.section == Section::Usage {
-                    this.load_usage(cx);
-                }
-                this.usage_changed(cx);
-            },
+            |this, result, cx| this.usage_flag_loaded(result.ok(), cx),
         );
+    }
+
+    /// The flag read finished; `None` is a failed read, which stays off.
+    fn usage_flag_loaded(&mut self, enabled: Option<bool>, cx: &mut Context<Self>) {
+        self.usage.flag_loading = false;
+        self.usage.flag_failed = enabled.is_none();
+        self.usage.enabled = Some(enabled.unwrap_or(false));
+        // A billing status still on its way loads the page when it lands,
+        // with the plan window it brings; loading here as well would fetch
+        // everything twice.
+        if !self.usage.flag_failed
+            && self.section == Section::Usage
+            && self.billing.status_pending == 0
+        {
+            self.load_usage(cx);
+        }
+        self.usage_changed(cx);
     }
 
     /// Fetch the history, recent requests and prices for the page. Needs
@@ -347,9 +356,13 @@ impl SettingsScreen {
         cx.notify();
     }
 
-    /// Billing status changed: the plan card and the period query follow it.
-    pub(super) fn usage_status_changed(&mut self, cx: &mut Context<Self>) {
-        if self.section == Section::Usage {
+    /// A billing status load finished. A new status moves the plan card and
+    /// the period the history is asked for; a failed load changes neither,
+    /// so it only loads a page that has nothing to show yet.
+    pub(super) fn usage_status_loaded(&mut self, loaded: bool, cx: &mut Context<Self>) {
+        if self.section == Section::Usage
+            && (loaded || (self.usage.summary.is_none() && !self.usage.summary_loading))
+        {
             self.load_usage(cx);
         }
         self.rebuild_usage_data();
@@ -927,6 +940,38 @@ mod tests {
                 !this.usage.shows_insights(Some(&status(0, "Free"))),
                 "Free keeps the plan summary even with the flag"
             );
+        });
+    }
+    /// The flag and the billing status arrive in either order on a visit;
+    /// together they fetch the history once, and a status load that failed
+    /// does not fetch it again.
+    #[gpui::test]
+    fn a_visit_fetches_the_history_once(cx: &mut TestAppContext) {
+        let (settings, cx) = usage_window(cx);
+        settings.update(cx, |this, cx| {
+            this.billing.status = Some(BillingStatus {
+                is_subscribed: true,
+                product_name: Some("Pro".into()),
+                total_tokens: Some(7_000),
+                ..BillingStatus::default()
+            });
+            let fetched = this.usage.summary_seq;
+
+            // The flag lands while the status is still on its way.
+            this.billing.status_pending = 1;
+            this.usage_flag_loaded(Some(true), cx);
+            assert_eq!(this.usage.summary_seq, fetched, "the status will load it");
+            this.billing.status_pending = 0;
+            this.usage_status_loaded(true, cx);
+            assert_eq!(this.usage.summary_seq, fetched + 1);
+
+            // A failed status load leaves the running fetch alone.
+            this.usage_status_loaded(false, cx);
+            assert_eq!(this.usage.summary_seq, fetched + 1);
+
+            // With no status load in flight, the flag loads the page itself.
+            this.usage_flag_loaded(Some(true), cx);
+            assert_eq!(this.usage.summary_seq, fetched + 2);
         });
     }
 }

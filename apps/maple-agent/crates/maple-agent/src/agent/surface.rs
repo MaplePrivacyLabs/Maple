@@ -405,7 +405,7 @@ impl AgentRuntimeHandle {
         if !runtime.runs.is_running(session_id) {
             runtime.unload_task(session_id).await?;
         }
-        Ok(self.project_trust_status(&config, &project_root))
+        self.project_trust_status(&config, &project_root)
     }
 }
 

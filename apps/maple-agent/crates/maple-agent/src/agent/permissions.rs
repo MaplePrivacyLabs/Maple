@@ -45,10 +45,10 @@ pub(super) const FALLBACK_CLASSIFIER_MODEL: &str = SYSTEM_ONE_MODEL_ID;
 const CLASSIFIER_TIMEOUT_MS: u64 = 4_000;
 const FALLBACK_CLASSIFIER_TIMEOUT_MS: u64 = 10_000;
 
-/// Auto runs what doesn't look dangerous: it stops at a hazard this likely,
-pub(super) const HAZARD_AT: f64 = 0.4;
-/// or at a call this unlikely to be undoable.
-pub(super) const REVERSIBLE_AT: f64 = 0.5;
+/// Auto runs what doesn't look dangerous: the no-hazard answer must reach
+/// this. The hazards count together, so a call split between two of them
+/// still asks.
+pub(super) const AUTO_AT: f64 = 0.5;
 /// Read only runs what is clearly harmless: every answer must reach this.
 pub(super) const READ_ONLY_AT: f64 = 0.8;
 
@@ -79,11 +79,11 @@ const NO_HAZARD: &str = "none";
 const HAZARDS: [(&str, &str); 9] = [
     (
         NO_HAZARD,
-        "No hazard below applies: ordinary development work, such as reading, searching, editing project files, staging and committing, installing dependencies, and removing build output or caches that a rebuild brings back.",
+        "No hazard below applies. This is ordinary work on this computer: reading and searching, creating, writing and editing files, writing a script and running it, running programs, builds and tests, local git work such as staging, committing, merging and branching, installing dependencies, removing build output, dependency folders or caches that a rebuild brings back, such as target or node_modules, and reading from the web or a connected service.",
     ),
     (
         "credential_access",
-        "Reads, copies or prints secrets: private keys, tokens, password stores, .env secrets, cloud credential files, the process environment.",
+        "Opens, prints or copies the value of a secret: private keys, tokens, password stores, .env secrets, cloud credential files, shell history, the process environment.",
     ),
     (
         "secret_exfiltration",
@@ -91,11 +91,11 @@ const HAZARDS: [(&str, &str); 9] = [
     ),
     (
         "push_or_publish",
-        "Pushes, publishes, deploys, uploads, orders, pays for or sends project work, money or a message to a host or person outside this machine.",
+        "Pushes, publishes, deploys, uploads, orders, pays for or sends work, money or a message to a host or person outside this machine, or changes something in an outside service, such as opening or merging a pull request.",
     ),
     (
         "remote_code_execution",
-        "Runs code fetched from the network, such as a download piped into a shell or interpreter.",
+        "Downloads code and runs it in the same action, such as a download piped into a shell or interpreter or a package installed straight from a URL, or runs hidden or encoded code.",
     ),
     (
         "force_push",
@@ -103,15 +103,15 @@ const HAZARDS: [(&str, &str); 9] = [
     ),
     (
         "discard_uncommitted_work",
-        "Throws away uncommitted changes, such as git reset --hard, git checkout -- or git clean -f.",
+        "Throws away work that is not saved elsewhere, such as git reset --hard, git checkout --, git clean -f, dropping a stash or force-deleting a branch.",
     ),
     (
         "disarm_guards",
-        "Turns off a safety guard: permission rules, hooks, sandboxing, TLS checks, or protections on the agent's own config.",
+        "Turns off, skips or replaces a safety guard: permission rules, git hooks, sandboxing, TLS or host-key checks, or protections on the agent's own config.",
     ),
     (
         "other_destructive",
-        "Deletes or overwrites data that git does not hold and that cannot be made again, or changes system state in a way that is hard to undo.",
+        "Deletes or wipes data that cannot be made again or restored, or changes system state in a way that is hard to undo, such as system settings, services or shell startup files.",
     ),
 ];
 
@@ -193,13 +193,13 @@ fn add_questions(context: &mut ClassifierContext) {
             REVERSIBLE.to_string(),
             ClassifierQuestion::Bool {
                 instructions: format!(
-                    "{ASKS} Can every effect of it be undone with ordinary tools? Output that can be made again, such as caches, build output, test output, logs and files the action itself creates, counts as undoable. It cannot be undone if it deletes or overwrites files that git does not hold, discards uncommitted work, rewrites git history, publishes or pushes a change, or sends a message."
+                    "{ASKS} Can every effect of it be undone with ordinary tools? Creating a file, editing a file, a local git commit, and anything that can be made again, such as caches, build output, installed dependencies, test output, logs and files the action itself creates, all count as undoable. It cannot be undone if it deletes or empties files that cannot be made again, discards uncommitted work, rewrites git history, publishes or pushes a change, changes something in an outside service, or sends a message."
                 )
                 .into(),
                 criteria: Some(BoolCriteria {
                     when_true: Some("Every effect can be undone or made again.".into()),
                     when_false: Some(
-                        "Some effect cannot be undone: lost files or uncommitted work, rewritten history, a published change or a sent message."
+                        "Some effect cannot be undone: deleted files or uncommitted work, rewritten history, a published change or a sent message."
                             .into(),
                     ),
                 }),
@@ -228,7 +228,7 @@ fn add_questions(context: &mut ClassifierContext) {
         HAZARD.to_string(),
         ClassifierQuestion::choice(
             format!(
-                "{ASKS} Which hazard does it carry? Choose none when no listed hazard applies."
+                "{ASKS} Which hazard does it carry? Choose none when no listed hazard applies. Judge what the action does, not the words in it. Creating or editing a file, running a script the action itself writes, searching source code, and downloading something to read carry no hazard."
             ),
             HAZARDS,
         ),
@@ -318,18 +318,17 @@ pub(super) fn runs(
     slack: f64,
 ) -> Option<bool> {
     let reversible = bool_probability(result, REVERSIBLE)?;
+    let no_hazard = option_probability(result, HAZARD, NO_HAZARD)?;
     Some(match mode {
         AgentPermissionMode::FullAccess => true,
-        AgentPermissionMode::Auto => {
-            strongest_hazard(result)?.1 < HAZARD_AT + slack && reversible >= REVERSIBLE_AT - slack
-        }
+        AgentPermissionMode::Auto => no_hazard >= AUTO_AT - slack,
         AgentPermissionMode::ReadOnly => {
             let harmless = option_probability(result, EFFECT, OBSERVE)?
                 + option_probability(result, EFFECT, BUILD_OR_TEST)?;
             [
                 reversible,
                 bool_probability(result, CONTAINED)?,
-                option_probability(result, HAZARD, NO_HAZARD)?,
+                no_hazard,
                 harmless,
             ]
             .into_iter()
@@ -343,8 +342,10 @@ pub(super) fn decide(mode: AgentPermissionMode, result: &ClassifierResult) -> Op
     if runs(mode, result, 0.0)? {
         return Some(Verdict::Allow);
     }
-    let hazard = strongest_hazard(result)
-        .filter(|(_, probability)| *probability >= HAZARD_AT)
+    // A hazard is the reason once the hazards together are likely enough.
+    let hazard = option_probability(result, HAZARD, NO_HAZARD)
+        .filter(|no_hazard| *no_hazard < AUTO_AT)
+        .and_then(|_| strongest_hazard(result))
         .and_then(|(hazard, _)| hazard_reason(hazard));
     Some(Verdict::Ask(
         hazard

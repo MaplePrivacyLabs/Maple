@@ -526,6 +526,20 @@ pub async fn platform_password_reset_request(
                 });
                 return encrypt_response(&data, &session_id, &response).await;
             }
+            // Past the account's budget, answer exactly as usual but create
+            // no further request and send no further email. This also bounds
+            // how many reset codes can be live for one account.
+            if data
+                .rate_limits
+                .platform_password_reset_request
+                .check(user.uuid)
+                .is_err()
+            {
+                let response = json!({
+                    "message": "If an account with that email exists, we have sent a password reset link."
+                });
+                return encrypt_response(&data, &session_id, &response).await;
+            }
         }
         Ok(None) => {
             // User doesn't exist, but we don't want to leak this information
@@ -597,6 +611,7 @@ pub async fn platform_password_reset_confirm(
         Error::PasswordResetExpired => ApiError::BadRequest,
         Error::InvalidPasswordResetSecret => ApiError::BadRequest,
         Error::InvalidPasswordResetRequest => ApiError::BadRequest,
+        Error::RateLimited(error) => error,
         _ => ApiError::InternalServerError,
     })?;
 

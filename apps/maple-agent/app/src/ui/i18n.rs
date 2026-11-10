@@ -40,7 +40,7 @@ impl Drop for TestLocalizationGuard {
 
 /// Enabled catalogs. None is the persisted system preference. Add a language
 /// here only when its catalog has passed the completeness checks.
-pub(super) const LANGUAGES: &[Option<&str>] = &[None, Some("en"), Some("es")];
+pub(super) const LANGUAGES: &[Option<&str>] = &[None, Some("en"), Some("es"), Some("de")];
 static NATIVE_NAMES: LazyLock<HashMap<&'static str, SharedString>> = LazyLock::new(|| {
     LANGUAGES
         .iter()

@@ -710,6 +710,12 @@ fn copy_rows(source: &Connection, destination: &mut Connection, scan: &Scan) -> 
         SalvageTable::RemoteIdentities,
     ];
     let transaction = destination.transaction()?;
+    // A recovered store keeps the source installation's workspace layout.
+    // The staging store initially has the fresh-install default.
+    transaction.execute(
+        "DELETE FROM app_settings WHERE key=?1",
+        [schema::NESTED_MAPLE_WORKSPACE_KEY],
+    )?;
     for table in order {
         let mut insert = None;
         walk(source, table, |row, columns| {

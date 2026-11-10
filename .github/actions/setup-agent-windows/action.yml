@@ -64,6 +64,31 @@ runs:
         printf 'OPENSSL_SRC_PERL=%s\n' "$native_perl_windows" >> "$GITHUB_ENV"
         # openssl-src uses NASM if available and otherwise selects no-asm.
 
+    - name: Select a build Python that can prepare the python tool's runtime
+      shell: bash
+      run: |
+        # scripts/prepare-python.py needs Python 3.13 for its archive checks;
+        # the x64 image's default is older but its tool cache holds newer ones.
+        recent='import sys; raise SystemExit(sys.version_info < (3, 13))'
+        if ! python3 -c "$recent" 2>/dev/null; then
+          selected=
+          while IFS= read -r candidate; do
+            if [ -x "$candidate/python.exe" ] && "$candidate/python.exe" -c "$recent"; then
+              selected="$candidate"
+            fi
+          done < <(ls -d "$(cygpath -u "$RUNNER_TOOL_CACHE")"/Python/3.*/"${{ inputs.architecture == 'aarch64' && 'arm64' || 'x64' }}" 2>/dev/null | sort -V)
+          if [ -z "$selected" ]; then
+            echo 'The runner has no Python 3.13 or later' >&2
+            exit 1
+          fi
+          # The lanes call python3; older tool-cache installs only have python.exe.
+          [ -x "$selected/python3.exe" ] || cp "$selected/python.exe" "$selected/python3.exe"
+          cygpath -w "$selected" >> "$GITHUB_PATH"
+          PATH="$selected:$PATH"
+        fi
+        python3 -c "$recent"
+        python3 --version
+
     - name: Pin and smoke-test the selected Windows linker
       shell: bash
       working-directory: apps/maple-agent

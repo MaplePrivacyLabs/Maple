@@ -71,6 +71,7 @@ def write_nsis_config(path, info, payload, installer, unsigned, build, arch="x86
     platform_name(arch)
     values = {
         "DISPLAY_NAME": info["display_name"], "BUNDLE_ID": info["bundle_id"],
+        "DATA_NAMESPACE": info["data_namespace"],
         "VERSION": info["version"], "NUMERIC_VERSION": info["version"].split("-", 1)[0],
         "PAYLOAD": payload, "INSTALLER": installer,
         "ICON": COMPONENT / "app/packaging" / ("maple-agent-dev.ico" if info["profile"] == "dev" else "maple-agent.ico"),
@@ -132,10 +133,17 @@ def write_bundle(payload, archive_path):
                         archive.addfile(entry, data)
 
 
+def require_embedded_python(binary):
+    """The python tool's CPython travels inside the executable (build-release.sh)."""
+    if not re.search(rb"maple-embedded-python-sha256=[0-9a-f]{64}", binary.read_bytes()):
+        raise ValueError("maple-agent.exe carries no Python runtime; build it with scripts/build-release.sh")
+
+
 def package(profile, unsigned, arch="x86_64"):
     platform = platform_name(arch)
     binary = COMPONENT / "target/release/maple-agent.exe"
     info = pe.validated_build_info(profile, binary, source_sha(), arch)
+    require_embedded_python(binary)
     build = build_number()
     destination = COMPONENT / "dist" / profile
     shutil.rmtree(destination, ignore_errors=True)

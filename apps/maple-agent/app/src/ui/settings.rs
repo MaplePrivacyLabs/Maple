@@ -1760,11 +1760,16 @@ impl SettingsScreen {
         self.shortcut_recorder = None;
     }
 
+    /// A running password change or erase keeps its dialog and its page.
+    fn section_change_blocked(&self, cx: &App) -> bool {
+        self.password_operation_busy(cx) || (self.advanced.erase && self.advanced.busy)
+    }
+
     fn select_section(&mut self, section: Section, cx: &mut Context<Self>) {
-        self.section_history.clear();
-        if self.password_operation_busy(cx) {
+        if self.section_change_blocked(cx) {
             return;
         }
+        self.section_history.clear();
         if section != Section::Account {
             self.advanced.form = None;
             self.advanced_subscriptions.clear();
@@ -1819,6 +1824,9 @@ impl SettingsScreen {
     /// Back: return to the page an in-app link was followed from, or close
     /// Settings when there is none.
     pub(super) fn go_back(&mut self, cx: &mut Context<Self>) {
+        if self.section_change_blocked(cx) {
+            return;
+        }
         match self.section_history.pop() {
             Some(section) => {
                 let history = std::mem::take(&mut self.section_history);
@@ -1879,7 +1887,7 @@ impl Render for SettingsScreen {
         }
         if self.application_reveal_pending {
             self.application_reveal_pending = false;
-            if self.application_vim.target.is_some() {
+            if self.application_vim.target.is_some() && !self.dialog_open() {
                 // The selected row attaches this anchor later in the same render.
                 // ScrollAnchor defers until the fresh layout origin is available.
                 self.application_anchor.scroll_to(window, cx);
@@ -3994,7 +4002,7 @@ impl SettingsScreen {
             Section::Billing | Section::Usage => self.refresh_billing(cx),
             Section::Api => {
                 self.load_api_keys(cx);
-                self.load_credit_balance(cx);
+                self.refresh_credit_balance(cx);
                 #[cfg(feature = "proxy")]
                 if self.local_api.can_refresh() {
                     self.refresh_local_api_status(cx);
