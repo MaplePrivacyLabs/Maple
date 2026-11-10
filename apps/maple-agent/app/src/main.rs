@@ -111,7 +111,8 @@ struct Cli {
     #[command(subcommand)]
     mode: Option<Mode>,
     /// Arguments a desktop launcher may append (file paths, `%u` expansions).
-    /// They are ignored so the window still opens.
+    /// They are ignored so the window still opens, except for a leading bare
+    /// word, which is a mistyped command: see `unrecognized_command`.
     #[arg(trailing_var_arg = true, allow_hyphen_values = true, hide = true)]
     desktop_args: Vec<String>,
 }
@@ -280,6 +281,42 @@ pub(crate) fn startup_elapsed() -> u128 {
         .unwrap_or(0)
 }
 
+/// A leading bare word (`begin-pairing`, `stauts`) is a mistyped command, not
+/// something a desktop launcher appends: those are flags, URLs or file paths.
+fn unrecognized_command(desktop_args: &[String]) -> Option<&str> {
+    let word = desktop_args.first()?;
+    let bare = word.starts_with(|c: char| c.is_ascii_alphanumeric())
+        && word
+            .chars()
+            .all(|c| c.is_ascii_alphanumeric() || c == '-' || c == '_');
+    bare.then_some(word.as_str())
+}
+
+/// The full path of a nested command with this name, such as
+/// `remote begin-pairing` for `begin-pairing`.
+fn nested_command_path(command: &clap::Command, word: &str) -> Option<String> {
+    command
+        .get_subcommands()
+        .filter(|sub| !sub.is_hide_set())
+        .find_map(|sub| {
+            if sub.get_name() == word {
+                return Some(word.to_owned());
+            }
+            nested_command_path(sub, word).map(|path| format!("{} {path}", sub.get_name()))
+        })
+}
+
+fn unrecognized_command_message(word: &str) -> String {
+    let command = <Cli as clap::CommandFactory>::command();
+    match nested_command_path(&command, word) {
+        Some(path) => format!(
+            "unrecognized command '{word}'\n\n  tip: did you mean '{} {path}'?",
+            command.get_name()
+        ),
+        None => format!("unrecognized command '{word}'"),
+    }
+}
+
 fn main() {
     #[cfg(all(feature = "desktop", target_os = "windows"))]
     if profile::PACKAGED {
@@ -295,6 +332,14 @@ fn main() {
         }
     }
     let cli = Cli::parse();
+    if let Some(word) = unrecognized_command(&cli.desktop_args) {
+        <Cli as clap::CommandFactory>::command()
+            .error(
+                clap::error::ErrorKind::InvalidSubcommand,
+                unrecognized_command_message(word),
+            )
+            .exit();
+    }
     #[cfg(all(feature = "desktop", target_os = "windows"))]
     {
         // The stable launcher and installer modes never open application data,
@@ -1091,5 +1136,48 @@ mod tests {
         assert!(matches!(parse(&[]), Ok(None)));
         assert!(matches!(parse(&["--unknown"]), Ok(None)));
         assert!(matches!(parse(&["some/file.txt"]), Ok(None)));
+        for launcher_args in [
+            vec![],
+            vec!["--unknown"],
+            vec!["some/file.txt"],
+            vec!["notes.txt"],
+            vec!["/home/user/notes"],
+            vec!["file:///home/user/notes", "status"],
+            vec!["maple://open"],
+        ] {
+            let cli =
+                Cli::try_parse_from(std::iter::once("maple-agent").chain(launcher_args)).unwrap();
+            assert_eq!(super::unrecognized_command(&cli.desktop_args), None);
+        }
+    }
+
+    #[test]
+    fn a_bare_word_is_an_unrecognized_command_not_desktop_startup() {
+        for (args, word) in [
+            (vec!["begin-pairing"], "begin-pairing"),
+            (vec!["stauts"], "stauts"),
+            (vec!["frobnicate", "--flag"], "frobnicate"),
+        ] {
+            let cli = Cli::try_parse_from(std::iter::once("maple-agent").chain(args)).unwrap();
+            assert!(cli.mode.is_none());
+            assert_eq!(super::unrecognized_command(&cli.desktop_args), Some(word));
+        }
+        assert_eq!(
+            super::unrecognized_command_message("begin-pairing"),
+            "unrecognized command 'begin-pairing'\n\n  tip: did you mean 'maple-agent remote begin-pairing'?"
+        );
+        assert_eq!(
+            super::unrecognized_command_message("stop"),
+            "unrecognized command 'stop'\n\n  tip: did you mean 'maple-agent host stop'?"
+        );
+        // Hidden commands are not suggested.
+        assert_eq!(
+            super::unrecognized_command_message("serve"),
+            "unrecognized command 'serve'"
+        );
+        assert_eq!(
+            super::unrecognized_command_message("frobnicate"),
+            "unrecognized command 'frobnicate'"
+        );
     }
 }
