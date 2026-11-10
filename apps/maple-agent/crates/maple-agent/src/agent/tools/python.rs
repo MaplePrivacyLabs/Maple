@@ -401,9 +401,9 @@ pub(crate) fn python_tool(task: Arc<TaskPython>, active: bool) -> RegisteredTool
             task,
         }),
         prompt: ToolPrompt {
-            snippet: Some("Run Python in this task's persistent scratchpad".to_string()),
+            snippet: Some("Persistent Python workspace: data and results stay loaded between calls".to_string()),
             guidelines: vec![
-                "Use python for calculations, data processing and multi-step scripts that benefit from keeping state between calls; use the shell for project commands, tests and long-running processes.".to_string(),
+                "Use python to load data once, then inspect, transform, compute and check it over several calls; use the shell for the project's own scripts, tests and CLIs, and anything long-running or interactive.".to_string(),
             ],
         },
         active,
@@ -454,11 +454,11 @@ impl AgentTool for PythonTool {
 fn declaration(version: &str) -> Tool {
     let minor = version.splitn(3, '.').take(2).collect::<Vec<_>>().join(".");
     let description = format!(
-        r#"Run Python in this task's persistent scratchpad: bundled CPython {minor} with its standard library, started in the task's project directory. Variables, functions, imports and background asyncio work persist across calls until the scratchpad is reset, and a result says so when earlier state is gone. A non-None final expression is displayed and kept in `_`. Top-level `await` runs on the scratchpad's event loop: use awaitable APIs and `asyncio.gather` rather than `asyncio.run()`. Python calls run one at a time, in order.
+        r#"A persistent Python workspace for this task: bundled CPython {minor} with its standard library, started in the project directory, with the same machine access as the shell. Unlike running a script, nothing restarts between calls: variables, functions, imports and background asyncio work stay loaded until reset, so you can load data once, then inspect, transform and check it step by step. Use the shell for the project's own code instead: its tests, scripts and CLIs, and anything long-running or interactive.
 
-This is ordinary Python with the same machine access as the shell. Run project tests, scripts and CLIs, and anything long-running or interactive, through the shell in the project's own environment: synchronous calls such as `subprocess.run()` pause the scratchpad until they return. Never install into the bundled runtime. To use a package, install a compatible wheel into a directory outside it and add that directory to `sys.path`, e.g. `subprocess.run([sys.executable, "-I", "-B", "-m", "pip", "--isolated", "install", "--only-binary=:all:", "--target", str(deps), "openpyxl"], check=True)`. Process pools need functions from importable `.py` modules, not functions defined in a cell.
+Calls run one at a time, in order. A non-None final expression is shown and kept in `_`. Top-level `await` works; use `asyncio.gather`, not `asyncio.run()`. Errors keep partial state and external effects. Output is bounded; write large results to files. A result says when earlier state was lost. `reset` starts fresh; empty `code` with `reset` only discards the state.
 
-Errors keep partial assignments and external effects. Output is bounded; write large results to files. Stopping a running cell discards the scratchpad. Set `reset` to start fresh before running `code`; empty `code` with `reset` only discards it."#
+Never install into the bundled runtime. To use a package, install a wheel into a folder outside it and add that folder to `sys.path`: `subprocess.run([sys.executable, "-I", "-B", "-m", "pip", "--isolated", "install", "--only-binary=:all:", "--target", str(deps), "openpyxl"], check=True)`. Process pools and subinterpreters need functions from importable `.py` modules, not functions defined in a cell."#
     );
     Tool::new(
         PYTHON_TOOL_NAME,
