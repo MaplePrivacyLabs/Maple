@@ -596,6 +596,9 @@ impl<V: 'static, K: Clone + PartialEq + 'static> Popup<V, K> {
                 ),
                 Entry::Separator => children.push(
                     div()
+                        // A menu taller than its limit scrolls, and a column
+                        // that overflows would shrink this line to nothing.
+                        .flex_none()
                         .my_1()
                         .h(px(1.))
                         .bg(gpui::rgb(theme::border()))

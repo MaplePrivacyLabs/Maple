@@ -17,7 +17,7 @@ use super::thinking::thinking_label;
 use super::transcript::{render_plan_row, render_subagent_row};
 use super::{
     COMPOSER_PLACEHOLDER, ChatPopup, ChatScreen, DraftAttachment, OpenSettingsSection,
-    SIDE_THREAD_PLACEHOLDER, Section,
+    ProjectComputer, SIDE_THREAD_PLACEHOLDER, Section,
 };
 use crate::ui::i18n::{UiText, tr};
 use crate::ui::icons::{icon, spinner};
@@ -1693,31 +1693,43 @@ fn chip(
         })
 }
 
-/// A new task's project chip. It sits outside the composer's row, so it is
-/// bounded and its text gives way: on a paired computer the computer's
-/// name shortens first, and the folder, which tells projects apart, only
-/// once the name is down to its ellipsis.
+/// The least a long computer name shortens to in the project chip: about
+/// eight letters and the ellipsis.
+const COMPUTER_NAME_FLOOR: gpui::Pixels = px(64.);
+
+/// A new task's project chip. It has the row above the composer to itself
+/// and shows its text whole while that row has room. When it does not, the
+/// text gives way: on a paired computer a long computer name shortens
+/// first, down to its first several letters, and then the folder, which
+/// tells projects apart. A short computer name stays whole.
 fn project_chip(
     leading: &'static str,
-    computer: Option<(SharedString, SharedString)>,
+    computer: Option<ProjectComputer>,
     project: SharedString,
     active: bool,
 ) -> gpui::Stateful<Div> {
-    let (computer, name) = match computer {
-        Some((computer, caption)) => (Some(computer), caption),
-        None => (None, project.clone()),
-    };
+    let name = computer
+        .as_ref()
+        .map_or_else(|| project.clone(), |computer| computer.caption.clone());
     chip_frame("root-picker", Some(leading), name, active)
-        .max_w(px(260.))
+        .max_w_full()
         .min_w_0()
         .when_some(computer, |el, computer| {
             el.child(
                 div()
-                    .min_w(px(24.))
-                    .flex_shrink(1000.)
-                    .truncate()
+                    .map(|name| {
+                        if computer.shortens {
+                            // Room for the first several letters, so the
+                            // computer stays recognizable beside a long folder.
+                            name.min_w(COMPUTER_NAME_FLOOR)
+                                .flex_shrink(1000.)
+                                .truncate()
+                        } else {
+                            name.flex_none().whitespace_nowrap()
+                        }
+                    })
                     .debug_selector(|| "project-computer".to_string())
-                    .child(computer),
+                    .child(computer.name),
             )
             .child(div().flex_none().child("·"))
         })

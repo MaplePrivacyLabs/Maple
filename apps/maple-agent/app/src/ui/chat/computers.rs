@@ -448,8 +448,7 @@ impl ChatScreen {
                 .find(|c| c.key.as_deref() == Some(host))
                 .map(|c| c.label.clone())
                 .unwrap_or_else(|| tr("chat-remote-computer"));
-            let caption = format!("{name} · {project}").into();
-            (name, caption)
+            ProjectComputer::new(name, &project)
         });
         self.project_label = project.into();
     }

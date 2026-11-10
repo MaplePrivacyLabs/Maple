@@ -252,6 +252,30 @@ pub(super) struct QuestionSelection {
     picked: BTreeSet<usize>,
 }
 
+/// The paired computer a new task would run on, as the project chip shows it.
+#[derive(Clone, Debug, PartialEq)]
+pub(super) struct ProjectComputer {
+    name: SharedString,
+    /// The chip's accessible name: "computer · folder".
+    caption: SharedString,
+    /// Whether the name may shorten to make room for the folder. A short
+    /// name never does; a long one keeps its first several letters.
+    shortens: bool,
+}
+
+impl ProjectComputer {
+    /// Names up to this long are shown whole.
+    const WHOLE_NAME_CHARS: usize = 10;
+
+    pub(super) fn new(name: SharedString, project: &str) -> Self {
+        Self {
+            caption: format!("{name} · {project}").into(),
+            shortens: name.chars().count() > Self::WHOLE_NAME_CHARS,
+            name,
+        }
+    }
+}
+
 /// The chat's popup menus. One is open at a time.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub(super) enum ChatPopup {
@@ -646,9 +670,9 @@ pub struct ChatScreen {
     /// The project chip's folder name; set when the root changes so render
     /// does not format it.
     project_label: SharedString,
-    /// On a paired computer, its name for the chip and the chip's full
-    /// accessible name ("computer · folder"). `None` on this computer.
-    project_computer: Option<(SharedString, SharedString)>,
+    /// On a paired computer, what the project chip says about it. `None` on
+    /// this computer.
+    project_computer: Option<ProjectComputer>,
     /// Git branch of the project root, read off the UI thread. `None`
     /// when the root is not a git checkout.
     project_branch: Option<String>,
