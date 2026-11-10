@@ -1447,11 +1447,21 @@ impl Render for RemoteScreen {
             .flex()
             .flex_col()
             .gap_4()
-            .child(div().text_lg().child(tr("settings-remote-remote-computers")))
             .child(
-                div().text_color(gpui::rgb(theme::text_secondary())).child(
-                    tr("settings-remote-work-on-another-computer-or-allow-a-paired-computer-to-work-on-th"),
-                ),
+                div()
+                    .font_family(crate::assets::FONT_DISPLAY)
+                    .text_size(px(26.))
+                    .line_height(px(32.))
+                    .text_color(gpui::rgb(theme::display_text()))
+                    .child(tr("settings-remote-remote-computers")),
+            )
+            .child(
+                div()
+                    .text_sm()
+                    .text_color(gpui::rgb(theme::text_muted()))
+                    .child(
+                        tr("settings-remote-work-on-another-computer-or-allow-a-paired-computer-to-work-on-th"),
+                    ),
             )
             .when_some(self.busy, |view, key| {
                 let message = tr(key);
@@ -1588,7 +1598,7 @@ impl RemoteScreen {
                             tr("settings-remote-show-a-one-time-code-here-then-enter-it-on-the-other-computer"),
                         ))
                         .child(
-                            widgets::primary_button("pairing-window")
+                            widgets::default_button("pairing-window")
                                 .aria_label(tr("settings-remote-show-pairing-code"))
                                 .child(tr("settings-remote-show-pairing-code"))
                                 .on_click(cx.listener(|screen, _, _, cx| {
@@ -1768,7 +1778,7 @@ impl RemoteScreen {
                                         .child(self.code_input.clone()),
                                 )
                                 .child(
-                                    widgets::primary_button("pair-selected")
+                                    widgets::default_button("pair-selected")
                                         .aria_label(tr("settings-remote-pair-computer"))
                                         .child(tr("settings-remote-pair-computer"))
                                         .on_click(
@@ -1974,7 +1984,7 @@ impl RemoteScreen {
                     action == CardAction::Update && can_install && !confirming,
                     |row| {
                         row.child(
-                            widgets::primary_button(SharedString::from(format!(
+                            widgets::default_button(SharedString::from(format!(
                                 "update-remote-{key}"
                             )))
                             .debug_selector({
@@ -2246,7 +2256,7 @@ impl RemoteScreen {
                             })),
                     )
                     .child(
-                        widgets::primary_button("confirm-remote-update")
+                        widgets::default_button("confirm-remote-update")
                             .debug_selector(|| "confirm-remote-update".into())
                             .aria_label(confirmation.action_label.clone())
                             .track_focus(&confirmation.install_focus)

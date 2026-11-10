@@ -252,6 +252,13 @@ tokens! {
 
     /// Text input caret; near the primary text color of each palette.
     text_cursor: 0xf7f7f9, 0x171717;
+
+    /// High-contrast default/primary action pill (WCAG AAA in both themes,
+    /// matching `maple-theme-spec.md`'s inverted button foreground/fill).
+    bg_default_button: 0xe8e8ed, 0x171717;
+    bg_default_button_hover: 0xf7f7f9, 0x2c2c34;
+    bg_default_button_active: 0xd1d2dc, 0x404040;
+    text_on_default_button: 0x18181c, 0xf7f7f9;
 }
 
 /// Translucent selection highlight in text inputs: the coral primary at a
@@ -395,6 +402,28 @@ mod contrast_tests {
                     if ratio < 3. {
                         failures.push(format!("{name}: {role} on {surface} is {ratio:.2}:1"));
                     }
+                }
+            }
+            for (label, fg, bg) in [
+                (
+                    "default_button",
+                    palette.text_on_default_button,
+                    palette.bg_default_button,
+                ),
+                (
+                    "default_button_hover",
+                    palette.text_on_default_button,
+                    palette.bg_default_button_hover,
+                ),
+                (
+                    "default_button_active",
+                    palette.text_on_default_button,
+                    palette.bg_default_button_active,
+                ),
+            ] {
+                let ratio = contrast(fg, bg);
+                if ratio < 7. {
+                    failures.push(format!("{name}: {label} is {ratio:.2}:1 (< 7.0:1)"));
                 }
             }
         }

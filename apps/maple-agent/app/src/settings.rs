@@ -80,9 +80,6 @@ pub struct AppSettings {
     /// Whether tool cards show input/output payloads by default.
     #[serde(default = "default_tool_details")]
     pub tool_details: bool,
-    /// Whether new tasks can use the web tools.
-    #[serde(default = "default_web_enabled")]
-    pub default_web_enabled: bool,
     /// The mode last picked for a new task, which the next one starts in.
     /// It stays in saved settings while unset: host patches name known keys.
     #[serde(default)]
@@ -273,10 +270,6 @@ fn default_chat_font_size() -> u8 {
     14
 }
 
-fn default_web_enabled() -> bool {
-    true
-}
-
 fn default_tool_details() -> bool {
     false
 }
@@ -301,7 +294,6 @@ impl Default for AppSettings {
     fn default() -> Self {
         Self {
             tool_details: default_tool_details(),
-            default_web_enabled: default_web_enabled(),
             new_task_permission_mode: None,
             tool_summaries: default_tool_summaries(),
             composer_vim_enabled: false,

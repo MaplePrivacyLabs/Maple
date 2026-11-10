@@ -20,6 +20,10 @@ import tempfile
 
 
 LOADER = "ld-linux-x86-64.so.2"
+# The python tool's CPython (scripts/prepare-python.py), found beside the
+# payload by the app's package resolver.
+PYTHON_RUNTIME = "usr/share/maple-agent/python"
+PYTHON_TARGET = "x86_64-unknown-linux-gnu"
 # These ABI providers must come from the host, including when loading the
 # host's graphics drivers. Never copy a build machine's libc into the bundle.
 HOST_LIBRARIES = frozenset({
@@ -103,6 +107,15 @@ def digest(path):
 
 def needed(path):
     return run("patchelf", "--print-needed", path).stdout.splitlines()
+
+
+def stage_python(appdir, component):
+    """Stage the python tool's CPython from its hash pin, copying hard links."""
+    with tempfile.TemporaryDirectory(prefix="maple-python-", dir=appdir.parent) as temporary:
+        runtime = Path(temporary) / "python"
+        subprocess.run([sys.executable, str(component / "scripts/prepare-python.py"), "--distribution", "pbs",
+                        "--target", PYTHON_TARGET, "--destination", str(runtime)], check=True)
+        shutil.copytree(runtime, appdir / PYTHON_RUNTIME, symlinks=True)
 
 
 def library_name(name):
@@ -360,6 +373,7 @@ def main():
         appdir.mkdir()
         stage_payload(appdir, binary)
         stage_metadata(appdir, component, metadata)
+        stage_python(appdir, component)
         normalize_public_permissions(appdir)
         for path in appdir.rglob("*"):
             os.utime(path, (epoch, epoch), follow_symlinks=False)

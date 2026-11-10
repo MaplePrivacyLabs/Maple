@@ -32,6 +32,7 @@ pub struct TaskSummary {
     pub state: String,
     pub kind: String,
     pub pinned_ms: Option<i64>,
+    /// Legacy: the task's own web flag, kept for peers on older builds.
     pub web_enabled: bool,
     /// The saved mode; none on a task from before modes existed.
     #[serde(default, skip_serializing_if = "Option::is_none")]

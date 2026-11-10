@@ -5105,7 +5105,7 @@ mod tests {
                     last_error: None,
                     compatibility_warning: None,
                 },
-                Section::Advanced,
+                Section::Account,
                 cx,
             )
         });
@@ -5171,7 +5171,7 @@ mod tests {
                     },
                     cx,
                 );
-                app.show_settings(Section::Advanced, cx);
+                app.show_settings(Section::Account, cx);
             });
             let screen = active_settings(&app, cx);
             let stale_close = screen.read_with(cx, |screen, _| screen.settings_snapshot());
@@ -5303,7 +5303,7 @@ mod tests {
         retired.update(cx, |_, cx| cx.emit(SettingsClosed(stale.clone())));
         cx.run_until_parked();
         app.update(cx, |app, cx| {
-            app.show_settings(Section::Advanced, cx);
+            app.show_settings(Section::Account, cx);
             let mut refreshed = app.settings.clone();
             refreshed.store_password_mode = true;
             app.apply_refreshed_password_settings(refreshed, cx);
@@ -5352,6 +5352,46 @@ mod tests {
         });
         cx.run_until_parked();
         assert_eq!(cx.debug_bounds("maple-page"), Some(original));
+    }
+
+    /// Settings opens in the task screen's frame. With the task sidebar
+    /// open, its content takes the task content's place on the canvas, its
+    /// title the wordmark's row, and Back the sidebar toggle's place beside
+    /// the traffic lights (without them, Back leads the title's row). (From
+    /// the collapsed rail, Settings still opens with its full column.)
+    #[gpui::test]
+    fn settings_opens_in_the_task_screens_frame(cx: &mut gpui::TestAppContext) {
+        struct AppHost(Entity<MapleApp>);
+        impl Render for AppHost {
+            fn render(&mut self, _: &mut Window, _: &mut Context<Self>) -> impl IntoElement {
+                div().size_full().child(self.0.clone())
+            }
+        }
+        let app = project_shell(cx);
+        let (_host, cx) = cx.add_window_view(|_, _| AppHost(app.clone()));
+        cx.simulate_resize(size(px(1100.), px(850.)));
+        cx.run_until_parked();
+        let task_content = cx.debug_bounds("task-content").expect("task content");
+        let toggle = cx
+            .debug_bounds("header-sidebar-toggle")
+            .expect("sidebar toggle");
+        let wordmark = cx.debug_bounds("sidebar-wordmark").expect("wordmark");
+
+        app.update(cx, |app, cx| app.show_settings(Section::General, cx));
+        cx.run_until_parked();
+        let content = cx
+            .debug_bounds("settings-content")
+            .expect("settings content");
+        let title = cx.debug_bounds("settings-title").expect("settings title");
+        let back = cx.debug_bounds("settings-back").expect("back");
+        assert_eq!(content, task_content);
+        assert_eq!(title.center().y, wordmark.center().y);
+        if crate::ui::titlebar::TRANSPARENT_TITLEBAR {
+            assert_eq!(back, toggle);
+        } else {
+            assert_eq!(back.center().y, title.center().y);
+            assert!(back.right() < title.left());
+        }
     }
 
     #[gpui::test]

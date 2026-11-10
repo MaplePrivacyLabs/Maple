@@ -41,6 +41,8 @@ pub(crate) struct TaskRow {
     pub(crate) project_root: String,
     pub(crate) kind: TaskKind,
     pub(crate) state: AgentTaskState,
+    /// Legacy: the task's own web flag, kept for peers on older builds. No
+    /// tool follows it.
     pub(crate) web_enabled: bool,
     /// Cache: the model of the latest selection or response.
     pub(crate) model: Option<String>,

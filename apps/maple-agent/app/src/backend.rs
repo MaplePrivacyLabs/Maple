@@ -273,6 +273,10 @@ operations! {
     [dispatch_only] start_checkout(user_id: (&str), product_id: (String)) -> ();
     [dispatch_only] api_credit_balance(user_id: (&str)) -> i64;
     [dispatch_only] purchase_api_credits(user_id: (&str), method: (crate::billing::PaymentMethod), credits: (u64)) -> ();
+    [dispatch_only] usage_page_enabled(user_id: (&str)) -> bool;
+    [dispatch_only] usage_summary(user_id: (&str), query: (crate::billing::UsageQuery)) -> crate::billing::UsageSummary;
+    [dispatch_only] usage_requests(user_id: (&str), cursor: (Option<String>), limit: (u32)) -> crate::billing::UsageRequestsPage;
+    [dispatch_only] usage_prices() -> crate::billing::UsagePrices;
     [dispatch_only] start_runtime(user_id: (&str), request: (Option<AgentStartRequest>)) -> AgentRuntimeStatus;
     stop_runtime(user_id: (&str)) -> AgentRuntimeStatus;
     select_project_root(user_id: (&str), path: (String)) -> SelectedProject;
@@ -305,6 +309,9 @@ operations! {
     list_integrations(user_id: (&str)) -> Vec<AgentIntegration>;
     set_integration_enabled(user_id: (&str), id: (&str), enabled: (bool)) -> Vec<AgentIntegration>;
     setup_integration(user_id: (&str), id: (&str), permissions: (AgentIntegrationPermissions)) -> Vec<AgentIntegration>;
+    [dispatch_only] list_tools(user_id: (&str)) -> Vec<AgentToolSwitch>;
+    [dispatch_only] set_tool_enabled(user_id: (&str), id: (&str), enabled: (bool)) -> Vec<AgentToolSwitch>;
+    // Only controllers on older builds send it; the host refuses it.
     [dispatch_only] set_session_web_enabled(user_id: (&str), session_id: (&str), enabled: (bool)) -> AgentSessionSummary;
     [dispatch_only] set_session_permission_mode(user_id: (&str), session_id: (&str), mode: (maple_agent::agent::AgentPermissionMode)) -> AgentSessionSummary;
     [dispatch_only] compact_session(user_id: (&str), session_id: (&str)) -> ();
@@ -1013,6 +1020,48 @@ async fn dispatch_inner_presented(
                     .await?,
             )
             .map_err(|_| HostFailure::new("response-encoding", "Could not encode host response"));
+        }
+        "usage_page_enabled" => {
+            let (user_id,): (String,) = serde_json::from_value(request.params).map_err(|_| {
+                HostFailure::new("request-parameters", "Invalid host request parameters")
+            })?;
+            backend.authorize_account_presented(&user_id)?;
+            return serde_json::to_value(backend.usage_page_enabled_presented(&user_id).await?)
+                .map_err(|_| {
+                    HostFailure::new("response-encoding", "Could not encode host response")
+                });
+        }
+        "usage_summary" => {
+            let (user_id, query): (String, crate::billing::UsageQuery) =
+                serde_json::from_value(request.params).map_err(|_| {
+                    HostFailure::new("request-parameters", "Invalid host request parameters")
+                })?;
+            backend.authorize_account_presented(&user_id)?;
+            return serde_json::to_value(backend.usage_summary_presented(&user_id, query).await?)
+                .map_err(|_| {
+                    HostFailure::new("response-encoding", "Could not encode host response")
+                });
+        }
+        "usage_requests" => {
+            let (user_id, cursor, limit): (String, Option<String>, u32) =
+                serde_json::from_value(request.params).map_err(|_| {
+                    HostFailure::new("request-parameters", "Invalid host request parameters")
+                })?;
+            backend.authorize_account_presented(&user_id)?;
+            return serde_json::to_value(
+                backend
+                    .usage_requests_presented(&user_id, cursor, limit)
+                    .await?,
+            )
+            .map_err(|_| HostFailure::new("response-encoding", "Could not encode host response"));
+        }
+        "usage_prices" => {
+            let (): () = serde_json::from_value(request.params).map_err(|_| {
+                HostFailure::new("request-parameters", "Invalid host request parameters")
+            })?;
+            return serde_json::to_value(backend.usage_prices_presented().await?).map_err(|_| {
+                HostFailure::new("response-encoding", "Could not encode host response")
+            });
         }
         _ => {}
     }

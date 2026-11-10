@@ -96,9 +96,17 @@ agent runtime; its desktop Agent page points users to Maple Work.
   must still choose the correct folder and bounded scope, and deliberately
   detached processes can escape a Unix process group. `head` bounds output,
   not runtime.
+- A build that bundles CPython registers `python`, switched off by default;
+  turn it on in Settings → Tools. It is a persistent scratchpad with one
+  interpreter per loaded task, started on first use in the task's folder with
+  the shell's PATH, keeping variables, imports and background asyncio work
+  between calls, which run one at a time. At most four run per host; another
+  task's need discards the least recently used idle one, and archiving,
+  unloading or restarting discards it too, with the model told on its next
+  call. See [Python scratchpad](docs/python-code-mode.md).
 - Slash commands in the composer: `/btw` asks a side question the task
-  never sees, plus `/compact`, `/new`, `/pin`, `/web`, `/model`, and
-  `/help`. Skills and prompt templates appear in the same list.
+  never sees, plus `/compact`, `/new`, `/pin`, `/model`, and `/help`.
+  Skills and prompt templates appear in the same list.
 - Instructions and skills, as in Pi: `AGENTS.md` (or `CLAUDE.md`) files
   from the project folder and the folders above it, `~/.agents/AGENTS.md`,
   and the account's own. Skills come from the account, `~/.agents/skills`,
@@ -162,11 +170,14 @@ agent runtime; its desktop Agent page points users to Maple Work.
   the position they return to when unpinned. Sidebar menus open toward the
   main pane so the list stays visible. Tasks also support rename, archive,
   and restore. Unknown or malformed View preferences fall back to defaults.
-- Settings: General (web tools, appearance, tool call details, desktop
-  notifications, tool call summaries, composer Vim, application Vim, and the
-  speech voice and speed), Keyboard Shortcuts, Additional instructions, Integrations
-  (detected built-ins and custom MCP servers), Usage (the plan meter from
-  the billing API), and About.
+- Settings: General (appearance, tool call details, desktop notifications,
+  tool call summaries, composer Vim, application Vim, and the speech voice
+  and speed), Keyboard Shortcuts, Additional instructions, Integrations
+  (detected built-ins and custom MCP servers), Tools (which of Maple's tools
+  tasks offer the model, with one Web switch for `web_search` and `open_url`;
+  a change reaches open tasks from their next request, and the page asks for a
+  paired computer running an older Maple to be updated), Usage (the plan meter
+  from the billing API), and About.
 - Dark and light themes; the default follows the system.
   On Linux, the protected GUI starts a portal-only child of the same executable
   (`--internal-theme-watch`). The child receives only desktop-bus environment,
@@ -342,8 +353,8 @@ the same selection state.
 The preview includes `j/k`, `gg/G`, counts, `Enter`, `h/l`, `y`, `/`, `ga`,
 `[a`/`]a`, `gi`, and `Ctrl-W h/j/k/l`. `Ctrl-W j` from the composer reaches its
 button row, where `h/l` (or `j/k`) and `gg/G` move between the model, thinking,
-integrations, web, attachment, and dictation controls and `Enter` presses one; a menu
-opens on its current choice. `Space s n` starts a task and `Space ,`
+integrations, permission mode, attachment, and dictation controls and `Enter`
+presses one; a menu opens on its current choice. `Space s n` starts a task and `Space ,`
 opens Settings. The Settings page itself is navigable, including its shortcut
 search and editable binding rows. Annotation motions are registered and report
 that no annotation source is available in the current app. A root action
@@ -635,6 +646,8 @@ ignored. See [build profiles](docs/release-profiles.md).
 | --- | --- | --- |
 | `MAPLE_API_URL` | OpenSecret backend. Use `http://127.0.0.1:3000` for a local dev backend. | `https://enclave.trymaple.ai` |
 | `MAPLE_BILLING_API_URL` | Maple billing API. | `https://billing.opensecret.cloud` |
+| `MAPLE_FLAGS_URL` | OpenSecret feature flag service. | `https://flags.opensecret.cloud` (`flags-dev` for the Dev profile) |
+| `MAPLE_FORCE_FEATURE_FLAGS` | Comma-separated flag keys to turn on without the flag service, such as `usage_page`. | unset |
 | `MAPLE_CLIENT_ID` | OpenSecret client id (UUID). | Maple's id |
 | `MAPLE_MODEL` | Model to select at start. | Runtime default |
 | `MAPLE_CONTEXT_LIMIT` | Context window in tokens, used instead of the model catalog's for compaction and the context ring. | Catalog value |
