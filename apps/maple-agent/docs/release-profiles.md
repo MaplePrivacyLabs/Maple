@@ -34,7 +34,8 @@ redirected through an inherited environment variable. This Agent profile does
 not change Research's Auth entry or the backend's default provider callbacks.
 
 Packaged builds ignore inherited `MAPLE_API_URL`, `MAPLE_BILLING_API_URL`,
-`MAPLE_CLIENT_ID` overrides. The updater feed and trusted keys are also immutable;
+`MAPLE_FLAGS_URL`, `MAPLE_FORCE_FEATURE_FLAGS` and `MAPLE_CLIENT_ID` overrides.
+The updater feed and trusted keys are also immutable;
 `MAPLE_UPDATE_REPO` is no longer supported. A build fails if a supplied
 `VITE_OPEN_SECRET_PCR_ENVIRONMENT` disagrees with its profile; the runtime crate
 bakes the required trust selection even when that variable is absent. Unknown

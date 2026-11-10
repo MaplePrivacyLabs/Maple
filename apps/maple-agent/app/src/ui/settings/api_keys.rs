@@ -12,7 +12,7 @@ use gpui::{
     prelude::*,
 };
 
-use super::{Section, SettingsScreen, SettingsTarget, activates, section_title};
+use super::{Section, SettingsScreen, SettingsTarget, activates};
 use crate::backend::{MapleApiKey, MapleApiKeyCreated};
 use crate::billing::BillingStatusExt;
 use crate::ui::text_input::TextInput;
@@ -29,7 +29,6 @@ pub(super) mod tab_order {
     pub const PLAN: isize = 16;
     pub const LOCAL_RETRY: isize = 17;
     pub const LOCAL_ENABLED: isize = 18;
-    pub const LOCAL_REFRESH: isize = 19;
     pub const LOCAL_COPY_URL: isize = 20;
     pub const LOCAL_SAVE_PORT: isize = 21;
     pub const LOCAL_PORT: isize = 22;
@@ -172,7 +171,7 @@ impl SettingsScreen {
         match target {
             ApiKeysTarget::LearnMore => crate::ui::rich_text::open_link(PROXY_DOCS_URL),
             ApiKeysTarget::SeePlans | ApiKeysTarget::BuyMore => {
-                self.select_section(Section::Billing, cx)
+                self.navigate_to(Section::Billing, cx)
             }
             ApiKeysTarget::Name => {
                 let handle = self.api_keys.name.read(cx).focus_handle(cx);
@@ -312,17 +311,22 @@ impl SettingsScreen {
 
     pub(super) fn render_api_pane(&self, cx: &mut Context<Self>) -> Div {
         let unlocked = self.api_access() != Some(false);
-        let pane = div()
-            .flex()
-            .flex_col()
-            .gap_4()
-            .child(section_title(&tr("settings-section-api")))
-            .child(self.render_api_intro(cx))
-            .child(if unlocked {
-                self.render_credits_strip(cx)
-            } else {
-                self.render_api_upgrade(cx)
-            });
+        let pane = div().flex().flex_col().gap_4();
+        #[cfg(not(feature = "acp"))]
+        let pane = pane.child(
+            div()
+                .flex()
+                .items_start()
+                .justify_between()
+                .gap_4()
+                .child(super::section_title(&tr("settings-section-api")))
+                .child(self.page_refresh_button("developer-refresh", cx)),
+        );
+        let pane = pane.child(self.render_api_intro(cx)).child(if unlocked {
+            self.render_credits_strip(cx)
+        } else {
+            self.render_api_upgrade(cx)
+        });
         #[cfg(feature = "proxy")]
         let pane = pane.child(self.render_local_api_card(cx));
         pane.when(unlocked, |pane| pane.child(self.render_api_keys_card(cx)))
@@ -353,14 +357,18 @@ impl SettingsScreen {
                             |_, _| crate::ui::rich_text::open_link(PROXY_DOCS_URL),
                             cx,
                         ))
-                        .child(tr("settings-local-api-learn-more")),
+                        .flex()
+                        .items_center()
+                        .gap_0p5()
+                        .child(tr("settings-local-api-learn-more"))
+                        .child(widgets::external_mark(theme::link())),
                 ),
             )
     }
 
     fn render_api_upgrade(&self, cx: &mut Context<Self>) -> Div {
         let see_plans = |this: &mut Self, cx: &mut Context<Self>| {
-            this.select_section(Section::Billing, cx);
+            this.navigate_to(Section::Billing, cx);
         };
         widgets::card_row()
             .flex()
@@ -374,19 +382,20 @@ impl SettingsScreen {
             .child(
                 self.application_target(
                     || SettingsTarget::ApiKeys(ApiKeysTarget::SeePlans),
-                    widgets::primary_button("api-keys-see-plans")
+                    widgets::default_button("api-keys-see-plans")
                         .py_1p5()
                         .tab_index(tab_order::PLAN)
                         .on_click(cx.listener(move |this, _, _, cx| see_plans(this, cx)))
                         .on_key_down(Self::on_press_key(see_plans, cx))
-                        .child(tr("settings-api-keys-see-plans")),
+                        .child(tr("settings-api-keys-see-plans"))
+                        .child(widgets::navigate_mark(theme::text_on_default_button())),
                 ),
             )
     }
 
     fn render_credits_strip(&self, cx: &mut Context<Self>) -> Div {
         let buy_more = |this: &mut Self, cx: &mut Context<Self>| {
-            this.select_section(Section::Billing, cx);
+            this.navigate_to(Section::Billing, cx);
         };
         widgets::card_row()
             .flex()
@@ -405,7 +414,8 @@ impl SettingsScreen {
                         .tab_index(tab_order::PLAN)
                         .on_click(cx.listener(move |this, _, _, cx| buy_more(this, cx)))
                         .on_key_down(Self::on_press_key(buy_more, cx))
-                        .child(tr("settings-api-keys-buy-more")),
+                        .child(tr("settings-api-keys-buy-more"))
+                        .child(widgets::navigate_mark(theme::text_primary())),
                 ),
             )
     }
@@ -459,7 +469,7 @@ impl SettingsScreen {
                     .child(
                         self.application_target(
                             || SettingsTarget::ApiKeys(ApiKeysTarget::Create),
-                            widgets::primary_button("api-keys-create")
+                            widgets::default_button("api-keys-create")
                                 .flex_none()
                                 .py_1p5()
                                 .tab_index(tab_order::KEY_CREATE)

@@ -164,6 +164,12 @@ upstream. Request compatibility alone does not establish that privacy boundary.
   current SSRF policy.
 - Keep usage tied to the actual provider and canonical public model while
   preserving the established user or API-key attribution.
+- The catalog drives how clients present the model picker, so a model ships
+  without a client release: each listed model names its `group`, the top-level
+  `groups` array gives the sections in display order with an English `label`,
+  and `badges` carries marks such as `Popular`. Group ids and badge strings are
+  stable keys clients translate; a client shows the served `label` for an id it
+  has no translation for. Give every model Maple Work offers a group.
 - Reasoning effort is one per-model table (`model_config::ModelReasoning`) that
   feeds the catalog `reasoning` object, request validation and tests. Clients
   choose a level only through OpenAI's `reasoning_effort` (Chat Completions) and
