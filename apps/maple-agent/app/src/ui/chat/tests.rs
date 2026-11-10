@@ -13507,40 +13507,62 @@ mod state_tests {
             assert_eq!(queued(&chat, cx), Some(High));
         }
 
-        /// Known models list in their groups, in the table's order; a model
-        /// the table does not know lists last, under "More models"; and a
-        /// catalog the table knows none of names no group at all.
+        /// The catalog decides the sections: its groups in its order, each
+        /// model under the group it names, in the list's order. A group this
+        /// build has no translation for shows the served label, a model
+        /// without a served group lists last under "More models", and a
+        /// catalog that serves no groups names none.
         #[test]
-        fn models_list_in_their_groups() {
-            use crate::ui::chat::composer::{ModelGroup, group_models};
-            let models: Vec<String> = [
-                "deepseek-v4-1-flash",
-                "gemma4-31b",
-                "brand-new-model",
-                "kimi-k3",
-                "glm-5-3",
-                "deepseek-v4-1-flash-1017-uncensored",
-            ]
-            .map(String::from)
-            .to_vec();
+        fn models_list_in_the_catalogs_groups() {
+            use crate::ui::chat::composer::ModelSections;
+            let catalog: maple_sdk::ModelCatalogResponse =
+                serde_json::from_value(serde_json::json!({
+                    "object": "list",
+                    "groups": [
+                        {"id": "capable", "label": "Most capable"},
+                        {"id": "uncensored", "label": "Uncensored"},
+                        {"id": "private", "label": "Private preview"},
+                        {"id": "fast", "label": "Fast & cheap"},
+                        {"id": "empty", "label": "No models"},
+                    ],
+                    "data": [
+                        {"id": "flash", "group": "fast"},
+                        {"id": "gemma", "group": "fast"},
+                        {"id": "ungrouped"},
+                        {"id": "kimi", "group": "capable"},
+                        {"id": "preview", "group": "private"},
+                        {"id": "unlisted-group", "group": "retired"},
+                        {"id": "glm", "group": "capable"},
+                        {"id": "uncensored", "group": "uncensored", "badges": ["Beta", "Popular"]},
+                    ],
+                }))
+                .expect("catalog");
+            let sections = ModelSections::from_catalog(&catalog);
+            let models: Vec<String> = catalog.data.iter().map(|model| model.id.clone()).collect();
+            let listed: Vec<(Option<String>, Vec<&str>)> = sections
+                .group(&models)
+                .into_iter()
+                .map(|(heading, models)| (heading.map(|heading| heading.to_string()), models))
+                .collect();
             assert_eq!(
-                group_models(&models),
+                listed,
                 vec![
-                    (Some(ModelGroup::Capable), vec!["glm-5-3", "kimi-k3"]),
+                    (Some("Most capable".to_string()), vec!["kimi", "glm"]),
+                    (Some("Uncensored".to_string()), vec!["uncensored"]),
+                    (Some("Private preview".to_string()), vec!["preview"]),
+                    (Some("Fast & cheap".to_string()), vec!["flash", "gemma"]),
                     (
-                        Some(ModelGroup::Uncensored),
-                        vec!["deepseek-v4-1-flash-1017-uncensored"]
+                        Some("More models".to_string()),
+                        vec!["ungrouped", "unlisted-group"]
                     ),
-                    (
-                        Some(ModelGroup::Fast),
-                        vec!["deepseek-v4-1-flash", "gemma4-31b"]
-                    ),
-                    (Some(ModelGroup::More), vec!["brand-new-model"]),
                 ]
             );
-            let unknown = vec!["model-a".to_string(), "model-b".to_string()];
+            assert!(sections.is_popular("uncensored"));
+            assert!(!sections.is_popular("glm"));
+
+            let ungrouped = vec!["model-a".to_string(), "model-b".to_string()];
             assert_eq!(
-                group_models(&unknown),
+                ModelSections::default().group(&ungrouped),
                 vec![(None, vec!["model-a", "model-b"])]
             );
         }

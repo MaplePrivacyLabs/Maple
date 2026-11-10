@@ -670,6 +670,8 @@ pub struct ChatScreen {
     model_catalog: HashMap<String, CatalogEntry>,
     /// Friendly labels from the advanced catalog; selection always uses IDs.
     model_labels: HashMap<String, String>,
+    /// The model panel's sections and badges, as the catalog serves them.
+    model_sections: composer::ModelSections,
     /// The first model load is in flight. Until it lands with no model
     /// chosen, the composer controls are laid out but not shown, so the
     /// row appears once in its final shape instead of shifting.
@@ -1538,6 +1540,7 @@ impl ChatScreen {
             attachment_picking: false,
             model_catalog: HashMap::new(),
             model_labels: HashMap::new(),
+            model_sections: composer::ModelSections::default(),
             models_loading: false,
             controls_held: false,
             controls_revealed: None,
@@ -2389,6 +2392,7 @@ impl ChatScreen {
                 if let Ok((mut models, saved, catalog)) = result {
                     if let Some(catalog) = &catalog {
                         this.model_labels = maple_agent::agent::catalog_model_labels(catalog);
+                        this.model_sections = composer::ModelSections::from_catalog(catalog);
                         // An older execution computer lists every API model,
                         // or every catalog model; offer only what the catalog
                         // describes and does not keep out of Maple Work.

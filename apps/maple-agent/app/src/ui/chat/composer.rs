@@ -1,6 +1,7 @@
 //! The chat pane chrome: the header and its menus, the slash palette,
 //! the plan and side-question cards, and the composer itself.
 
+use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
 
 // Literal command token; never translate the text entered into the composer.
@@ -586,17 +587,18 @@ impl ChatScreen {
             .max_height(px(480.))
             .application_vim(self.application_vim_enabled)
             .on_adjust(|this: &mut Self, step, _, cx| this.step_effort(step, cx));
-        for (index, (group, models)) in group_models(&self.models).into_iter().enumerate() {
-            if let Some(group) = group {
+        let sections = self.model_sections.group(&self.models);
+        for (index, (heading, models)) in sections.into_iter().enumerate() {
+            if let Some(heading) = heading {
                 if index > 0 {
                     menu = menu.separator();
                 }
-                menu = menu.header(tr(group.label_key()));
+                menu = menu.header(heading);
             }
             menu = menu.items(models.into_iter().map(|model| {
                 let pick = model.to_string();
                 let label = self.model_label(model).to_string();
-                let popular = POPULAR_MODELS.contains(&model);
+                let popular = self.model_sections.is_popular(model);
                 // The badge is drawn content; the row's name carries it for
                 // assistive technology.
                 let name: SharedString = if popular {
@@ -1705,79 +1707,89 @@ fn popular_badge() -> Div {
         .child(tr("chat-model-popular"))
 }
 
-/// A section of the model panel.
-#[derive(Clone, Copy, Debug, PartialEq)]
-pub(super) enum ModelGroup {
-    Capable,
-    Uncensored,
-    Fast,
-    /// Models the table below does not know yet.
-    More,
+/// How the catalog presents the models: the panel's sections in display
+/// order, each model's section, and the models it marks Popular. The server
+/// owns all three, so a model deployed without an app release lists where
+/// its release put it.
+#[derive(Clone, Debug, Default)]
+pub(super) struct ModelSections {
+    groups: Vec<maple_sdk::CatalogGroup>,
+    group_of: HashMap<String, String>,
+    popular: HashSet<String>,
 }
 
-impl ModelGroup {
-    const ORDER: [Self; 4] = [Self::Capable, Self::Uncensored, Self::Fast, Self::More];
+/// The badge string the catalog marks a popular model with.
+const POPULAR_BADGE: &str = "Popular";
 
-    fn label_key(self) -> &'static str {
-        match self {
-            Self::Capable => "chat-model-group-capable",
-            Self::Uncensored => "chat-model-group-uncensored",
-            Self::Fast => "chat-model-group-fast",
-            Self::More => "chat-model-group-more",
+impl ModelSections {
+    pub(super) fn from_catalog(catalog: &maple_sdk::ModelCatalogResponse) -> Self {
+        Self {
+            groups: catalog.groups.clone(),
+            group_of: catalog
+                .data
+                .iter()
+                .filter_map(|model| Some((model.id.clone(), model.group.clone()?)))
+                .collect(),
+            popular: catalog
+                .data
+                .iter()
+                .filter(|model| model.badges.iter().any(|badge| badge == POPULAR_BADGE))
+                .map(|model| model.id.clone())
+                .collect(),
         }
     }
-}
 
-/// The catalog's models by group, in the order they list in. The catalog
-/// carries no group yet, so the app keeps this table; a model deployed
-/// since it was written lists under "More models" until it is added here
-/// (or the catalog serves groups and this table goes).
-const MODEL_GROUPS: [(&str, ModelGroup); 7] = [
-    ("glm-5-3", ModelGroup::Capable),
-    ("kimi-k3-1-pro", ModelGroup::Capable),
-    ("kimi-k3", ModelGroup::Capable),
-    (
-        "deepseek-v4-1-flash-1017-uncensored",
-        ModelGroup::Uncensored,
-    ),
-    ("deepseek-v4-1-flash", ModelGroup::Fast),
-    ("glm-5-3-flash", ModelGroup::Fast),
-    ("gemma4-31b", ModelGroup::Fast),
-];
-
-/// Models the panel marks Popular.
-const POPULAR_MODELS: [&str; 1] = ["deepseek-v4-1-flash-1017-uncensored"];
-
-/// `models` in their groups, each group in the table's order and models the
-/// table does not know last, in the catalog's order. A catalog of only
-/// unknown models is one unnamed group: a lone "More models" says nothing.
-pub(super) fn group_models(models: &[String]) -> Vec<(Option<ModelGroup>, Vec<&str>)> {
-    let group_of = |model: &str| {
-        MODEL_GROUPS
-            .iter()
-            .find(|(id, _)| *id == model)
-            .map(|(_, group)| *group)
-    };
-    if models.iter().all(|model| group_of(model).is_none()) {
-        return vec![(None, models.iter().map(String::as_str).collect())];
+    pub(super) fn is_popular(&self, model: &str) -> bool {
+        self.popular.contains(model)
     }
-    ModelGroup::ORDER
-        .into_iter()
-        .filter_map(|group| {
-            let members: Vec<&str> = if group == ModelGroup::More {
-                models
+
+    /// `models` in their sections: the catalog's groups in its order, each
+    /// holding its models in the order `models` lists them, then the models
+    /// without a served group. When no model has one (an older server, or a
+    /// catalog that failed to load) the list is one unnamed section.
+    pub(super) fn group<'a>(
+        &self,
+        models: &'a [String],
+    ) -> Vec<(Option<SharedString>, Vec<&'a str>)> {
+        let served = |model: &str| {
+            self.group_of
+                .get(model)
+                .filter(|id| self.groups.iter().any(|group| &group.id == *id))
+        };
+        let rest: Vec<&str> = models
+            .iter()
+            .map(String::as_str)
+            .filter(|model| served(model).is_none())
+            .collect();
+        if rest.len() == models.len() {
+            return vec![(None, rest)];
+        }
+        let mut sections: Vec<_> = self
+            .groups
+            .iter()
+            .filter_map(|group| {
+                let members: Vec<&str> = models
                     .iter()
                     .map(String::as_str)
-                    .filter(|model| group_of(model).is_none())
-                    .collect()
-            } else {
-                MODEL_GROUPS
-                    .iter()
-                    .filter(|(id, of)| *of == group && models.iter().any(|model| model == id))
-                    .map(|(id, _)| *id)
-                    .collect()
-            };
-            (!members.is_empty()).then_some((Some(group), members))
-        })
-        .collect()
+                    .filter(|model| served(model) == Some(&group.id))
+                    .collect();
+                (!members.is_empty()).then(|| (Some(group_heading(group)), members))
+            })
+            .collect();
+        if !rest.is_empty() {
+            sections.push((Some(tr("chat-model-group-more")), rest));
+        }
+        sections
+    }
+}
+
+/// A section's heading: the app's translation for a group it knows, and
+/// the catalog's English label for one added since this build.
+fn group_heading(group: &maple_sdk::CatalogGroup) -> SharedString {
+    match group.id.as_str() {
+        "capable" => tr("chat-model-group-capable"),
+        "uncensored" => tr("chat-model-group-uncensored"),
+        "fast" => tr("chat-model-group-fast"),
+        _ => group.label.clone().into(),
+    }
 }
