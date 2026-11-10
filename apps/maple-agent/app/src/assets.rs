@@ -95,6 +95,7 @@ assets!(
     "icons/plug.svg",
     "icons/settings.svg",
     "icons/shield-check.svg",
+    "icons/shield-user.svg",
     "icons/square-pen.svg",
     "icons/square.svg",
     "icons/terminal.svg",
@@ -103,6 +104,7 @@ assets!(
     "icons/user.svg",
     "icons/users.svg",
     "icons/volume-2.svg",
+    "icons/wrench.svg",
     "icons/x.svg",
     "icons/zap.svg",
 );

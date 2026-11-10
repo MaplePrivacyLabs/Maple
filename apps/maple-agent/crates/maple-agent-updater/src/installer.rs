@@ -32,7 +32,7 @@ mod linux_bundle;
 mod windows_bundle;
 mod windows_diagnostics;
 pub use windows_diagnostics::{
-    WindowsInstallOperation, WindowsInstallerDiagnostic, WindowsStorageGuard,
+    WindowsGuardFailure, WindowsInstallOperation, WindowsInstallerDiagnostic, WindowsStorageGuard,
 };
 #[cfg(windows)]
 pub use windows_diagnostics::{WindowsInstallerTrace, report_windows_installation};

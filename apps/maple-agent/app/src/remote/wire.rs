@@ -160,6 +160,10 @@ pub enum Method {
     SetProjectMcpServerEnabled,
     ListIntegrations,
     SetIntegrationEnabled,
+    /// Only sent to a host advertising `tool_switches_v1`.
+    ListTools,
+    /// Only sent to a host advertising `tool_switches_v1`.
+    SetToolEnabled,
     SaveMcpServers,
     SetSessionWebEnabled,
     /// Only sent to a host advertising `permission_modes_v1`.
@@ -492,6 +496,11 @@ mod tests {
             "rename_project_root",
             "browse_project_folders",
             "create_project_folder",
+            "list_tools",
+            "set_tool_enabled",
+            // Controllers on older builds still send it; the host saves the
+            // task's legacy flag.
+            "set_session_web_enabled",
         ] {
             assert_eq!(Method::parse(name).unwrap().name(), name);
         }

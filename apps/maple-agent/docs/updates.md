@@ -46,6 +46,11 @@ menu and the tray also offer update actions. Paired computers can show and
 request updates for each other through the
 [experimental remote update controls](remote-access.md#experimental-remote-updates).
 
+Checks and downloads use the same proxy as the rest of the app:
+`HTTPS_PROXY`/`HTTP_PROXY`, or else the system's manual proxy setting. Automatic
+proxy configuration (PAC files) is not read. The log records why a check or
+download failed.
+
 ## Wire contract
 
 Installed clients only accept what they were built to parse, so the publisher
