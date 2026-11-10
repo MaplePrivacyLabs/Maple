@@ -8,7 +8,7 @@ mod state_tests {
     use crate::ui::chat::cache::{INLINE_PARSE_LIMIT, MAX_DIFF_LINES, ORDINAL_SPACING};
     use crate::ui::chat::composer::SideThreadTurn;
     use crate::ui::chat::computers::ProjectTarget;
-    use crate::ui::chat::sidebar::{RenameTarget, SidebarEvent, TaskMove};
+    use crate::ui::chat::sidebar::{RenameTarget, SidebarEvent, TaskMove, root_display_name};
     use crate::ui::chat::transcript::{diff_lines_for, tool_label_title};
     use crate::ui::chat::*;
     use gpui::{Context, TestAppContext};

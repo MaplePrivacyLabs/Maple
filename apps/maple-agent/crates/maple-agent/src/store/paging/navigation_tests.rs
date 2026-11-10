@@ -753,7 +753,7 @@ fn search_resolves_owner_default_basename_and_workspace_label_without_client_hin
     );
     // The well-known workspace is data only: this fixture never opens or creates
     // the actual directory on the developer's execution computer.
-    if let Some(workspace) = crate::agent::default_maple_workspace_path() {
+    if let Some(workspace) = store.maple_workspace_path().unwrap() {
         let workspace_id = task(
             &store,
             alice,

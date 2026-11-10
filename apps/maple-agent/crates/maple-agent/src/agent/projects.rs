@@ -59,8 +59,11 @@ pub(crate) fn owner_project_display_name(
         .into()
 }
 
-fn metadata(path: String, record: Option<ProjectRecord>) -> Result<RecentProjectRoot, String> {
-    let is_default_workspace = super::is_default_maple_workspace(Path::new(&path));
+fn metadata(
+    path: String,
+    record: Option<ProjectRecord>,
+    is_default_workspace: bool,
+) -> Result<RecentProjectRoot, String> {
     let mut root = RecentProjectRoot {
         name: owner_project_display_name(&path, None, is_default_workspace),
         path,
@@ -90,15 +93,19 @@ fn listed_metadata(
     if !structurally_valid_project_root(path) {
         return Err("Project path must be an absolute folder path".into());
     }
+    let is_default_workspace = store
+        .maple_workspace_path()
+        .map_err(|error| error.to_string())?
+        .is_some_and(|workspace| workspace == Path::new(path));
     let record = store
         .listed_project(account, path)
         .map_err(|error| error.to_string())?;
     if record.is_some() {
-        return metadata(path.into(), record);
+        return metadata(path.into(), record, is_default_workspace);
     }
     // The owner's implicit workspace is offered even before it exists. Its
     // explicit removal tombstone still wins; no directory is opened or created.
-    if super::is_default_maple_workspace(Path::new(path)) {
+    if is_default_workspace {
         let record = store
             .project(account, path)
             .map_err(|error| error.to_string())?;
@@ -106,7 +113,7 @@ fn listed_metadata(
             .as_ref()
             .is_none_or(|record| record.removed_ms.is_none())
         {
-            return metadata(path.into(), record);
+            return metadata(path.into(), record, true);
         }
     }
     Err("This project is not in this computer's project list".into())
@@ -118,12 +125,19 @@ impl AgentRuntimeHandle {
         self.verify_generation().await?;
         let tasks = self.store()?;
         let roots = tokio::task::spawn_blocking(move || {
+            let workspace = tasks
+                .store()
+                .maple_workspace_path()
+                .map_err(|e| e.to_string())?;
             tasks
                 .store()
                 .recently_used_projects(tasks.account())
                 .map_err(|error| error.to_string())?
                 .into_iter()
-                .map(|record| metadata(record.root.clone(), Some(record)))
+                .map(|record| {
+                    let is_default = workspace.as_deref() == Some(Path::new(&record.root));
+                    metadata(record.root.clone(), Some(record), is_default)
+                })
                 .collect::<Result<Vec<_>, String>>()
         })
         .await
@@ -171,7 +185,7 @@ impl AgentRuntimeHandle {
                 .store()
                 .project(tasks.account(), &path)
                 .map_err(|error| error.to_string())?;
-            Ok::<_, String>((metadata(path, record)?, changed))
+            Ok::<_, String>((metadata(path, record, root.is_default_workspace)?, changed))
         })
         .await
         .map_err(|_| "Project settings worker did not complete".to_owned())??;
@@ -760,10 +774,10 @@ mod tests {
         let Some(workspace) = super::super::default_maple_workspace_path() else {
             return;
         };
-        let root = metadata(path_string(&workspace), None).unwrap();
+        let root = metadata(path_string(&workspace), None, true).unwrap();
         assert_eq!(root.name, "Maple Workspace");
         assert!(root.is_default_workspace);
-        let decoy = metadata("/different/Maple".into(), None).unwrap();
+        let decoy = metadata("/different/Maple".into(), None, false).unwrap();
         assert_eq!(decoy.name, "Maple");
         assert!(!decoy.is_default_workspace);
     }

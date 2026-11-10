@@ -63,7 +63,7 @@ use self::composer::{SideQuestionPanel, SlashEntry, slash_entries_for};
 use self::navigation::ApplicationVimState;
 #[cfg(test)]
 use self::sidebar::SessionActivity;
-use self::sidebar::{Sidebar, SidebarEvent, TaskActivity, root_display_name, session_summary_eq};
+use self::sidebar::{Sidebar, SidebarEvent, TaskActivity, session_summary_eq};
 use self::transcript::{
     ActiveSubagent, PlanEntry, PlanStatus, plan_entries, plan_finished, render_question_card,
     render_waiting_indicator,
@@ -4045,7 +4045,7 @@ impl ChatScreen {
                             "chat-project-integration-save-failed",
                             [
                                 ("name", name.into()),
-                                ("project", root_display_name(&root).into()),
+                                ("project", this.sidebar.read(cx).root_name(&root).into()),
                             ],
                             "error",
                             message.into(),

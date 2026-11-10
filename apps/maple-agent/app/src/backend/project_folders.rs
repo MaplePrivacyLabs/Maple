@@ -329,7 +329,7 @@ fn scratch_worker_failure() -> HostFailure {
     )
 }
 
-/// The execution host's default for new projects. App tests reach the
+/// The execution host's container for new projects. App tests reach the
 /// host-facing operation through the real dispatch (UI state tests do), so
 /// they get a temporary folder and never touch the developer's Documents.
 fn scratch_parent() -> Option<PathBuf> {
@@ -338,7 +338,7 @@ fn scratch_parent() -> Option<PathBuf> {
             std::env::temp_dir().join(format!("maple-app-scratch-test-{}", std::process::id())),
         );
     }
-    maple_agent::agent::default_maple_workspace_path()
+    maple_agent::agent::maple_project_container_path()
 }
 
 fn create_scratch_folder(

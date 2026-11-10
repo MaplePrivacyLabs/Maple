@@ -307,8 +307,9 @@ async fn blocking<T: Send + 'static>(
 fn ensure_workspace_project(
     store: &Store,
     account: AccountId,
-) -> maple_agent::store::StoreResult<()> {
-    if let Some(path) = maple_agent::agent::default_maple_workspace_path() {
+) -> maple_agent::store::StoreResult<Option<std::path::PathBuf>> {
+    let workspace = store.maple_workspace_path()?;
+    if let Some(path) = &workspace {
         let root = path.to_string_lossy();
         let project = store.project(account, &root)?;
         if project
@@ -321,7 +322,7 @@ fn ensure_workspace_project(
             store.remember_project(account, &root, i64::MAX, last_used_ms)?;
         }
     }
-    Ok(())
+    Ok(workspace)
 }
 
 fn parse<T: DeserializeOwned>(params: Value) -> Result<(String, T), HostFailure> {
@@ -345,11 +346,13 @@ pub(super) async fn dispatch_presented(
             .map_err(|_| HostFailure::new("paging-request", "Invalid host paging parameters"))?;
         let (store, account) = context(backend, &user).await?;
         let workspace_store = store.clone();
-        blocking(move || ensure_workspace_project(&workspace_store, account)).await?;
+        let workspace =
+            blocking(move || ensure_workspace_project(&workspace_store, account)).await?;
         let handle = backend.service().handle_for_user(&user).await?;
         let runtime_status = handle.status().await?;
-        let project_root = super::local::gui_project_root(&handle.load_config().await?);
-        let default_project = match maple_agent::agent::default_maple_workspace_path() {
+        let project_root =
+            super::local::gui_project_root(&handle.load_config().await?, workspace.as_deref());
+        let default_project = match workspace {
             Some(path) => {
                 let path = path.to_string_lossy().into_owned();
                 let point_store = store.clone();

@@ -2534,13 +2534,17 @@ impl Sidebar {
 
     /// Show the project's folder in the file manager.
     fn open_folder(&mut self, root: &str, cx: &mut Context<Self>) {
+        let is_workspace = self
+            .project_metadata
+            .get(root)
+            .is_some_and(|project| project.is_default_workspace);
         let path = root.to_string();
         self.call_semantic(
             async move {
                 tokio::task::spawn_blocking(move || {
                     // The listed Maple workspace exists only once it is used.
-                    if maple_agent::agent::is_default_maple_workspace(std::path::Path::new(&path)) {
-                        maple_agent::agent::ensure_default_maple_workspace()?;
+                    if is_workspace {
+                        maple_agent::agent::ensure_maple_workspace(std::path::Path::new(&path))?;
                     }
                     crate::platform::reveal_folder(&path)
                 })
@@ -4722,9 +4726,6 @@ pub(super) fn session_summary_eq(a: &AgentSessionSummary, b: &AgentSessionSummar
 }
 
 pub(super) fn root_display_name(root: &str) -> String {
-    if maple_agent::agent::is_default_maple_workspace(std::path::Path::new(root)) {
-        return maple_agent::agent::MAPLE_WORKSPACE_DISPLAY_NAME.to_string();
-    }
     std::path::Path::new(root)
         .file_name()
         .map(|name| name.to_string_lossy().to_string())
@@ -4750,7 +4751,7 @@ pub(super) fn remote_root_display_name(root: &str) -> String {
 
 #[cfg(test)]
 mod tests {
-    use super::{remote_root_display_name, root_display_name};
+    use super::remote_root_display_name;
 
     #[gpui::test]
     fn collapsed_and_empty_projects_keep_the_expanded_task_gap(cx: &mut gpui::TestAppContext) {
@@ -4983,18 +4984,5 @@ mod tests {
         if cfg!(unix) {
             assert_eq!(remote_root_display_name(r"/home/alex/a\b"), r"a\b");
         }
-    }
-
-    #[test]
-    fn the_default_workspace_is_labeled_maple_workspace() {
-        let Some(workspace) = maple_agent::agent::default_maple_workspace_path() else {
-            return;
-        };
-        assert_eq!(
-            root_display_name(&workspace.to_string_lossy()),
-            "Maple Workspace"
-        );
-        let elsewhere = workspace.with_file_name("Notes");
-        assert_eq!(root_display_name(&elsewhere.to_string_lossy()), "Notes");
     }
 }
