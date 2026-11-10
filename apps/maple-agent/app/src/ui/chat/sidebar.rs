@@ -112,20 +112,7 @@ const ROW_FADE: gpui::Pixels = px(20.);
 /// Geometry shared by the expanded wordmark row and the collapsed mark.
 pub(super) const WORDMARK_LEFT: gpui::Pixels = px(16.);
 pub(super) const WORDMARK_HEIGHT: gpui::Pixels = px(16.);
-pub(super) const TOP_ROW_HEIGHT: gpui::Pixels = px(28.);
 pub(super) const TOP_ROW_GUTTER: gpui::Pixels = px(12.);
-
-/// Top of the wordmark row. Under traffic lights it starts below them,
-/// with the wordmark under the header's line. Without them the wordmark
-/// moves up into their corner, centered on the header's line.
-pub(super) fn wordmark_row_top() -> gpui::Pixels {
-    if titlebar::TRANSPARENT_TITLEBAR {
-        titlebar::TRAFFIC_LIGHT_ROW
-            .max(super::CHAT_HEADER_HEIGHT - (TOP_ROW_HEIGHT - WORDMARK_HEIGHT) / 2.)
-    } else {
-        (super::CHAT_HEADER_HEIGHT - TOP_ROW_HEIGHT) / 2.
-    }
-}
 
 pub(super) fn session_from_summary(
     summary: &maple_agent::store::TaskSummary,
@@ -4452,12 +4439,12 @@ impl Render for Sidebar {
                     .pr(TOP_ROW_GUTTER)
                     // Under traffic lights the wordmark row sits below them,
                     // not beside them; the space above it is still the bar.
-                    .pt(wordmark_row_top())
+                    .pt(titlebar::sidebar_row_top())
                     .pb_2()
                     .child(
                         div()
                             .flex_none()
-                            .h(TOP_ROW_HEIGHT)
+                            .h(titlebar::SIDEBAR_ROW_HEIGHT)
                             .flex()
                             .items_center()
                             .child(

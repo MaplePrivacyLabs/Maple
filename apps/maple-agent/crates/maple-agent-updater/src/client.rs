@@ -68,11 +68,15 @@ impl Updater {
         }
         manifest::stable_version(&config.current_version.to_string())?;
         let state = StateStore::new(&config.state_dir, &config.installed_path)?;
+        // Update traffic uses the same proxy as the rest of the app: the proxy
+        // variables first, then the system's manual proxy setting. Many company
+        // networks reach the internet only that way. A proxy cannot change what
+        // installs, because the feed must carry a pinned-key signature and each
+        // payload must match the signed size and SHA-256.
         let client = reqwest::Client::builder()
             .user_agent("Maple-Agent-Updater/1")
             .redirect(reqwest::redirect::Policy::none())
             .referer(false)
-            .no_proxy()
             .no_gzip()
             .no_brotli()
             .no_deflate()

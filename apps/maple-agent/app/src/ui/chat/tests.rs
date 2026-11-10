@@ -1671,8 +1671,7 @@ mod state_tests {
     }
 
     /// A persisted settings file must shape a freshly built chat screen:
-    /// tool cards collapsed and web off for new tasks without visiting
-    /// the settings screen first.
+    /// tool cards collapsed without visiting the settings screen first.
     #[gpui::test]
     fn test_constructor_reads_persisted_defaults(cx: &mut TestAppContext) {
         cx.executor().allow_parking();
@@ -1683,6 +1682,8 @@ mod state_tests {
             maple_agent::store::Store::open(maple_agent::store::StorePaths::new(directory.path()))
                 .unwrap(),
         );
+        // Settings an earlier build saved may still hold the retired web
+        // default, which is ignored.
         store
             .set_app_setting(
                 "ui",
@@ -1710,7 +1711,6 @@ mod state_tests {
         crate::settings::install_test_settings(previous);
         screen.update(cx, |this, _cx| {
             assert!(!this.tool_details);
-            assert!(!this.default_web_enabled);
         });
     }
 
@@ -2877,15 +2877,19 @@ mod state_tests {
 
     #[test]
     fn test_slash_entries_filter_and_cap() {
-        let skills = vec![AgentSlashCommand {
-            name: "deploy".to_string(),
-            description: "Deploy".to_string(),
-            input_hint: None,
-        }];
+        let skills: Vec<AgentSlashCommand> = ["deploy", "review", "triage"]
+            .into_iter()
+            .map(|name| AgentSlashCommand {
+                name: name.to_string(),
+                description: name.to_string(),
+                input_hint: None,
+            })
+            .collect();
         let entries = slash_entries_for("de", &skills);
         assert_eq!(entries.len(), 1);
         assert_eq!(entries[0].name, "deploy");
         assert!(slash_entries_for("zzz", &skills).is_empty());
+        // Six built-ins and three skills: the list stops at eight.
         assert_eq!(slash_entries_for("", &skills).len(), 8);
     }
 
@@ -2951,7 +2955,7 @@ mod state_tests {
             let btw = this.btw.as_ref().expect("thread continues");
             assert_eq!(btw.turns.len(), 3);
             assert_eq!(btw.turns[2].question, "plain follow-up");
-            assert!(this.try_command(Some("s1"), "/web", cx));
+            assert!(this.try_command(Some("s1"), "/help", cx));
             assert_eq!(this.btw.as_ref().unwrap().turns.len(), 3);
             this.close_side_thread(cx);
             assert!(this.btw.is_none());
@@ -2974,13 +2978,12 @@ mod state_tests {
         let screen = screen(cx);
         screen.update(cx, |this, cx| {
             this.booting = false;
-            this.web_enabled = true;
-            assert!(this.try_command(Some("s1"), "/web", cx));
-            assert!(!this.web_enabled);
             assert!(this.try_command(Some("s1"), "/model", cx));
             assert!(this.popup.is_open(&ChatPopup::Model));
-            // Unknown commands fall through to a normal send.
+            // Unknown commands fall through to a normal send, as does the
+            // retired `/web`.
             assert!(!this.try_command(Some("s1"), "/definitely-not-a-command", cx));
+            assert!(!this.try_command(Some("s1"), "/web", cx));
             // Paths that merely start with a slash are not commands.
             assert!(!this.try_command(Some("s1"), "/etc/hosts is a path", cx));
         });
@@ -3504,8 +3507,6 @@ mod state_tests {
             this.selected_session = Some("s1".to_string());
             this.replace_timeline(vec![user_item("u1", "hi")]);
             this.loading_session = Some("s1".to_string());
-            this.default_web_enabled = false;
-            this.web_enabled = true;
             let generation = this.selection_generation;
 
             this.new_session(cx);
@@ -3521,7 +3522,6 @@ mod state_tests {
                 this.selection_generation > generation,
                 "a draft is navigation"
             );
-            assert!(!this.web_enabled, "the draft takes the web default");
             assert_eq!(this.sessions.len(), 1, "no row was added");
         });
     }
@@ -3789,11 +3789,9 @@ mod state_tests {
     }
 
     /// The created task is compared with the composer before anything is
-    /// sent: web access the create could not carry, a server switched on
-    /// after Enter, and an external agent, which no request switches on.
-    /// With a difference the send waits for the apply; with none it goes
-    /// out at once. Before, the first turn ran under the web access the
-    /// task happened to be created with.
+    /// sent: a server switched on after Enter, and an external agent, which
+    /// no request switches on. With a difference the send waits for the
+    /// apply; with none it goes out at once.
     #[gpui::test]
     fn test_first_send_applies_the_composer_before_sending(cx: &mut TestAppContext) {
         cx.executor().allow_parking();
@@ -3803,8 +3801,6 @@ mod state_tests {
             this.selected_session = None;
             this.project_root = Some("/work/alpha".to_string());
             this.draft = true;
-            this.default_web_enabled = false;
-            this.web_enabled = false;
             this.set_draft_mcp_defaults(vec![
                 draft_mcp_row(mcp_server("docs", true)),
                 draft_mcp_row(mcp_server("wiki", false)),
@@ -3839,8 +3835,7 @@ mod state_tests {
             );
 
             // The create lands with what it was asked for.
-            let mut created = summary_at("created", "New Task", "/work/alpha");
-            created.web_enabled = true;
+            let created = summary_at("created", "New Task", "/work/alpha");
             let task_mcp = this.created_task_mcp(request.mcp_server_names.as_deref());
             assert_eq!(
                 task_mcp,
@@ -3866,7 +3861,6 @@ mod state_tests {
                 this.new_session_changes(&created, &task_mcp),
                 NewSessionChanges {
                     mode: None,
-                    web: Some(false),
                     mcp: vec![
                         DraftMcpChange {
                             name: "wiki".to_string(),
@@ -3896,7 +3890,6 @@ mod state_tests {
             assert!(!this.awaiting_first_token);
 
             // Once the task matches the composer the send goes out.
-            created.web_enabled = false;
             let mut task_mcp = task_mcp;
             task_mcp[1].enabled = true;
             task_mcp[2].enabled = true;
@@ -3905,7 +3898,6 @@ mod state_tests {
             assert!(!this.session_setup_pending);
             assert!(this.pending_first_send.is_none());
             assert_eq!(this.selected_session.as_deref(), Some("created"));
-            assert!(!this.web_enabled, "the chip is not clobbered");
             assert!(this.awaiting_first_token, "the send was dispatched");
         });
     }
@@ -3931,7 +3923,7 @@ mod state_tests {
 
             this.fail_new_session_setup(
                 summary_at("created", "New Task", &absolute_fixture_root("work")),
-                "Could not change web access: boom".into(),
+                "Could not change the mode: boom".into(),
                 generation,
                 cx,
             );
@@ -3943,7 +3935,7 @@ mod state_tests {
             assert!(!this.awaiting_first_token, "nothing was sent");
             assert_eq!(
                 this.notice.as_ref().map(UiText::resolve).as_deref(),
-                Some("Could not change web access: boom")
+                Some("Could not change the mode: boom")
             );
             assert_eq!(this.composer.clone().unwrap().read(cx).text(), "hello");
             assert!(
@@ -4419,11 +4411,9 @@ mod state_tests {
             this.booting = false;
             this.selected_session = None;
             this.project_root = Some("/work/alpha".to_string());
-            this.web_enabled = true;
 
-            // No task needed: the draft's web chip flips on screen only.
-            assert!(this.try_command(None, "/web", cx));
-            assert!(!this.web_enabled);
+            // No task needed: `/help` answers on the empty screen.
+            assert!(this.try_command(None, "/help", cx));
             assert!(!this.session_setup_pending);
 
             this.send_text("/btw what is this".to_string(), cx);
@@ -4474,9 +4464,6 @@ mod state_tests {
             this.project_root = Some("/work/alpha".to_string());
             this.selected_session = None;
             this.draft = true;
-            this.web_enabled = true;
-            this.set_web_enabled(false, cx);
-            assert!(!this.web_enabled);
             assert_eq!(
                 this.new_session_request().unwrap().mcp_server_names,
                 None,
@@ -4553,7 +4540,6 @@ mod state_tests {
             this.project_root = Some(root.clone());
             this.selected_session = None;
             this.draft = true;
-            this.web_enabled = true;
             this.project_mcp_save_pending = true;
             for enabled in [true, false] {
                 this.project_mcp_saves.push_back(ProjectMcpSave {
@@ -5038,7 +5024,6 @@ mod state_tests {
             this.draft_mcp_defaults.is_some()
         });
         chat.update(cx, |this, cx| {
-            this.web_enabled = false;
             this.selected_model = Some("chosen-model".to_string());
             this.composer
                 .clone()
@@ -5105,7 +5090,6 @@ mod state_tests {
                 "keep this draft"
             );
             assert_eq!(this.selected_model.as_deref(), Some("chosen-model"));
-            assert!(!this.web_enabled);
             this.land_project_selection(alpha.clone(), this.selection_generation, cx);
         });
         wait_until(&chat, cx, "alpha's saved default", |this| {
@@ -5467,13 +5451,13 @@ mod state_tests {
     /// auto-selects as before.
     #[gpui::test]
     fn test_project_switch_keeps_the_draft(cx: &mut TestAppContext) {
+        use maple_agent::agent::AgentPermissionMode;
         cx.executor().allow_parking();
         let screen = screen(cx);
         screen.update(cx, |this, cx| {
             this.project_root = Some("/work/alpha".to_string());
-            this.default_web_enabled = true;
             this.new_session(cx);
-            this.set_web_enabled(false, cx);
+            this.set_permission_mode(AgentPermissionMode::ReadOnly, cx);
             let generation = this.selection_generation;
 
             this.land_project_selection("/work/beta".to_string(), generation, cx);
@@ -5481,7 +5465,11 @@ mod state_tests {
             assert!(this.draft);
             assert_eq!(this.selected_session, None);
             assert_eq!(this.project_root.as_deref(), Some("/work/beta"));
-            assert!(!this.web_enabled, "the draft's chips stay");
+            assert_eq!(
+                this.permission_mode,
+                AgentPermissionMode::ReadOnly,
+                "the draft's chips stay"
+            );
             let generation = this.selection_generation;
             this.apply_session_list(vec![summary_at("b1", "Beta", "/work/beta")], generation, cx);
             assert_eq!(this.selected_session, None);
@@ -11645,8 +11633,6 @@ mod state_tests {
     fn test_application_vim_walks_and_presses_the_composer_controls(cx: &mut TestAppContext) {
         use super::super::composer::ComposerControl;
         use crate::ui::chat::navigation::ChatRegion;
-        // No task is selected, so the web toggle stays local rather than
-        // waiting on the test backend.
         let (chat, cx) = chat_window(cx, |chat, cx| {
             chat.selected_session = None;
             chat.composer_vim_enabled = true;
@@ -11688,12 +11674,9 @@ mod state_tests {
             )
         );
 
-        // A counted `l` walks right; Enter presses the web toggle.
-        let web = cx.update(|_window, app| chat.read(app).web_enabled);
+        // A counted `l` walks right, and `h` back.
         cx.simulate_keystrokes("4 l");
-        assert_eq!(row(cx).1, Some(ComposerControl::Web));
-        cx.simulate_keystrokes("enter");
-        assert_eq!(cx.update(|_window, app| chat.read(app).web_enabled), !web);
+        assert_eq!(row(cx).1, Some(ComposerControl::Attachments));
         cx.simulate_keystrokes("h");
         assert_eq!(row(cx).1, Some(ComposerControl::Mode));
 

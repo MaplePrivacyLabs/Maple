@@ -35,18 +35,16 @@ pub(super) enum ComposerControl {
     Thinking,
     Integrations,
     Mode,
-    Web,
     Attachments,
     Dictate,
 }
 
 impl ComposerControl {
-    const ALL: [Self; 7] = [
+    const ALL: [Self; 6] = [
         Self::Model,
         Self::Thinking,
         Self::Integrations,
         Self::Mode,
-        Self::Web,
         Self::Attachments,
         Self::Dictate,
     ];
@@ -120,17 +118,17 @@ impl ChatScreen {
                 .items_center()
                 .justify_between()
                 .gap_3()
-                .h(super::CHAT_HEADER_HEIGHT)
+                .h(titlebar::TITLE_BAR_HEIGHT)
                 .flex_none()
                 .pl(inset)
                 .pr_3()
-                .bg(gpui::rgb(theme::bg_sidebar())),
+                .bg(gpui::rgb(theme::bg_app())),
         )
         .child(
             div()
                 .absolute()
                 .left(toolbar_left)
-                .top((super::CHAT_HEADER_HEIGHT - super::sidebar::TOP_ROW_HEIGHT) / 2.)
+                .top(titlebar::title_bar_row_top())
                 .flex()
                 .items_center()
                 .gap_1()
@@ -198,7 +196,7 @@ impl ChatScreen {
                 div()
                     .absolute()
                     .left(toolbar_left + toolbar_width + header_gap)
-                    .top((super::CHAT_HEADER_HEIGHT - window.rem_size()) / 2.)
+                    .top((titlebar::TITLE_BAR_HEIGHT - window.rem_size()) / 2.)
                     .w(px(1.))
                     .h_4()
                     .opacity(collapsed_progress)
@@ -206,20 +204,14 @@ impl ChatScreen {
             )
         })
         .child(
-            div()
+            titlebar::title(title)
                 .debug_selector(|| "header-title".to_string())
                 // Sized by its text, like the chips: nowrap gives it a
                 // real intrinsic width (a clamped, shrinkable title
                 // measured as 0 px and vanished). The cap keeps a long
                 // title from pushing the chips out of the pane.
                 .flex_none()
-                .max_w(gpui::relative(0.6))
-                .truncate()
-                .text_lg()
-                .line_height(px(24.))
-                .font_weight(gpui::FontWeight::SEMIBOLD)
-                .text_color(gpui::rgb(theme::text_primary()))
-                .child(title),
+                .max_w(gpui::relative(0.6)),
         )
         .child(
             div()
@@ -245,7 +237,6 @@ impl ChatScreen {
                     self.project_label.clone(),
                     true,
                     self.popup.is_open(&ChatPopup::Project),
-                    false,
                 )
                 // Outside the composer box, so the standalone radius.
                 .rounded(theme::RADIUS_SM)
@@ -368,10 +359,6 @@ impl ChatScreen {
                 self.popup
                     .open_highlighted(ChatPopup::Mode, mode_item_id(self.permission_mode), cx)
             }
-            ComposerControl::Web => {
-                let next = !self.web_enabled;
-                self.set_web_enabled(next, cx);
-            }
             ComposerControl::Attachments => self.pick_attachments(cx),
             ComposerControl::Dictate => self.toggle_recording(cx),
         }
@@ -402,7 +389,6 @@ impl ChatScreen {
                         label,
                         true,
                         self.popup.is_open(&ChatPopup::Model),
-                        false,
                     ),
                     Placement::AboveStart,
                     window,
@@ -445,7 +431,6 @@ impl ChatScreen {
                     },
                     false,
                     self.popup.is_open(&ChatPopup::Integrations),
-                    false,
                 ),
                 Placement::AboveStart,
                 window,
@@ -460,31 +445,12 @@ impl ChatScreen {
                     tr(mode_label(self.permission_mode)).to_string(),
                     true,
                     self.popup.is_open(&ChatPopup::Mode),
-                    false,
                 )
                 .aria_label(tr(mode_chip_label(self.permission_mode))),
                 Placement::AboveStart,
                 window,
                 cx,
                 |this, _| this.mode_menu(),
-            ),
-            ComposerControl::Web => div().child(
-                chip(
-                    "web-toggle",
-                    Some("globe"),
-                    if self.web_enabled {
-                        tr("chat-web")
-                    } else {
-                        tr("chat-web-off")
-                    }
-                    .to_string(),
-                    false,
-                    false,
-                    self.web_enabled,
-                )
-                .on_click(cx.listener(|this, _event, _window, cx| {
-                    this.activate_composer_control(ComposerControl::Web, cx);
-                })),
             ),
             ComposerControl::Attachments => div().child(
                 div()
@@ -1670,7 +1636,6 @@ pub(super) fn slash_entries_for(token: &str, skills: &[AgentSlashCommand]) -> Ve
         ("compact", "chat-slash-compact"),
         ("new", "chat-slash-new"),
         ("pin", "chat-slash-pin"),
-        ("web", "chat-slash-web"),
         ("model", "chat-slash-model"),
         ("help", "chat-slash-help"),
     ]
@@ -1689,19 +1654,15 @@ pub(super) fn slash_entries_for(token: &str, skills: &[AgentSlashCommand]) -> Ve
 }
 
 /// One control in the composer chip row. `active` means its menu is
-/// open; `highlight` means the feature it toggles is on, shown in the
-/// accent so the two states never look alike.
+/// open.
 fn chip(
     id: &'static str,
     leading: Option<&'static str>,
     label: impl Into<SharedString>,
     chevron: bool,
     active: bool,
-    highlight: bool,
 ) -> gpui::Stateful<Div> {
-    let color = if highlight {
-        theme::accent()
-    } else if active {
+    let color = if active {
         theme::text_primary()
     } else {
         theme::text_secondary()

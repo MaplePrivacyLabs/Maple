@@ -35,6 +35,7 @@ use super::store::{TaskKind, TaskRow, TaskStore};
 use super::surface::{AgentSurfaceAccess, SurfaceTask, with_surface_servers};
 use super::switch_compaction::{OfferedModel, switch_compaction_extension};
 use super::timeline::{MAPLE_NOTICE_ENTRY, notice_item};
+use super::tool_settings::{ToolSwitch, tool_switches};
 use super::{
     AgentRuntimeStatus, AgentServiceEvent, AgentTimelineItem, AgentTimelineLabel,
     MapleAgentHostResources, emit_agent_event, login_path, tools,
@@ -90,6 +91,8 @@ struct LoadedTask {
     cua: Arc<TaskCua>,
     agents: TaskProviders,
     permissions: TaskPermissions,
+    /// The session's shell tool, which the shell's switch turns on.
+    shell: &'static str,
     last_used: Instant,
     unloading: Arc<AtomicBool>,
 }
@@ -126,6 +129,9 @@ pub(super) struct AgentRuntime {
     pub(super) failures: Failures,
     /// The external agents of the account's tasks.
     pub(super) external_agents: Arc<ExternalAgentRegistry>,
+    /// The bundled CPython behind the tasks' `python` scratchpads, when this
+    /// build has one.
+    python: Option<Arc<tools::PythonWorkers>>,
 }
 
 impl AgentRuntime {
@@ -158,6 +164,7 @@ impl AgentRuntime {
             surfaces: Mutex::new(HashMap::new()),
             runs: Runs::default(),
             failures: Failures::default(),
+            python: tools::PythonWorkers::bundled(),
         })
     }
 
@@ -702,10 +709,9 @@ impl AgentRuntime {
             } else {
                 None
             };
-            // The web switch and the external agents may have changed since
-            // the last run.
-            tools::sync_web_tools(session, row.web_enabled);
             permissions.set(row.permission_mode());
+            // The external agents may have changed since the last run; the
+            // switches of Settings → Tools reach the session as they change.
             sync_external_agent_tools(session, agents, providers);
             if let Some(resources) = resources {
                 session.set_resources(resources);
@@ -746,13 +752,16 @@ impl AgentRuntime {
         let output_dir = crate::store::spill::SpillRoot::new(self.store.store().paths())
             .and_then(|spills| spills.output_dir(&row.id))
             .map_err(|error| error.to_string())?;
+        // Read under the sessions' lock, under which a changed switch reaches
+        // the loaded sessions, so a session built during a change has it.
+        let switches = tool_switches(&self.host.paths, &self.user_id);
+        let python_on = switches.enabled(ToolSwitch::Python);
         let mut tools = tools::task_tools(tools::TaskToolsFor {
             session_id: row.id.clone(),
             kind: TaskKind::Desktop,
             login_path: search_path.clone(),
             questions: self.questions.clone(),
             web: self.api.clone(),
-            web_enabled: row.web_enabled,
             read_image: tools::ReadImageFor {
                 session_id: row.id.clone(),
                 cwd: PathBuf::from(&row.project_root),
@@ -760,7 +769,9 @@ impl AgentRuntime {
                 models: self.models.clone(),
                 describe,
             },
+            switches,
         });
+        let shell = tools.shell;
         tools.options.output_dir = Some(output_dir.clone());
         options.tool_options = tools.options;
         options.builtin_tools = Some(tools.builtin);
@@ -776,6 +787,19 @@ impl AgentRuntime {
                 login_path: search_path.clone(),
                 providers: agents.clone(),
             }));
+        if let Some(workers) = &self.python {
+            let python = workers.task(
+                &row.id,
+                PathBuf::from(&row.project_root),
+                search_path.as_deref(),
+                row.message_count > 0,
+                self.lifetime.child_token(),
+            );
+            options
+                .tools
+                .push(tools::python_tool(Arc::clone(&python), python_on));
+            options.extensions.push(tools::python_extension(python));
+        }
         let mcp = TaskMcp::new_with_output_dir(
             Path::new(&row.project_root),
             search_path,
@@ -816,6 +840,7 @@ impl AgentRuntime {
                 cua: task_cua,
                 agents,
                 permissions,
+                shell,
                 last_used: Instant::now(),
                 unloading: Arc::new(AtomicBool::new(false)),
             },
@@ -823,6 +848,31 @@ impl AgentRuntime {
         drop(sessions);
         self.evict_idle_tasks(&row.id).await;
         Ok((session, switched))
+    }
+
+    /// Bring a switch of Settings → Tools to every loaded task that
+    /// registered its tools, as the account has the switch now. Only those
+    /// tools change, from the task's next model request; see
+    /// [`tools::set_tools_active`].
+    pub(super) async fn apply_tool_switch(&self, switch: ToolSwitch) {
+        let enabled = {
+            let sessions = self.sessions.lock().await;
+            // Read under the lock, as a session's build does: when changes
+            // race, the last to get here applies the last one saved.
+            let enabled = tool_switches(&self.host.paths, &self.user_id).enabled(switch);
+            for task in sessions.values() {
+                tools::set_tools_active(&task.session, &switch.tool_names(task.shell), enabled);
+            }
+            enabled
+        };
+        // Off means off: no interpreter, and no background work an earlier
+        // cell left running, outlives the Python switch.
+        if switch == ToolSwitch::Python
+            && !enabled
+            && let Some(python) = &self.python
+        {
+            python.discard_all(tools::SWITCHED_OFF_REASON).await;
+        }
     }
 
     /// Move a session to `model`, as Pi's `setModel` does. A started task
@@ -1033,7 +1083,27 @@ impl AgentRuntime {
         // its persistence retry succeeds. The host must retain this runtime on
         // failure and keep its ownership lock/key until a successful retry.
         futures_util::future::join_all(sessions.iter().map(AgentSession::shutdown)).await;
+        if let Some(python) = &self.python {
+            python.shutdown().await;
+        }
         self.finish_shutdown().await
+    }
+
+    /// Discard a loaded task's Python scratchpad; its next call starts fresh
+    /// and is told why.
+    pub(super) async fn discard_python(&self, session_id: &str, reason: &str) {
+        if let Some(python) = &self.python {
+            python.discard(session_id, reason).await;
+        }
+    }
+
+    /// Discard the Python scratchpads of a project's loaded tasks.
+    pub(super) async fn discard_project_python(&self, project_root: &str) {
+        if let Some(python) = &self.python {
+            python
+                .discard_project(Path::new(project_root), tools::PROJECT_REMOVED_REASON)
+                .await;
+        }
     }
 
     /// Finish saving an already-drained runtime without notifying extensions or

@@ -1,7 +1,8 @@
 //! Stable-ID application Vim navigation for Settings.
 //!
 //! The settings screen owns this projection because its visible controls are
-//! dynamic (shortcut filtering, integrations, MCP servers, and ACP examples).
+//! dynamic (shortcut filtering, integrations, tools, MCP servers, and ACP
+//! examples).
 //! Selecting a row is side-effect free; Enter delegates to the same existing
 //! method as its pointer control.
 
@@ -29,7 +30,6 @@ pub(super) enum SettingsRegion {
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(super) enum GeneralTarget {
-    Web,
     Appearance,
     Language,
     ChatFont,
@@ -61,6 +61,7 @@ pub(super) enum SettingsTarget {
     PromptClear,
     Integration(String),
     IntegrationSetup(String),
+    Tool(String),
     McpAdd,
     McpServer(String),
     McpCatalog(String),
@@ -146,7 +147,6 @@ impl SettingsScreen {
     pub(super) fn visible_application_targets(&self) -> Vec<SettingsTarget> {
         match self.section {
             Section::General => [
-                GeneralTarget::Web,
                 GeneralTarget::Appearance,
                 GeneralTarget::Language,
                 GeneralTarget::ChatFont,
@@ -211,6 +211,7 @@ impl SettingsScreen {
                         .map(|entry| SettingsTarget::McpCatalog(entry.id.clone())),
                 )
                 .collect(),
+            Section::Tools => self.tool_targets(),
             Section::Remote | Section::Usage | Section::About | Section::Advanced => Vec::new(),
         }
     }
@@ -403,6 +404,7 @@ impl SettingsScreen {
             Some(SettingsTarget::PromptClear) => self.clear_prompt(cx),
             Some(SettingsTarget::Integration(id)) => self.toggle_integration(&id, cx),
             Some(SettingsTarget::IntegrationSetup(id)) => self.setup_integration(&id, cx),
+            Some(SettingsTarget::Tool(id)) => self.toggle_tool(&id, cx),
             Some(SettingsTarget::McpAdd) => self.open_mcp_editor(None, cx),
             Some(SettingsTarget::McpServer(name)) => self.edit_mcp_server(&name, cx),
             Some(SettingsTarget::McpCatalog(id)) => self.connect_catalog_entry(&id, cx),
@@ -412,7 +414,6 @@ impl SettingsScreen {
 
     fn activate_general_target(&mut self, target: GeneralTarget, cx: &mut Context<Self>) {
         match target {
-            GeneralTarget::Web => self.toggle_web_default(cx),
             GeneralTarget::Language => self.toggle_setting_menu(SettingMenu::Language, cx),
             GeneralTarget::Appearance => self.toggle_setting_menu(SettingMenu::Appearance, cx),
             GeneralTarget::ChatFont => self.toggle_setting_menu(SettingMenu::ChatFont, cx),
@@ -809,6 +810,43 @@ mod tests {
     }
 
     #[gpui::test]
+    fn tool_rows_are_targets_and_enter_switches_one(cx: &mut TestAppContext) {
+        let (settings, cx) = dropdown_window(cx, true);
+        let switch =
+            |id: &str, enabled: bool, available: bool| maple_agent::agent::AgentToolSwitch {
+                id: id.to_string(),
+                enabled,
+                enabled_by_default: enabled,
+                available,
+            };
+        cx.update(|window, app| {
+            settings.update(app, |this, cx| {
+                this.select_section(Section::Tools, cx);
+                this.tools.switches = Some(vec![
+                    switch("read", true, true),
+                    // A tool this computer cannot offer has no row.
+                    switch("python", false, false),
+                    switch("grep", false, true),
+                ]);
+                assert_eq!(
+                    this.visible_application_targets(),
+                    [
+                        SettingsTarget::Tool("read".to_string()),
+                        SettingsTarget::Tool("grep".to_string()),
+                    ]
+                );
+                this.application_vim.region = SettingsRegion::Pane;
+                this.application_vim.target = Some(SettingsTarget::Tool("grep".to_string()));
+                this.execute_application_vim(SettingsApplicationCommand::Activate, window, cx);
+                assert!(
+                    this.tools.saving.contains("grep"),
+                    "Enter switches the row, as a click does"
+                );
+            })
+        });
+    }
+
+    #[gpui::test]
     fn application_vim_off_keeps_settings_projection_empty(cx: &mut TestAppContext) {
         cx.executor().allow_parking();
         let backend = std::sync::Arc::new(
@@ -923,16 +961,16 @@ mod tests {
                     "entering the pane defers reveal until its selected row is rendered"
                 );
 
-                // General starts at the web toggle: there is no permission
-                // row to land on first.
+                // General starts at Appearance: there is no permission or
+                // web row to land on first.
                 assert_eq!(
                     this.visible_application_targets().first(),
-                    Some(&SettingsTarget::General(GeneralTarget::Web))
+                    Some(&SettingsTarget::General(GeneralTarget::Appearance))
                 );
                 this.move_application_selection(1, 1, window, cx);
                 assert_eq!(
                     this.application_vim.target,
-                    Some(SettingsTarget::General(GeneralTarget::Appearance))
+                    Some(SettingsTarget::General(GeneralTarget::Language))
                 );
                 assert!(
                     this.application_reveal_pending,
@@ -1083,8 +1121,9 @@ mod tests {
         (settings, cx)
     }
 
-    /// The General pane starts at the web toggle: there is no "Default
-    /// permission mode" row because the composer's chip remembers the mode.
+    /// The General pane starts at Appearance: there is no "Default
+    /// permission mode" row because the composer's chip remembers the mode,
+    /// and no web row because Settings → Tools has the web switch.
     #[gpui::test]
     fn general_settings_have_no_permission_row(cx: &mut TestAppContext) {
         let (settings, cx) = dropdown_window(cx, true);
@@ -1099,9 +1138,55 @@ mod tests {
         settings.update(cx, |this, _| {
             assert_eq!(
                 this.visible_application_targets().first(),
-                Some(&SettingsTarget::General(GeneralTarget::Web))
+                Some(&SettingsTarget::General(GeneralTarget::Appearance))
             );
         });
+    }
+
+    /// The content area below the title bar bounds the pane: General is
+    /// taller than the window, so the pane has a scroll range and a wheel
+    /// over it moves its content.
+    #[gpui::test]
+    fn the_pane_scrolls_below_the_title_bar(cx: &mut TestAppContext) {
+        let (settings, cx) = dropdown_window(cx, false);
+        let content = cx
+            .debug_bounds("settings-content")
+            .expect("settings content");
+        let range = settings.update(cx, |this, _| this.pane_scroll.max_offset().y);
+        assert!(range > px(0.), "General overflows its content area");
+        cx.simulate_event(gpui::ScrollWheelEvent {
+            // In the pane's gutter, so no row takes the wheel.
+            position: gpui::point(content.left() + px(8.), content.center().y),
+            delta: gpui::ScrollDelta::Pixels(gpui::point(px(0.), px(-200.))),
+            ..Default::default()
+        });
+        cx.run_until_parked();
+        let offset = settings.update(cx, |this, _| this.pane_scroll.offset().y);
+        assert!(offset < px(0.), "the wheel scrolls the pane");
+    }
+
+    /// Sign out lives in Account only, so it must not wait for the account:
+    /// while the profile loads, or after it fails to, the session can still
+    /// end from Settings.
+    #[gpui::test]
+    fn account_offers_sign_out_before_the_account_loads(cx: &mut TestAppContext) {
+        let (settings, cx) = dropdown_window(cx, false);
+        settings.update(cx, |this, cx| this.select_section(Section::Account, cx));
+        cx.run_until_parked();
+        assert!(settings.update(cx, |this, _| this.account.info.is_none()));
+        assert!(
+            cx.debug_bounds("account-sign-out").is_some(),
+            "while loading"
+        );
+        settings.update(cx, |this, cx| {
+            this.account.load_error = Some("offline".into());
+            cx.notify();
+        });
+        cx.run_until_parked();
+        assert!(
+            cx.debug_bounds("account-sign-out").is_some(),
+            "after a failed load"
+        );
     }
 
     #[gpui::test]
