@@ -25,6 +25,9 @@ fn locale_resolution_accepts_os_spellings_and_falls_back_safely() {
     ] {
         assert_eq!(resolve(locale), ENGLISH);
     }
+    for locale in ["de", "de-DE", "de-AT", "de-CH", "de_DE.UTF-8", "de_DE@euro"] {
+        assert_eq!(resolve(Some(locale)), langid!("de"));
+    }
     for locale in ["es", "es-ES", "es-MX", "es_ES.UTF-8"] {
         assert_eq!(resolve(Some(locale)), langid!("es"));
     }
@@ -562,6 +565,12 @@ fn cached_messages_and_notices_follow_locale_without_translating_raw_text() {
             "Contraseña cambiada.",
         ),
         (
+            "de",
+            "aktive Anfrage",
+            "aktive Anfragen",
+            "Passwort geändert.",
+        ),
+        (
             "en",
             "active request",
             "active requests",
@@ -590,7 +599,8 @@ fn parameterized_catalogs_format_all_messages_without_missing_arguments() {
     // exercised, including plural branches, without copying a message list.
     let english = include_str!("../../../locales/en/app.ftl");
     let spanish = include_str!("../../../locales/es/app.ftl");
-    let names: BTreeSet<_> = [english, spanish]
+    let german = include_str!("../../../locales/de/app.ftl");
+    let names: BTreeSet<_> = [english, spanish, german]
         .into_iter()
         .flat_map(|source| {
             source
@@ -604,7 +614,11 @@ fn parameterized_catalogs_format_all_messages_without_missing_arguments() {
                 .collect::<Vec<_>>()
         })
         .collect();
-    for (locale, source) in [(langid!("en"), english), (langid!("es"), spanish)] {
+    for (locale, source) in [
+        (langid!("en"), english),
+        (langid!("es"), spanish),
+        (langid!("de"), german),
+    ] {
         let mut bundle = FluentBundle::new(vec![locale]);
         bundle
             .add_resource(FluentResource::try_new(source.to_string()).unwrap())
@@ -1249,4 +1263,38 @@ fn future_error_kinds_do_not_inherit_known_provider_copy() {
     }))
     .unwrap();
     assert!(crate::ui::timeline_labels::body(&item, &MessageCache::default()).is_none());
+}
+
+#[test]
+fn german_saved_preference_formats_native_labels_and_arguments() {
+    let _locale = TestLocalizationGuard::enable();
+    initialize_saved_preference(Some("de-AT"));
+    assert_eq!(current_locale(), langid!("de"));
+    assert_eq!(preference_label(Some("de")).as_ref(), "Deutsch");
+    assert_eq!(tr("settings-language").as_ref(), "Sprache");
+    let title = tr_args(
+        "update-confirmation-title-version",
+        [("version", "1.2.3".into())],
+    );
+    assert_eq!(
+        title.as_ref(),
+        "Maple neu starten, um v1.2.3 zu installieren?"
+    );
+    assert!(!title.contains(['\u{2068}', '\u{2069}']));
+    assert_eq!(
+        tr_args(
+            "settings-date",
+            [
+                ("day", "9".into()),
+                ("month", "März".into()),
+                ("year", "2026".into())
+            ]
+        )
+        .as_ref(),
+        "9. März 2026"
+    );
+    initialize_saved_preference(Some("en"));
+    assert_eq!(current_locale(), langid!("de"));
+    apply_preference(Some("en"));
+    assert_eq!(tr("settings-language").as_ref(), "Language");
 }

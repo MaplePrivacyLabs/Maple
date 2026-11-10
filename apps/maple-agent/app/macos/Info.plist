@@ -8,6 +8,7 @@
     <array>
         <string>en</string>
         <string>es</string>
+        <string>de</string>
     </array>
     <key>CFBundleDisplayName</key>
     <string>Maple Agent Debug</string>

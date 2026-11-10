@@ -1,0 +1,14 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+	<key>NSAppleEventsUsageDescription</key>
+	<string>Maple verwendet Automation nur, wenn eine Aktion zur Computerbedienung mit einer anderen App kommunizieren muss.</string>
+	<key>NSMicrophoneUsageDescription</key>
+	<string>Maple nimmt dein Mikrofon auf, wenn du eine Nachricht diktierst.</string>
+	<key>NSDocumentsFolderUsageDescription</key>
+	<string>Maple speichert seinen Standardarbeitsbereich in Documents/Maple, wo der Agent mit den Dateien deiner Aufgaben arbeitet.</string>
+	<key>NSScreenCaptureUsageDescription</key>
+	<string>Maple nimmt den Bildschirm auf, wenn du die Computerbedienung ausdrücklich aktivierst, damit der Agent die Apps sehen und bedienen kann, deren Steuerung du angefordert hast.</string>
+</dict>
+</plist>

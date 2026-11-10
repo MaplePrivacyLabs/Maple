@@ -12,7 +12,7 @@ User content, provider diagnostics and machine-facing text remain unchanged.
 ## Locale and live switching
 
 Localization is enabled by default. Settings → General → Language offers System,
-English and Español. Changes are saved through the host and apply immediately;
+English, Español and Deutsch. Changes are saved through the host and apply immediately;
 no environment variable or restart is needed.
 
 The OS locale supplies the initial default. The first host settings snapshot
@@ -105,8 +105,8 @@ catalog and native `language-name`, register it in `i18n::LANGUAGES`, then run
 Validate layout, font fallback, bidi marks, and platform-native language
 metadata before production enablement. Spanish currently has Linux preview
 evidence only; macOS/Windows runtime checks remain separate. The macOS bundle
-declares English and Spanish, and the existing debug/release bundle generators
-include Spanish permission-description resources. Generator tests do not prove
+declares English, Spanish and German, and the existing debug/release bundle generators
+include Spanish and German permission-description resources. Generator tests do not prove
 native permission-dialog behavior on macOS.
 
 ## Compatibility and remaining coverage
@@ -174,3 +174,15 @@ The nonblocking dispatch-macro consolidation and global locale observers remain
 follow-up maintenance work.
 These changes do not establish Windows runtime evidence: exercise live language
 switching, native prompts/menus and DirectWrite on Windows before release.
+
+## German terminology
+
+The `de` catalog uses standard German with informal **du**. Regional OS locales
+such as `de-DE`, `de-AT` and `de-CH` resolve to this shared catalog. Use **Aufgabe**
+for task, **Datenspeicher** for the local store, **Eingabefeld** for composer,
+**Werkzeug** for tool and **entfernter Computer** for remote computer. Keep
+product names, external editor controls, commands and confirmation words exact.
+The English-only spell checker is disabled for German, as for Spanish.
+German macOS permission resources accompany the embedded catalog. Native macOS
+and Windows layout, font and permission-dialog checks remain required before
+release; generator and catalog tests do not establish those runtime results.
