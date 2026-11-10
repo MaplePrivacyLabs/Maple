@@ -384,11 +384,51 @@ struct ModelConfigEntry {
     /// Maple Work offers the model for new tasks. The catalog still lists it
     /// for Research and the API either way.
     available_in_agent: bool,
+    /// The model picker section the model lists under.
+    group: Option<ModelGroup>,
     enabled: bool,
     deprecated: bool,
     sort_order: u16,
     config: ModelConfig,
     catalog_metadata: Option<ModelCatalogMetadata>,
+}
+
+/// A section of a client's model picker. The catalog serves each model's
+/// group and the groups in display order, so a model joins a section, and a
+/// section is added or moved, without a client release.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum ModelGroup {
+    Capable,
+    Uncensored,
+    Fast,
+}
+
+impl ModelGroup {
+    /// The order clients list the sections in.
+    const ORDER: [Self; 3] = [Self::Capable, Self::Uncensored, Self::Fast];
+
+    /// Stable: clients key their translated heading on it.
+    const fn id(self) -> &'static str {
+        match self {
+            Self::Capable => "capable",
+            Self::Uncensored => "uncensored",
+            Self::Fast => "fast",
+        }
+    }
+
+    /// The English heading, shown by a client that has no translation for
+    /// the id yet.
+    const fn label(self) -> &'static str {
+        match self {
+            Self::Capable => "Most capable",
+            Self::Uncensored => "Uncensored",
+            Self::Fast => "Fast & cheap",
+        }
+    }
+
+    fn json(self) -> Value {
+        json!({ "id": self.id(), "label": self.label() })
+    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -568,6 +608,7 @@ impl ModelConfigEntry {
             paid_catalog_only: false,
             api_listed: listed,
             available_in_agent: listed,
+            group: None,
             enabled,
             deprecated,
             sort_order,
@@ -610,6 +651,7 @@ impl ModelConfigEntry {
             paid_catalog_only: false,
             api_listed: true,
             available_in_agent: false,
+            group: None,
             enabled,
             deprecated,
             sort_order,
@@ -645,6 +687,11 @@ impl ModelConfigEntry {
 
     const fn with_developer_role_as_system(mut self) -> Self {
         self.config.developer_role_as_system = true;
+        self
+    }
+
+    const fn in_group(mut self, group: ModelGroup) -> Self {
+        self.group = Some(group);
         self
     }
 
@@ -697,6 +744,9 @@ impl ModelConfigEntry {
             "available_in_agent": self.available_in_agent,
         });
         self.write_reasoning_metadata(&mut value);
+        if let Some(group) = self.group {
+            value["group"] = json!(group.id());
+        }
 
         if let Some(metadata) = self.catalog_metadata {
             value["input_modalities"] = json!(metadata.input_modalities);
@@ -1051,7 +1101,8 @@ const MODEL_CONFIGS: &[ModelConfigEntry] = &[
         262_144,
         GEMMA4_RESPONSES_MODEL_CONFIG,
     )
-    .with_reasoning(GEMMA4_REASONING),
+    .with_reasoning(GEMMA4_REASONING)
+    .in_group(ModelGroup::Fast),
     ModelConfigEntry::new(
         GLM_5_3_FLASH_MODEL_ID,
         "GLM-5.3 Flash",
@@ -1070,6 +1121,7 @@ const MODEL_CONFIGS: &[ModelConfigEntry] = &[
         GLM_5_3_RESPONSES_MODEL_CONFIG,
     )
     .with_reasoning(GLM_5_3_REASONING)
+    .in_group(ModelGroup::Fast)
     .with_catalog_metadata(ModelCatalogMetadata::new(
         &["text", "image"],
         &["text"],
@@ -1092,6 +1144,7 @@ const MODEL_CONFIGS: &[ModelConfigEntry] = &[
         KIMI_K3_1_PRO_RESPONSES_MODEL_CONFIG,
     )
     .with_reasoning(KIMI_K3_1_PRO_REASONING)
+    .in_group(ModelGroup::Capable)
     .with_developer_role_as_system()
     .with_catalog_metadata(ModelCatalogMetadata::new(
         &["text", "image"],
@@ -1115,6 +1168,7 @@ const MODEL_CONFIGS: &[ModelConfigEntry] = &[
         KIMI_K3_RESPONSES_MODEL_CONFIG,
     )
     .with_reasoning(KIMI_K3_REASONING)
+    .in_group(ModelGroup::Capable)
     .with_developer_role_as_system()
     .with_catalog_metadata(ModelCatalogMetadata::new(
         &["text", "image"],
@@ -1139,6 +1193,7 @@ const MODEL_CONFIGS: &[ModelConfigEntry] = &[
         GLM_5_3_RESPONSES_MODEL_CONFIG,
     )
     .with_reasoning(GLM_5_3_REASONING)
+    .in_group(ModelGroup::Capable)
     .with_catalog_provider("continuum", "glm-5.3")
     .with_catalog_metadata(ModelCatalogMetadata::new(&["text"], &["text"], None, None)),
     ModelConfigEntry::new(
@@ -1157,6 +1212,7 @@ const MODEL_CONFIGS: &[ModelConfigEntry] = &[
         DEEPSEEK_V4_1_FLASH_RESPONSES_MODEL_CONFIG,
     )
     .with_reasoning(DEEPSEEK_V4_1_FLASH_REASONING)
+    .in_group(ModelGroup::Fast)
     .with_catalog_metadata(ModelCatalogMetadata::new(
         &["text", "image"],
         &["text"],
@@ -1173,7 +1229,7 @@ const MODEL_CONFIGS: &[ModelConfigEntry] = &[
         "Dealign's uncensored DeepSeek 1017 reasoning and tool-use model.",
         ModelAccessTier::Pro,
         ModelCapabilities::chat(true, true),
-        &["Beta"],
+        &["Beta", "Popular"],
         true,
         true,
         false,
@@ -1182,6 +1238,7 @@ const MODEL_CONFIGS: &[ModelConfigEntry] = &[
         DEEPSEEK_V4_1_FLASH_RESPONSES_MODEL_CONFIG,
     )
     .with_reasoning(DEEPSEEK_V4_1_FLASH_REASONING)
+    .in_group(ModelGroup::Uncensored)
     .with_catalog_provider("maple", DEEPSEEK_V4_1_FLASH_UNCENSORED_MODEL_ID)
     .with_catalog_metadata(ModelCatalogMetadata::new(
         &["text", "image"],
@@ -1325,6 +1382,15 @@ pub(crate) fn model_catalog_response(plan: ModelPlan) -> Value {
     let data = MODEL_CONFIGS
         .iter()
         .filter(|entry| entry.listed && (plan.is_paid() || !entry.paid_catalog_only))
+        .collect::<Vec<_>>();
+    // Only the sections this plan's catalog has a model in.
+    let groups = ModelGroup::ORDER
+        .into_iter()
+        .filter(|group| data.iter().any(|entry| entry.group == Some(*group)))
+        .map(ModelGroup::json)
+        .collect::<Vec<_>>();
+    let data = data
+        .into_iter()
         .map(|entry| entry.catalog_json())
         .collect::<Vec<_>>();
     let aliases = MODEL_ALIAS_ENTRIES
@@ -1335,6 +1401,7 @@ pub(crate) fn model_catalog_response(plan: ModelPlan) -> Value {
     json!({
         "object": "list",
         "data": data,
+        "groups": groups,
         "aliases": aliases,
         "defaults": {
             "quick": AUTO_QUICK_MODEL_ID,
@@ -1424,7 +1491,7 @@ mod tests {
             assert_eq!(derivative["provider_id"], id);
             assert_eq!(derivative["context_window"], 1_048_576);
             assert_eq!(derivative["access"], "pro");
-            assert_eq!(derivative["badges"], json!(["Beta"]));
+            assert_eq!(derivative["badges"], json!(["Beta", "Popular"]));
             assert_eq!(catalog["defaults"]["quick"], AUTO_QUICK_MODEL_ID);
             assert_eq!(catalog["defaults"]["powerful"], AUTO_POWERFUL_MODEL_ID);
             assert!(has_model(&catalog, DEEPSEEK_V4_1_FLASH_MODEL_ID));
@@ -1775,6 +1842,40 @@ mod tests {
             assert_eq!(model["capabilities"]["tool_use"], true);
         }
         assert!(ModelPlan::Paid.allows_model(DEEPSEEK_V4_1_FLASH_MODEL_ID));
+    }
+
+    /// Maple Work lists its models in the catalog's sections, so a model it
+    /// offers without one would list apart from the rest.
+    #[test]
+    fn test_catalog_groups_every_model_maple_work_offers() {
+        for plan in [ModelPlan::Free, ModelPlan::Paid] {
+            let catalog = model_catalog_response(plan);
+            let groups = catalog["groups"]
+                .as_array()
+                .expect("catalog groups")
+                .iter()
+                .map(|group| {
+                    assert!(!group["label"].as_str().expect("group label").is_empty());
+                    group["id"].as_str().expect("group ID")
+                })
+                .collect::<Vec<_>>();
+            assert_eq!(groups, ["capable", "uncensored", "fast"], "plan={plan:?}");
+            for model in catalog["data"].as_array().expect("catalog data") {
+                let id = model["id"].as_str().expect("model ID");
+                match model["group"].as_str() {
+                    Some(group) => assert!(groups.contains(&group), "{id}: {group}"),
+                    None => assert_eq!(model["available_in_agent"], false, "{id}"),
+                }
+            }
+        }
+        let catalog = model_catalog_response(ModelPlan::Paid);
+        for (id, group) in [
+            (GLM_5_3_MODEL_ID, "capable"),
+            (DEEPSEEK_V4_1_FLASH_UNCENSORED_MODEL_ID, "uncensored"),
+            (DEEPSEEK_V4_1_FLASH_MODEL_ID, "fast"),
+        ] {
+            assert_eq!(catalog_model(&catalog, id)["group"], group, "{id}");
+        }
     }
 
     #[test]
