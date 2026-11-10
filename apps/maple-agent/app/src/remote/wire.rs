@@ -6,7 +6,7 @@ use zeroize::Zeroizing;
 
 // Keep the ALPN family stable so older peers receive the explicit version refusal.
 pub const ALPN: &[u8] = b"maple-agent/remote/1";
-pub const VERSION: u32 = 7;
+pub const VERSION: u32 = 8;
 pub const MAX_FRAME: usize = 16 * 1024 * 1024;
 pub const MAX_PREFACE: usize = 4096;
 pub const MAX_MANAGEMENT_REPLY: usize = 16 * 1024;
@@ -576,7 +576,7 @@ mod tests {
     #[test]
     fn optional_management_keeps_the_shipped_control_ack_and_alpn() {
         assert_eq!(ALPN, b"maple-agent/remote/1");
-        assert_eq!(VERSION, 7);
+        assert_eq!(VERSION, 8);
         assert_eq!(
             serde_json::to_string(&Ok::<(), Refusal>(())).unwrap(),
             r#"{"Ok":null}"#
@@ -584,6 +584,22 @@ mod tests {
         assert_eq!(Method::PeerInfo.name(), "peer_info");
         assert_eq!(Method::RemoteUpdateInstall.name(), "remote_update_install");
     }
+    #[tokio::test]
+    async fn task_state_wire_upgrade_refuses_seven_before_decoding_requests() {
+        let previous: serde_json::Value =
+            serde_json::from_str(include_str!("wire_v7.json")).unwrap();
+        for kind in ["hello", "pair"] {
+            let (mut tx, mut rx) = tokio::io::duplex(4096);
+            write(&mut tx, &previous[kind], MAX_PREFACE).await.unwrap();
+            let refusal = match read_hello(&mut rx).await {
+                Err(refusal) => refusal,
+                Ok(_) => panic!("wire 7 must update before exchanging task pages"),
+            };
+            assert!(refusal.terminal);
+            assert!(is_protocol_incompatibility_refusal(&refusal.into_error()));
+        }
+    }
+
     #[tokio::test]
     async fn paging_wire_upgrade_refuses_version_five_before_decoding() {
         // Version 5 shipped whole catalogs and transcripts. Reject the old
@@ -720,7 +736,7 @@ mod tests {
         );
     }
     #[test]
-    fn wire_seven_examples_are_stable() {
+    fn unchanged_wire_seven_payloads_are_stable() {
         let examples: serde_json::Value =
             serde_json::from_str(include_str!("wire_v7.json")).unwrap();
         fn check<T: serde::de::DeserializeOwned + serde::Serialize>(value: &serde_json::Value) {
@@ -793,7 +809,6 @@ mod tests {
                 "fixture must exercise a forwarded event"
             );
         }
-        assert_eq!(examples["hello"]["version"], VERSION);
     }
 
     #[test]

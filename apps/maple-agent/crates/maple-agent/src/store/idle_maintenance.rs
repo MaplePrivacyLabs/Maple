@@ -79,7 +79,7 @@ mod tests {
             .write(Durability::Durable, |transaction| {
                 transaction.execute("INSERT INTO accounts(id,user_key,user_id,created_ms,last_seen_ms) VALUES (1,'a','A',1,1)", [])?;
                 transaction.execute("INSERT INTO projects(id,account_id,root,last_used_ms) VALUES (1,1,'/vacuum-fixture',1)", [])?;
-                transaction.execute("INSERT INTO tasks(id,uuid,account_id,project_id,kind,state,title,title_fold,created_ms,updated_ms) VALUES (1,'vacuum-task',1,1,'desktop','settled','vacuum','vacuum',1,1)", [])?;
+                transaction.execute("INSERT INTO tasks(id,uuid,account_id,project_id,kind,state,title,title_fold,created_ms,updated_ms) VALUES (1,'vacuum-task',1,1,'desktop','active','vacuum','vacuum',1,1)", [])?;
                 for (id, bytes) in [(1, &retired), (2, &live)] {
                     // Leave the fixture uncompressed to create real free pages.
                     transaction.execute(

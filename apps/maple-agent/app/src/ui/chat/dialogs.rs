@@ -417,7 +417,7 @@ impl ChatScreen {
         self.clear_selected_session_presentation(cx);
     }
 
-    /// Move one task between active, settled, and archived. The service
+    /// Move one task between active and archived. The service
     /// event updates the row; an archived selection moves to the newest
     /// live task in the same root.
     pub(super) fn set_session_state(

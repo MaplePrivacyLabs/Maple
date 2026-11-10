@@ -334,7 +334,6 @@ impl AgentRuntimeHandle {
         let timeline = live.items;
         let state = match summary.state.as_str() {
             "active" => super::AgentTaskState::Active,
-            "settled" => super::AgentTaskState::Settled,
             "archived" => super::AgentTaskState::Archived,
             _ => return Err("Invalid task state".to_string()),
         };

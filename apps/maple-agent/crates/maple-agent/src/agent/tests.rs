@@ -2283,7 +2283,7 @@ fn notices_and_prompts(timeline: &[AgentTimelineItem]) -> Vec<String> {
 /// follows from the start of the run, and the transcript says where it
 /// switched, live and once stored.
 #[tokio::test]
-async fn a_run_wakes_a_settled_task_and_a_started_task_switches_models() {
+async fn a_started_task_switches_models() {
     let mut harness = Harness::new().await;
     let catalog = json!({
         "object": "list",
@@ -2296,15 +2296,8 @@ async fn a_run_wakes_a_settled_task_and_a_started_task_switches_models() {
     harness.serve_catalog(catalog.clone()).await;
     harness.faux.push_text("Hello.");
     let task = harness.create_task().await;
-    harness
-        .handle
-        .set_session_state(task.clone(), AgentTaskState::Settled)
-        .await
-        .unwrap();
     let mut run = harness.send(&task, "Hi").await;
     assert_eq!(finished(&mut run).await, AgentRunTerminal::Completed);
-    let listed = harness.handle.list_sessions(None).await.unwrap();
-    assert_eq!(listed[0].state, AgentTaskState::Active);
 
     harness.faux.push_text("Hello from Kimi.");
     let mut other_model = harness.request(&task, "Again");
@@ -2401,6 +2394,12 @@ async fn tasks_rename_archive_and_delete_with_their_files() {
         .await
         .unwrap();
     assert_eq!(archived.state, AgentTaskState::Archived);
+    let restored = harness
+        .handle
+        .set_session_state(task.clone(), AgentTaskState::Active)
+        .await
+        .unwrap();
+    assert_eq!(restored.state, AgentTaskState::Active);
 
     let store = harness.handle.store().unwrap();
     assert!(!store.timeline(&task).unwrap().is_empty());
@@ -2411,7 +2410,7 @@ async fn tasks_rename_archive_and_delete_with_their_files() {
 }
 
 #[tokio::test]
-async fn a_running_task_cannot_be_deleted_or_settled() {
+async fn a_running_task_cannot_be_deleted_or_archived() {
     let harness = Harness::new().await;
     harness.faux.push_hang();
     let task = harness.create_task().await;
@@ -2424,7 +2423,7 @@ async fn a_running_task_cannot_be_deleted_or_settled() {
     assert!(error.contains("Stop the running agent"), "{error}");
     let error = harness
         .handle
-        .set_session_state(task.clone(), AgentTaskState::Settled)
+        .set_session_state(task.clone(), AgentTaskState::Archived)
         .await
         .unwrap_err();
     assert!(error.contains("Stop the running agent"), "{error}");

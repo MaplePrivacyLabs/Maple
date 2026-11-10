@@ -561,7 +561,6 @@ fn task_row(record: TaskRecord, project_root: String) -> TaskRow {
         },
         state: match record.state {
             crate::store::TaskState::Active => AgentTaskState::Active,
-            crate::store::TaskState::Settled => AgentTaskState::Settled,
             crate::store::TaskState::Archived => AgentTaskState::Archived,
         },
         web_enabled: record.web_enabled,
@@ -583,7 +582,6 @@ fn store_kind(kind: TaskKind) -> crate::store::TaskKind {
 fn store_state(state: AgentTaskState) -> crate::store::TaskState {
     match state {
         AgentTaskState::Active => crate::store::TaskState::Active,
-        AgentTaskState::Settled => crate::store::TaskState::Settled,
         AgentTaskState::Archived => crate::store::TaskState::Archived,
     }
 }

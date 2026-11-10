@@ -792,6 +792,7 @@ mod tests {
                     .open_task_page(request, PageTransport::Local)
                     .await
                     .unwrap();
+                assert_eq!(page.summary.state, "active");
                 assert_eq!(
                     page.timeline_format,
                     super::super::projector::TIMELINE_FORMAT

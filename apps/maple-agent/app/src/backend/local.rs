@@ -2822,8 +2822,8 @@ impl LocalBackend {
             .await
     }
 
-    /// Move a task between active, settled, and archived. The runtime
-    /// refuses to settle or archive a task while it runs.
+    /// Move a task between active and archived. The runtime
+    /// refuses to archive a task while it runs.
     pub async fn set_session_state(
         &self,
         user_id: &str,

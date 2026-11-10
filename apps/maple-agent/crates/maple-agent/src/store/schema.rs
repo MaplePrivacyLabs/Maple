@@ -6,7 +6,7 @@ use super::{StoreError, StoreResult};
 
 pub(super) const APPLICATION_ID: i64 = 1_296_126_028;
 pub(super) const SCHEMA_EPOCH: i64 = 1;
-pub(super) const VERSION: i64 = 5;
+pub(super) const VERSION: i64 = 6;
 
 /// Original migration schema, including partial indexes and constraints.
 /// Validation executes the complete append-only migration chain as its reference.
@@ -306,6 +306,10 @@ CREATE TABLE mcp_oauth_credentials (
 ) STRICT;
 "#;
 
+// Keep the original CHECK constraint to avoid rebuilding the tasks table and
+// its dependent history. The runtime only writes active and archived states.
+const RESTORE_SETTLED_TASKS: &str = "UPDATE tasks SET state='active' WHERE state='settled';";
+
 const MIGRATIONS: &[Migration] = &[
     Migration {
         version: 1,
@@ -326,6 +330,10 @@ const MIGRATIONS: &[Migration] = &[
     Migration {
         version: 5,
         sql: MCP_OAUTH_DDL,
+    },
+    Migration {
+        version: 6,
+        sql: RESTORE_SETTLED_TASKS,
     },
 ];
 

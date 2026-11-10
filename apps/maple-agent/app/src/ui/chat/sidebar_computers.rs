@@ -32,7 +32,6 @@ impl ComputerPages {
                     .iter()
                     .flat_map(|group| group.tasks.iter())
                     .chain(page.active.iter())
-                    .chain(page.settled.iter())
                     .chain(page.search.iter())
                     .chain(page.archived.iter())
                     .map(|task| {
@@ -76,7 +75,6 @@ impl ComputerPages {
             .iter()
             .flat_map(|group| group.tasks.iter())
             .chain(page.active.iter())
-            .chain(page.settled.iter())
             .chain(page.search.iter())
             .chain(page.archived.iter())
             .map(|task| task.uuid.clone())
@@ -89,12 +87,10 @@ struct ComputerHostPage {
     projects: Vec<ProjectSummary>,
     groups: Vec<NavigationProjectGroup>,
     active: Vec<TaskSummary>,
-    settled: Vec<TaskSummary>,
     search: Vec<TaskSummary>,
     archived: Vec<TaskSummary>,
     next_groups: Option<String>,
     next_active: Option<String>,
-    next_settled: Option<String>,
     next_search: Option<String>,
     next_archived: Option<String>,
     next_projects: Option<String>,
@@ -119,14 +115,7 @@ impl ComputerHostPage {
     fn invalidate(&mut self) {
         for (kind, cursor) in [
             (ComputerPageKind::Groups, &self.next_groups),
-            (
-                ComputerPageKind::Tasks { settled: false },
-                &self.next_active,
-            ),
-            (
-                ComputerPageKind::Tasks { settled: true },
-                &self.next_settled,
-            ),
+            (ComputerPageKind::Tasks, &self.next_active),
             (ComputerPageKind::Search, &self.next_search),
             (ComputerPageKind::Archived, &self.next_archived),
         ] {
@@ -136,19 +125,15 @@ impl ComputerHostPage {
         }
         self.next_groups = None;
         self.next_active = None;
-        self.next_settled = None;
         self.next_search = None;
         self.next_archived = None;
         self.next_projects = None;
         for group in &mut self.groups {
-            for (settled, cursor) in [(false, &group.more.active), (true, &group.more.settled)] {
-                if cursor.is_some() {
-                    let root = group.project.root.clone();
-                    self.held_more
-                        .insert(ComputerPageKind::Project { root, settled }.key());
-                }
+            if group.more.take().is_some() {
+                let root = group.project.root.clone();
+                self.held_more
+                    .insert(ComputerPageKind::Project { root }.key());
             }
-            group.more = Default::default();
         }
         self.loading.clear();
         self.replacing.extend(self.loaded.drain());
@@ -165,7 +150,7 @@ impl ComputerHostPage {
         self.loading.contains(&first_page) && self.held_more.contains(&kind.key())
     }
 
-    /// A first page settled these rows, whichever way it went.
+    /// A first page completed, with either rows or an error.
     fn finish_refresh(&mut self, kind: &ComputerPageKind) {
         self.replacing.remove(&kind.key());
         self.held_more.remove(&kind.key());
@@ -179,21 +164,14 @@ impl ComputerHostPage {
             ComputerPageKind::ArchiveCount => None,
             ComputerPageKind::Projects => self.next_projects.as_ref(),
             ComputerPageKind::Groups => self.next_groups.as_ref(),
-            ComputerPageKind::Tasks { settled: false } => self.next_active.as_ref(),
-            ComputerPageKind::Tasks { settled: true } => self.next_settled.as_ref(),
+            ComputerPageKind::Tasks => self.next_active.as_ref(),
             ComputerPageKind::Search => self.next_search.as_ref(),
             ComputerPageKind::Archived => self.next_archived.as_ref(),
-            ComputerPageKind::Project { root, settled } => self
+            ComputerPageKind::Project { root } => self
                 .groups
                 .iter()
                 .find(|group| &group.project.root == root)
-                .and_then(|group| {
-                    if *settled {
-                        group.more.settled.as_ref()
-                    } else {
-                        group.more.active.as_ref()
-                    }
-                }),
+                .and_then(|group| group.more.as_ref()),
         };
         cursor.as_ref() == expected && (cursor.is_some() || !self.loaded.contains(&kind.key()))
     }
@@ -214,9 +192,9 @@ enum ComputerPageKind {
     ArchiveCount,
     Projects,
     Groups,
-    Tasks { settled: bool },
+    Tasks,
     Search,
-    Project { root: String, settled: bool },
+    Project { root: String },
     Archived,
 }
 
@@ -226,9 +204,9 @@ impl ComputerPageKind {
             Self::ArchiveCount => "archive-count".into(),
             Self::Projects => "projects".into(),
             Self::Groups => "groups".into(),
-            Self::Tasks { settled } => format!("tasks:{settled}"),
+            Self::Tasks => "tasks".into(),
             Self::Search => "search".into(),
-            Self::Project { root, settled } => format!("project:{settled}:{root}"),
+            Self::Project { root } => format!("project:{root}"),
             Self::Archived => "archived".into(),
         }
     }
@@ -273,8 +251,8 @@ async fn computer_task_page(
     }
 }
 
-/// Project headers keep their host cursor. Task prefixes and their independent
-/// section continuations are projected from the desktop's complete inventory.
+/// Project headers keep their host cursor. Task prefixes and continuations
+/// use the desktop's manual order.
 async fn manual_computer_groups(
     reader: catalog::Reader,
     backend: Arc<AgentBackend>,
@@ -285,65 +263,25 @@ async fn manual_computer_groups(
     let mut remaining = 200usize;
     for group in &mut page.groups {
         let budget = remaining.min(20) as u16;
-        let active_query = NavigationTaskQuery {
+        let query = NavigationTaskQuery {
             section: TaskSection::State(TaskState::Active),
             project: Some(group.project.root.clone()),
             pins: PinFilter::Ignore,
             cursor: None,
             limit: budget,
         };
-        let settled_query = NavigationTaskQuery {
-            section: TaskSection::State(TaskState::Settled),
-            ..active_query.clone()
-        };
-        // At most two scans run concurrently for this execution computer.
-        let (active, settled) = tokio::try_join!(
-            reader.clone().page(
+        let active = reader
+            .clone()
+            .page(
                 backend.clone(),
                 user.clone(),
-                catalog::TaskQuery::Tasks(active_query.clone()),
+                catalog::TaskQuery::Tasks(query),
                 order.clone(),
-            ),
-            reader.clone().page(
-                backend.clone(),
-                user.clone(),
-                catalog::TaskQuery::Tasks(settled_query.clone()),
-                order.clone(),
-            ),
-        )?;
-        let mut candidates = active
-            .tasks
-            .iter()
-            .chain(settled.tasks.iter())
-            .cloned()
-            .collect::<Vec<_>>();
-        order.sort(&mut candidates);
-        candidates.truncate(usize::from(budget));
-        let settled_count = candidates
-            .iter()
-            .filter(|task| task.state == "settled")
-            .count();
-        let active_count = candidates.len() - settled_count;
-        group.tasks = candidates;
+            )
+            .await?;
+        group.tasks = active.tasks;
         remaining -= group.tasks.len();
-        // Derive each continuation from this exact candidate snapshot. A
-        // section contributing no rows keeps a local start cursor when needed.
-        group.more.active = reader.prefix_cursor(
-            &backend,
-            &user,
-            &catalog::TaskQuery::Tasks(active_query),
-            &order,
-            &active,
-            active_count,
-        )?;
-        group.more.settled = reader.prefix_cursor(
-            &backend,
-            &user,
-            &catalog::TaskQuery::Tasks(settled_query),
-            &order,
-            &settled,
-            settled_count,
-        )?;
+        group.more = active.next_cursor;
     }
     Ok(page)
 }
@@ -459,7 +397,6 @@ fn snapshot_page(computer: &Computer, query: &str, archived_expanded: bool) -> C
             .find(|p| p.path == session.project_root);
         let state = match session.state {
             AgentTaskState::Active => "active",
-            AgentTaskState::Settled => "settled",
             AgentTaskState::Archived => "archived",
         };
         let task = TaskSummary {
@@ -487,8 +424,6 @@ fn snapshot_page(computer: &Computer, query: &str, archived_expanded: bool) -> C
             if archived_expanded {
                 page.archived.push(task.clone());
             }
-        } else if state == "settled" {
-            page.settled.push(task.clone());
         } else {
             page.active.push(task.clone());
         }
@@ -595,8 +530,7 @@ impl Sidebar {
                         "archive-count",
                         "projects",
                         "groups",
-                        "tasks:false",
-                        "tasks:true",
+                        "tasks",
                         "search",
                         "archived",
                     ]
@@ -673,7 +607,6 @@ impl Sidebar {
                 project_display_name: project.map(|project| project.label.to_string()),
                 state: match session.state {
                     AgentTaskState::Active => "active",
-                    AgentTaskState::Settled => "settled",
                     AgentTaskState::Archived => "archived",
                 }
                 .into(),
@@ -853,7 +786,6 @@ impl Sidebar {
                     .iter()
                     .flat_map(|group| group.tasks.iter())
                     .chain(page.active.iter())
-                    .chain(page.settled.iter())
                     .chain(page.search.iter())
                     .chain(page.archived.iter())
                     .map(|task| {
@@ -992,35 +924,30 @@ impl Sidebar {
             if self.project_filter.is_some() {
                 continue;
             }
-            let kinds = if !self.filter.is_empty() {
-                vec![ComputerPageKind::Search]
-            } else if matches!(self.view.group, SidebarGroup::Status | SidebarGroup::List) {
-                vec![
-                    ComputerPageKind::Tasks { settled: false },
-                    ComputerPageKind::Tasks { settled: true },
-                ]
+            let kind = if !self.filter.is_empty() {
+                ComputerPageKind::Search
+            } else if self.view.group == SidebarGroup::List {
+                ComputerPageKind::Tasks
             } else {
-                vec![ComputerPageKind::Groups]
+                ComputerPageKind::Groups
             };
-            for kind in kinds {
-                let page = self.group_pages.hosts.entry(computer.clone()).or_default();
-                let key = kind.key();
-                if !page.loaded.contains(&key)
-                    && !page.loading.contains(&key)
-                    && !page.errors.contains_key(&key)
-                {
-                    self.load_computer_page(
-                        ComputerMore {
-                            computer: computer.clone(),
-                            generation: self.group_pages.generation,
-                            kind,
-                            cursor: None,
-                            label: tr("chat-loading-tasks"),
-                            loading: false,
-                        },
-                        cx,
-                    );
-                }
+            let page = self.group_pages.hosts.entry(computer.clone()).or_default();
+            let key = kind.key();
+            if !page.loaded.contains(&key)
+                && !page.loading.contains(&key)
+                && !page.errors.contains_key(&key)
+            {
+                self.load_computer_page(
+                    ComputerMore {
+                        computer: computer.clone(),
+                        generation: self.group_pages.generation,
+                        kind,
+                        cursor: None,
+                        label: tr("chat-loading-tasks"),
+                        loading: false,
+                    },
+                    cx,
+                );
             }
             if self.archived_expanded && self.filter.is_empty() {
                 let page = self.group_pages.hosts.entry(computer.clone()).or_default();
@@ -1169,29 +1096,26 @@ impl Sidebar {
                     )
                     .await
                     .map(ComputerPageReply::Tasks),
-                    ComputerPageKind::Tasks { settled }
-                    | ComputerPageKind::Project { settled, .. } => computer_task_page(
-                        reader,
-                        backend,
-                        user,
-                        catalog::TaskQuery::Tasks(NavigationTaskQuery {
-                            section: TaskSection::State(if *settled {
-                                TaskState::Settled
-                            } else {
-                                TaskState::Active
+                    ComputerPageKind::Tasks | ComputerPageKind::Project { .. } => {
+                        computer_task_page(
+                            reader,
+                            backend,
+                            user,
+                            catalog::TaskQuery::Tasks(NavigationTaskQuery {
+                                section: TaskSection::State(TaskState::Active),
+                                project: match &request.kind {
+                                    ComputerPageKind::Project { root, .. } => Some(root.clone()),
+                                    _ => project,
+                                },
+                                pins: PinFilter::Ignore,
+                                cursor: request.cursor.clone(),
+                                limit: 50,
                             }),
-                            project: match &request.kind {
-                                ComputerPageKind::Project { root, .. } => Some(root.clone()),
-                                _ => project,
-                            },
-                            pins: PinFilter::Ignore,
-                            cursor: request.cursor.clone(),
-                            limit: 50,
-                        }),
-                        manual,
-                    )
-                    .await
-                    .map(ComputerPageReply::Tasks),
+                            manual,
+                        )
+                        .await
+                        .map(ComputerPageReply::Tasks)
+                    }
                     ComputerPageKind::Archived => computer_task_page(
                         reader,
                         backend,
@@ -1320,17 +1244,12 @@ impl Sidebar {
                     }));
                 }
                 match action.kind {
-                    ComputerPageKind::Tasks { settled } => {
-                        let (tasks, next) = if settled {
-                            (&mut page.settled, &mut page.next_settled)
-                        } else {
-                            (&mut page.active, &mut page.next_active)
-                        };
+                    ComputerPageKind::Tasks => {
                         if action.cursor.is_none() && !retain_head {
-                            tasks.clear();
+                            page.active.clear();
                         }
-                        *next = reply.next_cursor;
-                        merge_tasks(tasks, reply.tasks);
+                        page.next_active = reply.next_cursor;
+                        merge_tasks(&mut page.active, reply.tasks);
                     }
                     ComputerPageKind::Search => {
                         if action.cursor.is_none() && !retain_head {
@@ -1349,14 +1268,10 @@ impl Sidebar {
                             .archived_count
                             .max(u64::try_from(page.archived.len()).unwrap_or(u64::MAX));
                     }
-                    ComputerPageKind::Project { root, settled } => {
+                    ComputerPageKind::Project { root } => {
                         if let Some(group) = page.groups.iter_mut().find(|g| g.project.root == root)
                         {
-                            if settled {
-                                group.more.settled = reply.next_cursor;
-                            } else {
-                                group.more.active = reply.next_cursor;
-                            }
+                            group.more = reply.next_cursor;
                             merge_tasks(&mut group.tasks, reply.tasks);
                         }
                     }
@@ -1370,7 +1285,6 @@ impl Sidebar {
             self.remember_task_project_labels(own_labels);
             self.merge_page_sessions(own_tasks);
         }
-        self.load_missing_group_states(cx);
         self.finish_computer_revalidation(cx);
         self.rebuild_computer_project_roots();
         self.rebuild_entries();
@@ -1421,7 +1335,7 @@ impl Sidebar {
     }
 
     /// Resolve a summary against a newer verified live snapshot before it
-    /// participates in ordering or status grouping.
+    /// participates in ordering or grouping.
     fn current_computer_task(&self, computer: &Computer, task: &TaskSummary) -> TaskSummary {
         let own = computer.key.as_deref() == self.backend.remote_host();
         let latest = computer
@@ -1438,7 +1352,6 @@ impl Sidebar {
             task.message_count = u64::try_from(session.message_count).unwrap_or(u64::MAX);
             task.state = match session.state {
                 AgentTaskState::Active => "active",
-                AgentTaskState::Settled => "settled",
                 AgentTaskState::Archived => "archived",
             }
             .into();
@@ -1600,7 +1513,7 @@ impl Sidebar {
         &self,
         computer: &Computer,
         group: &NavigationProjectGroup,
-    ) -> prefix::Prefix<bool> {
+    ) -> prefix::Prefix<()> {
         let page = self.group_pages.hosts.get(&computer.key);
         // The continuation belongs to the received snapshot, before live state
         // changes or Pinned extraction alter its presentation.
@@ -1611,18 +1524,50 @@ impl Sidebar {
                     .find(|stored| stored.project.root == group.project.root)
             })
             .map_or(group.tasks.as_slice(), |stored| stored.tasks.as_slice());
+        let kind = ComputerPageKind::Project {
+            root: group.project.root.clone(),
+        };
+        let key = kind.key();
         prefix::Prefix::new(
-            [false, true].map(|settled| {
-                let kind = ComputerPageKind::Project {
-                    root: group.project.root.clone(),
-                    settled,
-                };
-                let key = kind.key();
+            [prefix::Stream {
+                source: (),
+                end: source
+                    .iter()
+                    .map(|task| {
+                        self.task_prefix_position(
+                            &computer.key,
+                            &task.uuid,
+                            task.created_ms,
+                            task.updated_ms,
+                        )
+                    })
+                    .max(),
+                complete: group.more.is_none()
+                    && page.is_none_or(|page| {
+                        !page.loading.contains(&key)
+                            && !page.errors.contains_key(&key)
+                            && !page.holds_more(&kind)
+                    }),
+            }],
+            self.view.sort == SidebarSort::Manual,
+        )
+    }
+
+    fn computer_flat_prefix(&self, hosts: &[usize]) -> prefix::Prefix<usize> {
+        let kind = ComputerPageKind::Tasks;
+        let key = kind.key();
+        let streams = hosts
+            .iter()
+            .copied()
+            .filter(|&index| self.computers[index].backend.is_some())
+            .map(|index| {
+                let computer = &self.computers[index];
+                let page = self.group_pages.hosts.get(&computer.key);
                 prefix::Stream {
-                    source: settled,
-                    end: source
-                        .iter()
-                        .filter(|task| (task.state == "settled") == settled)
+                    source: index,
+                    end: page
+                        .into_iter()
+                        .flat_map(|page| &page.active)
                         .map(|task| {
                             self.task_prefix_position(
                                 &computer.key,
@@ -1632,65 +1577,14 @@ impl Sidebar {
                             )
                         })
                         .max(),
-                    complete: (if settled {
-                        group.more.settled.is_none()
-                    } else {
-                        group.more.active.is_none()
-                    }) && page.is_none_or(|page| {
-                        !page.loading.contains(&key)
+                    complete: page.is_some_and(|page| {
+                        (!page.loading.contains(&key) || page.replacing.contains(&key))
                             && !page.errors.contains_key(&key)
                             && !page.holds_more(&kind)
+                            && page.next_active.is_none()
                     }),
                 }
-            }),
-            self.view.sort == SidebarSort::Manual,
-        )
-    }
-
-    fn computer_flat_prefix(
-        &self,
-        hosts: &[usize],
-        state: Option<bool>,
-    ) -> prefix::Prefix<(usize, bool)> {
-        let streams = hosts.iter().flat_map(|&index| {
-            let computer = &self.computers[index];
-            let page = self.group_pages.hosts.get(&computer.key);
-            [false, true]
-                .into_iter()
-                .filter(move |settled| {
-                    state.is_none_or(|state| state == *settled) && computer.backend.is_some()
-                })
-                .map(move |settled| {
-                    let kind = ComputerPageKind::Tasks { settled };
-                    let key = kind.key();
-                    let tasks = page.map(|page| if settled { &page.settled } else { &page.active });
-                    prefix::Stream {
-                        source: (index, settled),
-                        end: tasks
-                            .into_iter()
-                            .flatten()
-                            .map(|task| {
-                                self.task_prefix_position(
-                                    &computer.key,
-                                    &task.uuid,
-                                    task.created_ms,
-                                    task.updated_ms,
-                                )
-                            })
-                            .max(),
-                        complete: page.is_some_and(|page| {
-                            (!page.loading.contains(&key) || page.replacing.contains(&key))
-                                && !page.errors.contains_key(&key)
-                                && !page.holds_more(&kind)
-                                && if settled {
-                                    page.next_settled.is_none()
-                                } else {
-                                    page.next_active.is_none()
-                                }
-                        }),
-                    }
-                })
-        });
+            });
         prefix::Prefix::new(streams, self.view.sort == SidebarSort::Manual)
     }
 
@@ -1701,61 +1595,6 @@ impl Sidebar {
                 && (self.selected.as_ref() == Some(&task.uuid)
                     || self.activity.running.contains(&task.uuid)
                     || self.pages.is_live(&task.uuid)))
-    }
-
-    /// A group first page can spend its budget on just Active tasks. Read the
-    /// missing Settled prefix before presenting a merged list; zero-budget
-    /// groups retain their explicit More action instead of causing background
-    /// scans of projects past the visible row budget.
-    fn load_missing_group_states(&mut self, cx: &mut Context<Self>) {
-        if !self.filter.is_empty()
-            || matches!(self.view.group, SidebarGroup::Status | SidebarGroup::List)
-        {
-            return;
-        }
-        let mut actions = Vec::new();
-        for computer in self
-            .computers
-            .iter()
-            .filter(|computer| computer.backend.is_some())
-        {
-            let Some(page) = self.group_pages.hosts.get(&computer.key) else {
-                continue;
-            };
-            for group in page.groups.iter().filter(|group| !group.tasks.is_empty()) {
-                for settled in [false, true] {
-                    let cursor = if settled {
-                        &group.more.settled
-                    } else {
-                        &group.more.active
-                    };
-                    let kind = ComputerPageKind::Project {
-                        root: group.project.root.clone(),
-                        settled,
-                    };
-                    if cursor.is_some()
-                        && !page.loading.contains(&kind.key())
-                        && !page.errors.contains_key(&kind.key())
-                        && !group
-                            .tasks
-                            .iter()
-                            .any(|task| (task.state == "settled") == settled)
-                    {
-                        actions.push(ComputerMore {
-                            computer: computer.key.clone(),
-                            generation: self.group_pages.generation,
-                            kind,
-                            cursor: cursor.clone(),
-                            label: tr("chat-loading-tasks"),
-                            loading: false,
-                        });
-                    }
-                }
-            }
-        }
-        for action in actions {
-            self.load_computer_page(action, cx);
-        }
     }
 
     fn push_computer_group(
@@ -1791,45 +1630,25 @@ impl Sidebar {
             self.push_computer_task(entries, computer, task);
         }
         if self.filter.is_empty() {
-            for (settled, cursor) in [(false, group.more.active), (true, group.more.settled)] {
-                if prefix.next.first() != Some(&settled) {
-                    continue;
-                }
-                self.computer_more_entry(
-                    entries,
-                    &computer.key,
-                    ComputerPageKind::Project {
-                        root: target.path.clone(),
-                        settled,
-                    },
-                    cursor,
-                    &tr("chat-more-tasks"),
-                );
-            }
+            self.computer_more_entry(
+                entries,
+                &computer.key,
+                ComputerPageKind::Project { root: target.path },
+                group.more,
+                &tr("chat-more-tasks"),
+            );
         }
     }
 
-    fn push_computer_flat_more(
-        &mut self,
-        entries: &mut Vec<SidebarEntry>,
-        computer_index: usize,
-        settled: Option<bool>,
-    ) {
+    fn push_computer_flat_more(&mut self, entries: &mut Vec<SidebarEntry>, computer_index: usize) {
         let computer = self.computers[computer_index].clone();
         let Some(page) = self.group_pages.hosts.get(&computer.key) else {
             return;
         };
         let (kind, cursor) = if !self.filter.is_empty() {
             (ComputerPageKind::Search, page.next_search.clone())
-        } else if let Some(settled) = settled {
-            (
-                ComputerPageKind::Tasks { settled },
-                if settled {
-                    page.next_settled.clone()
-                } else {
-                    page.next_active.clone()
-                },
-            )
+        } else if self.view.group == SidebarGroup::List {
+            (ComputerPageKind::Tasks, page.next_active.clone())
         } else {
             (ComputerPageKind::Groups, page.next_groups.clone())
         };
@@ -1879,7 +1698,7 @@ impl Sidebar {
         let mut archived = Vec::new();
         let mut unavailable = Vec::new();
         let searching = !self.filter.is_empty();
-        let flat = matches!(self.view.group, SidebarGroup::Status | SidebarGroup::List);
+        let flat = self.view.group == SidebarGroup::List;
         for &index in &hosts {
             let computer = &computers[index];
             let Some(page) = self.group_pages.hosts.get(&computer.key) else {
@@ -1902,11 +1721,7 @@ impl Sidebar {
                 let source = if searching {
                     page.search.iter().chain(pins.iter()).collect::<Vec<_>>()
                 } else {
-                    page.active
-                        .iter()
-                        .chain(&page.settled)
-                        .chain(pins.iter())
-                        .collect::<Vec<_>>()
+                    page.active.iter().chain(pins.iter()).collect::<Vec<_>>()
                 };
                 let mut seen = HashSet::new();
                 for summary in source {
@@ -1939,23 +1754,12 @@ impl Sidebar {
         if searching {
             self.computer_archived_count = archived.len();
         }
-        let flat_prefix = self.computer_flat_prefix(&hosts, None);
-        let active_prefix = self.computer_flat_prefix(&hosts, Some(false));
-        let settled_prefix = self.computer_flat_prefix(&hosts, Some(true));
+        let flat_prefix = self.computer_flat_prefix(&hosts);
         if flat && !searching {
             tasks.retain(|(index, task)| {
                 let computer = &computers[*index];
-                let prefix = if self.view.group == SidebarGroup::Status {
-                    if task.state == "settled" {
-                        &settled_prefix
-                    } else {
-                        &active_prefix
-                    }
-                } else {
-                    &flat_prefix
-                };
                 self.prefix_exempt_task(computer, task)
-                    || prefix.allows(&self.task_prefix_position(
+                    || flat_prefix.allows(&self.task_prefix_position(
                         &computer.key,
                         &task.uuid,
                         task.created_ms,
@@ -2013,7 +1817,7 @@ impl Sidebar {
                         self.push_computer_group(&mut entries, &computers[index], group);
                     }
                     for &index in &hosts {
-                        self.push_computer_flat_more(&mut entries, index, None);
+                        self.push_computer_flat_more(&mut entries, index);
                     }
                     entries.extend(unavailable.iter().copied().map(SidebarEntry::Computer));
                 }
@@ -2030,43 +1834,8 @@ impl Sidebar {
                                 group.clone(),
                             );
                         }
-                        self.push_computer_flat_more(&mut entries, index, None);
+                        self.push_computer_flat_more(&mut entries, index);
                     }
-                }
-                SidebarGroup::Status => {
-                    for (section, settled) in [
-                        (SidebarSection::Active, false),
-                        (SidebarSection::Settled, true),
-                    ] {
-                        let visible = tasks
-                            .iter()
-                            .filter(|(_, task)| (task.state == "settled") == settled);
-                        if visible.clone().next().is_some() {
-                            entries.push(SidebarEntry::SectionLabel(section));
-                        }
-                        if !self.section_expanded(section) {
-                            continue;
-                        }
-                        for (index, task) in visible {
-                            self.push_computer_task(&mut entries, &computers[*index], task);
-                        }
-                        if !searching {
-                            let prefix = if settled {
-                                &settled_prefix
-                            } else {
-                                &active_prefix
-                            };
-                            if let Some(&(index, state)) = prefix.next.first() {
-                                self.push_computer_flat_more(&mut entries, index, Some(state));
-                            }
-                        }
-                    }
-                    if searching {
-                        for &index in &hosts {
-                            self.push_computer_flat_more(&mut entries, index, None);
-                        }
-                    }
-                    entries.extend(unavailable.iter().copied().map(SidebarEntry::Computer));
                 }
                 SidebarGroup::List => {
                     for (index, task) in &tasks {
@@ -2074,10 +1843,10 @@ impl Sidebar {
                     }
                     if searching {
                         for &index in &hosts {
-                            self.push_computer_flat_more(&mut entries, index, None);
+                            self.push_computer_flat_more(&mut entries, index);
                         }
-                    } else if let Some(&(index, state)) = flat_prefix.next.first() {
-                        self.push_computer_flat_more(&mut entries, index, Some(state));
+                    } else if let Some(&index) = flat_prefix.next.first() {
+                        self.push_computer_flat_more(&mut entries, index);
                     }
                     entries.extend(unavailable.iter().copied().map(SidebarEntry::Computer));
                 }
@@ -2202,8 +1971,6 @@ impl Sidebar {
                 entries.push(SidebarEntry::Task(SidebarTaskEntry {
                     session: index,
                     pinned: self.computer_task_pin(computer, task).is_some(),
-                    settled: state == AgentTaskState::Settled
-                        && !self.activity.running.contains(&task.uuid),
                     archived: state == AgentTaskState::Archived,
                 }));
             }
@@ -2254,10 +2021,6 @@ impl Sidebar {
             row.element_id = id.clone();
             let rung = if archived {
                 TaskRung::Archived
-            } else if session.state == AgentTaskState::Settled
-                && !computer.activity.running.contains(&task.uuid)
-            {
-                TaskRung::Settled
             } else {
                 TaskRung::Active
             };
@@ -2749,7 +2512,7 @@ mod paging_tests {
             page.loaded
                 .extend(["archive-count".into(), "groups".into(), "projects".into()]);
             page.next_groups = Some(format!("next-{id}"));
-            page.groups[0].more.active = Some(format!("active-{id}"));
+            page.groups[0].more = Some(format!("active-{id}"));
             sidebar.group_pages.hosts.insert(computer.key, page);
         }
         sidebar.rebuild_sections();
@@ -3051,7 +2814,6 @@ mod paging_tests {
             let mut latest = session_from_summary(&task("remote-cached"));
             latest.title = "Fresh owner title".into();
             latest.updated_ms += 1;
-            latest.state = AgentTaskState::Settled;
             sidebar.sessions.push(latest);
         });
         for (from, to) in [
@@ -3084,7 +2846,6 @@ mod paging_tests {
                         .find(|session| session.id == "remote-cached")
                         .unwrap();
                     assert_eq!(own.title, "Fresh owner title");
-                    assert_eq!(own.state, AgentTaskState::Settled);
                     assert!(sidebar.entries.iter().any(|entry| matches!(entry,
                         SidebarEntry::Task(task) if sidebar.sessions[task.session].id == "remote-cached")));
                 }
@@ -3122,7 +2883,7 @@ mod paging_tests {
             assert_eq!(visible_tasks(sidebar), ["local-cached", "remote-cached"]);
             for page in sidebar.group_pages.hosts.values() {
                 assert!(page.next_groups.is_none());
-                assert!(page.groups[0].more.active.is_none());
+                assert!(page.groups[0].more.is_none());
                 assert!(page.loading.contains("groups"));
             }
             sidebar.apply_computer_page(
@@ -3503,7 +3264,7 @@ mod merged_prefix_tests {
             assert_eq!(sidebar.group_pages.more[0].computer, remote_key);
             assert!(matches!(
                 sidebar.group_pages.more[0].kind,
-                ComputerPageKind::Tasks { settled: false }
+                ComputerPageKind::Tasks
             ));
             let remote = sidebar.group_pages.hosts.get_mut(&remote_key).unwrap();
             remote.active.extend([
@@ -3530,16 +3291,14 @@ mod merged_prefix_tests {
     }
 
     #[gpui::test]
-    fn project_more_advances_only_the_state_limiting_its_merged_prefix(
-        cx: &mut gpui::TestAppContext,
-    ) {
+    fn project_more_appends_to_its_loaded_prefix(cx: &mut gpui::TestAppContext) {
         let _settings = crate::settings::SETTINGS_IO_LOCK.lock();
         cx.executor().allow_parking();
         let backend =
             Arc::new(AgentBackend::for_test("http://127.0.0.1:9".into(), String::new()).unwrap());
         let chat = cx.new(|cx| ChatScreen::new_without_start(backend, "user".into(), cx));
         let sidebar = chat.read_with(cx, |chat, _| chat.sidebar.clone());
-        sidebar.update(cx, |sidebar, _| {
+        sidebar.update(cx, |sidebar, cx| {
             sidebar.reset_persisted_for_test();
             sidebar.view = SidebarView::default();
             sidebar.selected = None;
@@ -3547,7 +3306,7 @@ mod merged_prefix_tests {
             remote.backend = Some(Arc::new(AgentBackend::for_remote_test("remote").unwrap()));
             sidebar.computers = Arc::new(vec![remote]);
             let remote_key = Some("remote".into());
-            let mut group = NavigationProjectGroup {
+            let group = NavigationProjectGroup {
                 project: ProjectSummary {
                     root: "/tmp/project".into(),
                     display_name: None,
@@ -3558,14 +3317,11 @@ mod merged_prefix_tests {
                     truncated: false,
                 },
                 tasks: vec![
-                    task("active-80", "active", 80),
-                    task("active-70", "active", 70),
-                    task("settled-110", "settled", 110),
-                    task("settled-100", "settled", 100),
+                    task("active-110", "active", 110),
+                    task("active-100", "active", 100),
                 ],
-                more: Default::default(),
+                more: Some("next".into()),
             };
-            group.more.settled = Some("next".into());
             sidebar.group_pages.hosts.insert(
                 remote_key.clone(),
                 ComputerHostPage {
@@ -3574,31 +3330,23 @@ mod merged_prefix_tests {
                 },
             );
             sidebar.rebuild_sections();
-            assert_eq!(shown(sidebar), ["settled-110"]);
+            assert_eq!(shown(sidebar), ["active-110"]);
             assert_eq!(sidebar.group_pages.more.len(), 1);
             assert!(matches!(
                 sidebar.group_pages.more[0].kind,
-                ComputerPageKind::Project { settled: true, .. }
+                ComputerPageKind::Project { .. }
             ));
-            let group = &mut sidebar
-                .group_pages
-                .hosts
-                .get_mut(&remote_key)
-                .unwrap()
-                .groups[0];
-            group.tasks.push(task("settled-90", "settled", 90));
-            group.more.settled = None;
-            sidebar.rebuild_sections();
-            assert_eq!(
-                shown(sidebar),
-                [
-                    "settled-110",
-                    "settled-100",
-                    "settled-90",
-                    "active-80",
-                    "active-70"
-                ]
+            let more = sidebar.group_pages.more[0].clone();
+            assert_eq!(more.cursor.as_deref(), Some("next"));
+            sidebar.apply_computer_page(
+                more,
+                Ok(ComputerPageReply::Tasks(NavigationTaskPage {
+                    tasks: vec![task("active-90", "active", 90)],
+                    next_cursor: None,
+                })),
+                cx,
             );
+            assert_eq!(shown(sidebar), ["active-110", "active-100", "active-90"]);
             assert!(sidebar.group_pages.more.is_empty());
         });
     }

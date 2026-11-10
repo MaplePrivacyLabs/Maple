@@ -4196,7 +4196,7 @@ mod tests {
                 match mismatch {
                     "profile" => hello.profile = "different-backend".into(),
                     "build" => hello.build = "old-build".into(),
-                    _ => hello.version += 1,
+                    _ => hello.version -= 1,
                 }
                 let (reply, accepted) = tokio::join!(
                     async {
@@ -4229,7 +4229,7 @@ mod tests {
                 protocol::write(
                     &mut server,
                     &Ok::<_, String>(Welcome {
-                        version: protocol::VERSION + 1,
+                        version: protocol::VERSION - 1,
                         pid: 1,
                         build: "old-build".into(),
                         user_id: None,

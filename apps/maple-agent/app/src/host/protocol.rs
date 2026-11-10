@@ -4,7 +4,7 @@ use serde::{Deserialize, Serialize, de::DeserializeOwned};
 use tokio::io::{AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt};
 use zeroize::{Zeroize, Zeroizing};
 
-pub const VERSION: u32 = 3;
+pub const VERSION: u32 = 4;
 pub const BUILD: &str = concat!(env!("CARGO_PKG_VERSION"), ":", env!("MAPLE_GIT_SOURCE_SHA"));
 // Bounded local history/control replies retain their existing frame budget.
 // Attachments are imported by staged local path, not sent as inline JSON bytes.

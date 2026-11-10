@@ -130,7 +130,6 @@ pub(super) fn session_from_summary(
             summary.permission_mode.as_deref(),
         ),
         state: match summary.state.as_str() {
-            "settled" => AgentTaskState::Settled,
             "archived" => AgentTaskState::Archived,
             _ => AgentTaskState::Active,
         },
@@ -162,7 +161,7 @@ pub(super) enum SidebarEvent {
     /// A session changed on the backend (a rename); the screen owns the
     /// canonical list and pushes it back.
     SessionChanged(AgentSessionSummary),
-    /// Move a task between active, settled, and archived. The runtime
+    /// Move a task between active and archived. The runtime
     /// owns the state; its updated record moves the row.
     SetState {
         session_id: String,
@@ -261,8 +260,7 @@ pub(super) struct SidebarRow {
     /// Hover group that reveals the row's action buttons.
     pub(super) group: SharedString,
     pub(super) rename_id: SharedString,
-    /// The hover button that moves the task one rung along
-    /// active, settled, archived, deleted.
+    /// The hover button archives an active task or deletes an archived one.
     pub(super) step_id: SharedString,
     /// Animation id of the running indicator.
     pub(super) spinner_id: SharedString,
@@ -272,7 +270,6 @@ pub(super) struct SidebarRow {
     pub(super) menu_panel_id: SharedString,
     pub(super) menu_rename_id: SharedString,
     pub(super) menu_pin_id: SharedString,
-    pub(super) menu_settle_id: SharedString,
     pub(super) menu_archive_id: SharedString,
     pub(super) menu_delete_id: SharedString,
     pub(super) menu_reopen_id: SharedString,
@@ -309,7 +306,6 @@ impl SidebarRow {
             menu_panel_id: SharedString::from(format!("task-menu-{id}")),
             menu_rename_id: SharedString::from(format!("rename-task-{id}")),
             menu_pin_id: SharedString::from(format!("pin-task-{id}")),
-            menu_settle_id: SharedString::from(format!("settle-task-{id}")),
             menu_archive_id: SharedString::from(format!("archive-task-{id}")),
             menu_delete_id: SharedString::from(format!("delete-task-{id}")),
             menu_reopen_id: SharedString::from(format!("reopen-task-{id}")),
@@ -395,7 +391,6 @@ pub(super) enum SidebarEntry {
 pub(super) struct SidebarTaskEntry {
     pub(super) session: usize,
     pub(super) pinned: bool,
-    pub(super) settled: bool,
     pub(super) archived: bool,
 }
 
@@ -406,14 +401,10 @@ struct RowSpacing {
     after: bool,
 }
 
-/// Where a task sits on the ladder active, settled, archived, deleted.
-/// The hover button steps one rung forward; the overflow menu reaches
-/// every later rung and comes back only to active. The pinned section
-/// is a view of active tasks, not a rung of its own.
+/// The task's workflow state, which determines its available actions.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(super) enum TaskRung {
     Active,
-    Settled,
     Archived,
 }
 
@@ -421,7 +412,6 @@ pub(super) enum TaskRung {
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(super) enum TaskMove {
     Active,
-    Settled,
     Archived,
     Deleted,
 }
@@ -437,8 +427,6 @@ impl TaskRung {
     pub(super) fn of(task: SidebarTaskEntry) -> Self {
         if task.archived {
             Self::Archived
-        } else if task.settled {
-            Self::Settled
         } else {
             Self::Active
         }
@@ -447,8 +435,7 @@ impl TaskRung {
     /// The rung after this one.
     pub(super) fn next(self) -> TaskMove {
         match self {
-            Self::Active => TaskMove::Settled,
-            Self::Settled => TaskMove::Archived,
+            Self::Active => TaskMove::Archived,
             Self::Archived => TaskMove::Deleted,
         }
     }
@@ -456,10 +443,6 @@ impl TaskRung {
     pub(super) fn step(self) -> TaskStep {
         match self {
             Self::Active => TaskStep {
-                icon: "check",
-                row_label: "chat-settle",
-            },
-            Self::Settled => TaskStep {
                 icon: "archive",
                 row_label: "chat-archive",
             },
@@ -483,8 +466,6 @@ pub(super) enum SidebarEmpty {
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub(super) enum SidebarSection {
     Pinned,
-    Active,
-    Settled,
     /// One flat list of tasks in the selected order.
     List,
     /// A project's tasks, by index into the cached project rows.
@@ -504,8 +485,6 @@ impl SidebarSection {
     pub(super) fn label(self) -> SharedString {
         tr(match self {
             Self::Pinned => "chat-pinned",
-            Self::Active => "chat-active",
-            Self::Settled => "chat-settled",
             Self::List | Self::Project(_) => "chat-tasks",
         })
     }
@@ -513,8 +492,6 @@ impl SidebarSection {
     pub(super) fn element_id(self) -> &'static str {
         match self {
             Self::Pinned => "section-toggle-pinned",
-            Self::Active => "section-toggle-active",
-            Self::Settled => "section-toggle-settled",
             Self::List => "section-toggle-tasks",
             Self::Project(_) => "section-toggle-tasks",
         }
@@ -535,8 +512,8 @@ struct SidebarMenuItem {
 /// Ordinary task actions, workflow changes and deletion occupy separate groups.
 struct TaskMenuItems {
     actions: Vec<SidebarMenuItem>,
-    workflow: Vec<SidebarMenuItem>,
-    delete: SidebarMenuItem,
+    workflow: SidebarMenuItem,
+    delete: Option<SidebarMenuItem>,
 }
 
 /// Destructive project actions are rendered in their own popup section.
@@ -572,7 +549,6 @@ enum SidebarDragItem {
 #[derive(Clone, Debug, PartialEq, Eq)]
 enum TaskGroup {
     Project(ProjectTarget),
-    Status(bool),
     List,
     Pinned,
     Archived,
@@ -1088,8 +1064,8 @@ impl Sidebar {
         cx.notify();
     }
 
-    /// Which tasks wait on the user, run, or ended unseen. All of it
-    /// drives the row indicator; running also decides the active section.
+    /// Which tasks wait on the user, run, or ended unseen. Running tasks
+    /// can appear before their first message is recorded or paged in.
     pub(super) fn set_activity(&mut self, activity: TaskActivity, cx: &mut Context<Self>) {
         if self.activity == activity {
             return;
@@ -1373,12 +1349,7 @@ impl Sidebar {
 
     #[cfg(test)]
     pub(super) fn active_rows(&self) -> &[usize] {
-        self.section_rows(SidebarSection::Active)
-    }
-
-    #[cfg(test)]
-    pub(super) fn settled_rows(&self) -> &[usize] {
-        self.section_rows(SidebarSection::Settled)
+        self.section_rows(SidebarSection::List)
     }
 
     /// The folder groups' project names, in display order.
@@ -1513,9 +1484,9 @@ impl Sidebar {
     #[cfg(test)]
     pub(super) fn reset_persisted_for_test(&mut self) {
         crate::settings::retire_sidebar_account(&self.user_id);
-        // Most fixtures check the task ladder, so they group by status.
+        // Fixtures that inspect active rows use the flat list.
         self.view = SidebarView {
-            group: SidebarGroup::Status,
+            group: SidebarGroup::List,
             ..SidebarView::default()
         };
         self.pinned_tasks.clear();
@@ -1782,13 +1753,6 @@ impl Sidebar {
         archived.sort_by(order);
         let mut sections = Vec::new();
         match self.view.group {
-            SidebarGroup::Status => {
-                let (active, settled) = listed
-                    .into_iter()
-                    .partition(|&ix| self.session_is_active(&self.sessions[ix]));
-                sections.push((SidebarSection::Active, active));
-                sections.push((SidebarSection::Settled, settled));
-            }
             SidebarGroup::List => sections.push((SidebarSection::List, listed)),
             SidebarGroup::Project | SidebarGroup::Connection => {
                 let folder_of: HashMap<&str, usize> = self
@@ -1832,13 +1796,6 @@ impl Sidebar {
         self.rebuild_entries();
     }
 
-    /// Whether a task belongs to the active inbox. The runtime makes a
-    /// task active the moment a run starts on it; the running set covers
-    /// the frame before its updated record lands.
-    fn session_is_active(&self, session: &AgentSessionSummary) -> bool {
-        self.activity.running.contains(&session.id) || session.state != AgentTaskState::Settled
-    }
-
     /// Project bounded local-cache rows through the selected grouping.
     fn local_entries(&self) -> Vec<SidebarEntry> {
         let mut entries = vec![SidebarEntry::NewTask];
@@ -1870,8 +1827,6 @@ impl Sidebar {
                     SidebarEntry::Task(SidebarTaskEntry {
                         session,
                         pinned: section == SidebarSection::Pinned,
-                        settled: section != SidebarSection::Pinned
-                            && !self.session_is_active(&self.sessions[session]),
                         archived: false,
                     })
                 }));
@@ -1887,29 +1842,13 @@ impl Sidebar {
             for (section, rows) in &self.sections {
                 tasks(&mut entries, *section, rows);
             }
-            if self.pages.enabled {
-                let prefix = self.local_task_prefix();
-                let next_state = prefix.as_ref().and_then(|prefix| prefix.next.first());
-                for (kind, expanded) in [
-                    (
-                        PageKind::Active,
-                        self.view.group != SidebarGroup::Status
-                            || self.section_expanded(SidebarSection::Active),
-                    ),
-                    (
-                        PageKind::Settled,
-                        self.view.group != SidebarGroup::Status
-                            || self.section_expanded(SidebarSection::Settled),
-                    ),
-                    (PageKind::Search, !self.filter.is_empty()),
-                    (PageKind::Projects, true),
-                ] {
-                    let allowed = prefix.is_none()
-                        || !matches!(kind, PageKind::Active | PageKind::Settled)
-                        || next_state == Some(&kind);
-                    if allowed && expanded && self.pages.has_more(kind) {
-                        entries.push(SidebarEntry::LoadMore(kind));
-                    }
+            for (kind, visible) in [
+                (PageKind::Active, self.filter.is_empty()),
+                (PageKind::Search, !self.filter.is_empty()),
+                (PageKind::Projects, true),
+            ] {
+                if visible && self.pages.has_more(kind) {
+                    entries.push(SidebarEntry::LoadMore(kind));
                 }
             }
         }
@@ -1930,7 +1869,6 @@ impl Sidebar {
                         session,
                         archived: true,
                         pinned: false,
-                        settled: false,
                     })
                 }));
             }
@@ -2296,7 +2234,7 @@ impl Sidebar {
 
     /// Project context is supplied by a project header in grouped views.
     fn show_metadata(&self) -> bool {
-        matches!(self.view.group, SidebarGroup::Status | SidebarGroup::List)
+        self.view.group == SidebarGroup::List
     }
 
     fn show_task_metadata(&self, pinned: bool, archived: bool) -> bool {
@@ -2660,63 +2598,35 @@ impl Sidebar {
                 this.begin_rename(rename_target.rename_target(), cx)
             }),
         });
-        let moves: &[(TaskMove, &SharedString, &'static str, &'static str)] = match rung {
-            TaskRung::Active => &[
-                (
-                    TaskMove::Settled,
-                    &row.menu_settle_id,
-                    "check",
-                    "chat-settle-task",
-                ),
-                (
-                    TaskMove::Archived,
-                    &row.menu_archive_id,
-                    "archive",
-                    "chat-archive-task",
-                ),
-            ],
-            TaskRung::Settled => &[
-                (
-                    TaskMove::Active,
-                    &row.menu_reopen_id,
-                    "undo-2",
-                    "chat-reopen-task",
-                ),
-                (
-                    TaskMove::Archived,
-                    &row.menu_archive_id,
-                    "archive",
-                    "chat-archive-task",
-                ),
-            ],
-            TaskRung::Archived => &[(
+        let (to, id, icon, label) = match rung {
+            TaskRung::Active => (
+                TaskMove::Archived,
+                &row.menu_archive_id,
+                "archive",
+                "chat-archive-task",
+            ),
+            TaskRung::Archived => (
                 TaskMove::Active,
                 &row.menu_reopen_id,
                 "undo-2",
                 "chat-reopen-task",
-            )],
+            ),
         };
-        let workflow = moves
-            .iter()
-            .map(|&(to, id, icon, label)| {
-                let target = target.clone();
-                SidebarMenuItem {
-                    id: id.clone(),
-                    icon,
-                    label,
-                    on_click: Box::new(move |this, cx| this.move_task_target(&target, to, cx)),
-                }
-            })
-            .collect();
-        let delete_target = target.clone();
-        let delete = SidebarMenuItem {
+        let workflow_target = target.clone();
+        let workflow = SidebarMenuItem {
+            id: id.clone(),
+            icon,
+            label,
+            on_click: Box::new(move |this, cx| this.move_task_target(&workflow_target, to, cx)),
+        };
+        let delete = (rung == TaskRung::Archived).then(|| SidebarMenuItem {
             id: row.menu_delete_id.clone(),
             icon: "trash-2",
             label: "chat-delete-task",
             on_click: Box::new(move |this, cx| {
-                this.move_task_target(&delete_target, TaskMove::Deleted, cx)
+                this.move_task_target(&target, TaskMove::Deleted, cx)
             }),
-        };
+        });
         TaskMenuItems {
             actions,
             workflow,
@@ -2748,10 +2658,13 @@ impl Sidebar {
         };
         let action = match to {
             TaskMove::Active => TaskAction::SetState(AgentTaskState::Active),
-            TaskMove::Settled => TaskAction::SetState(AgentTaskState::Settled),
             TaskMove::Archived => TaskAction::SetState(AgentTaskState::Archived),
             TaskMove::Deleted => {
-                if let Some(task) = self.other_tasks.iter().find(|task| task.target == *target) {
+                if let Some(task) = self
+                    .other_tasks
+                    .iter()
+                    .find(|task| task.target == *target && task.archived)
+                {
                     cx.emit(SidebarEvent::ConfirmTaskDelete {
                         target: target.as_ref().clone(),
                         title: task.session.title.clone(),
@@ -2780,11 +2693,12 @@ impl Sidebar {
         };
         let target = match to {
             TaskMove::Active => AgentTaskState::Active,
-            TaskMove::Settled => AgentTaskState::Settled,
             TaskMove::Archived => AgentTaskState::Archived,
             TaskMove::Deleted => {
-                cx.emit(SidebarEvent::DeleteTask(session_id.to_string()));
-                cx.notify();
+                if current == AgentTaskState::Archived {
+                    cx.emit(SidebarEvent::DeleteTask(session_id.to_string()));
+                    cx.notify();
+                }
                 return;
             }
         };
@@ -2808,8 +2722,8 @@ impl Sidebar {
                 items
                     .actions
                     .into_iter()
-                    .chain(items.workflow)
-                    .chain(std::iter::once(items.delete))
+                    .chain(std::iter::once(items.workflow))
+                    .chain(items.delete)
                     .map(|item| tr(item.label).to_string())
                     .collect()
             })
@@ -3636,7 +3550,7 @@ impl Sidebar {
         let label = match self.view.group {
             SidebarGroup::Project => tr("chat-projects"),
             SidebarGroup::Connection => tr("chat-connections"),
-            SidebarGroup::Status | SidebarGroup::List => tr("chat-tasks"),
+            SidebarGroup::List => tr("chat-tasks"),
         };
         div()
             .group("projects-header-actions")
@@ -3722,11 +3636,6 @@ impl Sidebar {
                 tr("chat-group-connection"),
                 SidebarGroup::Connection,
             ),
-            (
-                "group-status",
-                tr("chat-group-status"),
-                SidebarGroup::Status,
-            ),
             ("group-list", tr("chat-group-list"), SidebarGroup::List),
         ] {
             if group == SidebarGroup::Connection && !self.connection_grouping_available() {
@@ -3774,7 +3683,6 @@ impl Sidebar {
                     .value(match view.group {
                         SidebarGroup::Project => tr("chat-group-project"),
                         SidebarGroup::Connection => tr("chat-group-connection"),
-                        SidebarGroup::Status => tr("chat-group-status"),
                         SidebarGroup::List => tr("chat-group-list"),
                     }),
             )
@@ -4081,9 +3989,10 @@ impl Sidebar {
             menu = menu
                 .items(items.actions.into_iter().map(menu_item))
                 .separator()
-                .items(items.workflow.into_iter().map(menu_item))
-                .separator()
-                .item(menu_item(items.delete));
+                .item(menu_item(items.workflow));
+            if let Some(delete) = items.delete {
+                menu = menu.separator().item(menu_item(delete));
+            }
             self.popup.render(menu, Placement::BelowStart, window, cx)
         });
         div()
@@ -4234,9 +4143,7 @@ impl Sidebar {
         let SidebarTaskEntry {
             session: index,
             pinned: is_pinned,
-            settled: _,
             archived,
-            ..
         } = task;
         let row = &self.rows[index];
         let is_selected = selected == Some(&*row.id);
@@ -4879,24 +4786,25 @@ mod tests {
         let sidebar = chat.update(cx, |chat, _| chat.sidebar.clone());
         sidebar.update(cx, |sidebar, cx| {
             sidebar.reset_persisted_for_test();
-            sidebar.project_filter = Some("/tmp/proj".into());
+            sidebar.view.group = SidebarGroup::Project;
             sidebar.application_vim_enabled = true;
             let sessions = (0..102)
                 .map(|ix| AgentSessionSummary {
                     id: format!("s{ix}"),
                     title: format!("Task {ix}"),
-                    project_root: "/tmp/proj".into(),
+                    project_root: if ix == 101 {
+                        "/tmp/proj-b"
+                    } else {
+                        "/tmp/proj-a"
+                    }
+                    .into(),
                     created_ms: 0,
                     updated_ms: 0,
                     message_count: 1,
                     model: None,
                     web_enabled: true,
                     permission_mode: Default::default(),
-                    state: if ix == 101 {
-                        AgentTaskState::Settled
-                    } else {
-                        AgentTaskState::Active
-                    },
+                    state: AgentTaskState::Active,
                     acp: false,
                 })
                 .collect();
@@ -4919,16 +4827,18 @@ mod tests {
         }
         let (_host, cx) = cx.add_window_view(|_, _| Host(sidebar.clone()));
         cx.simulate_resize(gpui::size(px(300.), px(400.)));
-        let settled = |cx: &mut gpui::VisualTestContext| {
+        let second_project = |cx: &mut gpui::VisualTestContext| {
             sidebar.update(cx, |sidebar, _| {
                 sidebar
                     .entries
                     .iter()
-                    .position(|entry| *entry == SidebarEntry::SectionLabel(SidebarSection::Settled))
+                    .position(|entry| {
+                        *entry == SidebarEntry::SectionLabel(SidebarSection::Project(1))
+                    })
                     .unwrap()
             })
         };
-        let row = settled(cx);
+        let row = second_project(cx);
         sidebar.update(cx, |sidebar, cx| {
             sidebar.list.scroll_to(gpui::ListOffset {
                 item_ix: row,
@@ -4944,13 +4854,13 @@ mod tests {
                 cx.notify();
             });
             cx.run_until_parked();
-            let row = settled(cx);
+            let row = second_project(cx);
             assert!(list.item_is_below_viewport(row).unwrap());
             assert!(list.bounds_for_item(row).is_some());
             sidebar.update(cx, |sidebar, cx| {
-                sidebar.toggle_section_expanded(SidebarSection::Active, cx);
+                sidebar.set_project_expanded("/tmp/proj-a", Some(expanded), cx);
             });
-            let row = settled(cx);
+            let row = second_project(cx);
             assert!(
                 list.bounds_for_item(row).is_none(),
                 "discard the off-screen heading's old measurement"

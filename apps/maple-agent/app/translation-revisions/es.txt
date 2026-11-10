@@ -1,6 +1,5 @@
 # English each translation was last reviewed against. Written by `just translations-reviewed`.
 chat-absolute-path a2ba378ac24704c4
-chat-active 196d1c9462f99ad3
 chat-activity-outside dc914a2d8037659c
 chat-agent-task-cancelled e26bb0917a4c240b
 chat-agents-running 15f7861d7b1f2dc3
@@ -103,7 +102,6 @@ chat-group-by 7c6238b38f9df1c2
 chat-group-connection 09d63de97c6b2af9
 chat-group-list 5daca6e6c8b45508
 chat-group-project 4ba8a89f51963833
-chat-group-status f494c2b5fca99715
 chat-history-loading 1737c0bffae15abe
 chat-history-newer a83b2253a8cc1acc
 chat-history-older 7203b7f6a0e8f096
@@ -213,9 +211,6 @@ chat-page-projects-retry b8a5a69d86f62060
 chat-page-search-loading 1e78c80ec60a9442
 chat-page-search-more e6cb9eb85c31ab34
 chat-page-search-retry 9c366742718afade
-chat-page-settled-loading 80f19523495e84c6
-chat-page-settled-more 0dfb447bb0448fe2
-chat-page-settled-retry 7819952f23b4deca
 chat-permission-allow 48955332314aface
 chat-permission-deny 247877b375d74e51
 chat-permission-label 003c13cd34c8664b
@@ -291,9 +286,6 @@ chat-settings-menu 823236502abfb624
 chat-settings-menu-update 213498aa5cb6c89e
 chat-settings-sync-timeout e691ab3c3d8da37d
 chat-settings-sync-unavailable 136a0f616f4ca33c
-chat-settle 1255527eb0b8d5dd
-chat-settle-task 9d9cbc7238f33cec
-chat-settled c7bc9514276f988d
 chat-setup-integrations 4708740f551d604e
 chat-show-sidebar b6b7a62cb43c92fc
 chat-shrink-composer 18af372ddecd4530

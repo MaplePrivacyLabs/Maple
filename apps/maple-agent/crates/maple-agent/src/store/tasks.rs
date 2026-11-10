@@ -43,7 +43,6 @@ impl TaskKind {
 #[serde(rename_all = "snake_case")]
 pub enum TaskState {
     Active,
-    Settled,
     Archived,
 }
 
@@ -51,7 +50,6 @@ impl TaskState {
     pub fn as_str(self) -> &'static str {
         match self {
             Self::Active => "active",
-            Self::Settled => "settled",
             Self::Archived => "archived",
         }
     }
@@ -136,7 +134,6 @@ pub enum TaskSection {
 #[serde(rename_all = "snake_case")]
 enum SerializedTaskSection {
     Active,
-    Settled,
     Archived,
     Pinned,
     Recent,
@@ -146,7 +143,6 @@ impl From<SerializedTaskSection> for TaskSection {
     fn from(value: SerializedTaskSection) -> Self {
         match value {
             SerializedTaskSection::Active => Self::State(TaskState::Active),
-            SerializedTaskSection::Settled => Self::State(TaskState::Settled),
             SerializedTaskSection::Archived => Self::State(TaskState::Archived),
             SerializedTaskSection::Pinned => Self::Pinned,
             SerializedTaskSection::Recent => Self::Recent,
@@ -158,7 +154,6 @@ impl From<TaskSection> for SerializedTaskSection {
     fn from(value: TaskSection) -> Self {
         match value {
             TaskSection::State(TaskState::Active) => Self::Active,
-            TaskSection::State(TaskState::Settled) => Self::Settled,
             TaskSection::State(TaskState::Archived) => Self::Archived,
             TaskSection::Pinned => Self::Pinned,
             TaskSection::Recent => Self::Recent,
@@ -580,7 +575,7 @@ impl Store {
                     updated_ms: row.get(2)?,
                 });
                 if !row.get::<_, bool>(3)?
-                    && row.get::<_, String>(4)? != "archived"
+                    && row.get::<_, String>(4)? == "active"
                     && row.get::<_, bool>(5)?
                 {
                     task_ids.push(row.get(1)?);
@@ -1066,7 +1061,7 @@ impl Store {
             let mut sql = format!("SELECT {PROJECT_COLUMNS} FROM projects AS p
                 WHERE p.account_id = ?1 AND p.removed_ms IS NULL AND EXISTS
                 (SELECT 1 FROM tasks t WHERE t.account_id = ?1 AND t.project_id = p.id
-                    AND t.state IN ('active','settled') AND t.provisional = 0
+                    AND t.state='active' AND t.provisional = 0
                     AND t.message_count > 0 AND t.deleted_ms IS NULL)");
             let mut values = vec![rusqlite::types::Value::Integer(account.0)];
             if let Some(cursor) = cursor {
@@ -1401,12 +1396,12 @@ fn list_tasks_tx(
         TaskSection::State(state) => {
             sql.push_str(" AND state=? AND message_count>0");
             values.push(rusqlite::types::Value::Text(state.as_str().to_owned()));
-            if query.pins == PinFilter::Exclude && state != TaskState::Archived {
+            if query.pins == PinFilter::Exclude && state == TaskState::Active {
                 sql.push_str(" AND pinned_ms IS NULL");
             }
         }
         TaskSection::Pinned => {
-            sql.push_str(" AND pinned_ms IS NOT NULL AND message_count>0 AND state<>'archived'")
+            sql.push_str(" AND pinned_ms IS NOT NULL AND message_count>0 AND state='active'")
         }
         TaskSection::Recent => {}
     }
@@ -1466,7 +1461,6 @@ fn read_task(row: &Row<'_>) -> rusqlite::Result<TaskRecord> {
     };
     let state = match row.get::<_, String>(4)?.as_str() {
         "active" => TaskState::Active,
-        "settled" => TaskState::Settled,
         "archived" => TaskState::Archived,
         _ => return Err(rusqlite::Error::InvalidQuery),
     };

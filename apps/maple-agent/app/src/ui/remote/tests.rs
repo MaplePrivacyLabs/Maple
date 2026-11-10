@@ -361,8 +361,8 @@ fn available_peer() -> PeerInfo {
     info
 }
 
-/// Agent 0.0.14: management 7.1.0 without the download capability, which
-/// reports an offer it has not downloaded as not ready.
+/// A compatible host without the download capability reports an offer it
+/// has yet to download as not ready.
 fn older_available_peer() -> PeerInfo {
     let mut info = available_peer();
     info.protocol

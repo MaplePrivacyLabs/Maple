@@ -60,9 +60,8 @@ pub use paging::{
     AttachmentRangeReply, HistoryAnchorRequest, HistoryPage, HistoryPageRequest,
     NavigationGetTasksReply, NavigationGroupPage, NavigationGroupQuery, NavigationProjectGroup,
     NavigationProjectPage, NavigationSearchQuery, NavigationTaskPage, NavigationTaskQuery,
-    OpenTaskPage, OpenTaskPageRequest, PageTransport, ProjectSummary, ProjectTaskCursors, RowRange,
-    RowRangeRequest, RowReader, TaskFactsReply, TaskHistoryStamp, TaskSummary, TimelineRow,
-    TransportCaps,
+    OpenTaskPage, OpenTaskPageRequest, PageTransport, ProjectSummary, RowRange, RowRangeRequest,
+    RowReader, TaskFactsReply, TaskHistoryStamp, TaskSummary, TimelineRow, TransportCaps,
 };
 pub use paths::{FilesystemKind, StorePaths};
 pub use persistence::{PersistenceFailure, PersistenceFailureReason, PersistenceStatus};

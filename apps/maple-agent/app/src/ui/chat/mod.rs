@@ -1164,11 +1164,6 @@ impl ChatScreen {
     }
 
     #[cfg(test)]
-    fn sidebar_settled(&self, cx: &gpui::App) -> Vec<usize> {
-        self.sidebar.read(cx).settled_rows().to_vec()
-    }
-
-    #[cfg(test)]
     fn sidebar_pinned(&self, cx: &gpui::App) -> Vec<usize> {
         self.sidebar.read(cx).pinned_rows().to_vec()
     }
@@ -1208,16 +1203,6 @@ impl ChatScreen {
             session.state = state;
         }
         self.sync_sidebar(cx);
-    }
-
-    #[cfg(test)]
-    fn settle_task(&mut self, session_id: &str, cx: &mut Context<Self>) {
-        self.set_task_state(session_id, AgentTaskState::Settled, cx);
-    }
-
-    #[cfg(test)]
-    fn unsettle_task(&mut self, session_id: &str, cx: &mut Context<Self>) {
-        self.set_task_state(session_id, AgentTaskState::Active, cx);
     }
 
     #[cfg(test)]
@@ -3507,8 +3492,7 @@ impl ChatScreen {
         self.tool_summaries.extend(stored_summaries);
         let project_root = session.project_root.clone();
         // Opening the task is what reads how its last run ended, so the
-        // unread or failed marker goes. Only an explicit settle ever moves
-        // a task out of the active inbox.
+        // unread or failed marker goes.
         if self.visible {
             self.mark_seen(&session.id);
         }

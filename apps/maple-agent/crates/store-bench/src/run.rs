@@ -407,18 +407,12 @@ fn seed(
     }
     drop(writers);
     for task in specs {
-        if task.index > 1 {
+        if task.index > 1 && task.index.is_multiple_of(5) {
             store.update_task(
                 account,
                 &task.uuid,
                 &TaskPatch {
-                    state: Some(if task.index % 5 == 0 {
-                        TaskState::Archived
-                    } else if task.index % 5 == 1 {
-                        TaskState::Active
-                    } else {
-                        TaskState::Settled
-                    }),
+                    state: Some(TaskState::Archived),
                     ..Default::default()
                 },
             )?;

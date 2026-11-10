@@ -1,4 +1,4 @@
-//! Tasks: create, list, read, rename, settle, archive and delete.
+//! Tasks: create, list, read, rename, archive and delete.
 //!
 //! A task is an account-authorized row in the host-owned store and, once it
 //! has run, an append-only Pi source tree with materialized history rows. Everything here works whether or not the account's runtime
@@ -638,8 +638,7 @@ impl AgentRuntimeHandle {
         Ok(summary)
     }
 
-    /// Move a task between active, settled and archived. A running task can
-    /// only be made active.
+    /// Move a task between active and archived. Archiving requires an idle task.
     pub async fn set_session_state(
         &self,
         session_id: String,
@@ -661,7 +660,7 @@ impl AgentRuntimeHandle {
                     .map(|row| row.summary())
                     .ok_or_else(|| format!("Failed to load Agent task: {task} was not found"))
             };
-            if state != AgentTaskState::Active
+            if state == AgentTaskState::Archived
                 && let Some(runtime) = runtime
             {
                 runtime

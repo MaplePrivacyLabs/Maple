@@ -128,19 +128,12 @@ fn default_group_limit() -> u16 {
     20
 }
 
-#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
-pub struct ProjectTaskCursors {
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub active: Option<String>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub settled: Option<String>,
-}
-
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub struct NavigationProjectGroup {
     pub project: ProjectSummary,
     pub tasks: Vec<TaskSummary>,
-    pub more: ProjectTaskCursors,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub more: Option<String>,
 }
 
 #[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
@@ -422,8 +415,8 @@ impl Store {
     }
 
     /// Projects are paged before their task queries. Even once the flattened
-    /// 200-task cap is reached, emitted groups retain start cursors for both
-    /// sections so no later project's history disappears.
+    /// 200-task cap is reached, emitted groups retain start cursors for any
+    /// tasks not yet shown.
     pub fn list_project_group_summaries(
         &self,
         account: AccountId,
@@ -460,19 +453,14 @@ impl Store {
                 .take(usize::from(query.limit_groups))
                 .enumerate()
             {
-                let active_scope = cursor_scope(&task_scope(
+                let task_scope = cursor_scope(&task_scope(
                     TaskSection::State(TaskState::Active),
-                    Some(&project.summary.root),
-                    PinFilter::Ignore,
-                ))?;
-                let settled_scope = cursor_scope(&task_scope(
-                    TaskSection::State(TaskState::Settled),
                     Some(&project.summary.root),
                     PinFilter::Ignore,
                 ))?;
                 let budget = usize::from(query.per_project).min(usize::from(MAX_ROWS) - flat_count);
                 // Read at most the remaining task budget plus one lookahead.
-                let mut active = task_rows(
+                let mut tasks = task_rows(
                     tx,
                     account,
                     TaskSection::State(TaskState::Active),
@@ -481,38 +469,23 @@ impl Store {
                     None,
                     budget + 1,
                 )?;
-                let mut settled = task_rows(
-                    tx,
-                    account,
-                    TaskSection::State(TaskState::Settled),
-                    Some(project.key),
-                    PinFilter::Ignore,
-                    None,
-                    budget + 1,
-                )?;
-                for row in active.iter_mut().chain(settled.iter_mut()) {
+                for row in &mut tasks {
                     row.summary.project_root = project.summary.root.clone();
                     row.summary.project_display_name = project.summary.display_name.clone();
                     row.summary.truncated |= project.summary.truncated;
                 }
-                let active_len = active.len();
-                let settled_len = settled.len();
+                let task_count = tasks.len();
                 let mut group = NavigationProjectGroup {
                     project: project.summary.clone(),
                     tasks: Vec::new(),
-                    more: ProjectTaskCursors {
-                        active: (!active.is_empty())
-                            .then(|| make_cursor("tasks", account, &active_scope, Value::Null))
-                            .transpose()?,
-                        settled: (!settled.is_empty())
-                            .then(|| make_cursor("tasks", account, &settled_scope, Value::Null))
-                            .transpose()?,
-                    },
+                    more: (!tasks.is_empty())
+                        .then(|| make_cursor("tasks", account, &task_scope, Value::Null))
+                        .transpose()?,
                 };
                 page.next_cursor = (project_index + 1 < projects.len())
                     .then(|| make_cursor("groups", account, &scope, project_position(project)))
                     .transpose()?;
-                // Budget the empty group (including its section continuations)
+                // Budget the empty group (including its task continuation)
                 // before advancing the group cursor past it.
                 page.groups.push(group.clone());
                 if serialized_len(&page)? > reply_limit(transport) {
@@ -528,33 +501,12 @@ impl Store {
                     )?);
                     return Ok(page);
                 }
-                let mut active_taken = 0;
-                let mut settled_taken = 0;
-                for (is_active, row) in active
-                    .into_iter()
-                    .map(|r| (true, r))
-                    .chain(settled.into_iter().map(|r| (false, r)))
-                {
-                    if group.tasks.len() == budget {
-                        break;
-                    }
+                for (index, row) in tasks.into_iter().take(budget).enumerate() {
                     let old_more = group.more.clone();
                     group.tasks.push(row.summary.clone());
-                    if is_active {
-                        active_taken += 1;
-                        group.more.active = (active_taken < active_len)
-                            .then(|| {
-                                make_cursor("tasks", account, &active_scope, task_position(&row))
-                            })
-                            .transpose()?;
-                    } else {
-                        settled_taken += 1;
-                        group.more.settled = (settled_taken < settled_len)
-                            .then(|| {
-                                make_cursor("tasks", account, &settled_scope, task_position(&row))
-                            })
-                            .transpose()?;
-                    }
+                    group.more = (index + 1 < task_count)
+                        .then(|| make_cursor("tasks", account, &task_scope, task_position(&row)))
+                        .transpose()?;
                     *page.groups.last_mut().ok_or(StoreError::InvalidData)? = group.clone();
                     if serialized_len(&page)? > reply_limit(transport) {
                         group.tasks.pop();
@@ -595,12 +547,12 @@ fn task_rows(
         TaskSection::State(state) => {
             sql.push_str(" AND state=? AND message_count>0");
             values.push(state.as_str().to_owned().into());
-            if pins == PinFilter::Exclude && state != TaskState::Archived {
+            if pins == PinFilter::Exclude && state == TaskState::Active {
                 sql.push_str(" AND pinned_ms IS NULL");
             }
         }
         TaskSection::Pinned => {
-            sql.push_str(" AND pinned_ms IS NOT NULL AND message_count>0 AND state<>'archived'")
+            sql.push_str(" AND pinned_ms IS NOT NULL AND message_count>0 AND state='active'")
         }
         TaskSection::Recent => {}
     }
@@ -682,7 +634,7 @@ fn project_rows(
         AND t.provisional=0 AND t.message_count>0 AND t.deleted_ms IS NULL",
     );
     if groups {
-        base.push_str(" AND t.state IN ('active','settled')");
+        base.push_str(" AND t.state='active'");
     }
     base.push(')');
     if !groups {

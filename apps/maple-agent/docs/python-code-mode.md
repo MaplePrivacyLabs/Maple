@@ -115,7 +115,7 @@ background work an earlier cell started.
   first result says that earlier variables, imports and background work are gone.
 
 Errors keep partial assignments and external effects; there is no rollback or
-replay. Settling a task and compacting its context keep the scratchpad.
+replay. Compacting a task's context keeps its scratchpad.
 
 ## Implementation and delivery
 
