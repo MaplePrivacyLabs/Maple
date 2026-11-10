@@ -7,7 +7,7 @@ import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { SettingsSection } from "./SettingsPage";
 import { saveRecoveryCode } from "@/services/recoveryCodeExport";
-import { extractRecoveryCode } from "@/services/recoveryCodeInput";
+import { AmbiguousRecoveryCodeError, extractRecoveryCode } from "@/services/recoveryCodeInput";
 import { isTauriMobile } from "@/utils/platform";
 
 type RecoveryApi = {
@@ -199,9 +199,13 @@ export function RecoveryCodeSettings({
       setShowConfirmation(false);
       setNotice("Recovery is enabled. Keep your saved code private.");
       void refresh();
-    } catch {
+    } catch (failure) {
       if (alive.current)
-        setError("That code doesn't match. Paste the recovery code you just saved and try again.");
+        setError(
+          failure instanceof AmbiguousRecoveryCodeError
+            ? failure.message
+            : "That code doesn't match. Paste the recovery code you just saved and try again."
+        );
     } finally {
       confirmInFlight.current = false;
       if (alive.current) setConfirming(false);

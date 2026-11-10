@@ -1,7 +1,7 @@
 import { useEffect, useLayoutEffect, useRef, useState } from "react";
 import type { PasswordResetCompletion, PasswordResetOptions } from "@mapleai/sdk";
 import { RecoveryCodeFormatError } from "@mapleai/sdk";
-import { extractRecoveryCode } from "@/services/recoveryCodeInput";
+import { AmbiguousRecoveryCodeError, extractRecoveryCode } from "@/services/recoveryCodeInput";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
@@ -80,8 +80,8 @@ export function PasswordResetFlow({
   async function submit(event: React.FormEvent) {
     event.preventDefault();
     if (inFlight.current || !email || !secret || success) return;
-    if (!options && !/^[A-Z0-9]{8}$/.test(code.trim().toUpperCase())) {
-      setError("Enter the 8-character reset code from your email.");
+    if (!options && !/^[A-Z0-9]{8,32}$/.test(code.trim().toUpperCase())) {
+      setError("Enter the reset code from your email (8–32 letters or numbers).");
       return;
     }
     if (options && ([...newPassword].length < 8 || [...newPassword].length > 64)) {
@@ -132,7 +132,9 @@ export function PasswordResetFlow({
       if (!current()) return;
       if (failure instanceof RecoveryCodeFormatError) {
         setError(
-          "Enter a valid Maple recovery code. You can paste the code or the saved text file's contents."
+          failure instanceof AmbiguousRecoveryCodeError
+            ? failure.message
+            : "Enter a valid Maple recovery code. You can paste the code or the saved text file's contents."
         );
         return;
       }
@@ -215,7 +217,7 @@ export function PasswordResetFlow({
                   autoCapitalize="characters"
                   spellCheck={false}
                   required
-                  maxLength={8}
+                  maxLength={32}
                 />
                 <p className="text-sm text-muted-foreground">
                   Check spam if the email hasn't arrived. Accounts created with Apple, Google, or

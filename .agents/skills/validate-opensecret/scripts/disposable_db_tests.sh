@@ -183,11 +183,9 @@ test "$expected_migrations" -gt 0
 assert_migration_count
 
 if [ "$redo_latest" -eq 1 ]; then
-  for ((redo = 0; redo < redo_count; redo++)); do
-    diesel migration redo --locked-schema \
-      --database-url "$AEAD_TAMPER_TEST_DATABASE_URL"
-    assert_migration_count
-  done
+  diesel migration redo --locked-schema -n "$redo_count" \
+    --database-url "$AEAD_TAMPER_TEST_DATABASE_URL"
+  assert_migration_count
 fi
 
 cargo test --locked --all-features aead_db_tamper_tests \
