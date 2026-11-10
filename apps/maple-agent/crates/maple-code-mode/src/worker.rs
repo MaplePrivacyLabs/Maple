@@ -360,8 +360,9 @@ impl TaskHandle {
             let generation = state.next_generation;
             call.execution_id = 1;
             let mut command = tokio::process::Command::new(&launch.python.executable);
+            // Threads a cell starts inherit its context, so their output is its own.
             command
-                .args(["-I", "-B", "-u"])
+                .args(["-I", "-B", "-u", "-X", "thread_inherit_context=1"])
                 .arg(&launch.python.worker)
                 .arg("--generation")
                 .arg(generation.to_string())
@@ -753,6 +754,8 @@ impl Actor {
             elapsed_ms,
             dropped_stdout_bytes: call.capture.dropped_stdout.saturating_add(stdout),
             dropped_stderr_bytes: call.capture.dropped_stderr.saturating_add(stderr),
+            thread_exceptions: 0,
+            first_thread_exception: None,
             background: self.background.take(),
             state_loss_reason: call.loss.take(),
             runtime: call.identity.take(),
@@ -886,7 +889,7 @@ impl WorkerStart {
                             if call.value.is_some() || call.traceback.is_some() { break "Python sent duplicate final content".into(); }
                             call.traceback = Some(traceback);
                         }
-                        WorkerFrame::Done { execution_id, status, elapsed_ms, dropped_stdout_bytes, dropped_stderr_bytes, .. } => {
+                        WorkerFrame::Done { execution_id, status, elapsed_ms, dropped_stdout_bytes, dropped_stderr_bytes, thread_exceptions, first_thread_exception, .. } => {
                             let Some(call) = actor.current.as_ref().filter(|call| actor.ready && call.execution_id == execution_id) else { break "Python terminal has no matching active execution".into(); };
                             if matches!(status, DoneStatus::Ok) && call.traceback.is_some() || matches!(status, DoneStatus::Error) && call.traceback.is_none() { break "Python terminal status contradicts its final content".into(); }
                             if dropped_stdout_bytes < actor.worker_drops.0 || dropped_stderr_bytes < actor.worker_drops.1 { break "Python output drop counters moved backwards".into(); }
@@ -903,6 +906,8 @@ impl WorkerStart {
                             let (call, mut outcome) = actor.terminal(generation, outcome_status, elapsed_ms).unwrap();
                             outcome.dropped_stdout_bytes = outcome.dropped_stdout_bytes.saturating_add(worker_delta.0);
                             outcome.dropped_stderr_bytes = outcome.dropped_stderr_bytes.saturating_add(worker_delta.1);
+                            outcome.thread_exceptions = thread_exceptions;
+                            outcome.first_thread_exception = first_thread_exception;
                             if let Some(worker) = state.workers.get_mut(&generation) { worker.phase = WorkerPhase::Idle; }
                             let _ = call.result.send(Ok(outcome));
                         }
@@ -1293,7 +1298,9 @@ mod tests {
                     status: DoneStatus::Ok,
                     elapsed_ms: 1,
                     dropped_stdout_bytes: 0,
-                    dropped_stderr_bytes: 0
+                    dropped_stderr_bytes: 0,
+                    thread_exceptions: 0,
+                    first_thread_exception: None
                 }),
                 &sender,
                 &budget,
@@ -1353,7 +1360,9 @@ mod tests {
                     status: DoneStatus::Ok,
                     elapsed_ms: 0,
                     dropped_stdout_bytes: 0,
-                    dropped_stderr_bytes: 0
+                    dropped_stderr_bytes: 0,
+                    thread_exceptions: 0,
+                    first_thread_exception: None
                 }),
                 &sender,
                 &budget,

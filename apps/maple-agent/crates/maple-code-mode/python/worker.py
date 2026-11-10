@@ -1,7 +1,8 @@
 """Maple's private, packaged CPython worker. This is not a Python sandbox.
 
-The host launches this file with the package interpreter and ``-I -B -u``. Import
-all bootstrap dependencies before making the task directory importable.
+The host launches this file with the package interpreter and ``-I -B -u -X
+thread_inherit_context=1``, so threads a cell starts carry its execution id.
+Import all bootstrap dependencies before making the task directory importable.
 """
 
 import ast
@@ -35,6 +36,7 @@ MAX_OUTPUT_BYTES = 16 * 1024
 MAX_OUTPUT_QUEUE_BYTES = 256 * 1024
 MAX_CONTROL_SLOTS = 8
 MAX_VALUE_BYTES = 16 * 1024
+MAX_SUMMARY_BYTES = 256
 MAX_SOURCE_CELLS = 64
 MAX_SOURCE_CACHE_BYTES = 1024 * 1024
 MAX_U64 = (1 << 64) - 1
@@ -202,33 +204,44 @@ def _bounded_traceback(error):
                     column = offset - 1 - (len(source) - len(displayed))
                     if 0 <= column <= len(displayed):
                         out.add("    " + " " * len(displayed[:column].expandtabs(4)) + "^\n")
-        out.add(type(item).__name__[:256] + ": ")
-        arguments = item.args
-        # Builtin exception __str__ implementations may eagerly format huge
-        # arguments. Read their useful fields within our cumulative budget
-        # instead; custom exception __str__ methods are never invoked here.
-        if (
-            isinstance(item, OSError)
-            and type(item.errno) is int
-            and -MAX_U64 <= item.errno <= MAX_U64
-            and type(item.strerror) is str
-        ):
-            out.add("[Errno " + str(item.errno) + "] ")
-            out.add(item.strerror)
-            for prefix, filename in ((": ", item.filename), (" -> ", item.filename2)):
-                if not out.remaining:
-                    break
-                if filename is not None:
-                    out.add(prefix)
-                    out.add(_bounded_repr(filename, max(1, out.remaining)))
-        elif isinstance(item, SyntaxError) and type(item.msg) is str:
-            out.add(item.msg)
-        elif len(arguments) == 1 and type(arguments[0]) is str:
-            out.add(arguments[0])
-        else:
-            out.add(_bounded_repr(arguments, max(1, out.remaining)))
+        _describe_exception(out, item)
         out.add("\n")
     return out.finish()
+
+
+def _describe_exception(out, error):
+    out.add(type(error).__name__[:256] + ": ")
+    arguments = error.args
+    # Builtin exception __str__ implementations may eagerly format huge
+    # arguments. Read their useful fields within our cumulative budget
+    # instead; custom exception __str__ methods are never invoked here.
+    if (
+        isinstance(error, OSError)
+        and type(error.errno) is int
+        and -MAX_U64 <= error.errno <= MAX_U64
+        and type(error.strerror) is str
+    ):
+        out.add("[Errno " + str(error.errno) + "] ")
+        out.add(error.strerror)
+        for prefix, filename in ((": ", error.filename), (" -> ", error.filename2)):
+            if not out.remaining:
+                break
+            if filename is not None:
+                out.add(prefix)
+                out.add(_bounded_repr(filename, max(1, out.remaining)))
+    elif isinstance(error, SyntaxError) and type(error.msg) is str:
+        out.add(error.msg)
+    elif len(arguments) == 1 and type(arguments[0]) is str:
+        out.add(arguments[0])
+    else:
+        out.add(_bounded_repr(arguments, max(1, out.remaining)))
+
+
+def _exception_summary(error):
+    """The exception's type and message, on one bounded line."""
+    out = _TextBudget(MAX_SUMMARY_BYTES)
+    _describe_exception(out, error)
+    return " ".join(out.finish().splitlines())
 
 
 class _Transport:
@@ -594,6 +607,8 @@ class _Worker:
         self.shutdown_task = None
         self.watchdog_started = False
         self.tasks = set()
+        self.thread_exceptions = 0
+        self.first_thread_exception = None
         self.source_cache = _SourceCache()
         self.transport = _Transport(output_fd, generation, self.owner_gone)
         self.captures = []
@@ -609,6 +624,35 @@ class _Worker:
         sys.modules["__main__"] = module
         self.loop.set_task_factory(self._task_factory)
         self.loop.set_exception_handler(self._background_exception)
+        self.thread_excepthook = threading.excepthook
+        threading.excepthook = self._thread_exception
+
+    def _thread_exception(self, args):
+        # threading calls this hook after leaving the thread's context. Print
+        # the traceback as output of the cell that started the thread, then
+        # count it if that cell is still running: a counted traceback always
+        # precedes the cell's terminal frame. SystemExit stays silent.
+        context = getattr(args.thread, "_context", None)
+        execution_id = (
+            context.get(_EXECUTION_ID)
+            if type(context) is contextvars.Context
+            else _EXECUTION_ID.get()
+        )
+        token = _EXECUTION_ID.set(execution_id)
+        try:
+            self.thread_excepthook(args)
+        finally:
+            _EXECUTION_ID.reset(token)
+            if execution_id is not None and args.exc_type is not SystemExit:
+                try:
+                    summary = _exception_summary(args.exc_value)
+                except BaseException:
+                    summary = type(args.exc_value).__name__[:256]
+                with self.admission:
+                    if execution_id == self.active_id:
+                        self.thread_exceptions = min(MAX_U64, self.thread_exceptions + 1)
+                        if self.first_thread_exception is None:
+                            self.first_thread_exception = summary
 
     def _task_factory(self, loop, coroutine, context=None, **kwargs):
         task = asyncio.Task(coroutine, loop=loop, context=context, **kwargs)
@@ -782,7 +826,11 @@ class _Worker:
                 "elapsed_ms": elapsed_ms,
                 "dropped_stdout_bytes": dropped["stdout"],
                 "dropped_stderr_bytes": dropped["stderr"],
+                "thread_exceptions": self.thread_exceptions,
+                "first_thread_exception": self.first_thread_exception,
             })
+            self.thread_exceptions = 0
+            self.first_thread_exception = None
 
     async def _drain(self):
         for stream in self.python_streams:
