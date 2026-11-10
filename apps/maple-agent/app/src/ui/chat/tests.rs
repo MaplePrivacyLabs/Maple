@@ -13485,7 +13485,7 @@ mod state_tests {
                 press(cx, "model-picker");
                 let track = cx.debug_bounds("effort-slider").expect("slider");
                 // The thumb's centre travels between the rounded ends.
-                let end = px(18.);
+                let end = crate::ui::effort_slider::TRACK_HEIGHT / 2.;
                 let at = |fraction: f32| {
                     gpui::point(
                         track.left() + end + (track.size.width - end * 2.) * fraction,
@@ -13530,7 +13530,8 @@ mod state_tests {
         }
 
         /// The chip opens the models with the selected one's slider under
-        /// them; a pick closes the panel, and `/model` opens the same one.
+        /// them, no taller than a model row so the list keeps the eye; a
+        /// pick closes the panel, and `/model` opens the same one.
         #[gpui::test]
         fn the_panel_puts_the_models_above_the_slider(cx: &mut TestAppContext) {
             let (chat, cx) = effort_window(
@@ -13542,6 +13543,10 @@ mod state_tests {
             let row = cx.debug_bounds("model-model-b").expect("model row");
             let slider = cx.debug_bounds("effort-slider").expect("slider");
             assert!(row.bottom() <= slider.top(), "models first, effort below");
+            assert!(
+                slider.size.height <= row.size.height,
+                "the slider ({slider:?}) stays within a row's height ({row:?})"
+            );
             press(cx, "model-model-b");
             assert_eq!(open_menu(&chat, cx), "");
             assert_eq!(

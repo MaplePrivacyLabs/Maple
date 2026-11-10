@@ -15,7 +15,7 @@ use gpui::{Animation, AnimationExt as _, Transformation};
 
 use super::thinking::thinking_label;
 use super::*;
-use crate::ui::effort_slider::{effort_slider, heat_color};
+use crate::ui::effort_slider::{SLIDER_HEIGHT, effort_slider, heat_color};
 use crate::ui::i18n::tr;
 use crate::ui::icons::{icon, spinner};
 use crate::ui::morph_text::morph_text;
@@ -257,8 +257,7 @@ impl ChatScreen {
                                     ("effort-brain-flash", count),
                                     Animation::new(SPARK).with_easing(gpui::ease_out_quint()),
                                     |disc, delta| {
-                                        disc.size(px(14. + 16. * delta))
-                                            .opacity(0.32 * (1. - delta))
+                                        disc.size(px(14. + 10. * delta)).opacity(0.2 * (1. - delta))
                                     },
                                 )),
                         )
@@ -300,13 +299,13 @@ impl ChatScreen {
                                             Animation::new(SPARK)
                                                 .with_easing(gpui::ease_out_quint()),
                                             |burst, delta| {
-                                                let scale = 0.65 + 0.6 * delta;
+                                                let scale = 0.65 + 0.45 * delta;
                                                 burst
                                                     .with_transformation(Transformation::scale(
                                                         gpui::size(scale, scale),
                                                     ))
                                                     .opacity(
-                                                        (delta / 0.15).min(1.)
+                                                        0.7 * (delta / 0.15).min(1.)
                                                             * (1. - delta).powf(1.5),
                                                     )
                                             },
@@ -449,7 +448,7 @@ impl ChatScreen {
                 .flex()
                 .flex_col()
                 .gap_1p5()
-                .child(div().h(px(44.)))
+                .child(div().h(SLIDER_HEIGHT))
                 .child(labels().invisible())
                 .child(
                     div()
@@ -523,7 +522,7 @@ impl ChatScreen {
         div()
             .id("effort-status")
             .debug_selector(|| "effort-status".to_string())
-            .h(px(44.))
+            .h(SLIDER_HEIGHT)
             .flex()
             .items_center()
             .justify_center()

@@ -45,13 +45,16 @@ use gpui::{
 
 use super::theme;
 
-/// Height of the track; the thumb sits inside its rounded ends.
-const TRACK_HEIGHT: Pixels = px(36.);
+/// Height of the track; the thumb sits inside its rounded ends. Kept low
+/// so the slider sits under the model list without pulling focus from it.
+pub(crate) const TRACK_HEIGHT: Pixels = px(24.);
 /// The thumb at rest, a little larger than the track so it reads as a knob.
-const THUMB: Pixels = px(40.);
+const THUMB: Pixels = px(27.);
 /// The thumb while held.
-const THUMB_PRESSED: Pixels = px(44.);
-const DOT: Pixels = px(5.);
+const THUMB_PRESSED: Pixels = px(30.);
+/// The slider's height: room for the held thumb.
+pub(crate) const SLIDER_HEIGHT: Pixels = THUMB_PRESSED;
+const DOT: Pixels = px(4.);
 /// How long the dots take to glide to a new set of stops.
 const MORPH: Duration = Duration::from_millis(320);
 const RIPPLE: Duration = Duration::from_millis(560);
@@ -504,7 +507,7 @@ impl Element for EffortSlider {
         cx: &mut App,
     ) -> (gpui::LayoutId, ()) {
         let style = Style {
-            size: size(gpui::relative(1.).into(), THUMB_PRESSED.into()),
+            size: size(gpui::relative(1.).into(), SLIDER_HEIGHT.into()),
             ..Style::default()
         };
         (window.request_layout(style, [], cx), ())
@@ -734,9 +737,9 @@ impl Element for EffortSlider {
                 body,
                 full,
                 &[BoxShadow {
-                    color: fill_end.opacity(0.18 + 0.32 * heat + 0.15 * snapshot.hot),
-                    offset: point(px(0.), px(2.)),
-                    blur_radius: px(10. + 10. * heat + 6. * snapshot.hot),
+                    color: fill_end.opacity(0.1 + 0.18 * heat + 0.08 * snapshot.hot),
+                    offset: point(px(0.), px(1.)),
+                    blur_radius: px(6. + 6. * heat + 3. * snapshot.hot),
                     spread_radius: px(0.),
                     inset: false,
                 }],
@@ -788,7 +791,7 @@ impl Element for EffortSlider {
             let stop = nearest_stop(hover, count);
             if stop != self.selected {
                 let center = point(x_at(stop_position(stop, count)), track.center().y);
-                let halo = TRACK_HEIGHT - px(10.);
+                let halo = TRACK_HEIGHT * 0.72;
                 window.paint_quad(quad(
                     Bounds::centered_at(center, size(halo, halo)),
                     Corners::all(halo / 2.),
@@ -883,8 +886,8 @@ impl Element for EffortSlider {
                     0.,
                     (if light { 0.12 } else { 0.30 }) + 0.1 * snapshot.lift,
                 ),
-                offset: point(px(0.), px(3.) + px(3.) * snapshot.lift),
-                blur_radius: px(10.) + px(8.) * snapshot.lift,
+                offset: point(px(0.), px(2.) + px(2.) * snapshot.lift),
+                blur_radius: px(6.) + px(5.) * snapshot.lift,
                 spread_radius: px(0.),
                 inset: false,
             },
@@ -892,29 +895,29 @@ impl Element for EffortSlider {
         if self.enabled && snapshot.lift > 0. && glow > 0. {
             // A soft glow in the level's colour rather than an outline.
             shadows.push(BoxShadow {
-                color: fill_end.opacity(0.3 * snapshot.lift * glow),
+                color: fill_end.opacity(0.2 * snapshot.lift * glow),
                 offset: point(px(0.), px(0.)),
-                blur_radius: px(12.) * snapshot.lift,
-                spread_radius: px(1.5) * snapshot.lift,
+                blur_radius: px(8.) * snapshot.lift,
+                spread_radius: px(1.) * snapshot.lift,
                 inset: false,
             });
         }
         if snapshot.bloom > 0. && glow > 0. {
             shadows.push(BoxShadow {
-                color: fill_end.opacity(0.4 * snapshot.bloom * glow),
+                color: fill_end.opacity(0.25 * snapshot.bloom * glow),
                 offset: point(px(0.), px(0.)),
-                blur_radius: px(14.) * snapshot.bloom,
-                spread_radius: px(6.) * snapshot.bloom,
+                blur_radius: px(9.) * snapshot.bloom,
+                spread_radius: px(3.) * snapshot.bloom,
                 inset: false,
             });
         }
         if snapshot.hot > 0. {
             // At the top stop the thumb keeps a warm halo.
             shadows.push(BoxShadow {
-                color: fill_end.opacity(0.45 * snapshot.hot),
+                color: fill_end.opacity(0.25 * snapshot.hot),
                 offset: point(px(0.), px(0.)),
-                blur_radius: px(16.) * snapshot.hot,
-                spread_radius: px(2.5) * snapshot.hot,
+                blur_radius: px(10.) * snapshot.hot,
+                spread_radius: px(1.) * snapshot.hot,
                 inset: false,
             });
         }
