@@ -8,7 +8,7 @@ chat-all-settings f521b783e34e05d0
 chat-answer 8fe68b78075b9d83
 chat-answer-failed 742c98c88f431acc
 chat-answer-first d789d7da0a035246
-chat-answer-placeholder 36c27f43438ddf04
+chat-answer-placeholder 87d25044db23bb66
 chat-archive c284c7691940c495
 chat-archive-count-from 9d636081cb0d79f3
 chat-archive-task 84ae8fab5ea55642
@@ -328,7 +328,7 @@ chat-skill-loading d12c3f0ab8c5ba32
 chat-skill-removed 4a9955edd03c795b
 chat-skill-send-restored 2f2b305b27e7b43a
 chat-skill-send-retained 59ddf65d8baa93ae
-chat-skip 619e5b6092d146a5
+chat-skip c655b871f3d35665
 chat-slash-btw 4bec87ecce3b715c
 chat-slash-compact f2964a979041df87
 chat-slash-help c89658bc3004f75f

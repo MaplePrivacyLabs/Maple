@@ -1556,7 +1556,7 @@ chat-show-sidebar = Show sidebar
 chat-empty-title = Work on anything...
 chat-empty-private = Encrypted and private at every step
 chat-transcript = Transcript
-chat-answer-placeholder = Type your answer…
+chat-answer-placeholder = Something else…
 # $name is a project folder name.
 chat-trust-title = Trust { $name }?
 # $name is a project folder name.
@@ -1677,7 +1677,7 @@ chat-question-next-hint = Select all that apply, then choose Next.
 chat-question-answer-hint = Select all that apply, then choose Answer.
 chat-next = Next
 chat-answer = Answer
-chat-skip = Skip (Esc)
+chat-skip = Skip
 chat-you = You
 # $count is a completed/total ratio, for example 2/5.
 chat-plan-done = Plan, { $count } done

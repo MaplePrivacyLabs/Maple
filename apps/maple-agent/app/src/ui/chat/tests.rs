@@ -2374,8 +2374,8 @@ mod state_tests {
                 this.question_step_answers[&0],
                 ["A", "B", "Additional note: on Linux"]
             );
-            this.toggle_question_option(1, 0, cx);
-            this.toggle_question_option(1, 2, cx);
+            this.select_question_option(1, 0, cx);
+            this.select_question_option(1, 2, cx);
             let answer: serde_json::Value =
                 serde_json::from_str(&this.composed_question_answer(cx)).unwrap();
             assert_eq!(
@@ -2526,17 +2526,17 @@ mod state_tests {
     }
 
     #[gpui::test]
-    fn test_question_option_click_toggles_off(cx: &mut TestAppContext) {
+    fn test_multi_select_option_click_toggles_off(cx: &mut TestAppContext) {
         cx.executor().allow_parking();
         let screen = screen(cx);
         let event = AgentServiceEvent::Question {
             session_id: "s1".to_string(),
             request_id: "q4".to_string(),
             questions: vec![maple_agent::agent::AgentQuestion {
-                multi_select: false,
+                multi_select: true,
                 id: "pick".to_string(),
                 header: "Pick".to_string(),
-                question: "Pick one".to_string(),
+                question: "Pick any".to_string(),
                 options: vec![maple_agent::agent::AgentQuestionOption {
                     label: "A".to_string(),
                     description: "First".to_string(),
@@ -2546,17 +2546,62 @@ mod state_tests {
         };
         screen.update(cx, |this, cx| {
             this.handle_service_event(event, cx);
-            // Clicking the picked option again clears it; the typed text
+            // Clicking the checked option again clears it; the typed text
             // then stands alone.
             this.toggle_question_option(0, 0, cx);
             assert_eq!(this.question_selected[&0].picked, BTreeSet::from([0]));
             this.toggle_question_option(0, 0, cx);
             assert!(this.question_selected.is_empty());
+            assert!(this.current_question().is_some());
             let input = this.pending_question_input.clone().expect("input exists");
             input.update(cx, |input, cx| input.set_text("something else", cx));
             let answer = this.composed_question_answer(cx);
             let parsed: serde_json::Value = serde_json::from_str(&answer).unwrap();
             assert_eq!(parsed["answers"]["pick"]["answers"][0], "something else");
+        });
+    }
+
+    #[gpui::test]
+    fn test_single_choice_click_answers_at_once(cx: &mut TestAppContext) {
+        cx.executor().allow_parking();
+        let screen = screen(cx);
+        let question = |id: &str| maple_agent::agent::AgentQuestion {
+            multi_select: false,
+            id: id.to_string(),
+            header: "Pick".to_string(),
+            question: "Pick one".to_string(),
+            options: ["A", "B"]
+                .into_iter()
+                .map(|label| maple_agent::agent::AgentQuestionOption {
+                    label: label.to_string(),
+                    description: String::new(),
+                })
+                .collect(),
+            permission: None,
+        };
+        let event = AgentServiceEvent::Question {
+            session_id: "s1".to_string(),
+            request_id: "q5".to_string(),
+            questions: vec![question("first"), question("second")],
+        };
+        screen.update(cx, |this, cx| {
+            this.handle_service_event(event, cx);
+            // An option that is not there answers nothing.
+            this.toggle_question_option(0, 7, cx);
+            assert_eq!(this.question_step, 0);
+            assert!(this.question_step_answers.is_empty());
+            // One click records the answer and moves to the next question.
+            this.toggle_question_option(0, 1, cx);
+            assert_eq!(this.question_step, 1);
+            assert_eq!(this.question_step_answers[&0], ["B"]);
+            assert!(this.question_selected.is_empty());
+            // Moving the keyboard selection still waits for Enter.
+            this.focus_question_option(1, 0, cx);
+            assert_eq!(this.question_step, 1);
+            assert!(this.current_question().is_some());
+            // The last click answers the whole card.
+            this.toggle_question_option(1, 0, cx);
+            assert!(this.current_question().is_none());
         });
     }
 

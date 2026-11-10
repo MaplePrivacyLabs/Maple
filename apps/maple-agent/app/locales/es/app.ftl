@@ -1445,7 +1445,7 @@ chat-show-sidebar = Mostrar barra lateral
 chat-empty-title = Trabaja en lo que quieras...
 chat-empty-private = Cifrado y privado en cada paso
 chat-transcript = Transcripción
-chat-answer-placeholder = Escribe tu respuesta…
+chat-answer-placeholder = Otra cosa…
 chat-trust-title = ¿Confiar en { $name }?
 chat-remove-title = ¿Quitar { $name }?
 chat-trust-keep = No confiar
@@ -1556,7 +1556,7 @@ chat-question-next-hint = Selecciona todas las opciones que correspondan y luego
 chat-question-answer-hint = Selecciona todas las opciones que correspondan y luego elige Responder.
 chat-next = Siguiente
 chat-answer = Responder
-chat-skip = Omitir (Esc)
+chat-skip = Omitir
 chat-you = Tú
 # count is a completed/total ratio, for example 2/5.
 chat-plan-done = Plan, pasos completados: { $count }
