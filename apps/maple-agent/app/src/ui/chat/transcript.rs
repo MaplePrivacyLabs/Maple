@@ -1796,8 +1796,8 @@ pub(super) fn render_question_card(
     cx: &mut Context<ChatScreen>,
 ) -> Div {
     const LINE: gpui::Pixels = px(20.);
-    // A row's leading slot: the option's key on a single choice, its
-    // checkbox on a multi-select. The free-form row lines up under it.
+    // A row's leading slot: a circle on a single choice, a box on a
+    // multi-select. The chevron and the free-form row's pencil share it.
     let lead = || div().flex_none().h(LINE).flex().items_center();
     let mut card = div()
         .debug_selector(|| "question-card".to_string())
@@ -1815,11 +1815,6 @@ pub(super) fn render_question_card(
     let step = step.min(question.questions.len().saturating_sub(1));
     let entry = question.questions.get(step);
     let permission = entry.and_then(|entry| entry.permission.as_ref());
-    // On a single choice every row leads with its key, and the chevron and
-    // the free-form row's pencil take the same column so the text lines up.
-    let keyed = entry.is_some_and(|entry| !entry.multi_select)
-        && permission.is_none()
-        && key_labels.iter().any(|label| !label.is_empty());
     let card_label = if permission.is_some() {
         tr("chat-permission-label")
     } else {
@@ -1857,7 +1852,7 @@ pub(super) fn render_question_card(
         .on_click(cx.listener(|this, _event, _window, cx| {
             this.toggle_question_collapsed(cx);
         }))
-        .child(lead().when(keyed, |lead| lead.min_w(px(28.))).child(icon(
+        .child(lead().child(icon(
             if collapsed {
                 "chevron-right"
             } else {
@@ -2018,35 +2013,42 @@ pub(super) fn render_question_card(
                         this.toggle_question_option(question_index, option_index, cx);
                     })
                 });
-            body = body.child(if entry.multi_select {
-                row.child(
-                    lead().child(
-                        div()
-                            .size(px(14.))
-                            .rounded(px(4.))
-                            .border_1()
-                            .border_color(gpui::rgb(if is_picked {
-                                theme::accent()
-                            } else {
-                                theme::text_faint()
-                            }))
-                            .when(is_picked, |mark| mark.bg(gpui::rgb(theme::accent()))),
-                    ),
-                )
-                .child(label_element)
-                .when_some(key, |row, key| {
-                    row.child(lead().child(widgets::keycap(key)))
-                })
-            } else {
-                row.when(keyed, |row| {
-                    row.child(
-                        lead()
-                            .min_w(px(28.))
-                            .when_some(key, |lead, key| lead.child(widgets::keycap(key))),
-                    )
-                })
-                .child(label_element)
-            });
+            // Both kinds read the same way: the mark, the option, its key.
+            // The mark's shape says which kind it is, as on any form.
+            let mark = div()
+                .size(px(14.))
+                .border_1()
+                .border_color(gpui::rgb(if is_picked {
+                    theme::accent()
+                } else {
+                    theme::text_faint()
+                }))
+                .map(|mark| {
+                    if entry.multi_select {
+                        mark.rounded(px(4.))
+                            .when(is_picked, |mark| mark.bg(gpui::rgb(theme::accent())))
+                    } else {
+                        mark.rounded_full()
+                            .flex()
+                            .items_center()
+                            .justify_center()
+                            .when(is_picked, |mark| {
+                                mark.child(
+                                    div()
+                                        .size(px(6.))
+                                        .rounded_full()
+                                        .bg(gpui::rgb(theme::accent())),
+                                )
+                            })
+                    }
+                });
+            body = body.child(
+                row.child(lead().child(mark))
+                    .child(label_element)
+                    .when_some(key, |row, key| {
+                        row.child(lead().child(widgets::keycap(key)))
+                    }),
+            );
         }
     }
     // The free-form answer is the card's last row: it stands in for a
@@ -2061,12 +2063,11 @@ pub(super) fn render_question_card(
                 .px_1p5()
                 .py_1()
                 .rounded(theme::RADIUS_SM)
-                .child(
-                    lead()
-                        .when(keyed, |lead| lead.min_w(px(28.)))
-                        .when(entry.multi_select, |lead| lead.w(px(14.)).justify_center())
-                        .child(icon("pencil", px(13.), theme::text_muted())),
-                )
+                .child(lead().w(px(14.)).justify_center().child(icon(
+                    "pencil",
+                    px(13.),
+                    theme::text_muted(),
+                )))
                 .child(div().flex_1().min_w_0().child(input))
                 .when(!entry.multi_select, |row| {
                     // Enter in the field sends what is typed; the key is
