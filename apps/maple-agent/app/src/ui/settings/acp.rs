@@ -8,9 +8,7 @@ use std::path::{Path, PathBuf};
 use crate::ui::i18n::{MessageCache, tr};
 use gpui::{Context, Div, SharedString, div, prelude::*};
 
-use super::{
-    SettingsScreen, SettingsTarget, activates, section_title, setting_copy, subsection_title,
-};
+use super::{SettingsScreen, SettingsTarget, activates, setting_copy, subsection_title};
 use crate::ui::{theme, widgets};
 
 const COMMAND_TAB_INDEX: isize = 17;
@@ -304,7 +302,6 @@ impl SettingsScreen {
             .flex()
             .flex_col()
             .gap_4()
-            .child(section_title(&tr("settings-acp-title")))
             .child(
                 div()
                     .text_sm()
@@ -312,12 +309,11 @@ impl SettingsScreen {
                     .child(tr("settings-acp-intro")),
             )
             .when(self.acp.temporary_location, |pane| {
-                pane.child(
-                    widgets::banner(theme::status_warning()).child(
-                        self.messages
-                            .get("settings-acp-temporary", [("name", name.into())]),
-                    ),
-                )
+                pane.child(widgets::banner(
+                    widgets::Tone::Warning,
+                    self.messages
+                        .get("settings-acp-temporary", [("name", name.into())]),
+                ))
             })
             .child(
                 widgets::card_row()
@@ -583,11 +579,12 @@ mod tests {
                     last_error: None,
                     compatibility_warning: None,
                 },
-                super::super::Section::Acp,
+                super::super::Section::Api,
                 cx,
             )
         });
         settings.update(cx, |settings, cx| {
+            settings.select_developer_tab(super::super::DeveloperTab::Acp, cx);
             assert_eq!(settings.acp_targets().len(), 2 + AcpExample::ALL.len());
             settings.activate_acp_target(AcpTarget::Command, cx);
             assert_eq!(

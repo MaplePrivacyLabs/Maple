@@ -15,7 +15,7 @@ use super::types::{
 };
 use super::{
     AgentPathLayout, AgentRuntimeHandle, AudioCapabilities, DEFAULT_AGENT_MODEL,
-    PREVIOUS_BUILT_IN_AGENT_MODEL,
+    PREVIOUS_BUILT_IN_AGENT_MODEL, ThinkingLevel,
 };
 use crate::maple_api::MapleApiSession;
 
@@ -256,6 +256,37 @@ fn write_model_choice(
         .map_err(|error| error.to_string())
 }
 
+/// The level picked on New Task with `model_id`, while that is the model
+/// picked there. New Task remembers one model and level, not one per model.
+pub(super) fn new_task_pick(
+    paths: &AgentPathLayout,
+    user_id: &str,
+    model_id: &str,
+) -> Result<Option<ThinkingLevel>, String> {
+    if model_choice_inner(paths, user_id)?.as_deref() != Some(model_id) {
+        return Ok(None);
+    }
+    Ok(load_agent_config_inner(paths, user_id)
+        .map_err(|error| error.to_string())?
+        .default_thinking_level)
+}
+
+/// Remember `model` and `level` as picked together on New Task: the pair
+/// the next new task starts on.
+pub(super) fn save_new_task_pick(
+    paths: &AgentPathLayout,
+    user_id: &str,
+    model: &str,
+    level: ThinkingLevel,
+) -> Result<(), String> {
+    let (store, account) = account_store(paths, user_id).map_err(|error| error.to_string())?;
+    write_model_choice(store, account, Some(model.to_string()))?;
+    let mut config = load_agent_config_inner(paths, user_id).map_err(|e| e.to_string())?;
+    config.default_model = model.to_string();
+    config.default_thinking_level = Some(level);
+    save_agent_config_inner(paths, user_id, &config).map_err(|e| e.to_string())
+}
+
 impl AgentRuntimeHandle {
     /// The model the user last picked, if any. Not checked against the
     /// catalog; [`Self::available_model_ids`] lists the resolved default first.
@@ -265,18 +296,23 @@ impl AgentRuntimeHandle {
         model_choice_inner(self.paths(), &self.user_id)
     }
 
-    /// Remember a model the user picked. It becomes the account default for
-    /// new tasks while the catalog offers it.
+    /// Remember a model the user picked on New Task. It becomes the account
+    /// default for new tasks while the catalog offers it, starting at its
+    /// own level: the level remembered with another model is forgotten.
     pub async fn save_model_choice(&self, model: String) -> Result<(), String> {
         self.verify_generation().await?;
         self.ensure_accepting_new_work()?;
         let _settings = self.lock_settings().await;
+        let previous = model_choice_inner(self.paths(), &self.user_id)?;
         let (store, account) =
             account_store(self.paths(), &self.user_id).map_err(|error| error.to_string())?;
         write_model_choice(store, account, Some(model.clone()))?;
         // Older builds read the pick from `agent.defaults`.
         let mut config =
             load_agent_config_inner(self.paths(), &self.user_id).map_err(|e| e.to_string())?;
+        if previous.as_deref() != Some(model.as_str()) {
+            config.default_thinking_level = None;
+        }
         config.default_model = model;
         save_agent_config_inner(self.paths(), &self.user_id, &config).map_err(|e| e.to_string())
     }

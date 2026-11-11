@@ -135,6 +135,8 @@ pub enum Method {
     TaskBootstrap,
     BrowseProjectFolders,
     CreateProjectFolder,
+    CreateScratchProject,
+    RecentProjectRoots,
     SelectProjectRoot,
     RenameProjectRoot,
     CreateSession,
@@ -160,6 +162,10 @@ pub enum Method {
     SetProjectMcpServerEnabled,
     ListIntegrations,
     SetIntegrationEnabled,
+    /// Only sent to a host advertising `tool_switches_v1`.
+    ListTools,
+    /// Only sent to a host advertising `tool_switches_v1`.
+    SetToolEnabled,
     SaveMcpServers,
     SetSessionWebEnabled,
     /// Only sent to a host advertising `permission_modes_v1`.
@@ -206,7 +212,13 @@ impl Method {
                 | Self::CancelAttachmentUpload
         ) {
             MAX_MANAGEMENT_REPLY
-        } else if matches!(self, Self::BrowseProjectFolders | Self::CreateProjectFolder) {
+        } else if matches!(
+            self,
+            Self::BrowseProjectFolders
+                | Self::CreateProjectFolder
+                | Self::CreateScratchProject
+                | Self::RecentProjectRoots
+        ) {
             256 * 1024
         } else if matches!(
             self,
@@ -424,6 +436,10 @@ mod tests {
             "billing_status",
             "start_checkout",
             "api_credit_balance",
+            "usage_page_enabled",
+            "usage_summary",
+            "usage_requests",
+            "usage_prices",
             "purchase_api_credits",
             "confirm_account_deletion",
             "setup_integration",
@@ -492,6 +508,13 @@ mod tests {
             "rename_project_root",
             "browse_project_folders",
             "create_project_folder",
+            "list_tools",
+            "set_tool_enabled",
+            // Controllers on older builds still send it; the host saves the
+            // task's legacy flag.
+            "set_session_web_enabled",
+            "create_scratch_project",
+            "recent_project_roots",
         ] {
             assert_eq!(Method::parse(name).unwrap().name(), name);
         }
@@ -499,7 +522,12 @@ mod tests {
 
     #[test]
     fn project_folder_commands_have_bounded_replies() {
-        for method in [Method::BrowseProjectFolders, Method::CreateProjectFolder] {
+        for method in [
+            Method::BrowseProjectFolders,
+            Method::CreateProjectFolder,
+            Method::CreateScratchProject,
+            Method::RecentProjectRoots,
+        ] {
             assert_eq!(Method::parse(&method.name()).unwrap(), method);
             assert_eq!(method.reply_limit(), 256 * 1024);
             assert!(!method.urgent());

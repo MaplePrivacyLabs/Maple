@@ -544,6 +544,8 @@ impl<V: 'static, K: Clone + PartialEq + 'static> Popup<V, K> {
             entries,
             priority,
             application_vim,
+            adjust,
+            footer,
         } = menu;
 
         // What the keyboard needs about each item: its id, its action,
@@ -605,6 +607,9 @@ impl<V: 'static, K: Clone + PartialEq + 'static> Popup<V, K> {
                 ),
                 Entry::Separator => children.push(
                     div()
+                        // A menu taller than its limit scrolls, and a column
+                        // that overflows would shrink this line to nothing.
+                        .flex_none()
                         .my_1()
                         .h(px(1.))
                         .bg(gpui::rgb(theme::border()))
@@ -658,8 +663,11 @@ impl<V: 'static, K: Clone + PartialEq + 'static> Popup<V, K> {
             .when_some(label, |panel, label| panel.aria_label(label))
             .max_w(room_width)
             .max_h(max_height)
-            .overflow_y_scroll()
-            .track_scroll(&self.scroll)
+            // Rows scroll; a footer stays put under them, so only the rows
+            // scroll then.
+            .when(footer.is_none(), |panel| {
+                panel.overflow_y_scroll().track_scroll(&self.scroll)
+            })
             .on_mouse_down_out(cx.listener(move |view, _: &MouseDownEvent, window, cx| {
                 if !over_inner_menu(&focus, window, cx) {
                     get(view).close(cx);
@@ -672,6 +680,7 @@ impl<V: 'static, K: Clone + PartialEq + 'static> Popup<V, K> {
             .on_action({
                 let picks = picks.clone();
                 let focus = self.focus.clone();
+                let adjust = adjust.clone();
                 cx.listener(move |view, _: &OpenSubmenu, window, cx| {
                     if !focus.is_focused(window) {
                         cx.propagate();
@@ -679,6 +688,8 @@ impl<V: 'static, K: Clone + PartialEq + 'static> Popup<V, K> {
                         && picks[row].submenu
                     {
                         pick(view, get, &picks, row, window, cx);
+                    } else if let Some(adjust) = &adjust {
+                        adjust(view, 1, window, cx);
                     }
                 })
             })
@@ -687,6 +698,10 @@ impl<V: 'static, K: Clone + PartialEq + 'static> Popup<V, K> {
                 cx.listener(move |view, _: &CloseSubmenu, window, cx| {
                     if focus.is_focused(window) && get(view).parent.is_some() {
                         close_menu(view, get, Exit::Return, window, cx);
+                    } else if focus.is_focused(window)
+                        && let Some(adjust) = &adjust
+                    {
+                        adjust(view, -1, window, cx);
                     } else {
                         cx.propagate();
                     }
@@ -726,8 +741,22 @@ impl<V: 'static, K: Clone + PartialEq + 'static> Popup<V, K> {
                 cx.listener(move |view, event: &KeyDownEvent, window, cx| {
                     type_ahead(view, get, &picks, &focus, event, window, cx);
                 })
-            })
-            .children(children);
+            });
+        let panel = match footer {
+            None => panel.children(children),
+            Some(footer) => panel
+                .child(
+                    div()
+                        .id("menu-rows")
+                        .flex()
+                        .flex_col()
+                        .min_h_0()
+                        .overflow_y_scroll()
+                        .track_scroll(&self.scroll)
+                        .children(children),
+                )
+                .child(footer),
+        };
 
         // A sibling after the panel, covering it, records the panel's hitbox
         // for an outer menu to test. The panel itself may scroll, so the
@@ -1004,6 +1033,8 @@ impl Element for Float {
 type OnSelect<V> = Rc<dyn Fn(&mut V, &mut Window, &mut Context<V>)>;
 type OnParent<V> = Rc<dyn Fn(&mut V, Exit, &mut Window, &mut Context<V>)>;
 type OpenChild<V> = Rc<dyn Fn(&mut V, OnParent<V>, &mut Context<V>)>;
+/// A step of a menu's own control, -1 for Left and 1 for Right.
+type OnAdjust<V> = Rc<dyn Fn(&mut V, i32, &mut Window, &mut Context<V>)>;
 
 enum Exit {
     Return,
@@ -1043,6 +1074,8 @@ pub(crate) struct Menu<V: 'static> {
     entries: Vec<Entry<V>>,
     priority: usize,
     application_vim: bool,
+    adjust: Option<OnAdjust<V>>,
+    footer: Option<AnyElement>,
 }
 
 enum Entry<V: 'static> {
@@ -1062,7 +1095,27 @@ impl<V: 'static> Menu<V> {
             entries: Vec::new(),
             priority: 1,
             application_vim: false,
+            adjust: None,
+            footer: None,
         }
+    }
+
+    /// Left and Right step a control of the menu's own, such as a slider,
+    /// where they would otherwise leave or enter a submenu.
+    pub(crate) fn on_adjust(
+        mut self,
+        adjust: impl Fn(&mut V, i32, &mut Window, &mut Context<V>) + 'static,
+    ) -> Self {
+        self.adjust = Some(Rc::new(adjust));
+        self
+    }
+
+    /// Content docked under the rows, such as a control for the picked
+    /// row: it stays in view while the rows scroll, and the keyboard skips
+    /// it.
+    pub(crate) fn footer(mut self, element: impl IntoElement) -> Self {
+        self.footer = Some(element.into_any_element());
+        self
     }
 
     /// Take Application Vim's `j`/`k`/`g g`/`G` while it is on.
@@ -1211,6 +1264,13 @@ impl<V: 'static> MenuItem<V> {
     /// An on/off row with a switch. Flipping it keeps the menu open.
     pub(crate) fn switch(mut self, on: bool) -> Self {
         self.state = Some(ItemState::Switch(on));
+        self.keep_open = true;
+        self
+    }
+
+    /// Picking the row keeps the menu open, for an action whose result
+    /// shows in the menu itself.
+    pub(crate) fn keep_open(mut self) -> Self {
         self.keep_open = true;
         self
     }

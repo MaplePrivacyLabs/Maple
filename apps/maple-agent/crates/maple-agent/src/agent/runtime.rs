@@ -9,7 +9,7 @@ use std::sync::{Arc, Mutex, MutexGuard};
 use std::time::{Duration, Instant};
 
 use pi_agent_core::QueueMode;
-use pi_ai::Model;
+use pi_ai::{Model, ThinkingLevel};
 use pi_coding_agent::resources::Resources;
 use pi_coding_agent::session::EntryKind;
 use pi_coding_agent::settings::{RetrySettings, Settings};
@@ -28,13 +28,16 @@ use super::mcp::{
     MAX_IDLE_TASKS_WITH_SERVERS, STARTUP_WAIT, TaskMcp, read_saved_servers, task_servers,
 };
 use super::permissions::{PermissionGate, TaskPermissions, permission_extension};
-use super::provider::{CatalogEntry, catalog_entry, maple_model, maple_model_registry};
+use super::provider::{
+    CatalogEntry, catalog_entry, maple_model, maple_model_registry, recommended_thinking_level,
+};
 use super::questions::QuestionBroker;
 use super::runs::{Failures, Runs};
 use super::store::{TaskKind, TaskRow, TaskStore};
 use super::surface::{AgentSurfaceAccess, SurfaceTask, with_surface_servers};
 use super::switch_compaction::{OfferedModel, switch_compaction_extension};
 use super::timeline::{MAPLE_NOTICE_ENTRY, notice_item};
+use super::tool_settings::{ToolSwitch, tool_switches};
 use super::{
     AgentRuntimeStatus, AgentServiceEvent, AgentTimelineItem, AgentTimelineLabel,
     MapleAgentHostResources, emit_agent_event, login_path, tools,
@@ -90,6 +93,8 @@ struct LoadedTask {
     cua: Arc<TaskCua>,
     agents: TaskProviders,
     permissions: TaskPermissions,
+    /// The session's shell tool, which the shell's switch turns on.
+    shell: &'static str,
     last_used: Instant,
     unloading: Arc<AtomicBool>,
 }
@@ -126,6 +131,13 @@ pub(super) struct AgentRuntime {
     pub(super) failures: Failures,
     /// The external agents of the account's tasks.
     pub(super) external_agents: Arc<ExternalAgentRegistry>,
+    /// The bundled CPython behind the tasks' `python` scratchpads, when this
+    /// build has one.
+    python: Option<Arc<tools::PythonWorkers>>,
+    /// A level picked for a task's next model, by task id: the model and
+    /// the level its switch takes. Held in memory, as the composer holds
+    /// the pick of that model until the task's next message.
+    next_thinking: Mutex<HashMap<String, (String, ThinkingLevel)>>,
 }
 
 impl AgentRuntime {
@@ -137,6 +149,7 @@ impl AgentRuntime {
             runtime.spawn(login_path::login_search_path());
         }
         let lifetime = CancellationToken::new();
+        let python = tools::PythonWorkers::bundled(parts.store.store().paths());
         Arc::new_cyclic(|runtime| Self {
             external_agents: Arc::new(ExternalAgentRegistry::new(ExternalAgentHost {
                 events: parts.host.events.clone(),
@@ -158,6 +171,8 @@ impl AgentRuntime {
             surfaces: Mutex::new(HashMap::new()),
             runs: Runs::default(),
             failures: Failures::default(),
+            python,
+            next_thinking: Mutex::new(HashMap::new()),
         })
     }
 
@@ -623,6 +638,71 @@ impl AgentRuntime {
         context_window: Option<u64>,
         vision: Option<bool>,
     ) -> Model {
+        self.pi_model_entry(model_id, context_window, vision)
+            .await
+            .0
+    }
+
+    /// `model_id`'s levels as [`Self::pi_model`] resolves them, and the
+    /// level the catalog recommends for it.
+    pub(super) async fn thinking_model(&self, model_id: &str) -> (Model, ThinkingLevel) {
+        let (model, entry) = self.pi_model_entry(model_id, None, None).await;
+        let recommended = recommended_thinking_level(&model, Some(&entry));
+        (model, recommended)
+    }
+
+    /// The level the catalog recommends for `model`
+    /// ([`recommended_thinking_level`]).
+    pub(super) async fn recommended_level(&self, model: &Model) -> ThinkingLevel {
+        let entry = match self.api.model_catalog().await {
+            Ok(catalog) => catalog_entry(&catalog, &model.id),
+            Err(error) => {
+                log::warn!("Failed to fetch the model catalog for a thinking level: {error}");
+                None
+            }
+        };
+        recommended_thinking_level(model, entry.as_ref())
+    }
+
+    /// The level a new task on `model` starts at: the one picked with it
+    /// on New Task while it is the model picked there, else `recommended`.
+    pub(super) fn new_task_level(
+        &self,
+        model: &Model,
+        recommended: ThinkingLevel,
+    ) -> ThinkingLevel {
+        match super::catalog::new_task_pick(&self.host.paths, &self.user_id, &model.id) {
+            Ok(Some(level)) => model.clamp_thinking_level(level),
+            Ok(None) => recommended,
+            Err(error) => {
+                log::warn!("Failed to read the New Task thinking pick: {error}");
+                recommended
+            }
+        }
+    }
+
+    /// The level picked for `task`'s next model, when that is `model_id`.
+    pub(super) fn next_level(&self, task: &str, model_id: &str) -> Option<ThinkingLevel> {
+        lock(&self.next_thinking)
+            .get(task)
+            .filter(|(model, _)| model == model_id)
+            .map(|(_, level)| *level)
+    }
+
+    /// Keep `level` for `task`'s switch to `model_id`, replacing a pick
+    /// for another model.
+    pub(super) fn set_next_level(&self, task: &str, model_id: &str, level: ThinkingLevel) {
+        lock(&self.next_thinking).insert(task.to_string(), (model_id.to_string(), level));
+    }
+
+    /// [`Self::pi_model`], with the catalog's entry for the model: empty
+    /// when the catalog cannot be read.
+    async fn pi_model_entry(
+        &self,
+        model_id: &str,
+        context_window: Option<u64>,
+        vision: Option<bool>,
+    ) -> (Model, CatalogEntry) {
         let mut entry = match self.api.model_catalog().await {
             Ok(catalog) => catalog_entry(&catalog, model_id).unwrap_or_default(),
             Err(error) => {
@@ -642,14 +722,15 @@ impl AgentRuntime {
                             model.input.push(pi_ai::InputModality::Image);
                         }
                     }
-                    return model;
+                    return (model, CatalogEntry::default());
                 }
                 CatalogEntry::default()
             }
         };
         entry.context_window = context_window.or(entry.context_window);
         entry.vision = vision.or(entry.vision);
-        maple_model(model_id, Some(&entry), context_limit_override())
+        let model = maple_model(model_id, Some(&entry), context_limit_override());
+        (model, entry)
     }
 
     /// The task's Pi session, built on first use, on `model`. Its skills
@@ -702,10 +783,9 @@ impl AgentRuntime {
             } else {
                 None
             };
-            // The web switch and the external agents may have changed since
-            // the last run.
-            tools::sync_web_tools(session, row.web_enabled);
             permissions.set(row.permission_mode());
+            // The external agents may have changed since the last run; the
+            // switches of Settings → Tools reach the session as they change.
             sync_external_agent_tools(session, agents, providers);
             if let Some(resources) = resources {
                 session.set_resources(resources);
@@ -746,13 +826,16 @@ impl AgentRuntime {
         let output_dir = crate::store::spill::SpillRoot::new(self.store.store().paths())
             .and_then(|spills| spills.output_dir(&row.id))
             .map_err(|error| error.to_string())?;
+        // Read under the sessions' lock, under which a changed switch reaches
+        // the loaded sessions, so a session built during a change has it.
+        let switches = tool_switches(&self.host.paths, &self.user_id);
+        let python_on = switches.enabled(ToolSwitch::Python);
         let mut tools = tools::task_tools(tools::TaskToolsFor {
             session_id: row.id.clone(),
             kind: TaskKind::Desktop,
             login_path: search_path.clone(),
             questions: self.questions.clone(),
             web: self.api.clone(),
-            web_enabled: row.web_enabled,
             read_image: tools::ReadImageFor {
                 session_id: row.id.clone(),
                 cwd: PathBuf::from(&row.project_root),
@@ -760,7 +843,9 @@ impl AgentRuntime {
                 models: self.models.clone(),
                 describe,
             },
+            switches,
         });
+        let shell = tools.shell;
         tools.options.output_dir = Some(output_dir.clone());
         options.tool_options = tools.options;
         options.builtin_tools = Some(tools.builtin);
@@ -776,6 +861,19 @@ impl AgentRuntime {
                 login_path: search_path.clone(),
                 providers: agents.clone(),
             }));
+        if let Some(workers) = &self.python {
+            let python = workers.task(
+                &row.id,
+                PathBuf::from(&row.project_root),
+                search_path.as_deref(),
+                row.message_count > 0,
+                self.lifetime.child_token(),
+            );
+            options
+                .tools
+                .push(tools::python_tool(Arc::clone(&python), python_on));
+            options.extensions.push(tools::python_extension(python));
+        }
         let mcp = TaskMcp::new_with_output_dir(
             Path::new(&row.project_root),
             search_path,
@@ -805,7 +903,16 @@ impl AgentRuntime {
             .map_err(|error| format!("Failed to start the Agent task: {error}"))?;
         let switched = match stored {
             Some(_) => self.switch_model(&session, row, model).await,
-            None => None,
+            None => {
+                // A task without messages starts as a new task on its model.
+                if row.message_count == 0 {
+                    let recommended = self.recommended_level(&model).await;
+                    session
+                        .set_thinking_level(self.new_task_level(&model, recommended))
+                        .await;
+                }
+                None
+            }
         };
         sync_external_agent_tools(&session, &agents, providers);
         sessions.insert(
@@ -816,6 +923,7 @@ impl AgentRuntime {
                 cua: task_cua,
                 agents,
                 permissions,
+                shell,
                 last_used: Instant::now(),
                 unloading: Arc::new(AtomicBool::new(false)),
             },
@@ -825,13 +933,38 @@ impl AgentRuntime {
         Ok((session, switched))
     }
 
+    /// Bring a switch of Settings → Tools to every loaded task that
+    /// registered its tools, as the account has the switch now. Only those
+    /// tools change, from the task's next model request; see
+    /// [`tools::set_tools_active`].
+    pub(super) async fn apply_tool_switch(&self, switch: ToolSwitch) {
+        let enabled = {
+            let sessions = self.sessions.lock().await;
+            // Read under the lock, as a session's build does: when changes
+            // race, the last to get here applies the last one saved.
+            let enabled = tool_switches(&self.host.paths, &self.user_id).enabled(switch);
+            for task in sessions.values() {
+                tools::set_tools_active(&task.session, &switch.tool_names(task.shell), enabled);
+            }
+            enabled
+        };
+        // Off means off: no interpreter, and no background work an earlier
+        // cell left running, outlives the Python switch.
+        if switch == ToolSwitch::Python
+            && !enabled
+            && let Some(python) = &self.python
+        {
+            python.discard_all(tools::SWITCHED_OFF_REASON).await;
+        }
+    }
+
     /// Move a session to `model`, as Pi's `setModel` does. A started task
     /// that switched to another model records a notice in its transcript,
     /// which is returned with its entry to show live.
     ///
-    /// Pi's switch takes the thinking default of the session's settings,
-    /// read when the session was built. A switch to another model takes the
-    /// account's default as it is now, which the composer previews.
+    /// A switch to another model starts it at the level picked for it while
+    /// the task waited for the switch, else at the level the catalog
+    /// recommends for it, never at the previous model's level.
     async fn switch_model(
         &self,
         session: &AgentSession,
@@ -842,14 +975,22 @@ impl AgentRuntime {
             .model()
             .is_none_or(|previous| previous.id != model.id);
         let model_id = model.id.clone();
+        let level = if changed {
+            let picked = lock(&self.next_thinking)
+                .remove(&row.id)
+                .filter(|(picked, _)| *picked == model_id)
+                .map(|(_, level)| level);
+            Some(match picked {
+                Some(level) => level,
+                None => self.recommended_level(&model).await,
+            })
+        } else {
+            None
+        };
         self.models.register_models([model.clone()]);
         session.set_model(model).await;
-        if !changed {
-            return None;
-        }
-        if let Some(level) = self.thinking_default() {
-            session.set_thinking_level(level).await;
-        }
+        let level = level?;
+        session.set_thinking_level(level).await;
         if row.message_count == 0 {
             return None;
         }
@@ -919,16 +1060,6 @@ impl AgentRuntime {
             .unwrap_or_else(|| model_id.to_string())
     }
 
-    /// The account's saved thinking default, if it has one.
-    fn thinking_default(&self) -> Option<pi_ai::ThinkingLevel> {
-        super::config::load_agent_config_inner(&self.host.paths, &self.user_id)
-            .map(|config| config.default_thinking_level)
-            .unwrap_or_else(|error| {
-                log::warn!("Failed to read the thinking default: {error}");
-                None
-            })
-    }
-
     /// The skills, prompt templates and instruction files of a task in
     /// `cwd`, or `None` when they cannot be read.
     async fn resources(&self, cwd: &str) -> Option<Resources> {
@@ -952,8 +1083,9 @@ impl AgentRuntime {
     }
 
     /// The settings of every session: Maple's retry budget, queued messages
-    /// delivered together, the saved thinking default, and the host's opening
-    /// instructions after Pi's own.
+    /// delivered together, and the host's opening instructions after Pi's
+    /// own. A session's thinking level is set where it starts or switches
+    /// models, from the catalog and the New Task pick.
     fn settings(&self) -> Settings {
         let appended = format!(
             "{}\n\n{}",
@@ -967,7 +1099,6 @@ impl AgentRuntime {
             http_idle_timeout_ms: Some(0),
             steering_mode: QueueMode::All,
             follow_up_mode: QueueMode::All,
-            default_thinking_level: self.thinking_default(),
             append_system_prompt: Some(appended).filter(|text| !text.is_empty()),
             ..Settings::default()
         }
@@ -1033,7 +1164,27 @@ impl AgentRuntime {
         // its persistence retry succeeds. The host must retain this runtime on
         // failure and keep its ownership lock/key until a successful retry.
         futures_util::future::join_all(sessions.iter().map(AgentSession::shutdown)).await;
+        if let Some(python) = &self.python {
+            python.shutdown().await;
+        }
         self.finish_shutdown().await
+    }
+
+    /// Discard a loaded task's Python scratchpad; its next call starts fresh
+    /// and is told why.
+    pub(super) async fn discard_python(&self, session_id: &str, reason: &str) {
+        if let Some(python) = &self.python {
+            python.discard(session_id, reason).await;
+        }
+    }
+
+    /// Discard the Python scratchpads of a project's loaded tasks.
+    pub(super) async fn discard_project_python(&self, project_root: &str) {
+        if let Some(python) = &self.python {
+            python
+                .discard_project(Path::new(project_root), tools::PROJECT_REMOVED_REASON)
+                .await;
+        }
     }
 
     /// Finish saving an already-drained runtime without notifying extensions or

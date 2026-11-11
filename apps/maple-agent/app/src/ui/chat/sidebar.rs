@@ -112,20 +112,7 @@ const ROW_FADE: gpui::Pixels = px(20.);
 /// Geometry shared by the expanded wordmark row and the collapsed mark.
 pub(super) const WORDMARK_LEFT: gpui::Pixels = px(16.);
 pub(super) const WORDMARK_HEIGHT: gpui::Pixels = px(16.);
-pub(super) const TOP_ROW_HEIGHT: gpui::Pixels = px(28.);
 pub(super) const TOP_ROW_GUTTER: gpui::Pixels = px(12.);
-
-/// Top of the wordmark row. Under traffic lights it starts below them,
-/// with the wordmark under the header's line. Without them the wordmark
-/// moves up into their corner, centered on the header's line.
-pub(super) fn wordmark_row_top() -> gpui::Pixels {
-    if titlebar::TRANSPARENT_TITLEBAR {
-        titlebar::TRAFFIC_LIGHT_ROW
-            .max(super::CHAT_HEADER_HEIGHT - (TOP_ROW_HEIGHT - WORDMARK_HEIGHT) / 2.)
-    } else {
-        (super::CHAT_HEADER_HEIGHT - TOP_ROW_HEIGHT) / 2.
-    }
-}
 
 pub(super) fn session_from_summary(
     summary: &maple_agent::store::TaskSummary,
@@ -2547,13 +2534,17 @@ impl Sidebar {
 
     /// Show the project's folder in the file manager.
     fn open_folder(&mut self, root: &str, cx: &mut Context<Self>) {
+        let is_workspace = self
+            .project_metadata
+            .get(root)
+            .is_some_and(|project| project.is_default_workspace);
         let path = root.to_string();
         self.call_semantic(
             async move {
                 tokio::task::spawn_blocking(move || {
                     // The listed Maple workspace exists only once it is used.
-                    if maple_agent::agent::is_default_maple_workspace(std::path::Path::new(&path)) {
-                        maple_agent::agent::ensure_default_maple_workspace()?;
+                    if is_workspace {
+                        maple_agent::agent::ensure_maple_workspace(std::path::Path::new(&path))?;
                     }
                     crate::platform::reveal_folder(&path)
                 })
@@ -4496,12 +4487,12 @@ impl Render for Sidebar {
                     .pr(TOP_ROW_GUTTER)
                     // Under traffic lights the wordmark row sits below them,
                     // not beside them; the space above it is still the bar.
-                    .pt(wordmark_row_top())
+                    .pt(titlebar::sidebar_row_top())
                     .pb_2()
                     .child(
                         div()
                             .flex_none()
-                            .h(TOP_ROW_HEIGHT)
+                            .h(titlebar::SIDEBAR_ROW_HEIGHT)
                             .flex()
                             .items_center()
                             .child(
@@ -4815,9 +4806,6 @@ pub(super) fn session_summary_eq(a: &AgentSessionSummary, b: &AgentSessionSummar
 }
 
 pub(super) fn root_display_name(root: &str) -> String {
-    if maple_agent::agent::is_default_maple_workspace(std::path::Path::new(root)) {
-        return maple_agent::agent::MAPLE_WORKSPACE_DISPLAY_NAME.to_string();
-    }
     std::path::Path::new(root)
         .file_name()
         .map(|name| name.to_string_lossy().to_string())
@@ -4826,7 +4814,7 @@ pub(super) fn root_display_name(root: &str) -> String {
 
 /// Interpret Windows paths on a Unix controller without changing the path sent
 /// back to the owner, or treating a backslash in a Unix filename as a separator.
-fn remote_root_display_name(root: &str) -> String {
+pub(super) fn remote_root_display_name(root: &str) -> String {
     let windows = root.starts_with(r"\\")
         || (root.as_bytes().get(1) == Some(&b':') && root.as_bytes().get(2) == Some(&b'\\'));
     if windows {
@@ -4843,7 +4831,7 @@ fn remote_root_display_name(root: &str) -> String {
 
 #[cfg(test)]
 mod tests {
-    use super::{remote_root_display_name, root_display_name};
+    use super::remote_root_display_name;
 
     #[gpui::test]
     fn projects_header_reveal_tracks_its_buttons_and_keeps_view_menu_open(
@@ -5267,18 +5255,5 @@ mod tests {
         if cfg!(unix) {
             assert_eq!(remote_root_display_name(r"/home/alex/a\b"), r"a\b");
         }
-    }
-
-    #[test]
-    fn the_default_workspace_is_labeled_maple_workspace() {
-        let Some(workspace) = maple_agent::agent::default_maple_workspace_path() else {
-            return;
-        };
-        assert_eq!(
-            root_display_name(&workspace.to_string_lossy()),
-            "Maple Workspace"
-        );
-        let elsewhere = workspace.with_file_name("Notes");
-        assert_eq!(root_display_name(&elsewhere.to_string_lossy()), "Notes");
     }
 }

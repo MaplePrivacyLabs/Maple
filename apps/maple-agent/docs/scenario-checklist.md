@@ -30,14 +30,14 @@ stdio MCP server configured in Settings > Integrations.
 | C3 | Stop and resume | Stop a long shell command, then send a follow-up | The stopped notice shows, no orphaned declined pair, and the follow-up runs |
 | C4 | Attachments | Attach an image by picker and by paste, then send | The model sees the image (vision model) or a `read_image` reference (text model) |
 | C5 | Voice input | Dictate a message | The transcript of the dictation lands in the composer |
-| C6 | Per-task pickers | Switch the model, Web and an integration on the draft, then send | The created task carries the three choices |
+| C6 | Per-task pickers | Switch the model and an integration on the draft, then send | The created task carries both choices |
 | C7 | Switch models mid-task | In a task with history, pick another model and send; reopen the task after a restart | The reply comes from the new model with the earlier context, the transcript shows "Switched to …", and the task reopens on the new model (**automated**: `a_run_wakes_a_settled_task_and_a_started_task_switches_models`) |
 
 ## Slash commands and skills
 
 | # | Scenario | How | Pass when |
 |---|---|---|---|
-| S1 | `/new`, `/pin`, `/web`, `/model`, `/help` | Run each | Each does what `/help` says |
+| S1 | `/new`, `/pin`, `/model`, `/help` | Run each | Each does what `/help` says |
 | S2 | `/compact` | After a few turns | "Compaction completed." and the context ring drops |
 | S3 | Skill command | Run a bundled skill such as `/handoff` | The skill's instructions load and the task follows them |
 | S4 | Project skill behind trust | Open an untrusted project with `.agents/skills` | The trust prompt appears; after trusting, the skill is offered |
@@ -52,6 +52,7 @@ stdio MCP server configured in Settings > Integrations.
 | L3 | `todo_write` | Ask for a multi-step plan | The plan pins above the composer and updates; once every item is checked it leaves the composer and stays in the transcript as a foldable Plan row |
 | L4 | `web_search` and `open_url` | Ask for a page title | Web results and the title come back |
 | L5 | `request_user_input` | Ask the model to ask you a question | The card shows; the answer reaches the model; Escape skips |
+| L6 | Settings → Tools | With a task open, turn `grep` on and `read_image` and Web off, then message the task; open the page in builds with and without bundled CPython | The next request offers `grep` but not `read_image`, `web_search` or `open_url`, as does a new task; the Python row shows only where CPython is bundled (**automated** on the host: `a_change_reaches_loaded_tasks_from_their_next_request`, `the_web_switch_moves_both_web_tools_from_the_next_request`) |
 
 ## Permission modes
 
@@ -105,7 +106,8 @@ stdio MCP server configured in Settings > Integrations.
 | D1 | Tool and thinking summaries | Setting on; run a tool | One-line summaries appear and turn off with the setting |
 | D2 | Image descriptions for text models | Attach an image on a text-only model | The description reaches the model |
 | D3 | Context ring and compaction | A long task | The ring fills toward the model's catalog window and the task compacts by itself before it is full; `/compact` empties it |
-| D4 | Plan meter | Settings > Usage | The plan, percent used and reset date show, nothing else |
+| D4 | Plan meter | Settings > Usage on an account without the `usage_page` flag | The plan, percent used and reset date show, nothing else |
+| D9 | Usage history | Settings > Usage on a Pro, Max or Team account with the `usage_page` flag (or `MAPLE_FORCE_FEATURE_FLAGS=usage_page` locally) | The plan card leads, as in D4, with credits used of the allowance and the pace; below it, the range's totals, daily chart, models, apps, months, requests and prices match the web Usage page for the same range; Load more adds requests; switching the range, Show and Split by redraws without a reload |
 | D5 | Notifications | Finish a task and ask a question with the window in the background | Two notifications, none for permissions |
 | D6 | Appearance, fonts, motion, Vim | Change each setting | Each applies live |
 | D8 | Compaction after a switch to a smaller window | A long task on a large-window model, then a model whose window it exceeds | The task compacts before the next reply, summarized by the previous model (log line "summarized by"), and the reply comes from the new one (**automated**: `a_switch_to_a_smaller_window_compacts_with_the_previous_model`) |

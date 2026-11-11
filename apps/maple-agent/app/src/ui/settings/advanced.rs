@@ -2,14 +2,18 @@
 //! remote task selection never redirects these settings to another computer.
 
 use crate::ui::i18n::{MessageCache, UiText, tr, tr_args};
-use gpui::{App, Context, Div, Entity, EventEmitter, div, prelude::*};
+use gpui::{App, Context, Div, Entity, EventEmitter, Focusable, div, prelude::*, px};
+
+use crate::ui::icons::icon;
 use maple_agent::store::{
     StoreState,
     lifecycle::{StoreMode, StoreModeNotice},
 };
 use serde_json::Value;
 
-use super::{Section, SettingsScreen, TextInput, section_title, theme, widgets};
+use super::account::AccountTarget;
+use super::navigation::SettingsTarget;
+use super::{Section, SettingsScreen, TextInput, subsection_title, theme, widgets};
 use crate::ui::store_gate::{
     ConfirmationRequest, ERASE_COPY, PasswordAction, PasswordForm, PasswordFormFinished,
     RetryStorePersistence, StoreStatus,
@@ -20,6 +24,8 @@ pub(super) struct AdvancedState {
     pub form: Option<Entity<PasswordForm>>,
     pub confirmation: Entity<TextInput>,
     pub erase: bool,
+    /// Focus the erase dialog's field the next time it draws.
+    pub erase_focus_pending: bool,
     pub busy: bool,
     pub notice: Option<UiText>,
     success: Option<&'static str>,
@@ -29,12 +35,31 @@ pub(super) struct AdvancedState {
 }
 
 impl AdvancedState {
-    pub fn new(cx: &mut Context<SettingsScreen>) -> Self {
+    pub fn new(
+        application_vim_enabled: bool,
+        application_focus: gpui::FocusHandle,
+        cx: &mut Context<SettingsScreen>,
+    ) -> Self {
         Self {
             status: None,
             form: None,
-            confirmation: cx.new(|cx| TextInput::localized("settings-advanced-type-erase", cx)),
+            confirmation: {
+                let screen = cx.entity().downgrade();
+                cx.new(move |cx| {
+                    TextInput::localized("settings-advanced-type-erase", cx)
+                        .application_vim(application_vim_enabled)
+                        .on_application_escape(move |window, cx| {
+                            window.focus(&application_focus, cx)
+                        })
+                        // Enter submits once the word is right; a wrong word
+                        // shows the notice, as the button does.
+                        .on_enter(move |_text, _window, cx| {
+                            let _ = screen.update(cx, |screen, cx| screen.erase_local_store(cx));
+                        })
+                })
+            },
             erase: false,
+            erase_focus_pending: false,
             busy: false,
             notice: None,
             success: None,
@@ -71,7 +96,7 @@ impl SettingsScreen {
         cx: &mut Context<Self>,
     ) -> bool {
         let message = message.into();
-        if self.section != Section::Advanced {
+        if self.section != Section::Account {
             return false;
         }
         if let Some(form) = &self.advanced.form {
@@ -158,7 +183,7 @@ impl SettingsScreen {
         );
     }
 
-    fn open_password_form(&mut self, action: PasswordAction, cx: &mut Context<Self>) {
+    pub(super) fn open_password_form(&mut self, action: PasswordAction, cx: &mut Context<Self>) {
         if !self.advanced.available()
             || self.advanced.busy
             || !self
@@ -185,6 +210,8 @@ impl SettingsScreen {
             &form,
             move |this, _form, event: &PasswordFormFinished, cx| {
                 this.advanced.form = None;
+                this.application_focus_pending = true;
+                this.reconcile_application_vim_target();
                 if event.cancelled {
                     cx.notify();
                     return;
@@ -204,7 +231,264 @@ impl SettingsScreen {
         cx.notify();
     }
 
-    fn erase_local_store(&mut self, cx: &mut Context<Self>) {
+    /// Escape or the backdrop on the password dialog. A running operation
+    /// keeps the dialog: its own Cancel knows whether it can stop.
+    pub(super) fn dismiss_password_form(&mut self, cx: &mut Context<Self>) {
+        // The form's own close: a no-op while busy, otherwise it emits the
+        // cancelled finish that the subscription turns into `form = None`.
+        if let Some(form) = self.advanced.form.clone() {
+            form.update(cx, |form, cx| form.close(cx));
+        }
+    }
+
+    /// Set / change / remove the unlock password, as a dialog. The form is
+    /// its own card; this adds the scrim and keeps the encryption context
+    /// lines under it.
+    pub(super) fn render_password_dialog(
+        &self,
+        window: &gpui::Window,
+        cx: &mut Context<Self>,
+    ) -> Option<impl IntoElement + use<>> {
+        let form = self.advanced.form.clone()?;
+        let title = form.read(cx).title();
+        let width = (window.viewport_size().width - px(48.)).clamp(px(0.), px(560.));
+        let max_height = (window.viewport_size().height - px(96.)).max(px(240.));
+        // The notes sit on their own surface: the scrim is no background for
+        // body text in either theme.
+        let notes = self.encryption_notes(true);
+        let body = div()
+            .id("advanced-password-body")
+            .flex()
+            .flex_col()
+            .gap_3()
+            .w(width)
+            .max_h(max_height)
+            .overflow_y_scroll()
+            .child(form)
+            .when(!notes.is_empty(), |body| {
+                body.child(
+                    widgets::card_row()
+                        .flex()
+                        .flex_col()
+                        .gap_2()
+                        .text_color(gpui::rgb(theme::text_secondary()))
+                        .children(notes),
+                )
+            });
+        Some(
+            div()
+                .id("advanced-password-backdrop")
+                .absolute()
+                .inset_0()
+                .size_full()
+                .occlude()
+                .bg(theme::scrim())
+                .flex()
+                .items_center()
+                .justify_center()
+                .on_mouse_down(
+                    gpui::MouseButton::Left,
+                    cx.listener(|this, _event, _window, cx| this.dismiss_password_form(cx)),
+                )
+                .child(
+                    div()
+                        .id("advanced-password-dialog")
+                        .debug_selector(|| "advanced-password-dialog".to_string())
+                        .role(gpui::Role::Dialog)
+                        .aria_label(title)
+                        .key_context("Dialog")
+                        .rounded(theme::RADIUS_XL)
+                        .shadow_lg()
+                        .on_mouse_down(gpui::MouseButton::Left, |_event, _window, cx| {
+                            cx.stop_propagation();
+                        })
+                        .on_key_down(cx.listener(
+                            |this, event: &gpui::KeyDownEvent, _window, cx| {
+                                if event.keystroke.key == "escape"
+                                    && !event.keystroke.modifiers.modified()
+                                {
+                                    cx.stop_propagation();
+                                    this.dismiss_password_form(cx);
+                                }
+                            },
+                        ))
+                        .child(body),
+                ),
+        )
+    }
+
+    pub(super) fn open_erase_dialog(&mut self, cx: &mut Context<Self>) {
+        self.advanced.erase = true;
+        self.advanced.erase_focus_pending = true;
+        self.advanced.notice = None;
+        self.advanced.success = None;
+        // Every way of closing the dialog leads back here, so the word is
+        // typed afresh each time and the erase button starts inert.
+        self.advanced
+            .confirmation
+            .update(cx, |input, cx| input.clear(cx));
+        cx.notify();
+    }
+
+    /// Cancel, Escape, or the backdrop. Nothing is lost by closing: the
+    /// typed word is the only state.
+    pub(super) fn close_erase_dialog(&mut self, cx: &mut Context<Self>) {
+        if self.advanced.busy {
+            return;
+        }
+        self.advanced.erase = false;
+        self.advanced.notice = None;
+        self.advanced
+            .confirmation
+            .update(cx, |input, cx| input.clear(cx));
+        self.application_focus_pending = true;
+        self.reconcile_application_vim_target();
+        cx.notify();
+    }
+
+    pub(super) fn focus_erase_dialog(&mut self, window: &mut gpui::Window, cx: &mut Context<Self>) {
+        if self.advanced.erase && std::mem::take(&mut self.advanced.erase_focus_pending) {
+            window.focus(&self.advanced.confirmation.read(cx).focus_handle(cx), cx);
+        }
+    }
+
+    /// Erasing this version's local data, as a dialog: the consequences,
+    /// the typed word, Cancel, and a destructive button inert until the
+    /// word is right.
+    pub(super) fn render_erase_dialog(
+        &self,
+        window: &gpui::Window,
+        cx: &mut Context<Self>,
+    ) -> Option<impl IntoElement + use<>> {
+        if !self.advanced.erase {
+            return None;
+        }
+        let busy = self.advanced.busy;
+        let ready = self.advanced.confirmation.read(cx).text() == "ERASE";
+        let title = tr("settings-advanced-erase-dialog-title");
+        let width = (window.viewport_size().width - px(48.)).clamp(px(0.), px(520.));
+        Some(
+            div()
+                .id("advanced-erase-backdrop")
+                .absolute()
+                .inset_0()
+                .size_full()
+                .occlude()
+                .bg(theme::scrim())
+                .flex()
+                .items_center()
+                .justify_center()
+                .on_mouse_down(
+                    gpui::MouseButton::Left,
+                    cx.listener(|this, _event, _window, cx| this.close_erase_dialog(cx)),
+                )
+                .child(
+                    div()
+                        .id("advanced-erase-dialog")
+                        .debug_selector(|| "advanced-erase-dialog".to_string())
+                        .role(gpui::Role::Dialog)
+                        .aria_label(title.clone())
+                        .key_context("Dialog")
+                        .w(width)
+                        .p_5()
+                        .rounded(theme::RADIUS_XL)
+                        .shadow_lg()
+                        .bg(gpui::rgb(theme::bg_elevated()))
+                        .border_1()
+                        .border_color(gpui::rgb(theme::border()))
+                        .flex()
+                        .flex_col()
+                        .gap_4()
+                        .text_color(gpui::rgb(theme::text_primary()))
+                        .on_mouse_down(gpui::MouseButton::Left, |_event, _window, cx| {
+                            cx.stop_propagation();
+                        })
+                        .on_key_down(cx.listener(
+                            |this, event: &gpui::KeyDownEvent, _window, cx| {
+                                if event.keystroke.key == "escape"
+                                    && !event.keystroke.modifiers.modified()
+                                {
+                                    cx.stop_propagation();
+                                    this.close_erase_dialog(cx);
+                                }
+                            },
+                        ))
+                        .child(
+                            div()
+                                .flex()
+                                .items_center()
+                                .gap_2()
+                                .child(icon("circle-alert", px(18.), theme::status_error()))
+                                .child(
+                                    div()
+                                        .text_lg()
+                                        .font_weight(gpui::FontWeight::SEMIBOLD)
+                                        .child(title),
+                                ),
+                        )
+                        .child(
+                            div()
+                                .text_sm()
+                                .text_color(gpui::rgb(theme::text_secondary()))
+                                .child(gpui::text!(tr(ERASE_COPY))),
+                        )
+                        .child(
+                            self.application_target(
+                                || SettingsTarget::Account(AccountTarget::EraseWord),
+                                widgets::input_frame()
+                                    .text_sm()
+                                    .child(self.advanced.confirmation.clone()),
+                            ),
+                        )
+                        .when_some(self.advanced.notice.clone(), |dialog, notice| {
+                            dialog.child(
+                                div()
+                                    .text_sm()
+                                    .text_color(gpui::rgb(theme::status_error()))
+                                    .child(notice),
+                            )
+                        })
+                        .child(
+                            div()
+                                .flex()
+                                .items_center()
+                                .justify_end()
+                                .gap_2()
+                                .child(
+                                    self.application_target(
+                                        || SettingsTarget::Account(AccountTarget::EraseCancel),
+                                        widgets::ghost_button("advanced-erase-cancel")
+                                            .py_1p5()
+                                            .on_click(cx.listener(|this, _event, _window, cx| {
+                                                this.close_erase_dialog(cx);
+                                            }))
+                                            .child(tr("settings-advanced-cancel")),
+                                    ),
+                                )
+                                .child(
+                                    self.application_target(
+                                        || SettingsTarget::Account(AccountTarget::EraseConfirm),
+                                        widgets::danger_button("advanced-erase-confirm")
+                                            .py_1p5()
+                                            .when(busy || !ready, |el| el.opacity(0.5))
+                                            .when(!busy && ready, |el| {
+                                                el.on_click(cx.listener(
+                                                    |this, _event, _window, cx| {
+                                                        this.erase_local_store(cx)
+                                                    },
+                                                ))
+                                            })
+                                            .child(tr(
+                                                "settings-advanced-erase-this-version-s-local-data",
+                                            )),
+                                    ),
+                                ),
+                        ),
+                ),
+        )
+    }
+
+    pub(super) fn erase_local_store(&mut self, cx: &mut Context<Self>) {
         if self.advanced.busy || !self.advanced.available() {
             return;
         }
@@ -392,10 +676,10 @@ impl SettingsScreen {
     }
 
     pub(super) fn render_advanced(&self, cx: &mut Context<Self>) -> Div {
-        let mut pane = div().flex().flex_col().gap_4();
+        let mut pane = div().flex().flex_col().gap_3();
         if !self.advanced.available() {
             pane = self.render_local_store_notices(
-                pane.child(section_title(&tr("settings-advanced-local-data"))),
+                pane.child(subsection_title(&tr("settings-advanced-local-data"))),
                 cx,
             );
             if !self.advanced_has_content() {
@@ -408,19 +692,16 @@ impl SettingsScreen {
             }
             return pane;
         }
-        pane = pane.child(section_title(&tr(
+        pane = pane.child(subsection_title(&tr(
             "settings-advanced-encryption-on-this-computer",
         )));
-        if let Some(form) = &self.advanced.form {
-            let pane = self.encryption_context(pane.child(form.clone()), true);
-            return self.render_local_store_notices(pane, cx);
-        }
+        let mut card = widgets::card_row().flex().flex_col().gap_3();
         if let Some(success) = self.advanced.success {
-            pane = pane.child(
+            card = card.child(
                 div()
                     .rounded_md()
                     .p_3()
-                    .bg(gpui::rgb(theme::bg_elevated()))
+                    .bg(gpui::rgb(theme::bg_sidebar()))
                     .text_color(gpui::rgb(theme::status_success()))
                     .child(tr(success)),
             );
@@ -430,7 +711,7 @@ impl SettingsScreen {
             .status
             .as_ref()
             .is_some_and(|status| status.mode == StoreMode::Password);
-        pane = pane.child(
+        card = card.child(
             div()
                 .font_weight(gpui::FontWeight::MEDIUM)
                 .text_color(gpui::rgb(if password {
@@ -444,81 +725,79 @@ impl SettingsScreen {
                     tr("settings-advanced-encryption-is-off")
                 }),
         );
-        pane=pane.child(div().text_sm().text_color(gpui::rgb(theme::text_secondary())).child(if password {
-            tr("settings-advanced-maple-s-copy-of-your-conversation-text-settings-and-sign-in-on-th")
-        } else {tr("settings-advanced-your-conversation-text-settings-and-sign-in-are-stored-on-this-co")}));
-        if self.advanced.erase {
-            pane = pane
-                .child(div().text_sm().child(tr(ERASE_COPY)))
-                .child(self.advanced.confirmation.clone())
-                .child(
-                    widgets::primary_button("advanced-erase-confirm")
-                        .when(self.advanced.busy, |button| button.opacity(0.5))
-                        .on_click(
-                            cx.listener(|this, _event, _window, cx| this.erase_local_store(cx)),
-                        )
-                        .child(tr("settings-advanced-erase-this-version-s-local-data")),
-                )
-                .child(
-                    widgets::ghost_button("advanced-erase-cancel")
-                        .on_click(cx.listener(|this, _event, _window, cx| {
-                            this.advanced.erase = false;
-                            cx.notify();
-                        }))
-                        .child(tr("settings-advanced-cancel")),
-                );
-        } else {
-            pane = pane
-                .child(
-                    div()
-                        .flex()
-                        .gap_2()
-                        .child(
-                            widgets::primary_button("advanced-password")
-                                .on_click(cx.listener(move |this, _event, _window, cx| {
-                                    this.open_password_form(
-                                        if password {
-                                            PasswordAction::Change
-                                        } else {
-                                            PasswordAction::Set
-                                        },
-                                        cx,
-                                    )
+        card = card.child(
+            div()
+                .text_sm()
+                .text_color(gpui::rgb(theme::text_secondary()))
+                .child(if password {
+                    tr("settings-advanced-maple-s-copy-of-your-conversation-text-settings-and-sign-in-on-th")
+                } else {
+                    tr("settings-advanced-your-conversation-text-settings-and-sign-in-are-stored-on-this-co")
+                }),
+        );
+        {
+            card = card.child(
+                div()
+                    .flex()
+                    .flex_wrap()
+                    .items_center()
+                    .gap_2()
+                    .child(
+                        widgets::default_button("advanced-password")
+                            .on_click(cx.listener(move |this, _event, _window, cx| {
+                                this.open_password_form(
+                                    if password {
+                                        PasswordAction::Change
+                                    } else {
+                                        PasswordAction::Set
+                                    },
+                                    cx,
+                                )
+                            }))
+                            .child(if password {
+                                tr("settings-advanced-change-password")
+                            } else {
+                                tr("settings-advanced-set-unlock-password")
+                            }),
+                    )
+                    .when(password, |row| {
+                        row.child(
+                            widgets::secondary_button("advanced-remove-password")
+                                .on_click(cx.listener(|this, _event, _window, cx| {
+                                    this.open_password_form(PasswordAction::Remove, cx)
                                 }))
-                                .child(if password {
-                                    tr("settings-advanced-change-password")
-                                } else {
-                                    tr("settings-advanced-set-unlock-password")
-                                }),
+                                .child(tr("settings-advanced-remove-password")),
                         )
-                        .when(password, |row| {
-                            row.child(
-                                widgets::secondary_button("advanced-remove-password")
-                                    .on_click(cx.listener(|this, _event, _window, cx| {
-                                        this.open_password_form(PasswordAction::Remove, cx)
-                                    }))
-                                    .child(tr("settings-advanced-remove-password")),
-                            )
-                        }),
-                )
-                .child(
-                    widgets::ghost_button("advanced-erase")
-                        .on_click(cx.listener(|this, _event, _window, cx| {
-                            this.advanced.erase = true;
-                            this.advanced.notice = None;
-                            this.advanced.success = None;
-                            cx.notify();
-                        }))
-                        .child(tr("settings-advanced-erase-local-data")),
-                );
+                    })
+                    .child(
+                        widgets::danger_outline_button("advanced-erase")
+                            .debug_selector(|| "advanced-erase".to_string())
+                            .on_click(cx.listener(|this, _event, _window, cx| {
+                                this.open_erase_dialog(cx);
+                            }))
+                            .child(icon(
+                                "circle-alert",
+                                widgets::ROW_ICON,
+                                theme::status_error(),
+                            ))
+                            .child(tr("settings-advanced-erase-local-data")),
+                    ),
+            );
         }
-        pane = self.encryption_context(pane, password);
-        self.render_local_store_notices(pane, cx)
+        let card = self.encryption_context(card, password);
+        self.render_local_store_notices(pane.child(card), cx)
     }
 
-    fn encryption_context(&self, mut pane: Div, password: bool) -> Div {
+    fn encryption_context(&self, pane: Div, password: bool) -> Div {
+        pane.children(self.encryption_notes(password))
+    }
+
+    /// The warnings that belong next to any encryption control: remote
+    /// access while locked, and the coding agents that keep their own copy.
+    fn encryption_notes(&self, password: bool) -> Vec<Div> {
+        let mut notes = Vec::new();
         if self.advanced.remote_enabled {
-            pane=pane.child(div().text_sm().child(tr("settings-advanced-while-maple-is-locked-your-other-computers-can-t-reach-this-one-a")));
+            notes.push(div().text_sm().child(tr("settings-advanced-while-maple-is-locked-your-other-computers-can-t-reach-this-one-a")));
         }
         if password {
             for integration in self
@@ -538,11 +817,11 @@ impl SettingsScreen {
                     _ => None,
                 };
                 if let Some(copy) = copy {
-                    pane = pane.child(div().text_sm().child(copy));
+                    notes.push(div().text_sm().child(copy));
                 }
             }
         }
-        pane
+        notes
     }
 }
 
@@ -776,7 +1055,7 @@ mod tests {
         settings.update(cx, |settings, cx| {
             assert!(!settings.show_local_store_notice("Needs attention.", cx));
             assert!(settings.advanced.notice.is_none());
-            settings.section = Section::Advanced;
+            settings.section = Section::Account;
             assert!(settings.show_local_store_notice("Needs attention.", cx));
             assert_eq!(
                 settings
@@ -790,7 +1069,9 @@ mod tests {
         });
     }
     #[gpui::test]
-    fn privacy_and_security_is_listed_only_with_something_to_show(cx: &mut gpui::TestAppContext) {
+    fn local_store_content_is_shown_in_account_only_when_available_or_noticing(
+        cx: &mut gpui::TestAppContext,
+    ) {
         cx.executor().allow_parking();
         let backend = std::sync::Arc::new(
             crate::backend::AgentBackend::for_test("http://127.0.0.1:1".into(), String::new())
@@ -813,13 +1094,11 @@ mod tests {
             )
         });
         settings.update(cx, |settings, _| {
-            assert!(!settings.visible_sections().contains(&Section::Advanced));
+            assert!(!settings.advanced_has_content());
             settings.advanced.notice = Some("Needs attention.".into());
-            assert!(settings.visible_sections().contains(&Section::Advanced));
+            assert!(settings.advanced_has_content());
             settings.advanced.notice = None;
-            settings.section = Section::Advanced;
-            assert!(settings.visible_sections().contains(&Section::Advanced));
-            settings.section = Section::General;
+            assert!(!settings.advanced_has_content());
             settings.advanced.status = Some(
                 serde_json::from_value(serde_json::json!({
                     "state": {"state": "open"},
@@ -828,7 +1107,8 @@ mod tests {
                 }))
                 .unwrap(),
             );
-            assert!(settings.visible_sections().contains(&Section::Advanced));
+            assert!(settings.advanced_has_content());
+            assert!(settings.visible_sections().contains(&Section::Account));
         });
     }
     #[test]

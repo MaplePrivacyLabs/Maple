@@ -489,6 +489,20 @@ pub async fn password_reset_request(
                 });
                 return encrypt_response(&data, &session_id, &response).await;
             }
+            // Past the account's budget, answer exactly as usual but create
+            // no further request and send no further email. This also bounds
+            // how many reset codes can be live for one account.
+            if data
+                .rate_limits
+                .password_reset_request
+                .check(user.uuid)
+                .is_err()
+            {
+                let response = json!({
+                    "message": "If an account with that email exists, we have sent a password reset link."
+                });
+                return encrypt_response(&data, &session_id, &response).await;
+            }
         }
         Err(DBError::UserNotFound) => {
             // User doesn't exist, but we don't want to leak this information
@@ -565,6 +579,7 @@ pub async fn password_reset_confirm(
         crate::Error::PasswordResetExpired => ApiError::BadRequest,
         crate::Error::InvalidPasswordResetSecret => ApiError::BadRequest,
         crate::Error::InvalidPasswordResetRequest => ApiError::BadRequest,
+        crate::Error::RateLimited(error) => error,
         _ => ApiError::InternalServerError,
     })?;
 

@@ -1,8 +1,9 @@
-//! Composer thinking controls backed by Pi's session and account defaults.
+//! Composer thinking controls backed by Pi's sessions, the catalog's
+//! recommended levels and the account's New Task pick.
 
 use pi_coding_agent::AgentSession;
 
-use super::config::{load_agent_config_inner, save_agent_config_inner};
+use super::catalog::save_new_task_pick;
 use super::{AgentRuntimeHandle, AgentThinkingState, ThinkingLevel};
 
 impl AgentRuntimeHandle {
@@ -35,75 +36,81 @@ impl AgentRuntimeHandle {
         runtime.task_session(&row, model).await.map(Some)
     }
 
-    /// A task reads its persisted Pi level. A new-task composer previews
-    /// the saved default, or Pi's Medium default, clamped by its model. A
-    /// task previews another model with the level a switch gives it: the
-    /// saved default, as Pi's switch takes its default.
+    /// A task reads its persisted Pi level; one that never recorded a
+    /// level previews the level a new task starts at. A new-task composer
+    /// previews that level: the one picked on New Task with this model,
+    /// else the catalog's recommendation. A task previews another model
+    /// with the level a switch gives it: one picked for it while the task
+    /// waits, else the recommendation, never the current model's level.
     pub async fn thinking_state(
         &self,
         session_id: Option<&str>,
         model_id: &str,
     ) -> Result<AgentThinkingState, String> {
-        if let Some(session_id) = session_id {
-            self.verify_generation().await?;
+        let Some(session_id) = session_id else {
             let runtime = self.runtime().await?;
-            let (task_model, task_level) = match runtime.loaded_session(session_id).await {
-                Some(session) => {
-                    let model = session.model().ok_or("No model selected")?;
-                    if model.id == model_id {
-                        return Ok(AgentThinkingState {
-                            levels: model.thinking_levels(),
-                            current: session.thinking_level(),
-                        });
-                    }
-                    (Some(model.id), Some(session.thinking_level()))
-                }
-                None => {
-                    let store = self.store()?;
-                    let facts = store
-                        .store()
-                        .task_facts(store.account(), session_id)
-                        .map_err(|error| error.to_string())?;
-                    let saved = facts
-                        .thinking_level
-                        .as_deref()
-                        .map(|value| {
-                            serde_json::from_value::<ThinkingLevel>(serde_json::Value::String(
-                                value.to_owned(),
-                            ))
-                        })
-                        .transpose()
-                        .map_err(|_| "Invalid saved thinking level".to_string())?;
-                    (facts.model, saved)
-                }
-            };
-            let default = self.load_config().await?.default_thinking_level;
-            let level = if task_model.as_deref().is_none_or(|model| model == model_id) {
-                task_level.or(default)
-            } else {
-                default.or(task_level)
-            };
-            let model = runtime.pi_model(model_id, None, None).await;
+            let (model, recommended) = runtime.thinking_model(model_id).await;
             return Ok(AgentThinkingState {
                 levels: model.thinking_levels(),
-                current: model.clamp_thinking_level(level.unwrap_or(ThinkingLevel::Medium)),
+                current: runtime.new_task_level(&model, recommended),
+                recommended: Some(recommended),
             });
-        }
+        };
+        self.verify_generation().await?;
         let runtime = self.runtime().await?;
-        let model = runtime.pi_model(model_id, None, None).await;
-        let default = self
-            .load_config()
-            .await?
-            .default_thinking_level
-            .unwrap_or(ThinkingLevel::Medium);
+        let (task_model, task_level) = match runtime.loaded_session(session_id).await {
+            Some(session) => {
+                let model = session.model().ok_or("No model selected")?;
+                if model.id == model_id {
+                    return Ok(AgentThinkingState {
+                        levels: model.thinking_levels(),
+                        current: session.thinking_level(),
+                        recommended: Some(runtime.recommended_level(&model).await),
+                    });
+                }
+                (Some(model.id), Some(session.thinking_level()))
+            }
+            None => {
+                let store = self.store()?;
+                let facts = store
+                    .store()
+                    .task_facts(store.account(), session_id)
+                    .map_err(|error| error.to_string())?;
+                let saved = facts
+                    .thinking_level
+                    .as_deref()
+                    .map(|value| {
+                        serde_json::from_value::<ThinkingLevel>(serde_json::Value::String(
+                            value.to_owned(),
+                        ))
+                    })
+                    .transpose()
+                    .map_err(|_| "Invalid saved thinking level".to_string())?;
+                (facts.model, saved)
+            }
+        };
+        let (model, recommended) = runtime.thinking_model(model_id).await;
+        let current = if task_model.as_deref().is_none_or(|model| model == model_id) {
+            match task_level {
+                Some(level) => model.clamp_thinking_level(level),
+                None => runtime.new_task_level(&model, recommended),
+            }
+        } else {
+            runtime
+                .next_level(session_id, model_id)
+                .map_or(recommended, |level| model.clamp_thinking_level(level))
+        };
         Ok(AgentThinkingState {
             levels: model.thinking_levels(),
-            current: model.clamp_thinking_level(default),
+            current,
+            recommended: Some(recommended),
         })
     }
 
-    /// Pi records the task's selection. Save the actual clamped level for
-    /// future tasks without overwriting other account settings.
+    /// Pi records a task's selection; a pick for a task's next model waits
+    /// for its switch. A pick on New Task (no task) is remembered with its
+    /// model for the next new task, replacing the previous pair; a task's
+    /// pick leaves that pair as it is.
     pub async fn set_thinking_level(
         &self,
         session_id: Option<&str>,
@@ -116,40 +123,42 @@ impl AgentRuntimeHandle {
             Some(session_id) => self.thinking_session(session_id, model_id).await?,
             None => None,
         };
-        let state = if let Some(session) = session {
+        let runtime = self.runtime().await?;
+        let state = if let Some(session) = &session {
             session.set_thinking_level(level).await;
+            let model = session.model().ok_or("No model selected")?;
             AgentThinkingState {
-                levels: session
-                    .model()
-                    .ok_or("No model selected")?
-                    .thinking_levels(),
+                levels: model.thinking_levels(),
                 current: session.thinking_level(),
+                recommended: Some(runtime.recommended_level(&model).await),
             }
         } else {
-            // A new task, or a task's next model, which its switch gives the
-            // default saved below.
-            let runtime = self.runtime().await?;
-            let model = runtime.pi_model(model_id, None, None).await;
+            let (model, recommended) = runtime.thinking_model(model_id).await;
             AgentThinkingState {
                 levels: model.thinking_levels(),
                 current: model.clamp_thinking_level(level),
+                recommended: Some(recommended),
             }
         };
         self.verify_generation().await?;
-        let _settings = self.lock_settings().await;
-        let mut config = load_agent_config_inner(self.paths(), &self.user_id)
-            .map_err(|error| error.to_string())?;
-        config.default_thinking_level = Some(state.current);
-        save_agent_config_inner(self.paths(), &self.user_id, &config)
-            .map_err(|error| error.to_string())?;
-        if let Some(session_id) = session_id {
-            super::emit_agent_event(
-                &self.service.host.events,
-                super::AgentServiceEvent::ThinkingChanged {
-                    session_id: session_id.into(),
-                    state: state.clone(),
-                },
-            );
+        match session_id {
+            Some(session_id) => {
+                if session.is_none() {
+                    // The task's next model, which takes it as it switches.
+                    runtime.set_next_level(session_id, model_id, state.current);
+                }
+                super::emit_agent_event(
+                    &self.service.host.events,
+                    super::AgentServiceEvent::ThinkingChanged {
+                        session_id: session_id.into(),
+                        state: state.clone(),
+                    },
+                );
+            }
+            None => {
+                let _settings = self.lock_settings().await;
+                save_new_task_pick(self.paths(), &self.user_id, model_id, state.current)?;
+            }
         }
         Ok(state)
     }

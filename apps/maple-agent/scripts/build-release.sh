@@ -23,6 +23,14 @@ case "$(uname -s)" in
         # and build scripts. Stage only this build's executable at the shared
         # prebuilt path.
         windows_target="${MAPLE_WINDOWS_ARCH:-x86_64}-pc-windows-msvc"
+        # The python tool's CPython travels inside the executable: a Windows
+        # generation holds exactly four files, and installed launchers refuse
+        # one with anything else. See docs/python-code-mode.md.
+        python3 scripts/prepare-python.py --distribution pbs --target "$windows_target" \
+            --destination "target/python-embedded/$windows_target/python" \
+            --archive "target/python-embedded/$windows_target/python-runtime.tar.gz"
+        # pwd -W: a Windows path, which the build script of a native cargo can open.
+        export MAPLE_CODE_MODE_EMBEDDED_RUNTIME="$(pwd -W)/target/python-embedded/$windows_target/python-runtime.tar.gz"
         cargo build --release -p maple-agent-app --locked --timings --target "$windows_target"
         mkdir -p target/release
         cp "target/$windows_target/release/maple-agent.exe" target/release/maple-agent.exe

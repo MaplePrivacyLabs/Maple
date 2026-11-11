@@ -137,7 +137,7 @@ pub(super) fn load_agent_config_inner(
     }
     // The one well-known fallback also needs its own removal tombstone; a
     // missing saved folder must not resurrect a workspace the user hid.
-    if let Some(workspace) = default_maple_workspace_path() {
+    if let Some(workspace) = store.maple_workspace_path()? {
         load_project_state(store, account, &path_string(&workspace), &mut config)?;
     }
     config.mcp_servers =
@@ -213,10 +213,13 @@ pub(super) fn project_trust_decision_inner(
     project_root: &Path,
 ) -> Result<Option<bool>, anyhow::Error> {
     let (store, account) = account_store(paths, user_id)?;
+    let workspace = store.maple_workspace_path()?;
     Ok(store
         .project(account, &path_string(project_root))?
         .and_then(|project| project.trusted)
-        .or_else(|| is_implicitly_trusted_project_root(project_root).then_some(true)))
+        .or_else(|| {
+            is_implicitly_trusted_project_root(project_root, workspace.as_deref()).then_some(true)
+        }))
 }
 
 pub(super) fn migrate_agent_config(config: &mut AgentConfig) -> bool {
@@ -299,6 +302,7 @@ pub(super) fn paths_are_same_dir(left: &Path, right: &Path) -> bool {
 
 /// Folder name under the platform documents directory.
 pub const MAPLE_WORKSPACE_DIRECTORY_NAME: &str = "Maple";
+const DEFAULT_WORKSPACE_DIRECTORY_NAME: &str = "Workspace";
 
 /// Name shown for that folder in the project menus.
 pub const MAPLE_WORKSPACE_DISPLAY_NAME: &str = "Maple Workspace";
@@ -321,15 +325,15 @@ pub(super) fn document_dir() -> Option<PathBuf> {
         .filter(|path| path.is_absolute())
 }
 
-/// Path of the default workspace, without creating it.
+/// The parent of new projects, without creating it.
 ///
 /// Resolved once per process: the UI labels project roots while it
 /// renders, so recognizing the workspace must not touch the disk. The
 /// documents folder is canonicalized the way every project root is, so a
 /// plain comparison matches the root the runtime stores for it.
-pub fn default_maple_workspace_path() -> Option<PathBuf> {
-    static WORKSPACE: once_cell::sync::OnceCell<Option<PathBuf>> = once_cell::sync::OnceCell::new();
-    WORKSPACE
+pub fn maple_project_container_path() -> Option<PathBuf> {
+    static CONTAINER: once_cell::sync::OnceCell<Option<PathBuf>> = once_cell::sync::OnceCell::new();
+    CONTAINER
         .get_or_init(|| {
             let documents = document_dir()?;
             let documents = canonical_dir(&documents).unwrap_or(documents);
@@ -338,27 +342,33 @@ pub fn default_maple_workspace_path() -> Option<PathBuf> {
         .clone()
 }
 
+pub(crate) fn maple_workspace_path(nested: bool) -> Option<PathBuf> {
+    if nested {
+        default_maple_workspace_path()
+    } else {
+        maple_project_container_path()
+    }
+}
+
+/// Built-in workspace location for a newly initialized store.
+pub fn default_maple_workspace_path() -> Option<PathBuf> {
+    Some(maple_project_container_path()?.join(DEFAULT_WORKSPACE_DIRECTORY_NAME))
+}
+
 /// Create the default workspace when it is missing and return its canonical
 /// path. Call this only when the workspace is about to be used (a runtime
 /// start that picks it, or the user choosing or opening it), never at
 /// launch: someone working elsewhere is not asked for Documents access,
 /// and a folder the user deleted stays deleted until it is used again.
-pub fn ensure_default_maple_workspace() -> Result<PathBuf, String> {
-    let path = default_maple_workspace_path()
+pub fn ensure_maple_workspace(path: &Path) -> Result<PathBuf, String> {
+    let container = maple_project_container_path()
         .ok_or_else(|| "No documents folder for the Maple workspace".to_string())?;
-    create_directory(&path)
-}
-
-pub(super) fn create_directory(path: &Path) -> Result<PathBuf, String> {
+    if path != container && path != container.join(DEFAULT_WORKSPACE_DIRECTORY_NAME) {
+        return Err("Invalid Maple workspace path".into());
+    }
     fs::create_dir_all(path)
         .map_err(|error| format!("Cannot create {}: {error}", path.display()))?;
     canonical_dir(path).ok_or_else(|| format!("{} is not a folder", path.display()))
-}
-
-/// Whether `path` is the default Documents/Maple workspace. Project roots
-/// are canonical, so this is a comparison with no disk access.
-pub fn is_default_maple_workspace(path: &Path) -> bool {
-    default_maple_workspace_path().is_some_and(|workspace| workspace == path)
 }
 
 /// Project the desktop opens when it has no usable saved root.
@@ -431,14 +441,14 @@ pub fn include_default_maple_workspace(
 /// workspace are trusted until the user records a different answer. The
 /// filesystem root is never implicit: a GUI launched from the Dock often
 /// has cwd `/`.
-pub(super) fn is_implicitly_trusted_project_root(project_root: &Path) -> bool {
+fn is_implicitly_trusted_project_root(project_root: &Path, workspace: Option<&Path>) -> bool {
     implicitly_trusted_project_root(
         project_root,
         home_dir().and_then(|path| canonical_dir(&path)).as_deref(),
         launch_dir()
             .filter(|path| !is_filesystem_root(path))
             .as_deref(),
-        default_maple_workspace_path().as_deref(),
+        workspace,
     )
 }
 
@@ -468,11 +478,12 @@ pub(super) fn implicitly_trusted_project_root(
 pub(super) fn project_trust_status(
     config: &AgentConfig,
     project_root: &Path,
+    workspace: Option<&Path>,
     protected_features: Vec<AgentProjectTrustFeature>,
 ) -> AgentProjectTrustStatus {
     AgentProjectTrustStatus {
         path: path_string(project_root),
-        decision: project_trust_decision(config, project_root),
+        decision: project_trust_decision(config, project_root, workspace),
         available: true,
         protected_features,
     }
@@ -480,14 +491,18 @@ pub(super) fn project_trust_status(
 
 /// The decision saved for `project_root`, else the implicit trust of home,
 /// the launch folder and the Maple workspace.
-pub(super) fn project_trust_decision(config: &AgentConfig, project_root: &Path) -> Option<bool> {
+pub(super) fn project_trust_decision(
+    config: &AgentConfig,
+    project_root: &Path,
+    workspace: Option<&Path>,
+) -> Option<bool> {
     let path = path_string(project_root);
     config
         .project_trust
         .iter()
         .find(|entry| entry.path == path)
         .map(|entry| entry.trusted)
-        .or_else(|| is_implicitly_trusted_project_root(project_root).then_some(true))
+        .or_else(|| is_implicitly_trusted_project_root(project_root, workspace).then_some(true))
 }
 
 pub(super) fn apply_project_trust(config: &mut AgentConfig, project_root: &Path, trusted: bool) {

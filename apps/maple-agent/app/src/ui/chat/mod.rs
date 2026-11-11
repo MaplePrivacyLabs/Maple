@@ -39,6 +39,7 @@ pub(crate) mod computers;
 use computers::{Computer, Destination, Navigate, NavigationChanged};
 mod attachments;
 mod dialogs;
+mod effort;
 mod feedback;
 mod navigation;
 mod paging;
@@ -63,7 +64,7 @@ use self::composer::{SideQuestionPanel, SlashEntry, slash_entries_for};
 use self::navigation::ApplicationVimState;
 #[cfg(test)]
 use self::sidebar::SessionActivity;
-use self::sidebar::{Sidebar, SidebarEvent, TaskActivity, root_display_name, session_summary_eq};
+use self::sidebar::{Sidebar, SidebarEvent, TaskActivity, session_summary_eq};
 use self::transcript::{
     ActiveSubagent, PlanEntry, PlanStatus, plan_entries, plan_finished, render_question_card,
     render_waiting_indicator,
@@ -113,24 +114,25 @@ struct QueueEdit {
     draft: String,
 }
 
-/// Width of the task sidebar.
-const SIDEBAR_WIDTH: gpui::Pixels = px(300.);
+/// Width of the task sidebar. Settings' navigation takes the same column,
+/// so the pane and its title stay put when Settings opens.
+pub(crate) const SIDEBAR_WIDTH: gpui::Pixels = px(300.);
 /// Width of the rail that stands in for the sidebar while it is collapsed.
 const SIDEBAR_RAIL_WIDTH: gpui::Pixels = px(48.);
-/// Height of the task header and the clear strip above the collapsed rail.
-const CHAT_HEADER_HEIGHT: gpui::Pixels = px(40.);
+
 /// Where the header's toolbar starts, from the window's left edge, as the
 /// sidebar goes from collapsed (0) to expanded (1). Beside traffic lights
-/// it stays put: they reach 30 px past the rail, followed by an 8 px gap.
+/// it stays put at `titlebar::TRAFFIC_LIGHT_TOOLBAR_LEFT`, which Settings'
+/// Back shares.
 /// Without them the Maple logo holds the top row's corner, and the
 /// toolbar follows it at its own 4 px button gap: after the rail's mark
 /// button, or after the wordmark with the same padding, on a whole pixel.
 fn header_toolbar_left(sidebar_expansion: f32) -> gpui::Pixels {
     if titlebar::TRANSPARENT_TITLEBAR {
-        return SIDEBAR_RAIL_WIDTH + px(38.);
+        return titlebar::TRAFFIC_LIGHT_TOOLBAR_LEFT;
     }
-    let padding = (sidebar::TOP_ROW_HEIGHT - sidebar::WORDMARK_HEIGHT) / 2.;
-    let mark = sidebar::WORDMARK_LEFT - padding + sidebar::TOP_ROW_HEIGHT;
+    let padding = (titlebar::SIDEBAR_ROW_HEIGHT - sidebar::WORDMARK_HEIGHT) / 2.;
+    let mark = sidebar::WORDMARK_LEFT - padding + titlebar::SIDEBAR_ROW_HEIGHT;
     let wordmark = sidebar::WORDMARK_LEFT
         + crate::ui::icons::wordmark_width(sidebar::WORDMARK_HEIGHT)
         + padding;
@@ -139,8 +141,6 @@ fn header_toolbar_left(sidebar_expansion: f32) -> gpui::Pixels {
 /// Reading width shared by the transcript and the composer; they must
 /// stay in one column.
 const CONTENT_WIDTH: gpui::Pixels = px(900.);
-/// Header title when no task is selected.
-const DEFAULT_TASK_TITLE: &str = "chat-new-task-title";
 
 fn notification_body(
     details_enabled: bool,
@@ -188,6 +188,10 @@ const NOTICE_TTL: std::time::Duration = std::time::Duration::from_secs(8);
 /// How long the plan card stays after its last item is checked off live,
 /// so the final check is seen before the card goes.
 const PLAN_DONE_HOLD: std::time::Duration = std::time::Duration::from_millis(1500);
+/// The plan and its extra credits are read again when the person comes
+/// back to the chat (from Settings, or from the browser after buying
+/// credits), unless the last reading is newer than this.
+const PLAN_RETURN_REFRESH: std::time::Duration = std::time::Duration::from_secs(30);
 
 const COMPOSER_PLACEHOLDER: &str = "chat-composer-placeholder";
 const SIDE_THREAD_PLACEHOLDER: &str = "chat-side-thread-placeholder";
@@ -231,19 +235,61 @@ pub(crate) struct SpeechState {
     pub playing: bool,
 }
 
+/// The key that picks option `index` of a question as the keymap has it
+/// now, or nothing when the user unbound it.
+fn question_key_label(index: usize, window: &Window) -> SharedString {
+    window
+        .highest_precedence_binding_for_action(&PickQuestionOption { index })
+        .map(|binding| {
+            binding
+                .keystrokes()
+                .iter()
+                .map(ToString::to_string)
+                .collect::<Vec<_>>()
+                .join(" ")
+        })
+        .unwrap_or_default()
+        .into()
+}
+
 #[derive(Default)]
 pub(super) struct QuestionSelection {
     cursor: Option<usize>,
     picked: BTreeSet<usize>,
 }
 
+/// The paired computer a new task would run on, as the project chip shows it.
+#[derive(Clone, Debug, PartialEq)]
+pub(super) struct ProjectComputer {
+    name: SharedString,
+    /// The chip's accessible name: "computer · folder".
+    caption: SharedString,
+    /// Whether the name may shorten to make room for the folder. A short
+    /// name never does; a long one keeps its first several letters.
+    shortens: bool,
+}
+
+impl ProjectComputer {
+    /// Names up to this long are shown whole.
+    const WHOLE_NAME_CHARS: usize = 10;
+
+    pub(super) fn new(name: SharedString, project: &str) -> Self {
+        Self {
+            caption: format!("{name} · {project}").into(),
+            shortens: name.chars().count() > Self::WHOLE_NAME_CHARS,
+            name,
+        }
+    }
+}
+
 /// The chat's popup menus. One is open at a time.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub(super) enum ChatPopup {
-    /// The header chip's project menu.
+    /// A new task's project menu, from the chip above the composer.
     Project,
+    /// The model chip's panel: the models a task can use, and under them
+    /// the selected model's effort slider. `/model` opens it too.
     Model,
-    Thinking,
     Integrations,
     /// The composer chip's permission modes.
     Mode,
@@ -297,14 +343,13 @@ struct ProjectMcpSave {
 /// Applied before the first send.
 #[derive(Debug, Clone, PartialEq, Eq)]
 struct NewSessionChanges {
-    web: Option<bool>,
     mode: Option<AgentPermissionMode>,
     mcp: Vec<DraftMcpChange>,
 }
 
 impl NewSessionChanges {
     fn is_empty(&self) -> bool {
-        self.web.is_none() && self.mode.is_none() && self.mcp.is_empty()
+        self.mode.is_none() && self.mcp.is_empty()
     }
 }
 
@@ -541,6 +586,26 @@ pub struct ChatScreen {
     thinking_loading: bool,
     thinking_generation: u64,
     thinking_saving: bool,
+    /// A level picked while another pick was saving; it goes out next.
+    thinking_queued: Option<(thinking::ThinkingKey, ThinkingLevel)>,
+    /// The level under the effort slider's thumb while it is dragged.
+    effort_preview: Option<ThinkingLevel>,
+    /// The effort slider's motion, kept while its panel is closed so a
+    /// model with other levels glides into place when it reopens.
+    effort_slider: std::rc::Rc<std::cell::RefCell<crate::ui::effort_slider::EffortSliderState>>,
+    /// Resets so far, naming each spin of the reset icon, and when the
+    /// latest one began.
+    effort_reset_spins: usize,
+    effort_reset_at: Option<std::time::Instant>,
+    /// Pointer picks and resets so far, naming each brain pulse, and when
+    /// the latest began: a reopened panel must not replay it.
+    effort_pulses: usize,
+    effort_pulse_at: Option<std::time::Instant>,
+    /// The level last moved by a key step: its name swaps at once.
+    effort_keyed: bool,
+    /// What the effort footer showed last, so the slider or the status
+    /// line fades in when one replaces the other.
+    effort_body: std::cell::Cell<effort::EffortBody>,
     /// Desktop notifications enabled (settings).
     notify_enabled: bool,
     /// Local-store policy, independent of the selected execution computer.
@@ -549,6 +614,14 @@ pub struct ChatScreen {
     /// on activation changes because they force a redraw.
     window_active: bool,
     sidebar_plan: Option<crate::billing::PlanUsage>,
+    /// When the plan was last asked for; `None` until the first request.
+    plan_requested_at: Option<std::time::Instant>,
+    /// Bumped per plan request, so a reply to an older one is dropped.
+    plan_generation: u64,
+    /// A usage refusal that arrived while the billing reading said extra
+    /// credits cover the plan: they did not pay, so it keeps its Billing
+    /// offer.
+    refused_on_credits: Option<String>,
     runtime_error: Option<UiText>,
     runtime_error_reason: Option<String>,
     persistence_status: maple_agent::store::PersistenceStatus,
@@ -581,8 +654,16 @@ pub struct ChatScreen {
     /// Project context shown by the UI and used explicitly for new tasks.
     /// Existing tasks always execute in their own persisted project root.
     project_root: Option<String>,
+    /// Explicit intent; a missing root alone must never create a folder.
+    scratch_project: bool,
+    /// Navigation that owns the outstanding folder creation.
+    scratch_creation: Option<u64>,
     recent_roots: Vec<RecentProjectRoot>,
-    /// Which of the chat's popup menus is open: the header's project menu,
+    picker_projects: Vec<(Option<String>, RecentProjectRoot)>,
+    picker_projects_generation: u64,
+    #[cfg(test)]
+    picker_projects_fixture: Option<Vec<(Option<String>, RecentProjectRoot)>>,
+    /// Which of the chat's popup menus is open: a new task's project menu,
     /// a composer chip's menu, or the transcript's right-click menu.
     popup: Popup<ChatScreen, ChatPopup>,
     /// Focus for whichever modal dialog is open, so Enter and Escape
@@ -600,13 +681,16 @@ pub struct ChatScreen {
     project_folder_dialog: Option<Entity<project_folder::ProjectFolderDialog>>,
     root_picker_open: bool,
     root_selecting: bool,
-    /// Header label for the project root; set when the root changes so
-    /// render does not format it.
+    /// The project chip's folder name; set when the root changes so render
+    /// does not format it.
     project_label: SharedString,
+    /// On a paired computer, what the project chip says about it. `None` on
+    /// this computer.
+    project_computer: Option<ProjectComputer>,
     /// Git branch of the project root, read off the UI thread. `None`
     /// when the root is not a git checkout.
     project_branch: Option<String>,
-    /// `project_branch` in parentheses, ready for the header.
+    /// `project_branch` in parentheses, ready for the project chip's row.
     branch_label: Option<SharedString>,
     /// Watches the git dir of the current root so a checkout by the agent
     /// or from a terminal updates the branch. Replaced when the git dir
@@ -634,6 +718,8 @@ pub struct ChatScreen {
     model_catalog: HashMap<String, CatalogEntry>,
     /// Friendly labels from the advanced catalog; selection always uses IDs.
     model_labels: HashMap<String, String>,
+    /// The model panel's sections and badges, as the catalog serves them.
+    model_sections: composer::ModelSections,
     /// The first model load is in flight. Until it lands with no model
     /// chosen, the composer controls are laid out but not shown, so the
     /// row appears once in its final shape instead of shifting.
@@ -694,10 +780,6 @@ pub struct ChatScreen {
     /// Whether a running runtime has been seen, so the skills list is
     /// re-read once Goose knows the account's skills directory.
     runtime_running_seen: bool,
-    /// Web tools on for the selected task (mirrors the session record).
-    web_enabled: bool,
-    /// Settings default applied to newly created tasks.
-    default_web_enabled: bool,
     /// What the selected task may do without asking (mirrors its record).
     permission_mode: AgentPermissionMode,
     /// The mode a new task starts in: the last one picked for a new task.
@@ -715,8 +797,6 @@ pub struct ChatScreen {
     /// Item id to `(index in timeline, revision)`; the revision counts
     /// applied updates so caches can tell a changed item from a stable one.
     timeline_index: HashMap<String, (usize, u64)>,
-    /// Title of the selected task, shown in the header.
-    selected_title: SharedString,
     /// Guards against a slow session load overwriting a newer selection.
     selection_generation: u64,
     /// Same guard for mid-run history reloads. Separate from the selection
@@ -1054,7 +1134,6 @@ impl ChatScreen {
             sidebar.set_activity(activity, cx);
             sidebar.set_recent_roots(roots, cx);
         });
-        self.refresh_selected_title();
         cx.emit(NavigationChanged);
     }
 
@@ -1102,7 +1181,6 @@ impl ChatScreen {
         let selected = self.sidebar_selection();
         self.sidebar
             .update(cx, |sidebar, cx| sidebar.set_selected(selected, cx));
-        self.refresh_selected_title();
     }
 
     pub(super) fn set_sidebar_collapsed(&mut self, collapsed: bool, cx: &mut Context<Self>) {
@@ -1486,10 +1564,22 @@ impl ChatScreen {
             thinking_loading: false,
             thinking_generation: 0,
             thinking_saving: false,
+            thinking_queued: None,
+            effort_preview: None,
+            effort_slider: Default::default(),
+            effort_reset_spins: 0,
+            effort_reset_at: None,
+            effort_pulses: 0,
+            effort_pulse_at: None,
+            effort_keyed: false,
+            effort_body: Default::default(),
             notify_enabled: settings.desktop_notifications,
             notify_details: settings.notification_details_enabled(),
             window_active: true,
             sidebar_plan: None,
+            plan_requested_at: None,
+            plan_generation: 0,
+            refused_on_credits: None,
             runtime_error: None,
             runtime_error_reason: None,
             persistence_status: maple_agent::store::PersistenceStatus::default(),
@@ -1506,7 +1596,13 @@ impl ChatScreen {
             painted_rows: std::rc::Rc::default(),
             tool_details: settings.tool_details,
             project_root: None,
+            scratch_project: false,
+            scratch_creation: None,
             recent_roots: Vec::new(),
+            picker_projects: Vec::new(),
+            picker_projects_generation: 0,
+            #[cfg(test)]
+            picker_projects_fixture: None,
             popup: Popup::new(|this| &mut this.popup, cx),
             dialog_focus: None,
             dialog_focus_pending: false,
@@ -1525,6 +1621,7 @@ impl ChatScreen {
             attachment_picking: false,
             model_catalog: HashMap::new(),
             model_labels: HashMap::new(),
+            model_sections: composer::ModelSections::default(),
             models_loading: false,
             controls_held: false,
             controls_revealed: None,
@@ -1537,8 +1634,6 @@ impl ChatScreen {
             composer_glide: None,
             send_stop: motion::Tween::new(0.),
             send_ready: motion::Tween::new(0.),
-            web_enabled: true,
-            default_web_enabled: settings.default_web_enabled,
             permission_mode: settings.new_task_permission_mode.unwrap_or_default(),
             new_task_permission_mode: settings.new_task_permission_mode.unwrap_or_default(),
             markdown_cache: MarkdownCache::default(),
@@ -1546,11 +1641,11 @@ impl ChatScreen {
             derived: DerivedCache::default(),
             markdown_warmup: None,
             timeline_index: HashMap::new(),
-            selected_title: tr(DEFAULT_TASK_TITLE),
             project_folder_dialog: None,
             root_picker_open: false,
             root_selecting: false,
             project_label: tr("chat-choose-folder"),
+            project_computer: None,
             project_branch: None,
             branch_label: None,
             branch_watcher: None,
@@ -1736,7 +1831,7 @@ impl ChatScreen {
             sidebar.reconcile_default_project(workspace, cx)
         });
         self.handle_service_events(boot.questions, cx);
-        if !self.set_project_context(boot.project_root, cx) {
+        if !self.scratch_project && !self.set_project_context(boot.project_root, cx) {
             self.project_root_changed(cx);
             self.check_project_trust(cx);
         }
@@ -1962,7 +2057,10 @@ impl ChatScreen {
                 match result {
                     Ok(registration) => {
                         this.restore_selected_project(registration.project, cx);
-                        this.refresh_roots(cx);
+                        if this.project_root.as_deref() != Some(registration.project_root.as_str())
+                        {
+                            this.refresh_roots(cx);
+                        }
                         this.land_project_selection(
                             registration.project_root,
                             selection_generation,
@@ -2012,17 +2110,21 @@ impl ChatScreen {
 
     /// Persist `root` as the default for new tasks and the next launch
     /// without changing what is on screen. Used when a task under another
-    /// project is opened and when a project is archived.
-    fn persist_project_root(&mut self, root: String, cx: &mut Context<Self>) {
+    /// project is opened and when a project is archived. Only a changed
+    /// listing needs `refresh_roots`: recording use of the root that is
+    /// already selected keeps the sidebar's prepared rows.
+    fn persist_project_root(&mut self, root: String, refresh_roots: bool, cx: &mut Context<Self>) {
         let backend = self.backend.clone();
         let user_id = self.user_id.clone();
         self.call(
             async move { backend.select_project_root(&user_id, root).await },
             cx,
-            |this, result, cx| match result {
+            move |this, result, cx| match result {
                 Ok(registration) => {
                     this.restore_selected_project(registration.project, cx);
-                    this.refresh_roots(cx);
+                    if refresh_roots {
+                        this.refresh_roots(cx);
+                    }
                     cx.notify();
                 }
                 Err(error) => log::warn!("Cannot persist project root: {error}"),
@@ -2045,7 +2147,9 @@ impl ChatScreen {
         project_root: Option<String>,
         cx: &mut Context<Self>,
     ) -> bool {
-        if self.project_root == project_root {
+        let was_scratch = self.scratch_project;
+        self.scratch_project = false;
+        if self.project_root == project_root && !was_scratch {
             return false;
         }
         self.project_root = project_root;
@@ -2225,7 +2329,7 @@ impl ChatScreen {
         cx.notify();
     }
 
-    /// The root changed: update the header label, then read its branch
+    /// The root changed: update the project chip, then read its branch
     /// and watch its git dir.
     fn project_root_changed(&mut self, cx: &mut Context<Self>) {
         self.refresh_project_caption(cx);
@@ -2340,21 +2444,39 @@ impl ChatScreen {
         );
     }
 
-    /// Open or close the project menu from the header chip.
+    /// Open or close a new task's project menu from its chip.
     pub fn toggle_root_menu(&mut self, cx: &mut Context<Self>) {
-        self.popup.toggle(ChatPopup::Project, cx);
-    }
-
-    /// Open or close one of the composer chips' menus. Opening the
-    /// integrations menu refreshes the task's servers.
-    pub(super) fn toggle_popup(&mut self, popup: ChatPopup, cx: &mut Context<Self>) {
-        if self.popup.toggle(popup, cx) && popup == ChatPopup::Integrations {
-            self.refresh_session_mcp(cx);
+        // A saved task's folder is fixed and its top bar has no picker:
+        // choosing a project starts a new task, where the picker sits.
+        if self.selected_session.is_some() {
+            self.new_session(cx);
+            if self.selected_session.is_some() {
+                return;
+            }
+        }
+        if self.popup.toggle(ChatPopup::Project, cx) {
+            self.refresh_picker_projects(cx);
         }
     }
 
-    /// Text for the header project chip.
+    /// Open or close one of the composer chips' menus. Opening the
+    /// integrations menu refreshes the task's servers; opening the model
+    /// panel starts its slider from the saved level.
+    pub(super) fn toggle_popup(&mut self, popup: ChatPopup, cx: &mut Context<Self>) {
+        if self.popup.toggle(popup, cx) {
+            match popup {
+                ChatPopup::Integrations => self.refresh_session_mcp(cx),
+                ChatPopup::Model => self.reset_effort_input(),
+                _ => {}
+            }
+        }
+    }
+
+    /// The project chip's folder name.
     pub fn project_label(&self, cx: &gpui::App) -> String {
+        if self.scratch_project {
+            return tr("chat-new-project-button").to_string();
+        }
         self.project_root
             .as_deref()
             .map(|root| self.sidebar.read(cx).root_name(root))
@@ -2381,6 +2503,7 @@ impl ChatScreen {
                 if let Ok((mut models, saved, catalog)) = result {
                     if let Some(catalog) = &catalog {
                         this.model_labels = maple_agent::agent::catalog_model_labels(catalog);
+                        this.model_sections = composer::ModelSections::from_catalog(catalog);
                         // An older execution computer lists every API model,
                         // or every catalog model; offer only what the catalog
                         // describes and does not keep out of Maple Work.
@@ -2500,10 +2623,101 @@ impl ChatScreen {
         self.clear_selected_session_presentation(cx);
         self.draft = true;
         // The draft starts from this project's defaults.
-        self.web_enabled = self.default_web_enabled;
         self.permission_mode = self.new_task_permission_mode;
         self.refresh_draft_mcp(cx);
-        self.refresh_selected_title();
+        cx.notify();
+    }
+
+    /// Choose a fresh project without touching the filesystem or saving a task.
+    fn select_scratch_project(&mut self, cx: &mut Context<Self>) {
+        if self.session_setup_pending || self.root_selecting {
+            return;
+        }
+        if !self.draft {
+            self.new_session(cx);
+        } else {
+            self.begin_navigation();
+        }
+        self.popup.close(cx);
+        self.set_project_context(None, cx);
+        self.scratch_project = true;
+        self.refresh_project_caption(cx);
+        self.notice = None;
+        self.screen_focus_pending = true;
+        cx.notify();
+    }
+
+    fn create_scratch_for_first_send(&mut self, action: FirstSend, cx: &mut Context<Self>) {
+        if self.session_setup_pending {
+            return;
+        }
+        let generation = self.selection_generation;
+        let epoch = self.host_recovery.epoch;
+        let user_id = self.user_id.clone();
+        let owner = user_id.clone();
+        let backend = self.backend.clone();
+        self.scratch_creation = Some(generation);
+        self.session_setup_pending = true;
+        self.pending_first_send = Some(action);
+        self.notice = None;
+        cx.notify();
+        self.call_semantic(
+            async move {
+                backend
+                    .call_presented::<crate::backend::SelectedProject>(
+                        "create_scratch_project",
+                        (&user_id,),
+                    )
+                    .await
+                    .map_err(UiFailure::from)
+            },
+            cx,
+            move |this, result, cx| {
+                this.finish_scratch_project(generation, epoch, &owner, result, cx);
+            },
+        );
+    }
+
+    fn finish_scratch_project(
+        &mut self,
+        generation: u64,
+        epoch: u64,
+        user_id: &str,
+        result: Result<crate::backend::SelectedProject, UiFailure>,
+        cx: &mut Context<Self>,
+    ) {
+        if self.scratch_creation != Some(generation) {
+            return;
+        }
+        self.scratch_creation = None;
+        self.session_setup_pending = false;
+        let action = self.pending_first_send.take();
+        // A different task, computer, account, or recovered host wins. Never
+        // send the old draft from a late folder result into its new context.
+        if self.selection_generation != generation
+            || self.host_recovery.epoch != epoch
+            || self.user_id != user_id
+            || !self.scratch_project
+            || !self.draft
+        {
+            cx.notify();
+            return;
+        }
+        match result {
+            Ok(registration) => {
+                self.restore_selected_project(registration.project, cx);
+                self.set_project_context(Some(registration.project_root), cx);
+                self.refresh_roots(cx);
+                if let Some(action) = action {
+                    self.create_for_first_send(action, cx);
+                }
+            }
+            Err(message) => {
+                self.notice = Some(message.into());
+                // The composer and attachments never left the draft. Retrying
+                // explicitly repeats the failed host operation.
+            }
+        }
         cx.notify();
     }
 
@@ -2519,6 +2733,10 @@ impl ChatScreen {
         if self.root_selecting {
             self.notice = Some(UiText::key("chat-wait-project"));
             cx.notify();
+            return;
+        }
+        if self.scratch_project {
+            self.create_scratch_for_first_send(action, cx);
             return;
         }
         let Some(request) = self.new_session_request() else {
@@ -2735,7 +2953,7 @@ impl ChatScreen {
     }
 
     /// The settings the composer shows that `session`, just created, does
-    /// not have: web access and the integration rows whose switch differs
+    /// not have: the mode and the integration rows whose switch differs
     /// from `task_mcp`. Chips flipped while the create was in flight show
     /// up here like any other.
     fn new_session_changes(
@@ -2744,7 +2962,6 @@ impl ChatScreen {
         task_mcp: &[DraftMcpChange],
     ) -> NewSessionChanges {
         NewSessionChanges {
-            web: (self.web_enabled != session.web_enabled).then_some(self.web_enabled),
             mode: (self.permission_mode != session.permission_mode).then_some(self.permission_mode),
             mcp: self
                 .session_mcp
@@ -2772,7 +2989,7 @@ impl ChatScreen {
     /// only once everything has applied select the task and run the first
     /// send. Nothing is sent on a failure: the task is kept and opened,
     /// the text stays in the composer, and the error is shown, so a task
-    /// meant to run without web access or a server never runs with it.
+    /// meant to run without a server never runs with it.
     fn settle_new_session(
         &mut self,
         session: AgentSessionSummary,
@@ -2797,21 +3014,6 @@ impl ChatScreen {
         self.call_semantic(
             async move {
                 let mut session = session;
-                if let Some(enabled) = changes.web {
-                    session = backend
-                        .call_presented::<maple_agent::agent::AgentSessionSummary>(
-                            "set_session_web_enabled",
-                            (&user_id, &session.id, enabled),
-                        )
-                        .await
-                        .map_err(UiFailure::from)
-                        .map_err(|failure| {
-                            let fallback = failure
-                                .raw_message()
-                                .map(|raw| format!("Could not change web access: {raw}"));
-                            failure.with_context("chat-web-change-error", vec![], fallback)
-                        })?;
-                }
                 if let Some(mode) = changes.mode {
                     session = backend
                         .call_presented::<maple_agent::agent::AgentSessionSummary>(
@@ -2989,6 +3191,9 @@ impl ChatScreen {
     /// Build an explicit request so new-task placement never depends on the
     /// runtime's startup fallback.
     fn new_session_request(&self) -> Option<AgentCreateSessionRequest> {
+        if self.scratch_project {
+            return None;
+        }
         Some(AgentCreateSessionRequest {
             project_root: Some(self.project_root.clone()?),
             title: None,
@@ -3154,10 +3359,21 @@ impl ChatScreen {
                         // the task restored at launch (`apply_bootstrap`)
                         // does not.
                         let switching = !this.is_selected(&detail.session.id);
+                        let root = detail.session.project_root.clone();
+                        let needs_recent_touch = this
+                            .project_root
+                            .as_ref()
+                            .is_none_or(|current| current == &root);
                         this.upsert_session(detail.session.clone(), cx);
                         this.set_active_session(detail.session, detail.timeline, summaries, cx);
                         if switching {
                             this.row_motion.switch_task(motion::now());
+                        }
+                        // A different existing root is persisted by set_active_session;
+                        // explicit opens in the same root also count as recent use.
+                        // Recency alone changes no listing, so no root reload.
+                        if needs_recent_touch {
+                            this.persist_project_root(root, false, cx);
                         }
                         this.set_queue(detail.queue.items);
                     }
@@ -3188,7 +3404,6 @@ impl ChatScreen {
     fn finish_loading(&mut self, session_id: &str) {
         if self.loading_session.as_deref() == Some(session_id) {
             self.loading_session = None;
-            self.refresh_selected_title();
         }
     }
 
@@ -3252,7 +3467,6 @@ impl ChatScreen {
             .find_map(plan_entries)
             .unwrap_or_default();
         self.set_plan(plan);
-        self.refresh_selected_title();
     }
 
     /// Apply settings changes when returning from the settings screen:
@@ -3263,12 +3477,6 @@ impl ChatScreen {
         cx: &mut Context<Self>,
     ) {
         self.tool_details = settings.tool_details;
-        self.default_web_enabled = settings.default_web_enabled;
-        if self.selected_session.is_none() {
-            // The draft has no record of its own; the chip shows the
-            // default the task will be created with.
-            self.web_enabled = settings.default_web_enabled;
-        }
         self.apply_notification_settings(settings);
         self.summaries_enabled = settings.tool_summaries;
         self.composer_vim_enabled = settings.composer_vim_enabled;
@@ -3533,6 +3741,7 @@ impl ChatScreen {
         self.selected_session = None;
         // Leaving a draft ends it; "New Task" starts the next one itself.
         self.draft = false;
+        self.scratch_project = false;
         self.draft_mcp_defaults = None;
         self.draft_mcp_changes.clear();
         // The empty screen uses the default, not the last task's model.
@@ -3606,11 +3815,9 @@ impl ChatScreen {
             // Working in another project makes it the default for new
             // tasks and the next launch, as the project selector does. An
             // archived task under a removed project restores that project.
-            self.persist_project_root(project_root, cx);
+            self.persist_project_root(project_root, true, cx);
         }
-        self.refresh_selected_title();
         self.set_queue(Vec::new());
-        self.web_enabled = session.web_enabled;
         self.permission_mode = session.permission_mode;
         self.apply_session_model(&session, cx);
         self.replace_timeline(timeline);
@@ -3995,7 +4202,7 @@ impl ChatScreen {
                             "chat-project-integration-save-failed",
                             [
                                 ("name", name.into()),
-                                ("project", root_display_name(&root).into()),
+                                ("project", this.sidebar.read(cx).root_name(&root).into()),
                             ],
                             "error",
                             message.into(),
@@ -4009,53 +4216,6 @@ impl ChatScreen {
                     Ok(()) => {}
                 }
                 this.save_next_project_mcp(cx);
-            },
-        );
-    }
-
-    /// Persist the web flag for the selected task; the runtime applies it
-    /// on the next turn. On the draft it is only screen state, applied
-    /// when the task is created.
-    fn set_web_enabled(&mut self, enabled: bool, cx: &mut Context<Self>) {
-        let Some(session_id) = self.selected_session.clone() else {
-            self.web_enabled = enabled;
-            cx.notify();
-            return;
-        };
-        let previous = self.web_enabled;
-        self.web_enabled = enabled;
-        cx.notify();
-        let backend = self.backend.clone();
-        let user_id = self.user_id.clone();
-        let target = session_id.clone();
-        self.call_semantic(
-            async move {
-                backend
-                    .call_presented::<maple_agent::agent::AgentSessionSummary>(
-                        "set_session_web_enabled",
-                        (&user_id, &target, enabled),
-                    )
-                    .await
-                    .map_err(UiFailure::from)
-            },
-            cx,
-            move |this, result, cx| {
-                match result {
-                    Ok(session) => {
-                        this.upsert_session(session, cx);
-                    }
-                    Err(message) => {
-                        if this.selected_session.as_deref() == Some(session_id.as_str()) {
-                            this.web_enabled = previous;
-                        }
-                        this.notice = Some(UiText::context(
-                            "chat-web-failed",
-                            "message",
-                            message.into(),
-                        ));
-                    }
-                }
-                cx.notify();
             },
         );
     }
@@ -5057,14 +5217,9 @@ impl ChatScreen {
                 }
                 true
             }
-            "web" => {
-                let next = !self.web_enabled;
-                self.set_web_enabled(next, cx);
-                true
-            }
             "model" => {
                 if args.is_empty() {
-                    self.popup.open(ChatPopup::Model, cx);
+                    self.open_model_panel(cx);
                 } else {
                     let query = args.to_string();
                     match self
@@ -5820,14 +5975,30 @@ impl ChatScreen {
         }
     }
 
-    /// Click handler for an option row: clicking the picked option again
-    /// clears it so a typed answer can stand alone.
+    /// Click handler for an option. On a single choice or a permission card
+    /// the click is the whole decision, so it answers; moving the keyboard
+    /// selection never is, and Enter still confirms that. On a multi-select
+    /// it checks the option, or clears it when it was checked.
     fn toggle_question_option(
         &mut self,
         question_index: usize,
         option_index: usize,
         cx: &mut Context<Self>,
     ) {
+        let Some(entry) = self
+            .current_question()
+            .and_then(|question| question.questions.get(question_index))
+        else {
+            return;
+        };
+        if option_index >= entry.options.len() {
+            return;
+        }
+        if !entry.multi_select {
+            self.select_question_option(question_index, option_index, cx);
+            self.submit_question(cx);
+            return;
+        }
         if let Some(selection) = self.question_selected.get_mut(&question_index)
             && selection.picked.remove(&option_index)
         {
@@ -5839,15 +6010,6 @@ impl ChatScreen {
             cx.notify();
         } else {
             self.select_question_option(question_index, option_index, cx);
-            // A click is the whole decision on a permission card. Moving
-            // the keyboard selection never is: Enter still confirms it.
-            let permission = self
-                .current_question()
-                .and_then(|question| question.questions.get(question_index))
-                .is_some_and(|question| question.permission.is_some());
-            if permission {
-                self.submit_question(cx);
-            }
         }
     }
 
@@ -5949,23 +6111,30 @@ impl ChatScreen {
         );
     }
 
-    /// Pick the model of the next message, in a task or a new one. It also
-    /// becomes the account default for new tasks.
+    /// Pick the model of the next message, in a task or a new one. A pick
+    /// on New Task is remembered for new tasks, starting at the model's own
+    /// level unless it is the model already remembered; a task's pick is
+    /// the task's alone.
     fn pick_model(&mut self, model: String, cx: &mut Context<Self>) {
         self.selected_model = Some(model.clone());
-        self.default_model = Some(model.clone());
+        if self.selected_session.is_none() {
+            if self.default_model.as_deref() != Some(model.as_str()) {
+                self.thinking_cache.invalidate_defaults();
+            }
+            self.default_model = Some(model.clone());
+            // Remember the choice across launches via the agent config.
+            let backend = self.backend.clone();
+            let user_id = self.user_id.clone();
+            self.call(
+                async move { backend.save_default_model(&user_id, model).await },
+                cx,
+                |_this, _result, _cx| {},
+            );
+        }
         self.refresh_thinking(cx);
         self.popup.close(cx);
         cx.notify();
         self.refresh_model_catalog(cx);
-        // Remember the choice across launches via the agent config.
-        let backend = self.backend.clone();
-        let user_id = self.user_id.clone();
-        self.call(
-            async move { backend.save_default_model(&user_id, model).await },
-            cx,
-            |_this, _result, _cx| {},
-        );
         self.refresh_context_usage(cx);
     }
 
@@ -6145,10 +6314,6 @@ impl ChatScreen {
                 );
                 self.timeline.push(item);
                 self.list_state.splice(index..index, 1);
-                if index == 0 {
-                    // The pane leaves the empty state; the header follows.
-                    self.refresh_selected_title();
-                }
                 index
             }
         };
@@ -6185,7 +6350,6 @@ impl ChatScreen {
             }
             let mut switched = None;
             if self.selected_session.as_deref() == Some(session.id.as_str()) {
-                self.web_enabled = session.web_enabled;
                 self.permission_mode = session.permission_mode;
                 // Follow a switch the task made, here or on another surface;
                 // a pick waiting for the next message stays.
@@ -6238,6 +6402,15 @@ impl ChatScreen {
             let id = self.timeline[index].id.clone();
             self.row_motion
                 .open_from_more(&id, transcript::WAITING_ROW_HEIGHT);
+        }
+        if self
+            .sidebar_plan
+            .as_ref()
+            .is_some_and(crate::billing::PlanUsage::on_extra_credits)
+            && let Some(row) = self.timeline.get(index)
+            && transcript::is_usage_limit(row)
+        {
+            self.refused_on_credits = Some(row.id.clone());
         }
         if let Some(plan) = plan {
             self.update_live_plan(plan, cx);
@@ -6730,7 +6903,7 @@ impl ChatScreen {
                 self.sync_sidebar_activity(cx);
             }
             AgentServiceEvent::ThinkingChanged { session_id, state } => {
-                self.apply_thinking_changed(&session_id, state, cx);
+                self.apply_thinking_changed(&session_id, state);
             }
             AgentServiceEvent::RemoteAccessEnded(_)
             | AgentServiceEvent::HostDisconnected
@@ -7155,7 +7328,6 @@ impl ChatScreen {
             return;
         }
         self.locale = locale;
-        self.refresh_selected_title();
         self.refresh_project_caption(cx);
         self.derived.clear();
         if let Some(composer) = &self.composer {
@@ -7266,17 +7438,33 @@ impl Render for ChatScreen {
                     let enter = gpui::ElementId::Name(
                         format!("question-card-enter-{}", question.request_id).into(),
                     );
-                    // Like the cards above the composer, a new question
-                    // rises in and leaves at once.
+                    // Each option shows the key bound to it right now. One
+                    // keymap lookup per option on show; a card has a handful.
+                    let key_labels = question
+                        .questions
+                        .get(step.min(question.questions.len().saturating_sub(1)))
+                        .filter(|entry| entry.permission.is_none())
+                        .map(|entry| {
+                            (0..entry.options.len().min(9))
+                                .map(|index| question_key_label(index, window))
+                                .collect::<Vec<_>>()
+                        })
+                        .unwrap_or_default();
+                    // Same column and gutter as the composer under it. Like
+                    // the cards above the composer, a new question rises in
+                    // and leaves at once.
                     container.child(motion::slide_in(
-                        render_question_card(
-                            question,
-                            step,
-                            self.question_collapsed,
-                            input,
-                            &self.question_selected,
-                            &self.messages,
-                            cx,
+                        div().w_full().max_w(CONTENT_WIDTH).mx_auto().px_6().child(
+                            render_question_card(
+                                question,
+                                step,
+                                self.question_collapsed,
+                                input,
+                                &self.question_selected,
+                                &key_labels,
+                                &self.messages,
+                                cx,
+                            ),
                         ),
                         enter,
                         motion::ENTER,
@@ -7319,12 +7507,7 @@ impl Render for ChatScreen {
                         .children(self.render_plan_card(cx).map(|card| {
                             motion::slide_in(card, "plan-card-enter", motion::ENTER, rise)
                         }))
-                        .child(
-                            self.render_composer(window, cx)
-                                .when(self.composer_fills(), |composer| {
-                                    composer.flex_1().min_h_0()
-                                }),
-                        )
+                        .child(self.render_composer(window, cx))
                         .children(self.render_slash_palette(cx))
                         .children(self.render_persistence_failure(cx))
                         .child(composer::measure(
@@ -7403,7 +7586,7 @@ impl Render for ChatScreen {
                             .flex_1()
                             .h_full()
                             .min_w_0()
-                            .bg(gpui::rgb(theme::bg_sidebar()))
+                            .bg(gpui::rgb(theme::bg_app()))
                             .child(
                                 // The header is the window's title bar; a wheel
                                 // over it scrolls nothing.
@@ -7412,11 +7595,11 @@ impl Render for ChatScreen {
                             )
                             .child(
                                 div()
+                                    .debug_selector(|| "task-content".to_string())
                                     .flex()
                                     .flex_col()
                                     .flex_1()
                                     .min_h_0()
-                                    .rounded_tl(theme::RADIUS_LG)
                                     .bg(gpui::rgb(theme::bg_app()))
                                     .child(main),
                             ),
@@ -7653,24 +7836,33 @@ impl ChatScreen {
             let usage_label = self.sidebar_plan.as_ref().map_or_else(
                 || tr("chat-usage-unavailable-label"),
                 |plan| {
-                    self.messages.get(
-                        "chat-usage-label",
-                        [
-                            ("percent", plan.percent_used.into()),
-                            (
-                                "plan",
-                                crate::ui::settings::presentation::plan_name(plan, &self.messages)
-                                    .to_string()
-                                    .into(),
-                            ),
-                            (
-                                "reset",
-                                crate::ui::settings::presentation::reset_date(plan, &self.messages)
-                                    .to_string()
-                                    .into(),
-                            ),
-                        ],
-                    )
+                    let percent = ("percent", plan.percent_used.into());
+                    let plan_name = (
+                        "plan",
+                        crate::ui::settings::presentation::plan_name(plan, &self.messages)
+                            .to_string()
+                            .into(),
+                    );
+                    let reset = (
+                        "reset",
+                        crate::ui::settings::presentation::reset_date(plan, &self.messages)
+                            .to_string()
+                            .into(),
+                    );
+                    match plan.extra_credits() {
+                        Some(credits) => self.messages.get(
+                            "chat-usage-label-credits",
+                            [
+                                percent,
+                                plan_name,
+                                reset,
+                                ("credits", crate::billing::format_count(credits).into()),
+                            ],
+                        ),
+                        None => self
+                            .messages
+                            .get("chat-usage-label", [percent, plan_name, reset]),
+                    }
                 },
             );
             let usage = div()
@@ -7684,6 +7876,7 @@ impl ChatScreen {
                         .flex()
                         .items_center()
                         .gap_2()
+                        .child(icon("gauge", px(14.), theme::text_secondary()))
                         .child(
                             div()
                                 .flex_1()
@@ -7717,7 +7910,13 @@ impl ChatScreen {
                                             (f32::from(plan.percent_used) / 100.).clamp(0., 1.),
                                         ))
                                         .rounded_full()
-                                        .bg(gpui::rgb(theme::accent())),
+                                        // Nothing is wrong once credits cover the
+                                        // used-up plan, so the bar goes quiet.
+                                        .bg(gpui::rgb(if plan.on_extra_credits() {
+                                            theme::text_faint()
+                                        } else {
+                                            theme::accent()
+                                        })),
                                 ),
                         )
                         .child(
@@ -7745,6 +7944,10 @@ impl ChatScreen {
                                         )],
                                     ),
                                 ),
+                        )
+                        .children(
+                            plan.extra_credits()
+                                .map(|credits| self.render_plan_credits(plan, credits)),
                         )
                 })
                 .when(self.sidebar_plan.is_none(), |usage| {
@@ -7786,14 +7989,15 @@ impl ChatScreen {
                     )
                 }))
                 .item(
+                    // Shows the label of the Settings section it opens.
                     MenuItem::new(
                         "settings-menu-account",
-                        tr("chat-account"),
+                        tr("settings-section-account"),
                         |_: &mut Self, _, cx| {
                             cx.emit(OpenSettingsSection(Section::Account));
                         },
                     )
-                    .icon("user"),
+                    .icon("shield-user"),
                 )
                 .item(
                     MenuItem::new(
@@ -7831,23 +8035,34 @@ impl ChatScreen {
                 .w_full()
                 .pt_2()
                 .child(
-                    widgets::banner(theme::status_error())
-                        .flex()
-                        .flex_col()
-                        .items_start()
-                        .gap_2()
-                        .child(crate::ui::host_errors::persistence_text(failure).resolve())
-                        .when(remote, |panel| panel.child(tr("chat-retry-save-remote")))
-                        .when(!remote, |panel| {
-                            panel.child(
-                                widgets::secondary_button("retry-local-store-persistence")
-                                    .debug_selector(|| "retry-local-store-persistence".to_string())
-                                    .child(gpui::text!(tr("chat-retry-save")))
-                                    .on_click(cx.listener(|_this, _event, _window, cx| {
-                                        cx.emit(crate::ui::store_gate::RetryStorePersistence);
-                                    })),
-                            )
-                        }),
+                    widgets::banner(
+                        widgets::Tone::Error,
+                        div()
+                            .flex()
+                            .flex_col()
+                            .gap_0p5()
+                            .child(gpui::text!(
+                                crate::ui::host_errors::persistence_text(failure).resolve()
+                            ))
+                            .when(remote, |message| {
+                                message.child(
+                                    div()
+                                        .text_color(gpui::rgb(theme::text_muted()))
+                                        .child(gpui::text!(tr("chat-retry-save-remote"))),
+                                )
+                            }),
+                    )
+                    .when(!remote, |panel| {
+                        panel.child(
+                            widgets::secondary_button("retry-local-store-persistence")
+                                .flex_none()
+                                .debug_selector(|| "retry-local-store-persistence".to_string())
+                                .child(gpui::text!(tr("chat-retry-save")))
+                                .on_click(cx.listener(|_this, _event, _window, cx| {
+                                    cx.emit(crate::ui::store_gate::RetryStorePersistence);
+                                })),
+                        )
+                    }),
                 ),
         )
     }
@@ -7879,7 +8094,7 @@ impl ChatScreen {
     /// The collapsed sidebar: a slim rail in the sidebar's color whose
     /// Maple mark shows the sidebar again.
     fn render_sidebar_rail(&self, cx: &mut Context<Self>) -> gpui::Stateful<Div> {
-        let mark_padding = (sidebar::TOP_ROW_HEIGHT - sidebar::WORDMARK_HEIGHT) / 2.;
+        let mark_padding = (titlebar::SIDEBAR_ROW_HEIGHT - sidebar::WORDMARK_HEIGHT) / 2.;
         let rail = titlebar::drag_region(
             div()
                 .id("sidebar-rail")
@@ -7897,14 +8112,14 @@ impl ChatScreen {
                 .debug_selector(|| "show-sidebar".to_string())
                 .absolute()
                 .left(sidebar::WORDMARK_LEFT - mark_padding)
-                .top(sidebar::wordmark_row_top() - CHAT_HEADER_HEIGHT)
+                .top(titlebar::sidebar_row_top() - titlebar::TITLE_BAR_HEIGHT)
                 .role(gpui::Role::Button)
                 .aria_label(tr("chat-show-sidebar"))
                 // The search field's place in the tab order, which the rail
                 // holds while the sidebar is collapsed.
                 .tab_index(2)
                 .flex_none()
-                .size(sidebar::TOP_ROW_HEIGHT)
+                .size(titlebar::SIDEBAR_ROW_HEIGHT)
                 .overflow_hidden()
                 .flex()
                 .items_center()
@@ -7950,7 +8165,7 @@ impl ChatScreen {
             .child(titlebar::drag_region(
                 div()
                     .id("sidebar-rail-titlebar")
-                    .h(CHAT_HEADER_HEIGHT)
+                    .h(titlebar::TITLE_BAR_HEIGHT)
                     .flex_none()
                     .bg(gpui::rgb(theme::bg_sidebar())),
             ))
@@ -8090,14 +8305,7 @@ impl ChatScreen {
                                 None if expanded => wrap.flex_1().min_h_0().flex().flex_col(),
                                 None => wrap,
                             })
-                            // Whatever comes with the composer (a folder
-                            // picker by the prompt, say) fills the region
-                            // with it while it fills: expanded, and on the
-                            // way there and back, not only once expanded.
-                            .child(
-                                self.render_composer(window, cx)
-                                    .when(fills, |composer| composer.flex_1().min_h_0()),
-                            )
+                            .child(self.render_composer(window, cx))
                             .children(self.render_slash_palette(cx))
                             .child(composer::measure(
                                 &self.composer_frame,
@@ -8114,7 +8322,7 @@ impl ChatScreen {
                     )
                     .children(privacy)
                     .when_some(self.runtime_error.clone(), |column, error| {
-                        column.child(widgets::banner(theme::status_error()).mt_6().child(error))
+                        column.child(widgets::banner(widgets::Tone::Error, error).mt_6())
                     })
                     .children(
                         self.render_persistence_failure(cx)
@@ -8178,26 +8386,6 @@ impl ChatScreen {
         self.session_mcp = servers;
     }
 
-    /// Cache the header title for the selected task. The header names what
-    /// the pane shows: with no transcript on screen it is a new task,
-    /// whatever the list has selected.
-    fn refresh_selected_title(&mut self) {
-        if self.timeline.is_empty() && self.loading_session.is_none() {
-            self.selected_title = tr(DEFAULT_TASK_TITLE);
-            return;
-        }
-        self.selected_title = self
-            .selected_session
-            .as_deref()
-            .and_then(|selected| {
-                self.sessions
-                    .iter()
-                    .position(|session| session.id == selected)
-            })
-            .map(|index| SharedString::from(self.sessions[index].title.clone()))
-            .unwrap_or_else(|| tr(DEFAULT_TASK_TITLE));
-    }
-
     /// Raise a desktop notification when enabled and the window is not
     /// focused. `tag` names the task, so a later alert about the same task
     /// replaces the earlier one instead of stacking.
@@ -8229,19 +8417,104 @@ impl ChatScreen {
     /// Load the usage preview from the Maple billing API. Failures keep
     /// the previous value; without one, the menu shows usage as unavailable.
     fn refresh_sidebar_plan(&mut self, cx: &mut Context<Self>) {
+        self.plan_requested_at = Some(std::time::Instant::now());
+        self.plan_generation += 1;
+        let generation = self.plan_generation;
         let backend = self.backend.clone();
         let user_id = self.user_id.clone();
         self.call(
             async move { backend.plan_usage(&user_id).await },
             cx,
-            |this, result: Result<Option<crate::billing::PlanUsage>, String>, cx| match result {
-                Ok(plan) => {
-                    this.sidebar_plan = plan;
-                    cx.notify();
+            move |this, result: Result<Option<crate::billing::PlanUsage>, String>, cx| {
+                if this.plan_generation != generation {
+                    return;
                 }
-                Err(error) => log::warn!("plan usage unavailable: {error}"),
+                match result {
+                    Ok(plan) => {
+                        this.sidebar_plan = plan;
+                        cx.notify();
+                    }
+                    Err(error) => {
+                        log::warn!("plan usage unavailable: {error}");
+                        // Let the next return ask again rather than wait out
+                        // the interval on a failed read.
+                        this.plan_requested_at =
+                            std::time::Instant::now().checked_sub(PLAN_RETURN_REFRESH);
+                    }
+                }
             },
         );
+    }
+
+    /// Coming back to the chat is when credits bought in the browser or a
+    /// plan changed in Settings would show up. Asks again once the first
+    /// reading is in and the last one is older than [`PLAN_RETURN_REFRESH`].
+    pub(crate) fn refresh_plan_on_return(&mut self, cx: &mut Context<Self>) {
+        if self
+            .plan_requested_at
+            .is_some_and(|at| at.elapsed() >= PLAN_RETURN_REFRESH)
+        {
+            self.refresh_sidebar_plan(cx);
+        }
+    }
+
+    /// The extra credits under the plan in the Settings menu: the balance,
+    /// and whether tasks spend it now or once the allowance runs out.
+    fn render_plan_credits(&self, plan: &crate::billing::PlanUsage, credits: i64) -> Div {
+        let when = if plan.on_extra_credits() {
+            tr("chat-usage-credits-in-use")
+        } else {
+            tr("chat-usage-credits-next")
+        };
+        div()
+            .debug_selector(|| "settings-usage-credits".to_string())
+            .mt_0p5()
+            .pt_2p5()
+            .border_t_1()
+            .border_color(gpui::rgb(theme::border_subtle()))
+            .flex()
+            .flex_col()
+            .gap_1()
+            .child(
+                div()
+                    .flex()
+                    .items_center()
+                    .gap_2()
+                    .text_xs()
+                    .child(
+                        div()
+                            .flex_none()
+                            .size_5()
+                            .flex()
+                            .items_center()
+                            .justify_center()
+                            .rounded(px(6.))
+                            .bg(gpui::rgb(theme::accent_container()))
+                            .child(icon("coins", px(13.), theme::accent_ink())),
+                    )
+                    .child(
+                        div()
+                            .flex_1()
+                            .font_weight(gpui::FontWeight::MEDIUM)
+                            .text_color(gpui::rgb(theme::text_primary()))
+                            .child(tr("chat-usage-extra-credits")),
+                    )
+                    .child(
+                        div()
+                            .font_weight(gpui::FontWeight::SEMIBOLD)
+                            .text_color(gpui::rgb(theme::text_heading()))
+                            .child(self.messages.get(
+                                "chat-usage-credits-left",
+                                [("credits", crate::billing::format_count(credits).into())],
+                            )),
+                    ),
+            )
+            .child(
+                div()
+                    .text_xs()
+                    .text_color(gpui::rgb(theme::text_muted()))
+                    .child(when),
+            )
     }
 }
 

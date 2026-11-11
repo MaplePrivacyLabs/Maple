@@ -212,6 +212,9 @@ tokens! {
     on_accent: 0xf7f7f9, 0xf7f7f9;
     /// Soft coral container (maple-100 / a dark coral tint).
     accent_container: 0x3a2118, 0xffe8e0;
+    /// Coral for an icon on a coral container: maple-500 on dark,
+    /// maple-800 on light, where lighter steps wash out (3:1 or better).
+    accent_ink: 0xff9771, 0xd04926;
 
     status_running: 0xbabccb, 0xa3a3a3;
     status_success: 0x8fa35a, 0x7b8f4a;
@@ -224,10 +227,20 @@ tokens! {
     code_text: 0xe8e8ed, 0x171717;
     /// Links take the tertiary Bark scale (bark-300 / bark-500).
     link: 0xc29a8d, 0x9e7469;
+    /// A short label's pill, such as the Popular badge: coral on the dark
+    /// coral container on dark; on light, where coral read like an alert,
+    /// secondary grey on pebble-200, a step darker than a highlighted
+    /// row so the pill stays visible on one. 4.5:1 or better.
+    badge_fill: 0x3a2118, 0xd1d2dc;
+    badge_text: 0xff9771, 0x525252;
 
     /// Elicitation row fill/border: the coral container and maple-300.
     permission_fill: 0x2a1a14, 0xffe8e0;
     permission_border: 0x784a38, 0xffbaa2;
+
+    /// Panel docked inside the composer (the out-of-usage notice): half a
+    /// step above the composer's well.
+    bg_composer_tray: 0x222228, 0xf7f7f9;
 
     user_bubble_border: 0x3a3a44, 0xe8e8ed;
 
@@ -252,6 +265,13 @@ tokens! {
 
     /// Text input caret; near the primary text color of each palette.
     text_cursor: 0xf7f7f9, 0x171717;
+
+    /// High-contrast default/primary action pill (WCAG AAA in both themes,
+    /// matching `maple-theme-spec.md`'s inverted button foreground/fill).
+    bg_default_button: 0xe8e8ed, 0x171717;
+    bg_default_button_hover: 0xf7f7f9, 0x2c2c34;
+    bg_default_button_active: 0xd1d2dc, 0x404040;
+    text_on_default_button: 0x18181c, 0xf7f7f9;
 }
 
 /// Translucent selection highlight in text inputs: the coral primary at a
@@ -369,6 +389,7 @@ mod contrast_tests {
                 ("bg_input", palette.bg_input),
                 ("bg_sidebar_card", palette.bg_sidebar_card),
                 ("bg_tool_card", palette.bg_tool_card),
+                ("bg_composer_tray", palette.bg_composer_tray),
             ];
             let body = [
                 ("text_primary", palette.text_primary),
@@ -383,6 +404,12 @@ mod contrast_tests {
                 ("status_warning", palette.status_warning),
                 ("link", palette.link),
             ];
+            let ratio = contrast(palette.accent_ink, palette.accent_container);
+            if ratio < 3. {
+                failures.push(format!(
+                    "{name}: accent_ink on accent_container is {ratio:.2}:1"
+                ));
+            }
             for (surface, fill) in surfaces {
                 for (role, color) in body {
                     let ratio = contrast(color, fill);
@@ -395,6 +422,32 @@ mod contrast_tests {
                     if ratio < 3. {
                         failures.push(format!("{name}: {role} on {surface} is {ratio:.2}:1"));
                     }
+                }
+            }
+            let ratio = contrast(palette.badge_text, palette.badge_fill);
+            if ratio < 4.5 {
+                failures.push(format!("{name}: badge_text on badge_fill is {ratio:.2}:1"));
+            }
+            for (label, fg, bg) in [
+                (
+                    "default_button",
+                    palette.text_on_default_button,
+                    palette.bg_default_button,
+                ),
+                (
+                    "default_button_hover",
+                    palette.text_on_default_button,
+                    palette.bg_default_button_hover,
+                ),
+                (
+                    "default_button_active",
+                    palette.text_on_default_button,
+                    palette.bg_default_button_active,
+                ),
+            ] {
+                let ratio = contrast(fg, bg);
+                if ratio < 7. {
+                    failures.push(format!("{name}: {label} is {ratio:.2}:1 (< 7.0:1)"));
                 }
             }
         }

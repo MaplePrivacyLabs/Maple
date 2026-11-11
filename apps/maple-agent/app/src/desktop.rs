@@ -1460,6 +1460,7 @@ impl MapleApp {
 
     /// Returning to the window is when a plan most likely changed: after
     /// paying on the website, or after a subscription ended elsewhere.
+    /// Extra credits bought there show up in the chat from here too.
     fn recheck_plan_on_activation(&mut self, cx: &mut Context<Self>) {
         let stale = self
             .plan_check
@@ -1468,6 +1469,17 @@ impl MapleApp {
         if matches!(self.screen, Screen::PlanGate(_)) || stale {
             self.check_plan(false, cx);
         }
+        let mut chats: Vec<_> = self.local_chat.iter().cloned().collect();
+        if let Screen::Chat(chat) = &self.screen {
+            chats.push(chat.clone());
+        }
+        chats.dedup_by_key(|chat| chat.entity_id());
+        // This runs from render; read the plans after it.
+        cx.defer(move |cx| {
+            for chat in chats {
+                chat.update(cx, |chat, cx| chat.refresh_plan_on_return(cx));
+            }
+        });
     }
 
     /// Nicknames and remote pins belong to this desktop's signed-in account,
@@ -1922,7 +1934,14 @@ impl MapleApp {
                     .values()
                     .filter_map(|c| c.chat.as_ref()),
             ) {
-                other.update(cx, |other, cx| other.set_visible(false, cx));
+                // Same-computer navigation must not look like leaving the
+                // screen: the target decides whether to admit the request.
+                if other.entity_id() != chat.entity_id() {
+                    other.update(cx, |other, cx| {
+                        other.cancel_scratch_send(cx);
+                        other.set_visible(false, cx);
+                    });
+                }
             }
             self.selected_host = request.computer;
             self.screen = Screen::Chat(chat.clone());
@@ -4954,6 +4973,40 @@ mod tests {
 
     use super::*;
 
+    #[gpui::test]
+    fn scratch_first_send_survives_same_computer_navigation_but_not_a_switch(
+        cx: &mut gpui::TestAppContext,
+    ) {
+        let shell = project_shell(cx);
+        shell.update(cx, |app, cx| {
+            let local = app.local_chat.clone().unwrap();
+            local.update(cx, |chat, cx| chat.begin_scratch_send_for_test(cx));
+            let generation = local.read(cx).navigation_generation();
+            assert!(local.read(cx).scratch_send_pending_for_test());
+
+            app.navigate(
+                Navigate {
+                    computer: None,
+                    destination: Destination::DraftProject("/another/project".into()),
+                },
+                cx,
+            );
+            assert_eq!(local.read(cx).navigation_generation(), generation);
+            assert!(local.read(cx).scratch_send_pending_for_test());
+
+            app.navigate(
+                Navigate {
+                    computer: Some("east".into()),
+                    destination: Destination::Overview,
+                },
+                cx,
+            );
+            assert_ne!(local.read(cx).navigation_generation(), generation);
+            assert!(!local.read(cx).scratch_send_pending_for_test());
+            assert_eq!(app.selected_host.as_deref(), Some("east"));
+        });
+    }
+
     fn project_roots(name: &str) -> Vec<maple_agent::agent::RecentProjectRoot> {
         vec![maple_agent::agent::RecentProjectRoot {
             path: "/same/project".into(),
@@ -5122,7 +5175,7 @@ mod tests {
                     last_error: None,
                     compatibility_warning: None,
                 },
-                Section::Advanced,
+                Section::Account,
                 cx,
             )
         });
@@ -5188,7 +5241,7 @@ mod tests {
                     },
                     cx,
                 );
-                app.show_settings(Section::Advanced, cx);
+                app.show_settings(Section::Account, cx);
             });
             let screen = active_settings(&app, cx);
             let stale_close = screen.read_with(cx, |screen, _| screen.settings_snapshot());
@@ -5393,7 +5446,7 @@ mod tests {
         retired.update(cx, |_, cx| cx.emit(SettingsClosed(stale.clone())));
         cx.run_until_parked();
         app.update(cx, |app, cx| {
-            app.show_settings(Section::Advanced, cx);
+            app.show_settings(Section::Account, cx);
             let mut refreshed = app.settings.clone();
             refreshed.store_password_mode = true;
             app.apply_refreshed_password_settings(refreshed, cx);
@@ -5442,6 +5495,46 @@ mod tests {
         });
         cx.run_until_parked();
         assert_eq!(cx.debug_bounds("maple-page"), Some(original));
+    }
+
+    /// Settings opens in the task screen's frame. With the task sidebar
+    /// open, its content takes the task content's place on the canvas, its
+    /// title the wordmark's row, and Back the sidebar toggle's place beside
+    /// the traffic lights (without them, Back leads the title's row). (From
+    /// the collapsed rail, Settings still opens with its full column.)
+    #[gpui::test]
+    fn settings_opens_in_the_task_screens_frame(cx: &mut gpui::TestAppContext) {
+        struct AppHost(Entity<MapleApp>);
+        impl Render for AppHost {
+            fn render(&mut self, _: &mut Window, _: &mut Context<Self>) -> impl IntoElement {
+                div().size_full().child(self.0.clone())
+            }
+        }
+        let app = project_shell(cx);
+        let (_host, cx) = cx.add_window_view(|_, _| AppHost(app.clone()));
+        cx.simulate_resize(size(px(1100.), px(850.)));
+        cx.run_until_parked();
+        let task_content = cx.debug_bounds("task-content").expect("task content");
+        let toggle = cx
+            .debug_bounds("header-sidebar-toggle")
+            .expect("sidebar toggle");
+        let wordmark = cx.debug_bounds("sidebar-wordmark").expect("wordmark");
+
+        app.update(cx, |app, cx| app.show_settings(Section::General, cx));
+        cx.run_until_parked();
+        let content = cx
+            .debug_bounds("settings-content")
+            .expect("settings content");
+        let title = cx.debug_bounds("settings-title").expect("settings title");
+        let back = cx.debug_bounds("settings-back").expect("back");
+        assert_eq!(content, task_content);
+        assert_eq!(title.center().y, wordmark.center().y);
+        if crate::ui::titlebar::TRANSPARENT_TITLEBAR {
+            assert_eq!(back, toggle);
+        } else {
+            assert_eq!(back.center().y, title.center().y);
+            assert!(back.right() < title.left());
+        }
     }
 
     #[gpui::test]

@@ -3,7 +3,7 @@
 //! leaves every window undecorated: a drag region with a centered title
 //! plus round minimize, maximize, and close controls.
 
-use gpui::{Context, Pixels, SharedString, Window, div, prelude::*, px};
+use gpui::{Context, Div, Pixels, SharedString, Window, div, prelude::*, px};
 
 use super::decorations::system_draws_titlebar;
 use super::theme;
@@ -19,21 +19,51 @@ pub const TRANSPARENT_TITLEBAR: bool = cfg!(target_os = "macos");
 /// Where the traffic lights sit when the bar is transparent.
 pub const TRAFFIC_LIGHT_POSITION: gpui::Point<Pixels> = gpui::point(px(12.), px(12.));
 
-/// Horizontal room the traffic lights need at the left of the top row.
-pub const TRAFFIC_LIGHT_INSET: Pixels = px(78.);
-
 /// Vertical room the traffic lights take at the top of a column, for a
 /// row that sits under them instead of beside them.
-pub const TRAFFIC_LIGHT_ROW: Pixels = px(36.);
+const TRAFFIC_LIGHT_ROW: Pixels = px(36.);
 
-/// Left padding for a top row: clears the traffic lights when the bar is
-/// transparent, otherwise the ordinary gutter.
-pub fn top_row_inset(gutter: Pixels) -> Pixels {
+/// Where the first toolbar button starts beside the traffic lights: past
+/// their 78 px, after an 8 px gap. The task header's toolbar and Settings'
+/// Back both start here.
+pub const TRAFFIC_LIGHT_TOOLBAR_LEFT: Pixels = px(86.);
+
+/// Height of the title bar row at the top of each screen's canvas, as tall
+/// as the traffic lights' row. The task header and Settings share it, so
+/// their content starts on one line on both screens.
+pub const TITLE_BAR_HEIGHT: Pixels = px(36.);
+
+/// Height of the first row of a sidebar column: the task sidebar's
+/// wordmark, Settings' title.
+pub const SIDEBAR_ROW_HEIGHT: Pixels = px(28.);
+
+/// Top of a `SIDEBAR_ROW_HEIGHT` row centered in the title bar: the task
+/// header's toolbar and Settings' Back, and without traffic lights each
+/// sidebar's first row.
+pub fn title_bar_row_top() -> Pixels {
+    (TITLE_BAR_HEIGHT - SIDEBAR_ROW_HEIGHT) / 2.
+}
+
+/// Top of a sidebar column's first row. Under traffic lights it starts
+/// below them; without them it is centered in the title bar.
+pub fn sidebar_row_top() -> Pixels {
     if TRANSPARENT_TITLEBAR {
-        TRAFFIC_LIGHT_INSET
+        TRAFFIC_LIGHT_ROW
     } else {
-        gutter
+        title_bar_row_top()
     }
+}
+
+/// A screen's title: the task's in the task header, "Settings" at the top
+/// of its sidebar. One style, so a title reads the same on every screen.
+pub fn title(text: impl Into<SharedString>) -> Div {
+    div()
+        .truncate()
+        .text_lg()
+        .line_height(px(24.))
+        .font_weight(gpui::FontWeight::SEMIBOLD)
+        .text_color(gpui::rgb(theme::text_primary()))
+        .child(text.into())
 }
 
 /// Make an element behave like the title bar it is standing in for: a

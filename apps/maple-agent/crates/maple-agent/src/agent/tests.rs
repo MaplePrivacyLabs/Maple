@@ -597,61 +597,52 @@ async fn the_model_shows_its_plan_and_asks_the_user() {
     );
 }
 
+/// Every task follows the web switch of Settings → Tools. A task's web flag
+/// saved before the switch moved changes nothing, and the per-task setter a
+/// controller on an older build still sends is refused, so that controller
+/// never shows web access as off while the tools stay on.
 #[tokio::test]
-async fn the_web_tools_follow_the_tasks_web_switch() {
+async fn the_web_tools_follow_the_account_switch_not_the_tasks_flag() {
     let harness = Harness::new().await;
+    let handle = &harness.handle;
     let task = harness.create_task().await;
-    let declared = |request: &pi_ai::faux::FauxRequest| -> Vec<String> {
-        pi_ai::transcript::current_tools(&request.context.messages)
-            .into_iter()
-            .map(|tool| tool.name)
-            .collect()
+    let web = |request: &pi_ai::faux::FauxRequest| {
+        let tools = pi_ai::transcript::current_tools(&request.context.messages);
+        ["web_search", "open_url"].map(|name| tools.iter().any(|tool| tool.name == name))
     };
-    let switch = |enabled| AgentSetSessionWebRequest {
-        session_id: task.clone(),
-        enabled,
-    };
-    for (enabled, reply) in [(true, "On."), (false, "Off."), (true, "On again.")] {
-        harness
-            .handle
-            .set_session_web_enabled(switch(enabled))
+    for enabled in [false, true] {
+        let refused = handle
+            .set_session_web_enabled(AgentSetSessionWebRequest {
+                session_id: task.clone(),
+                enabled,
+            })
             .await
-            .unwrap();
-        assert!(
-            harness.recorder.events().iter().any(|event| matches!(
-                event,
-                AgentServiceEvent::SessionUpdated { session_id, session, .. }
-                    if session_id == &task && session.web_enabled == enabled
-            )),
-            "every window showing the task hears of the change"
-        );
-        harness.faux.push_text(reply);
-        let mut run = harness.send(&task, "Look it up").await;
-        assert_eq!(finished(&mut run).await, AgentRunTerminal::Completed);
+            .unwrap_err();
+        assert_eq!(refused, super::tasks::WEB_SWITCH_MOVED);
     }
-    let requests = harness.faux.requests();
-    let tools: Vec<Vec<String>> = requests.iter().map(declared).collect();
-    for name in ["todo_write", "request_user_input"] {
-        assert!(
-            tools
-                .iter()
-                .all(|tools| tools.iter().any(|tool| tool == name))
-        );
-    }
-    let has_web = |tools: &[String]| {
-        ["web_search", "open_url"]
-            .iter()
-            .all(|name| tools.iter().any(|tool| tool == name))
-    };
-    assert!(has_web(&tools[0]), "{:?}", tools[0]);
-    assert!(
-        !tools[1]
-            .iter()
-            .any(|tool| tool == "web_search" || tool == "open_url"),
-        "{:?}",
-        tools[1]
-    );
-    assert!(has_web(&tools[2]), "{:?}", tools[2]);
+
+    // A flag saved off before the switch moved.
+    handle
+        .store()
+        .unwrap()
+        .update(&task, |row| row.web_enabled = false)
+        .unwrap();
+    harness.faux.push_text("Found.");
+    let mut run = harness.send(&task, "Look it up").await;
+    assert_eq!(finished(&mut run).await, AgentRunTerminal::Completed);
+    assert_eq!(web(&harness.faux.requests()[0]), [true, true]);
+
+    handle
+        .set_tool_enabled(AgentSetToolEnabledRequest {
+            id: "web".to_string(),
+            enabled: false,
+        })
+        .await
+        .unwrap();
+    harness.faux.push_text("Not looked up.");
+    let mut run = harness.send(&task, "Look it up again").await;
+    assert_eq!(finished(&mut run).await, AgentRunTerminal::Completed);
+    assert_eq!(web(&harness.faux.requests()[1]), [false, false]);
 }
 
 #[tokio::test]
@@ -1494,6 +1485,38 @@ async fn mixed_files_and_images_use_committed_paths_and_preserve_refs_in_queue_e
 }
 
 #[tokio::test]
+async fn accepted_message_refreshes_project_recency_but_rejected_send_does_not() {
+    let harness = Harness::new().await;
+    let task = harness.create_task().await;
+    let (store, account) = harness.handle.test_persistence().unwrap();
+    let root = harness
+        .handle
+        .store()
+        .unwrap()
+        .get(&task)
+        .unwrap()
+        .unwrap()
+        .project_root;
+    store.register_explicit_project(account, &root, 1).unwrap();
+    let before = store.project(account, &root).unwrap().unwrap();
+    let mut invalid = harness.request(&task, "Reject invalid attachment");
+    invalid.attachments = vec!["not-an-id".into()];
+    assert!(harness.handle.send_message(invalid).await.is_err());
+    assert_eq!(store.project(account, &root).unwrap().unwrap(), before);
+    harness.faux.push_text("Done");
+    let mut run = harness.send(&task, "Use this project again").await;
+    let after = store.project(account, &root).unwrap().unwrap();
+    assert!(after.last_used_ms > before.last_used_ms);
+    assert_eq!(after.position, before.position);
+    finished(&mut run).await;
+    // Model completion is not a new user choice.
+    assert_eq!(
+        store.project(account, &root).unwrap().unwrap().last_used_ms,
+        after.last_used_ms
+    );
+}
+
+#[tokio::test]
 async fn an_invalid_or_foreign_attachment_rejects_the_whole_send_before_inference() {
     let harness = Harness::new().await;
     let task = harness.create_task().await;
@@ -2119,6 +2142,37 @@ async fn a_model_without_vision_looks_at_images_through_read_image() {
             .any(|block| matches!(block, pi_ai::Content::Image(_)))
     );
     assert!(!prompt(&requests[2]).contains(guideline));
+}
+
+/// With read_image switched off in Settings → Tools, `read` keeps Pi's own
+/// note for a model that cannot see the image.
+#[tokio::test]
+async fn read_keeps_its_own_note_while_read_image_is_off() {
+    use base64::Engine as _;
+
+    let harness = Harness::new().await;
+    harness
+        .handle
+        .set_tool_enabled(AgentSetToolEnabledRequest {
+            id: "read_image".to_string(),
+            enabled: false,
+        })
+        .await
+        .unwrap();
+    let png = base64::engine::general_purpose::STANDARD
+        .decode(PNG_1X1)
+        .unwrap();
+    std::fs::write(harness.project.path().join("shot.png"), png).unwrap();
+    harness
+        .faux
+        .push_message(vec![faux_tool_call("read", json!({"path": "shot.png"}))]);
+    harness.faux.push_text("Not seen.");
+    let task = harness.create_task().await;
+    let mut run = harness.send(&task, "What is in shot.png?").await;
+    assert_eq!(finished(&mut run).await, AgentRunTerminal::Completed);
+    let text = pi_ai::content_text(&first_tool_result(&harness.faux.requests()[1]).content);
+    assert!(!text.contains("read_image"), "{text}");
+    assert!(text.contains("does not support images"), "{text}");
 }
 
 #[tokio::test]
@@ -3517,12 +3571,16 @@ async fn pending_question_snapshots_respect_account_task_and_generation_authoriz
     }
 }
 
+/// A task keeps the level picked for it, through a restart, and its pick
+/// leaves New Task alone. A pick on New Task starts new tasks on its model,
+/// whose first level is otherwise the catalog's default.
 #[tokio::test]
-async fn thinking_picks_persist_in_pi_and_default_new_tasks_after_restart() {
+async fn thinking_picks_persist_in_pi_and_only_new_task_picks_start_new_tasks() {
     use ThinkingLevel::{High, Low, Max};
     let mut harness = Harness::new().await;
     let catalog = json!({"object":"list","data":[{
-        "id":"glm-5-3", "reasoning":{"mandatory":true,"supported_efforts":["max","high","low"]}
+        "id":"glm-5-3",
+        "reasoning":{"mandatory":true,"supported_efforts":["max","high","low"],"default_effort":"max"}
     }],"aliases":[]});
     harness.serve_catalog(catalog.clone()).await;
     assert_eq!(
@@ -3533,7 +3591,8 @@ async fn thinking_picks_persist_in_pi_and_default_new_tasks_after_restart() {
             .unwrap(),
         AgentThinkingState {
             levels: vec![Low, High, Max],
-            current: High
+            current: Max,
+            recommended: Some(Max),
         }
     );
     let task = harness.create_task().await;
@@ -3543,15 +3602,16 @@ async fn thinking_picks_persist_in_pi_and_default_new_tasks_after_restart() {
         .await
         .unwrap();
     assert_eq!(selected.current, Low);
-    assert_eq!(
+    assert_eq!(selected.recommended, Some(Max));
+    let new_task = async |harness: &Harness| {
         harness
             .handle
-            .load_config()
+            .thinking_state(None, "glm-5-3")
             .await
             .unwrap()
-            .default_thinking_level,
-        Some(Low)
-    );
+            .current
+    };
+    assert_eq!(new_task(&harness).await, Max, "a task's pick is its own");
     harness.faux.push_text("Done.");
     let mut run = harness.send(&task, "Hello").await;
     assert_eq!(finished(&mut run).await, AgentRunTerminal::Completed);
@@ -3565,10 +3625,10 @@ async fn thinking_picks_persist_in_pi_and_default_new_tasks_after_restart() {
             .thinking_level(),
         Low
     );
-    // A later default affects new tasks, not the task's persisted choice.
+    // A pick on New Task affects new tasks, not the task's persisted choice.
     harness
         .handle
-        .set_thinking_level(None, "glm-5-3", Max)
+        .set_thinking_level(None, "glm-5-3", High)
         .await
         .unwrap();
     harness.restart().await;
@@ -3583,6 +3643,7 @@ async fn thinking_picks_persist_in_pi_and_default_new_tasks_after_restart() {
             .current,
         Low
     );
+    assert_eq!(new_task(&harness).await, High);
     let fresh = harness.create_task().await;
     assert_eq!(
         harness
@@ -3591,7 +3652,21 @@ async fn thinking_picks_persist_in_pi_and_default_new_tasks_after_restart() {
             .await
             .unwrap()
             .current,
-        Max
+        High
+    );
+    harness.faux.push_text("Done.");
+    let mut run = harness.send(&fresh, "Hello").await;
+    assert_eq!(finished(&mut run).await, AgentRunTerminal::Completed);
+    assert_eq!(
+        harness
+            .runtime()
+            .await
+            .loaded_session(&fresh)
+            .await
+            .unwrap()
+            .thinking_level(),
+        High,
+        "the new task starts at the New Task pick"
     );
     // A nonreasoning model offers and saves only Off.
     assert_eq!(
@@ -3603,6 +3678,95 @@ async fn thinking_picks_persist_in_pi_and_default_new_tasks_after_restart() {
             .current,
         ThinkingLevel::Off
     );
+}
+
+/// New Task remembers one model and level, as the user picked them there.
+/// Another model starts at its own default, not at the remembered level; a
+/// model picked there forgets the level picked with the previous one; and
+/// a task's picks, or opening a task, change neither.
+#[tokio::test]
+async fn new_task_remembers_one_model_and_level() {
+    use ThinkingLevel::{High, Low, Max};
+    const KIMI: &str = "kimi-k3-1-pro";
+    const DEEPSEEK: &str = "deepseek-v4-1-flash";
+    let mut harness = Harness::new().await;
+    let catalog = json!({"object":"list","data":[
+        {"id":KIMI,"reasoning":{"supported_efforts":["max","high","low"],"default_effort":"max"}},
+        {"id":DEEPSEEK,"reasoning":{"supported_efforts":["max","xhigh","high","low"],"default_effort":"high"}}
+    ],"aliases":[]});
+    harness.serve_catalog(catalog.clone()).await;
+    let new_task = async |harness: &Harness, model: &str| {
+        harness
+            .handle
+            .thinking_state(None, model)
+            .await
+            .unwrap()
+            .current
+    };
+    let pick = async |harness: &Harness, model: &str, level: Option<ThinkingLevel>| {
+        harness
+            .handle
+            .save_model_choice(model.into())
+            .await
+            .unwrap();
+        if let Some(level) = level {
+            harness
+                .handle
+                .set_thinking_level(None, model, level)
+                .await
+                .unwrap();
+        }
+    };
+    assert_eq!(new_task(&harness, KIMI).await, Max);
+    assert_eq!(new_task(&harness, DEEPSEEK).await, High);
+
+    pick(&harness, KIMI, Some(Low)).await;
+    assert_eq!(new_task(&harness, KIMI).await, Low);
+    assert_eq!(
+        new_task(&harness, DEEPSEEK).await,
+        High,
+        "no level per model"
+    );
+
+    pick(&harness, DEEPSEEK, Some(Low)).await;
+    assert_eq!(new_task(&harness, DEEPSEEK).await, Low);
+    assert_eq!(new_task(&harness, KIMI).await, Max);
+
+    // A task's picks and opening it leave the pair alone.
+    let task = harness.create_task().await;
+    harness
+        .handle
+        .set_thinking_level(Some(&task), KIMI, High)
+        .await
+        .unwrap();
+    assert_eq!(
+        harness
+            .handle
+            .thinking_state(Some(&task), KIMI)
+            .await
+            .unwrap()
+            .current,
+        High
+    );
+    assert_eq!(new_task(&harness, DEEPSEEK).await, Low);
+    assert_eq!(new_task(&harness, KIMI).await, Max);
+
+    harness.restart().await;
+    harness.start().await;
+    harness.serve_catalog(catalog).await;
+    assert_eq!(
+        harness.handle.model_choice().await.unwrap().as_deref(),
+        Some(DEEPSEEK)
+    );
+    assert_eq!(new_task(&harness, DEEPSEEK).await, Low);
+
+    // Picking the remembered model again keeps its level; another model
+    // starts at its default and the old level is gone.
+    pick(&harness, DEEPSEEK, None).await;
+    assert_eq!(new_task(&harness, DEEPSEEK).await, Low);
+    pick(&harness, KIMI, None).await;
+    assert_eq!(new_task(&harness, KIMI).await, Max);
+    assert_eq!(new_task(&harness, DEEPSEEK).await, High);
 }
 
 /// The start of the oldest message of [`long_task`], which a small window
@@ -3743,22 +3907,24 @@ async fn a_failed_previous_summary_falls_back_to_trimmed_history_on_the_new_mode
 }
 
 /// A started task previews the model it will switch to with the level the
-/// switch gives it, keeps a pick for that model off its current one, and
-/// takes the pick when its next run switches.
+/// switch gives it, the model's default, keeps a pick for that model off
+/// its current one, and takes the pick when its next run switches. A
+/// switch without a pick starts the model at its default, not at the
+/// previous model's level.
 #[tokio::test]
 async fn a_started_task_previews_and_takes_thinking_for_its_next_model() {
     use ThinkingLevel::{High, Low, Max};
     let harness = Harness::new().await;
     harness
         .serve_catalog(json!({"object":"list","data":[
-            {"id":"glm-5-3", "reasoning":{"mandatory":true,"supported_efforts":["max","high","low"]}},
+            {"id":"glm-5-3", "reasoning":{"mandatory":true,"supported_efforts":["max","high","low"],"default_effort":"max"}},
             {"id":"kimi-k3", "reasoning":{"supported_efforts":["high","low"]}}
         ],"aliases":[]}))
         .await;
     let task = harness.create_task().await;
     harness
         .handle
-        .set_thinking_level(Some(&task), "glm-5-3", Max)
+        .set_thinking_level(Some(&task), "glm-5-3", High)
         .await
         .unwrap();
     harness.faux.push_text("Done.");
@@ -3772,14 +3938,16 @@ async fn a_started_task_previews_and_takes_thinking_for_its_next_model() {
             .await
             .unwrap()
     };
+    // Kimi K3 serves no default: Medium, clamped.
     assert_eq!(
         state("kimi-k3").await,
         AgentThinkingState {
             levels: vec![Low, High],
             current: High,
+            recommended: Some(High),
         }
     );
-    assert_eq!(state("glm-5-3").await.current, Max);
+    assert_eq!(state("glm-5-3").await.current, High);
 
     let picked = harness
         .handle
@@ -3787,9 +3955,10 @@ async fn a_started_task_previews_and_takes_thinking_for_its_next_model() {
         .await
         .unwrap();
     assert_eq!(picked.current, Low);
+    assert_eq!(state("kimi-k3").await.current, Low);
     let session = harness.runtime().await.loaded_session(&task).await.unwrap();
     assert_eq!(session.model().unwrap().id, "glm-5-3");
-    assert_eq!(session.thinking_level(), Max);
+    assert_eq!(session.thinking_level(), High);
 
     harness.faux.push_text("Switched.");
     let mut kimi = harness.request(&task, "Go on");
@@ -3799,6 +3968,14 @@ async fn a_started_task_previews_and_takes_thinking_for_its_next_model() {
     assert_eq!(session.model().unwrap().id, "kimi-k3");
     assert_eq!(session.thinking_level(), Low);
     assert_eq!(state("kimi-k3").await.current, Low);
+
+    // Back to GLM without a pick: its default, not Kimi's Low.
+    assert_eq!(state("glm-5-3").await.current, Max);
+    harness.faux.push_text("Back.");
+    let mut run = harness.send(&task, "And back").await;
+    assert_eq!(finished(&mut run).await, AgentRunTerminal::Completed);
+    assert_eq!(session.model().unwrap().id, "glm-5-3");
+    assert_eq!(session.thinking_level(), Max);
 }
 
 /// An ACP or other surface selection on a started task is stored for its

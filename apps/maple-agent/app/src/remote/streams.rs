@@ -31,9 +31,15 @@ const DISCOVERY_TIMEOUT: Duration = Duration::from_secs(5);
 const FOLDERS_UNCONFIRMED: &str =
     "Could not confirm folder browsing support. Try again, or update Maple on the remote computer.";
 const FOLDERS_UNSUPPORTED: &str = "Update Maple on the remote computer to browse or create folders. Existing projects and chats remain available.";
+const SCRATCH_UNSUPPORTED: &str = "Update Maple on the remote computer to create a new project.";
+const RECENT_UNSUPPORTED: &str = "Update Maple on the remote computer to show recent projects.";
+pub(crate) const RECENT_PROJECTS_UNSUPPORTED_CODE: &str = "remote-recent-projects-unsupported";
 const PERMISSIONS_UNCONFIRMED: &str = "Could not confirm that the remote computer can change permissions. Try again, or update Maple there.";
 const PERMISSIONS_UNSUPPORTED: &str =
     "Update Maple on the remote computer to change permissions from here.";
+const TOOLS_UNCONFIRMED: &str = "Could not confirm that the remote computer can switch tools. Try again, or update Maple there.";
+const TOOLS_UNSUPPORTED: &str =
+    "Update Maple on the remote computer to choose its tools from here.";
 // Attachments may take longer than control traffic on a slow link, but cannot
 // retain an admitted stream indefinitely.
 const TRANSFER_TIMEOUT: Duration = Duration::from_secs(60);
@@ -134,7 +140,22 @@ pub struct Client {
     connection: Connection,
     project_folders: OnceCell<bool>,
     permission_modes: OnceCell<bool>,
+    tool_switches: OnceCell<bool>,
+    scratch_project: OnceCell<bool>,
+    recent_projects: OnceCell<bool>,
     discovery_timeout: Duration,
+}
+
+/// A method an older host cannot decode, and the capability that says it
+/// can. Each refusal is a code the viewer words in its language, with the
+/// English fallback.
+struct CodedGate<'a> {
+    support: &'a OnceCell<bool>,
+    check: fn(&super::update::PeerInfo) -> bool,
+    /// Support could not be read.
+    unconfirmed: (&'static str, &'static str),
+    /// The host does not advertise the capability.
+    unsupported: (&'static str, &'static str),
 }
 
 impl Client {
@@ -143,8 +164,30 @@ impl Client {
             connection,
             project_folders: OnceCell::new(),
             permission_modes: OnceCell::new(),
+            tool_switches: OnceCell::new(),
+            scratch_project: OnceCell::new(),
+            recent_projects: OnceCell::new(),
             discovery_timeout: DISCOVERY_TIMEOUT,
         }
+    }
+
+    /// The gate of a method released hosts cannot decode, if it has one.
+    fn coded_gate(&self, method: Method) -> Option<CodedGate<'_>> {
+        Some(match method {
+            Method::SetSessionPermissionMode => CodedGate {
+                support: &self.permission_modes,
+                check: super::update::PeerInfo::supports_permission_modes,
+                unconfirmed: ("remote-permissions-unconfirmed", PERMISSIONS_UNCONFIRMED),
+                unsupported: ("remote-permissions-unsupported", PERMISSIONS_UNSUPPORTED),
+            },
+            Method::ListTools | Method::SetToolEnabled => CodedGate {
+                support: &self.tool_switches,
+                check: super::update::PeerInfo::supports_tool_switches,
+                unconfirmed: ("remote-tools-unconfirmed", TOOLS_UNCONFIRMED),
+                unsupported: ("remote-tools-unsupported", TOOLS_UNSUPPORTED),
+            },
+            _ => return None,
+        })
     }
 
     /// Whether the host advertises an optional feature, or `None` when that
@@ -188,49 +231,58 @@ impl Client {
     ) -> Result<Message, String> {
         if matches!(
             command.method,
-            Method::BrowseProjectFolders | Method::CreateProjectFolder
+            Method::BrowseProjectFolders
+                | Method::CreateProjectFolder
+                | Method::CreateScratchProject
+                | Method::RecentProjectRoots
         ) {
-            match self
-                .supports(
-                    &self.project_folders,
-                    super::update::PeerInfo::supports_project_folders,
-                )
-                .await
-            {
+            let (cell, check, unsupported): (_, fn(&super::update::PeerInfo) -> bool, _) =
+                match command.method {
+                    Method::CreateScratchProject => (
+                        &self.scratch_project,
+                        super::update::PeerInfo::supports_scratch_project,
+                        SCRATCH_UNSUPPORTED,
+                    ),
+                    Method::RecentProjectRoots => (
+                        &self.recent_projects,
+                        super::update::PeerInfo::supports_recent_projects,
+                        RECENT_UNSUPPORTED,
+                    ),
+                    _ => (
+                        &self.project_folders,
+                        super::update::PeerInfo::supports_project_folders,
+                        FOLDERS_UNSUPPORTED,
+                    ),
+                };
+            match self.supports(cell, check).await {
                 None => return Err(FOLDERS_UNCONFIRMED.into()),
-                Some(false) => return Err(FOLDERS_UNSUPPORTED.into()),
+                Some(false) if command.method == Method::RecentProjectRoots => {
+                    return Ok(Message::Response {
+                        id: command.id,
+                        result: Err(unsupported.into()),
+                        failure: Some(crate::backend::HostFailure::new(
+                            RECENT_PROJECTS_UNSUPPORTED_CODE,
+                            unsupported,
+                        )),
+                    });
+                }
+                Some(false) => return Err(unsupported.into()),
                 Some(true) => {}
             }
             // Discovery may have waited on the network. Cached support is
             // never authority: recheck account and grant before dispatch.
             authorize.await?;
-        } else if command.method == Method::SetSessionPermissionMode {
+        } else if let Some(gate) = self.coded_gate(command.method) {
             // An older host would drop the stream of a method it does not
             // know. Coded refusals let the viewer word them in its language.
-            let refusal = |code: &str, message: &str| Message::Response {
+            let refusal = |(code, message): (&str, &str)| Message::Response {
                 id: command.id,
                 result: Err(message.into()),
                 failure: Some(crate::backend::HostFailure::new(code, message)),
             };
-            match self
-                .supports(
-                    &self.permission_modes,
-                    super::update::PeerInfo::supports_permission_modes,
-                )
-                .await
-            {
-                None => {
-                    return Ok(refusal(
-                        "remote-permissions-unconfirmed",
-                        PERMISSIONS_UNCONFIRMED,
-                    ));
-                }
-                Some(false) => {
-                    return Ok(refusal(
-                        "remote-permissions-unsupported",
-                        PERMISSIONS_UNSUPPORTED,
-                    ));
-                }
+            match self.supports(gate.support, gate.check).await {
+                None => return Ok(refusal(gate.unconfirmed)),
+                Some(false) => return Ok(refusal(gate.unsupported)),
                 Some(true) => {}
             }
             authorize.await?;
@@ -489,3 +541,6 @@ mod folder_tests;
 
 #[cfg(test)]
 mod permission_tests;
+
+#[cfg(test)]
+mod tool_switch_tests;

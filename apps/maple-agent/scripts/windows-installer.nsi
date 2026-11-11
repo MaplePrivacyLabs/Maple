@@ -24,7 +24,10 @@ VIAddVersionKey /LANG=1033 "LegalCopyright" "Maple Privacy Labs"
 !uninstfinalize 'pwsh -NoLogo -NoProfile -ExecutionPolicy Bypass -File "${SIGNER}" -File "%1"' = 0
 !endif
 
-Page directory
+; No folder page: the per-user location under the profile is the only one the
+; native installer can protect. A folder elsewhere, such as under a drive root,
+; inherits write access for every signed-in user. A previously registered
+; location (InstallDirRegKey) and /D= still apply.
 Page instfiles
 UninstPage uninstConfirm
 UninstPage instfiles
@@ -39,6 +42,8 @@ Var InstallerReport
 Var ReportPath
 Var FailureAdvice
 Var ExitCode
+Var StagingRoot
+Var Staging
 
 Function .onInit
   SetShellVarContext current
@@ -77,16 +82,47 @@ Section "Install"
   StrCpy $NativeActivationStage 0
   StrCpy $NativeWin32Error 0
   StrCpy $InstallerReport ""
+  StrCpy $Staging ""
+  ; Plug-ins are DLLs that NSIS unpacks and loads. By default it unpacks them
+  ; under %TEMP% and locks that folder only for an elevated installer, so a
+  ; moved TEMP such as C:\Temp let other accounts replace a DLL before it
+  ; loaded. Unpack them under the profile instead, before the first plug-in
+  ; call. This root inherits the profile's entries, which name this user, so
+  ; normal and elevated runs can each use a root the other left behind.
+  StrCpy $FailureCode 21
+  StrCpy $FailureStage "creating the installer's working folder"
+  StrCpy $StagingRoot "$LOCALAPPDATA\Maple Work Installer Staging"
+  ClearErrors
+  CreateDirectory $StagingRoot
+  GetTempFileName $0 $StagingRoot
+  IfErrors refused
+  Delete $0
+  CreateDirectory $0
+  IfErrors refused
+  UnsafeStrCpy $PLUGINSDIR $0
+  ; The payload is unpacked into a folder this installer creates with its own
+  ; protected ACL, so the native installer's permission checks see only the
+  ; entries Maple set, even on a profile with extra entries. Each run gets a
+  ; new folder; an existing one is never adopted.
+  System::Call 'kernel32::GetCurrentProcessId() i .r5'
+  System::Call 'kernel32::GetTickCount() i .r6'
+  IntFmt $6 "%u" $6
+  StrCpy $0 "$StagingRoot\$5-$6"
+  Call CreatePrivateDirectory
+  StrCmp $1 0 staging_created
+  StrCpy $FailureStage "creating a private folder for the installer files (Windows error $1)"
+  Goto refused
+staging_created:
+  StrCpy $Staging $0
   StrCpy $FailureCode 20
   StrCpy $FailureStage "extracting the installer payload"
   ClearErrors
-  InitPluginsDir
-  SetOutPath "$PLUGINSDIR\payload"
+  SetOutPath "$Staging\payload"
   File "${PAYLOAD}\maple-agent.exe"
   File "${PAYLOAD}\LICENSE.txt"
   File "${PAYLOAD}\build-info.json"
   File "${PAYLOAD}\bundle-info.json"
-  WriteUninstaller "$PLUGINSDIR\payload\uninstall.exe"
+  WriteUninstaller "$Staging\payload\uninstall.exe"
   IfErrors refused
   ; The native child owns admission, locks, copying, registration, shortcuts
   ; and activation. NSIS never mutates the installed root between phases.
@@ -94,9 +130,9 @@ Section "Install"
   ; child refuses while the recorded owner, this process, is still alive.
   StrCpy $FailureCode 23
   StrCpy $FailureStage "starting the native installer"
-  StrCpy $ReportPath "$PLUGINSDIR\install-report.txt"
+  StrCpy $ReportPath "$Staging\install-report.txt"
   ClearErrors
-  ExecWait '"$PLUGINSDIR\payload\maple-agent.exe" --internal-windows-installer-install "$INSTDIR" ${GENERATION} --internal-windows-installer-report "$ReportPath"' $NativeStatus
+  ExecWait '"$Staging\payload\maple-agent.exe" --internal-windows-installer-install "$INSTDIR" ${GENERATION} --internal-windows-installer-report "$ReportPath"' $NativeStatus
   IfErrors refused
   Call ReadInstallerReport
   StrCpy $NativeStatusAvailable 1
@@ -113,6 +149,7 @@ Section "Install"
   StrCpy $NativeActivationStage $1
   IntOp $NativeWin32Error $NativeStatus & 0xFFFF
 refused:
+  Call RemoveStaging
   ; Unattended callers get the full native status for an activation failure
   ; and the installer stage otherwise. The dialog always shows the stage.
   StrCpy $ExitCode $FailureCode
@@ -146,8 +183,42 @@ no_report:
   SetErrorLevel $ExitCode
   Abort
 done:
+  Call RemoveStaging
   SetErrorLevel 0
 SectionEnd
+
+; Create the folder named by $0 with a protected ACL: full control for SYSTEM,
+; Administrators and the folder's owner, the installing user, and nothing
+; inherited from the parent. Files written into it inherit only these entries.
+; Sets $1 to 0 on success or to the Windows error (183: it already exists).
+; Uses $2 to $4. System is NSIS's own plugin; CreateDirectoryW applies the ACL
+; atomically, so the folder never exists with its parent's entries.
+Function CreatePrivateDirectory
+  StrCpy $1 -1
+  System::Call 'advapi32::ConvertStringSecurityDescriptorToSecurityDescriptorW(w "D:P(A;OICI;FA;;;SY)(A;OICI;FA;;;BA)(A;OICI;FA;;;OW)", i 1, *p .r2, p 0) i .r3 ?e'
+  Pop $1
+  StrCmp $3 0 done
+  System::Call '*(&l4, p r2, i 0) p .r4'
+  System::Call 'kernel32::CreateDirectoryW(w r0, p r4) i .r3 ?e'
+  Pop $1
+  StrCmp $3 0 free
+  StrCpy $1 0
+free:
+  System::Free $4
+  System::Call 'kernel32::LocalFree(p r2)'
+done:
+FunctionEnd
+
+; Delete this run's staging folder. The shared root stays: NSIS deletes its
+; plug-in folder there only when the installer exits.
+Function RemoveStaging
+  StrCmp $Staging "" done
+  ; The output path is the process's current folder; leave it first.
+  SetOutPath "$PLUGINSDIR"
+  RMDir /r "$Staging"
+  StrCpy $Staging ""
+done:
+FunctionEnd
 
 ; This file is diagnostic text only; it never authorizes a successful install.
 Function ReadInstallerReport
@@ -206,7 +277,7 @@ busy:
   StrCpy $FailureAdvice "Another Maple installation or update is active. Let it finish before retrying."
   Goto done
 validation:
-  StrCpy $FailureAdvice "The installation folder or application files did not pass validation. For a first installation, choose a new empty folder. Otherwise contact Maple support."
+  StrCpy $FailureAdvice "The installation folder or application files did not pass validation. Copy these details for Maple support."
   Goto done
 manual:
   StrCpy $FailureAdvice "Maple could not safely replace this installation. Contact Maple support with these details."
@@ -215,7 +286,7 @@ storage:
   StrCpy $FailureAdvice "Maple could not validate installation storage. Copy these details for Maple support."
   Goto done
 access:
-  StrCpy $FailureAdvice "Windows denied access to the installation folder. Choose a folder owned by your user account, or contact Maple support."
+  StrCpy $FailureAdvice "Windows denied access to the installation folder. Copy these details for Maple support."
   Goto done
 locked:
   StrCpy $FailureAdvice "An installation file is in use, usually because ${DISPLAY_NAME} is still running. Close ${DISPLAY_NAME}, wait a few seconds for its background host to stop, then run this installer again."
@@ -271,6 +342,9 @@ intent_removed:
   Delete "$SMPROGRAMS\${DISPLAY_NAME}\Uninstall.lnk"
   RMDir "$SMPROGRAMS\${DISPLAY_NAME}"
   DeleteRegKey HKCU "Software\Microsoft\Windows\CurrentVersion\Uninstall\${BUNDLE_ID}"
+  ; The python tool's CPython, which the app unpacked from its executable on
+  ; first use. It is a copy of installed files, not user data, which stays.
+  RMDir /r "$LOCALAPPDATA\${DATA_NAMESPACE}\python-runtime"
   ; The durable fence belongs to this NSIS process. Keep it while performing
   ; all installed-file, shortcut and registration changes, after the native
   ; helper releases its handles. No root/registration mutation may follow its

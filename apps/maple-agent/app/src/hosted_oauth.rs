@@ -210,6 +210,8 @@ enum CompletionLocale {
     English,
     #[cfg(feature = "desktop")]
     Spanish,
+    #[cfg(feature = "desktop")]
+    German,
 }
 
 impl CompletionLocale {
@@ -217,6 +219,10 @@ impl CompletionLocale {
         #[cfg(feature = "desktop")]
         if locale == "es" {
             return Self::Spanish;
+        }
+        #[cfg(feature = "desktop")]
+        if locale == "de" {
+            return Self::German;
         }
         let _ = locale;
         Self::English
@@ -227,6 +233,8 @@ impl CompletionLocale {
             Self::English => "en",
             #[cfg(feature = "desktop")]
             Self::Spanish => "es",
+            #[cfg(feature = "desktop")]
+            Self::German => "de",
         }
     }
 }
@@ -333,6 +341,25 @@ mod tests {
             let response = completion_response(outcome, CompletionLocale::Spanish);
             assert!(!response.contains("{{"));
             assert!(!response.contains("flows-oauth-"));
+        }
+    }
+
+    #[cfg(feature = "desktop")]
+    #[test]
+    fn german_completion_formats_every_outcome() {
+        let locale = CompletionLocale::from_requested("de");
+        assert_eq!(locale.tag(), "de");
+        for (outcome, expected) in [
+            (Ok(true), "Angemeldet"),
+            (Ok(false), "Deine Sitzung konnte nicht gespeichert werden."),
+            (Err(()), "Anmeldung konnte nicht abgeschlossen werden"),
+        ] {
+            let response = completion_response(outcome, locale);
+            assert!(response.contains("<html lang=\"de\">"));
+            assert!(response.contains(expected));
+            assert!(!response.contains("flows-oauth-"));
+            let (headers, body) = response.split_once("\r\n\r\n").unwrap();
+            assert!(headers.contains(&format!("Content-Length: {}", body.len())));
         }
     }
 

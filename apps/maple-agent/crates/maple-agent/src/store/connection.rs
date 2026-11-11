@@ -1,10 +1,13 @@
 //! Connection roles and their invariant settings. Raw handles stay in store/.
 
+use std::path::{Path, PathBuf};
 use std::time::Duration;
 
-use rusqlite::{Connection, OpenFlags, config::DbConfig, functions::FunctionFlags};
+use rusqlite::{
+    Connection, OpenFlags, OptionalExtension, config::DbConfig, functions::FunctionFlags,
+};
 
-use super::{StorePaths, StoreResult};
+use super::{StoreError, StorePaths, StoreResult};
 
 const _: () = assert!(rusqlite::ffi::SQLITE_VERSION_NUMBER >= 3_051_003);
 
@@ -57,6 +60,21 @@ fn connect(paths: &StorePaths, initialize: &Initializer<'_>) -> StoreResult<Conn
     Ok(connection)
 }
 
+pub(super) fn maple_workspace_path(connection: &Connection) -> StoreResult<Option<PathBuf>> {
+    let marker: Option<String> = connection
+        .prepare_cached("SELECT value FROM app_settings WHERE key=?1")?
+        .query_row([super::schema::NESTED_MAPLE_WORKSPACE_KEY], |row| {
+            row.get(0)
+        })
+        .optional()?;
+    let nested = match marker.as_deref() {
+        Some("true") => true,
+        None => false,
+        Some(_) => return Err(StoreError::InvalidData),
+    };
+    Ok(crate::agent::maple_workspace_path(nested))
+}
+
 fn configure(connection: &Connection, role: Role, created: bool) -> StoreResult<()> {
     let objects: i64 =
         connection.query_row("SELECT count(*) FROM sqlite_schema", [], |r| r.get(0))?;
@@ -82,20 +100,21 @@ fn configure(connection: &Connection, role: Role, created: bool) -> StoreResult<
     connection.set_prepared_statement_cache_capacity(64);
     // SQLite lower() folds ASCII only. Search uses the same Rust Unicode fold
     // as titles, and the same owner-side label projection as runtime/page data.
-    // Capture the owner's cached workspace path once; the SQL function is pure.
-    let workspace = crate::agent::default_maple_workspace_path();
+    // The query supplies the owning store's workspace path. The function
+    // stays pure and can be registered before schema initialization.
     connection.create_scalar_function(
         "maple_project_label_fold",
-        2,
+        3,
         FunctionFlags::SQLITE_UTF8
             | FunctionFlags::SQLITE_DETERMINISTIC
             | FunctionFlags::SQLITE_INNOCUOUS,
-        move |context| {
+        |context| {
             let root: String = context.get(0)?;
             let custom_name: Option<String> = context.get(1)?;
+            let workspace: Option<String> = context.get(2)?;
             let is_default = workspace
                 .as_deref()
-                .is_some_and(|path| path == std::path::Path::new(&root));
+                .is_some_and(|path| Path::new(path) == Path::new(&root));
             Ok(
                 crate::agent::owner_project_display_name(&root, custom_name.as_deref(), is_default)
                     .to_lowercase(),

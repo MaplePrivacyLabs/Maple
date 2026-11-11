@@ -16,9 +16,9 @@ use maple_agent::agent::{
     AgentIntegrationPermissionKind, AgentIntegrationPermissions, AgentProjectTrustStatus,
     AgentQueueControlRequest, AgentRenameSessionRequest, AgentRuntimeStatus,
     AgentSendMessageRequest, AgentServiceEvent, AgentSessionDetail, AgentSessionSummary,
-    AgentSetIntegrationEnabledRequest, AgentSetupIntegrationRequest, AgentSlashCommand,
-    AgentStartRequest, AgentSubagent, AgentTaskState, MapleAgentHostResources, MapleAgentService,
-    RecentProjectRoot,
+    AgentSetIntegrationEnabledRequest, AgentSetToolEnabledRequest, AgentSetupIntegrationRequest,
+    AgentSlashCommand, AgentStartRequest, AgentSubagent, AgentTaskState, AgentToolSwitch,
+    MapleAgentHostResources, MapleAgentService, RecentProjectRoot,
 };
 use maple_agent::maple_api::{
     MapleApiAuthEventSink, MapleApiAuthRequest, MapleApiAuthSnapshot, MapleApiAuthState,
@@ -544,7 +544,7 @@ fn home_dir() -> Option<PathBuf> {
 }
 
 /// Root the desktop app opens when the account has no saved root and the
-/// Documents/Maple workspace cannot be created. The GUI must not depend on
+/// Maple workspace cannot be created. The GUI must not depend on
 /// the directory it was launched from: that is the job of the `maple acp`
 /// command, not a windowed app started from a launcher.
 fn fallback_project_root() -> Option<String> {
@@ -552,24 +552,29 @@ fn fallback_project_root() -> Option<String> {
 }
 
 /// Root for a GUI start: the saved folder when it still exists and was not
-/// removed, otherwise Documents/Maple unless the user removed it. Home is
+/// removed, otherwise the built-in workspace unless the user removed it. Home is
 /// only the last resort. Never the process working directory. The
 /// workspace may not exist yet: `gui_start_root` creates it.
-pub(super) fn gui_project_root(config: &maple_agent::agent::AgentConfig) -> Option<String> {
-    let workspace = maple_agent::agent::default_maple_workspace_path();
-    maple_agent::agent::startup_project_root(config, workspace.as_deref())
-        .or_else(fallback_project_root)
+pub(super) fn gui_project_root(
+    config: &maple_agent::agent::AgentConfig,
+    workspace: Option<&std::path::Path>,
+) -> Option<String> {
+    maple_agent::agent::startup_project_root(config, workspace).or_else(fallback_project_root)
 }
 
 /// `gui_project_root` for a runtime start, which needs the folder on disk.
-/// Documents/Maple is created here, the first time a start uses it. If
+/// The workspace is created here, the first time a start uses it. If
 /// that fails (Documents access denied, for example), the start uses home.
-fn gui_start_root(config: &maple_agent::agent::AgentConfig) -> Option<String> {
-    let root = gui_project_root(config)?;
-    if !maple_agent::agent::is_default_maple_workspace(std::path::Path::new(&root)) {
+fn gui_start_root(
+    config: &maple_agent::agent::AgentConfig,
+    workspace: Option<&std::path::Path>,
+) -> Option<String> {
+    let root = gui_project_root(config, workspace)?;
+    let path = std::path::Path::new(&root);
+    if workspace != Some(path) {
         return Some(root);
     }
-    match maple_agent::agent::ensure_default_maple_workspace() {
+    match maple_agent::agent::ensure_maple_workspace(path) {
         Ok(path) => Some(path.to_string_lossy().to_string()),
         Err(error) => {
             log::warn!("{error}");
@@ -2385,6 +2390,62 @@ impl LocalBackend {
         })
     }
 
+    /// Whether the account sees the full Usage page. The web app reads the
+    /// same flag; when the flag service can't be reached the page stays thin.
+    pub async fn usage_page_enabled_presented(&self, user_id: &str) -> Result<bool, HostFailure> {
+        // Flags belong to a signed-in account.
+        self.session_for(user_id).await?;
+        crate::flags::is_enabled(user_id, crate::flags::USAGE_PAGE)
+            .await
+            .map_err(|error| {
+                log::warn!("Could not load feature flags: {error}");
+                HostFailure::new("usage-flags", "Could not load feature flags")
+            })
+    }
+
+    /// Usage history for the Usage page: daily and monthly rows for the
+    /// range, and the billing window's daily credits when the query names it.
+    pub async fn usage_summary_presented(
+        &self,
+        user_id: &str,
+        query: crate::billing::UsageQuery,
+    ) -> Result<crate::billing::UsageSummary, HostFailure> {
+        let query = Arc::new(query);
+        self.billing_call_presented(user_id, |billing, token| {
+            let query = Arc::clone(&query);
+            async move { billing.usage(&token, &query).await }
+        })
+        .await
+        .map_err(|error| usage_failure(error, "Could not load usage"))
+    }
+
+    /// One page of recent requests, newest first.
+    pub async fn usage_requests_presented(
+        &self,
+        user_id: &str,
+        cursor: Option<String>,
+        limit: u32,
+    ) -> Result<crate::billing::UsageRequestsPage, HostFailure> {
+        let cursor = Arc::new(cursor);
+        self.billing_call_presented(user_id, |billing, token| {
+            let cursor = Arc::clone(&cursor);
+            async move {
+                billing
+                    .usage_requests(&token, cursor.as_deref(), limit)
+                    .await
+            }
+        })
+        .await
+        .map_err(|error| usage_failure(error, "Could not load recent requests"))
+    }
+
+    /// Current model prices. Public on the billing API, no token needed.
+    pub async fn usage_prices_presented(&self) -> Result<crate::billing::UsagePrices, HostFailure> {
+        self.timed_billing(self.billing.usage_prices())
+            .await?
+            .map_err(|error| usage_failure(error.to_string().into(), "Could not load prices"))
+    }
+
     /// Start a card or Bitcoin checkout for `credits` prepaid API credits in
     /// the system browser. The billing service credits the account from the
     /// provider's webhook; the browser then lands on the web app, so no
@@ -2525,6 +2586,35 @@ impl LocalBackend {
             .await
             .map_err(|failure| failure.message)
     }
+    pub async fn usage_page_enabled(&self, user_id: &str) -> Result<bool, String> {
+        self.usage_page_enabled_presented(user_id)
+            .await
+            .map_err(|failure| failure.message)
+    }
+    pub async fn usage_summary(
+        &self,
+        user_id: &str,
+        query: crate::billing::UsageQuery,
+    ) -> Result<crate::billing::UsageSummary, String> {
+        self.usage_summary_presented(user_id, query)
+            .await
+            .map_err(|failure| failure.message)
+    }
+    pub async fn usage_requests(
+        &self,
+        user_id: &str,
+        cursor: Option<String>,
+        limit: u32,
+    ) -> Result<crate::billing::UsageRequestsPage, String> {
+        self.usage_requests_presented(user_id, cursor, limit)
+            .await
+            .map_err(|failure| failure.message)
+    }
+    pub async fn usage_prices(&self) -> Result<crate::billing::UsagePrices, String> {
+        self.usage_prices_presented()
+            .await
+            .map_err(|failure| failure.message)
+    }
     /// Run one billing request with the cached token, minting a token
     /// first when there is none and once more after a 401.
     async fn billing_call_presented<T, F, Fut>(
@@ -2599,15 +2689,19 @@ impl LocalBackend {
         let session = self.session_for(user_id).await?;
         // The agent falls back to the process working directory when no root
         // is given. That is right for `maple acp`, not for the GUI: pick the
-        // saved root or Documents/Maple instead.
+        // saved root or the built-in workspace instead.
         let request = match request {
             Some(AgentStartRequest {
                 project_root: None,
                 model,
             }) => {
                 let config = handle.load_config().await?;
+                let workspace = self
+                    .open_store()?
+                    .maple_workspace_path()
+                    .map_err(|e| e.to_string())?;
                 Some(AgentStartRequest {
-                    project_root: gui_start_root(&config),
+                    project_root: gui_start_root(&config, workspace.as_deref()),
                     model,
                 })
             }
@@ -2701,8 +2795,13 @@ impl LocalBackend {
     ) -> Result<SelectedProject, String> {
         let handle = self.service.handle_for_user(user_id).await?;
         // The listed Maple workspace is created the first time it is chosen.
-        if maple_agent::agent::is_default_maple_workspace(std::path::Path::new(path.trim())) {
-            maple_agent::agent::ensure_default_maple_workspace()?;
+        let workspace = self
+            .open_store()?
+            .maple_workspace_path()
+            .map_err(|e| e.to_string())?;
+        let requested = std::path::Path::new(path.trim());
+        if workspace.as_deref() == Some(requested) {
+            maple_agent::agent::ensure_maple_workspace(requested)?;
         }
         let project_root = handle.save_recent_project_root(path).await?;
         let project = handle.project_root_metadata(project_root.clone()).await?;
@@ -3116,6 +3215,30 @@ impl LocalBackend {
             .await
     }
 
+    pub async fn list_tools(&self, user_id: &str) -> Result<Vec<AgentToolSwitch>, String> {
+        self.service
+            .handle_for_user(user_id)
+            .await?
+            .list_tools()
+            .await
+    }
+
+    pub async fn set_tool_enabled(
+        &self,
+        user_id: &str,
+        id: &str,
+        enabled: bool,
+    ) -> Result<Vec<AgentToolSwitch>, String> {
+        self.service
+            .handle_for_user(user_id)
+            .await?
+            .set_tool_enabled(AgentSetToolEnabledRequest {
+                id: id.to_string(),
+                enabled,
+            })
+            .await
+    }
+
     pub async fn save_mcp_servers(
         &self,
         user_id: &str,
@@ -3204,7 +3327,8 @@ impl LocalBackend {
             .await
     }
 
-    /// Turn the web tools on or off for a session (next turn onward).
+    /// Refused: controllers on older builds send it, and web access is one
+    /// switch for all tasks in Settings → Tools now.
     pub async fn set_session_web_enabled(
         &self,
         user_id: &str,
@@ -3549,6 +3673,13 @@ fn billing_failure(error: HostFailure, fallback: &str, code: &str) -> HostFailur
     )
 }
 
+/// A failed usage history read. The Usage page shows its own message, so
+/// the server detail only goes to the log.
+fn usage_failure(error: HostFailure, fallback: &str) -> HostFailure {
+    log::warn!("{fallback}: {error}");
+    HostFailure::new("usage-load", fallback)
+}
+
 /// Open the fixed pricing page while retaining typed browser failures.
 pub(crate) fn open_pricing_page_presented() -> Result<(), HostFailure> {
     open_in_browser_presented(crate::billing::PRICING_URL, "pricing", "browser-pricing")
@@ -3890,6 +4021,106 @@ mod tests {
                 .unwrap_err(),
             "Invalid host request parameters"
         );
+    }
+
+    /// The calls a paired viewer sends for Settings → Tools reach the host's
+    /// switches, with the authority that integrations need: listing tools
+    /// as listing integrations, switching one as switching an integration.
+    #[tokio::test]
+    async fn remote_tool_commands_reach_the_switches_with_the_integrations_authority() {
+        use serde_json::{Value, json};
+        /// Dispatch a command as it travels on the wire.
+        async fn dispatch(
+            backend: &LocalBackend,
+            method: &str,
+            params: Value,
+        ) -> Result<Value, HostFailure> {
+            let command: crate::remote::wire::Command = serde_json::from_value(json!({
+                "id": 1,
+                "method": method,
+                "send_id": null,
+                "params": params
+            }))
+            .unwrap();
+            super::super::dispatch_remote_inner_presented(
+                backend,
+                crate::host::protocol::Request {
+                    id: command.id,
+                    method: command.method.name(),
+                    params: command.params,
+                    send_id: None,
+                },
+            )
+            .await
+        }
+        /// Each tool call is refused for `user` as its integrations
+        /// counterpart is.
+        async fn refused_alike(backend: &LocalBackend, user: &str) {
+            for ((tools, tools_params), (integrations, integrations_params)) in [
+                (
+                    ("list_tools", json!([user])),
+                    ("list_integrations", json!([user])),
+                ),
+                (
+                    ("set_tool_enabled", json!([user, "grep", false])),
+                    ("set_integration_enabled", json!([user, "codex", false])),
+                ),
+            ] {
+                let refused = dispatch(backend, tools, tools_params).await.unwrap_err();
+                assert_eq!(refused.code, "deletion-account-changed", "{tools}");
+                assert_eq!(
+                    dispatch(backend, integrations, integrations_params)
+                        .await
+                        .unwrap_err(),
+                    refused,
+                    "{tools} and {integrations}"
+                );
+            }
+        }
+        fn grep(switches: &Value) -> bool {
+            serde_json::from_value::<Vec<AgentToolSwitch>>(switches.clone())
+                .unwrap()
+                .into_iter()
+                .find(|switch| switch.id == "grep")
+                .unwrap()
+                .enabled
+        }
+
+        let root = tempfile::tempdir().unwrap();
+        let backend = LocalBackend::isolated_for_test(root.path());
+        assert!(backend.persisted_auth.claim_and_persist(&auth_snapshot(
+            "fixture-user",
+            "fixture-session",
+            1,
+            "fixture-token"
+        )));
+        let list = || dispatch(&backend, "list_tools", json!(["fixture-user"]));
+        assert!(!grep(&list().await.unwrap()));
+        let changed = dispatch(
+            &backend,
+            "set_tool_enabled",
+            json!(["fixture-user", "grep", true]),
+        )
+        .await
+        .unwrap();
+        assert!(grep(&changed));
+        assert_eq!(list().await.unwrap(), changed);
+
+        // The host's own account reaches each setter, which judges the id.
+        for (method, refusal) in [
+            ("set_tool_enabled", "Unknown tool 'telepathy'"),
+            ("set_integration_enabled", "Unknown integration 'telepathy'"),
+        ] {
+            let params = json!(["fixture-user", "telepathy", true]);
+            let failure = dispatch(&backend, method, params).await.unwrap_err();
+            assert_eq!(failure.message, refusal);
+        }
+        // Another account is refused alike and changes nothing; so is the
+        // host's own account once it has signed out.
+        refused_alike(&backend, "other-user").await;
+        assert_eq!(list().await.unwrap(), changed);
+        backend.persisted_auth.forget_owner();
+        refused_alike(&backend, "fixture-user").await;
     }
 
     #[tokio::test]

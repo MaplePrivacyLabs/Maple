@@ -3,36 +3,9 @@ use super::*;
 use crate::ui::i18n::tr;
 
 impl SettingsScreen {
-    pub(super) fn render_general(
-        &self,
-        pane: gpui::Stateful<Div>,
-        window: &mut Window,
-        cx: &mut Context<Self>,
-    ) -> gpui::Stateful<Div> {
-        pane.child(section_title(&tr("settings-defaults")))
-            .child(self.application_target(
-                || SettingsTarget::General(GeneralTarget::Web),
-                localized_toggle_row(
-                    "new-tasks-can-use-the-web",
-                    &tr("settings-web"),
-                    &tr("settings-web-description"),
-                    self.settings.default_web_enabled,
-                    cx.listener(|this, _event, _window, cx| {
-                        this.toggle_web_default(cx);
-                    }),
-                ),
-            ))
-            .child(self.application_target(
-                || SettingsTarget::General(GeneralTarget::Appearance),
-                self.setting_menu_row(
-                    &tr("settings-appearance"),
-                    &tr("settings-appearance-description"),
-                    SettingMenu::Appearance,
-                    window,
-                    cx,
-                ),
-            ))
-            .child(self.application_target(
+    pub(super) fn render_general(&self, window: &mut Window, cx: &mut Context<Self>) -> Div {
+        let defaults_rows = vec![
+            self.application_target(
                 || SettingsTarget::General(GeneralTarget::Language),
                 self.setting_menu_row(
                     &crate::ui::i18n::tr("settings-language"),
@@ -40,45 +13,12 @@ impl SettingsScreen {
                     SettingMenu::Language,
                     window,
                     cx,
-                ),
-            ))
-            .child(section_title(&tr("settings-chat-appearance")))
-            .child(self.application_target(
-                || SettingsTarget::General(GeneralTarget::ChatFont),
-                self.setting_menu_row(
-                    &tr("settings-chat-font"),
-                    &font_note(crate::ui::typography::ChatFontFamily::parse(
-                        &self.settings.chat_font_family,
-                    )),
-                    SettingMenu::ChatFont,
-                    window,
-                    cx,
-                ),
-            ))
-            .child(self.application_target(
-                || SettingsTarget::General(GeneralTarget::ChatSize),
-                self.setting_menu_row(
-                    &tr("settings-text-size"),
-                    &tr("settings-text-size-description"),
-                    SettingMenu::ChatSize,
-                    window,
-                    cx,
-                ),
-            ))
-            .child(self.chat_appearance_preview())
-            .child(self.application_target(
-                || SettingsTarget::General(GeneralTarget::ToolDetails),
-                localized_toggle_row(
-                    "show-tool-call-details",
-                    &tr("settings-tool-details"),
-                    &tr("settings-tool-details-description"),
-                    self.settings.tool_details,
-                    cx.listener(|this, _event, _window, cx| {
-                        this.toggle_tool_details(cx);
-                    }),
-                ),
-            ))
-            .child(self.application_target(
+                )
+                .into_any_element(),
+            ),
+        ];
+        let notifications_rows = vec![
+            self.application_target(
                 || SettingsTarget::General(GeneralTarget::Notifications),
                 localized_toggle_row(
                     "desktop-notifications",
@@ -89,8 +29,8 @@ impl SettingsScreen {
                         this.toggle_desktop_notifications(cx);
                     }),
                 ),
-            ))
-            .child(self.application_target(
+            ),
+            self.application_target(
                 || SettingsTarget::General(GeneralTarget::PasswordNotificationDetails),
                 localized_toggle_row(
                     "show-task-details-in-password-mode",
@@ -101,33 +41,10 @@ impl SettingsScreen {
                         this.toggle_password_notification_details(cx);
                     }),
                 ),
-            ))
-            .child(self.application_target(
-                || SettingsTarget::General(GeneralTarget::ReduceMotion),
-                localized_toggle_row(
-                    "reduce-motion",
-                    &tr("settings-reduce-motion"),
-                    &tr("settings-reduce-motion-description"),
-                    self.settings.reduce_motion,
-                    cx.listener(|this, _event, _window, cx| {
-                        this.toggle_reduce_motion(cx);
-                    }),
-                ),
-            ))
-            .child(self.application_target(
-                || SettingsTarget::General(GeneralTarget::ToolSummaries),
-                localized_toggle_row(
-                    "summarize-tool-calls",
-                    &tr("settings-tool-summaries"),
-                    &tr("settings-tool-summaries-description"),
-                    self.settings.tool_summaries,
-                    cx.listener(|this, _event, _window, cx| {
-                        this.toggle_tool_summaries(cx);
-                    }),
-                ),
-            ))
-            .child(section_title(&tr("settings-editing")))
-            .child(self.application_target(
+            ),
+        ];
+        let editing_rows = vec![
+            self.application_target(
                 || SettingsTarget::General(GeneralTarget::ComposerVim),
                 localized_toggle_row(
                     "vim-mode-in-composer",
@@ -138,8 +55,8 @@ impl SettingsScreen {
                         this.toggle_composer_vim(cx);
                     }),
                 ),
-            ))
-            .child(self.application_target(
+            ),
+            self.application_target(
                 || SettingsTarget::General(GeneralTarget::ApplicationVim),
                 localized_toggle_row(
                     "vim-navigation-across-the-app",
@@ -150,9 +67,10 @@ impl SettingsScreen {
                         this.toggle_application_vim(cx);
                     }),
                 ),
-            ))
-            .child(section_title(&tr("settings-voice")))
-            .child(self.application_target(
+            ),
+        ];
+        let voice_rows = vec![
+            self.application_target(
                 || SettingsTarget::General(GeneralTarget::Voice),
                 self.setting_menu_row(
                     &tr("settings-speech-voice"),
@@ -160,9 +78,10 @@ impl SettingsScreen {
                     SettingMenu::Voice,
                     window,
                     cx,
-                ),
-            ))
-            .child(self.application_target(
+                )
+                .into_any_element(),
+            ),
+            self.application_target(
                 || SettingsTarget::General(GeneralTarget::SpeechSpeed),
                 self.setting_menu_row(
                     &tr("settings-speech-speed"),
@@ -170,9 +89,233 @@ impl SettingsScreen {
                     SettingMenu::SpeechSpeed,
                     window,
                     cx,
-                ),
+                )
+                .into_any_element(),
+            ),
+        ];
+        div()
+            .flex()
+            .flex_col()
+            .gap_4()
+            .child(page_header(
+                &tr("settings-section-general"),
+                &tr("settings-general-subtitle"),
             ))
+            .child(subsection_title(&tr("settings-defaults")))
+            .child(widgets::card_stack(defaults_rows))
+            .child(subsection_title(&tr("settings-notifications-heading")))
+            .child(widgets::card_stack(notifications_rows))
+            .child(subsection_title(&tr("settings-editing")))
+            .child(widgets::card_stack(editing_rows))
+            .child(subsection_title(&tr("settings-voice")))
+            .child(widgets::card_stack(voice_rows))
+            .child(subsection_title(&tr("settings-agent-instructions")))
+            .child(self.render_prompt_editor_card(cx))
     }
+
+    pub(super) fn render_appearance(&self, window: &mut Window, cx: &mut Context<Self>) -> Div {
+        let theme_rows = vec![
+            self.theme_selector_row(cx).into_any_element(),
+            self.application_target(
+                || SettingsTarget::Appearance(AppearanceTarget::ReduceMotion),
+                localized_toggle_row(
+                    "reduce-motion",
+                    &tr("settings-reduce-motion"),
+                    &tr("settings-reduce-motion-description"),
+                    self.settings.reduce_motion,
+                    cx.listener(|this, _event, _window, cx| {
+                        this.toggle_reduce_motion(cx);
+                    }),
+                ),
+            ),
+        ];
+        let chat_rows = vec![
+            self.application_target(
+                || SettingsTarget::Appearance(AppearanceTarget::ChatFont),
+                self.setting_menu_row(
+                    &tr("settings-chat-font"),
+                    &font_note(crate::ui::typography::ChatFontFamily::parse(
+                        &self.settings.chat_font_family,
+                    )),
+                    SettingMenu::ChatFont,
+                    window,
+                    cx,
+                )
+                .into_any_element(),
+            ),
+            self.application_target(
+                || SettingsTarget::Appearance(AppearanceTarget::ChatSize),
+                self.setting_menu_row(
+                    &tr("settings-text-size"),
+                    &tr("settings-text-size-description"),
+                    SettingMenu::ChatSize,
+                    window,
+                    cx,
+                )
+                .into_any_element(),
+            ),
+            self.chat_appearance_preview().into_any_element(),
+        ];
+        let transcript_rows = vec![
+            self.application_target(
+                || SettingsTarget::Appearance(AppearanceTarget::ToolDetails),
+                localized_toggle_row(
+                    "show-tool-call-details",
+                    &tr("settings-tool-details"),
+                    &tr("settings-tool-details-description"),
+                    self.settings.tool_details,
+                    cx.listener(|this, _event, _window, cx| {
+                        this.toggle_tool_details(cx);
+                    }),
+                ),
+            ),
+            self.application_target(
+                || SettingsTarget::Appearance(AppearanceTarget::ToolSummaries),
+                localized_toggle_row(
+                    "summarize-tool-calls",
+                    &tr("settings-tool-summaries"),
+                    &tr("settings-tool-summaries-description"),
+                    self.settings.tool_summaries,
+                    cx.listener(|this, _event, _window, cx| {
+                        this.toggle_tool_summaries(cx);
+                    }),
+                ),
+            ),
+        ];
+        div()
+            .flex()
+            .flex_col()
+            .gap_4()
+            .child(page_header(
+                &tr("settings-section-appearance"),
+                &tr("settings-appearance-subtitle"),
+            ))
+            .child(subsection_title(&tr("settings-theme-motion")))
+            .child(widgets::card_stack(theme_rows))
+            .child(subsection_title(&tr("settings-chat-appearance")))
+            .child(widgets::card_stack(chat_rows))
+            .child(subsection_title(&tr("settings-transcript")))
+            .child(widgets::card_stack(transcript_rows))
+    }
+
+    fn theme_selector_row(&self, cx: &mut Context<Self>) -> Div {
+        // Tab stops after the sidebar filter (0); one slot per pill so Tab
+        // walks System → Dark → Light in order.
+        const THEME_TAB_INDEX: isize = 1;
+        let options = [
+            (theme::Preference::System, "system"),
+            (theme::Preference::Dark, "dark"),
+            (theme::Preference::Light, "light"),
+        ];
+        div()
+            .flex()
+            .flex_wrap()
+            .items_center()
+            .justify_between()
+            .gap_4()
+            .child(setting_copy(
+                tr("settings-appearance"),
+                tr("settings-appearance-description"),
+            ))
+            .child(
+                div()
+                    .id("setting-value-appearance")
+                    .role(gpui::Role::TabList)
+                    .aria_label(tr("settings-appearance"))
+                    .flex()
+                    .flex_none()
+                    .items_center()
+                    .gap_1()
+                    .p_1()
+                    .rounded_full()
+                    .bg(gpui::rgb(theme::bg_input()))
+                    .border_1()
+                    .border_color(gpui::rgb(theme::border_subtle()))
+                    .children(options.into_iter().zip(THEME_TAB_INDEX..).map(
+                        |((preference, slug), tab_index)| {
+                            let active = self.theme == preference;
+                            let swatch = match preference {
+                                theme::Preference::System => div()
+                                    .size(px(12.))
+                                    .rounded_full()
+                                    .border_1()
+                                    .border_color(gpui::rgb(theme::border()))
+                                    .overflow_hidden()
+                                    .flex()
+                                    .child(div().w_1_2().h_full().bg(gpui::rgb(0x18181c)))
+                                    .child(div().w_1_2().h_full().bg(gpui::rgb(0xffffff))),
+                                theme::Preference::Dark => div()
+                                    .size(px(12.))
+                                    .rounded_full()
+                                    .border_1()
+                                    .border_color(gpui::rgb(theme::border()))
+                                    .bg(gpui::rgb(0x18181c)),
+                                theme::Preference::Light => div()
+                                    .size(px(12.))
+                                    .rounded_full()
+                                    .border_1()
+                                    .border_color(gpui::rgb(theme::border()))
+                                    .bg(gpui::rgb(0xffffff)),
+                            };
+                            let pill = div()
+                                .id(gpui::SharedString::from(format!(
+                                    "setting-appearance-{slug}"
+                                )))
+                                .debug_selector(move || format!("setting-appearance-{slug}"))
+                                .role(gpui::Role::Tab)
+                                .aria_label(theme_label(preference))
+                                .aria_selected(active)
+                                .tab_index(tab_index)
+                                .flex()
+                                .items_center()
+                                .gap_1p5()
+                                .px_3()
+                                .py_1()
+                                .rounded_full()
+                                .text_xs()
+                                .font_weight(gpui::FontWeight::MEDIUM)
+                                .bg(gpui::rgb(if active {
+                                    theme::bg_default_button()
+                                } else {
+                                    theme::bg_input()
+                                }))
+                                .text_color(gpui::rgb(if active {
+                                    theme::text_on_default_button()
+                                } else {
+                                    theme::text_secondary()
+                                }))
+                                .when(!active, |el| {
+                                    el.hover(|style| {
+                                        style
+                                            .bg(gpui::rgb(theme::bg_sidebar_row_hover()))
+                                            .text_color(gpui::rgb(theme::text_primary()))
+                                            .cursor_pointer()
+                                    })
+                                })
+                                .when(active, |el| el.hover(|style| style.cursor_pointer()))
+                                .focus_visible(widgets::focus_ring)
+                                .on_click(cx.listener(move |this, _event, _window, cx| {
+                                    this.choose_theme(preference, cx);
+                                }))
+                                .on_key_down(cx.listener(
+                                    move |this, event: &gpui::KeyDownEvent, _, cx| {
+                                        if activates(event) {
+                                            cx.stop_propagation();
+                                            this.choose_theme(preference, cx);
+                                        }
+                                    },
+                                ))
+                                .child(swatch)
+                                .child(theme_label(preference));
+                            self.application_target(
+                                || SettingsTarget::Appearance(AppearanceTarget::Theme(preference)),
+                                pill,
+                            )
+                        },
+                    )),
+            )
+    }
+
     fn chat_appearance_preview(&self) -> Div {
         let family = crate::ui::typography::ChatFontFamily::parse(&self.settings.chat_font_family);
         let size = crate::ui::typography::clamp_chat_font_size(self.settings.chat_font_size);
@@ -187,7 +330,7 @@ impl SettingsScreen {
         // The settings pane and user bubbles both sit on elevated fills in
         // dark mode. Recess a real chat well (`bg_app`) so assistant text
         // and the user bubble separate from the card, matching the transcript.
-        widgets::card_row()
+        div()
             .flex()
             .flex_col()
             .gap_2()
@@ -261,7 +404,7 @@ fn localized_toggle_row(
     on: bool,
     on_click: impl Fn(&gpui::ClickEvent, &mut Window, &mut App) + 'static,
 ) -> gpui::Stateful<Div> {
-    widgets::card_row()
+    div()
         .id(gpui::SharedString::from(format!("setting-{slug}")))
         .flex()
         .items_center()

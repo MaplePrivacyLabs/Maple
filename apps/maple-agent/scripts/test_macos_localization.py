@@ -28,14 +28,14 @@ class NativeLocalizationTests(unittest.TestCase):
         self.assertEqual(result["CFBundleDevelopmentRegion"], "en")
 
     def assert_resources(self, plist_path, display_name):
-        expected = plistlib.loads((COMPONENT / "app/macos/es.lproj/InfoPlist.strings").read_bytes())
         purpose_keys = {key for key in self.base if key.endswith("UsageDescription")}
-        self.assertEqual(set(expected), purpose_keys)
         for locale in self.languages:
             content = plistlib.loads((plist_path.parent / "Resources" / f"{locale}.lproj/InfoPlist.strings").read_bytes())
             self.assertEqual(content["CFBundleDisplayName"], display_name)
             self.assertEqual(content["CFBundleName"], display_name)
-            if locale == "es":
+            if locale != "en":
+                expected = plistlib.loads((COMPONENT / f"app/macos/{locale}.lproj/InfoPlist.strings").read_bytes())
+                self.assertEqual(set(expected), purpose_keys)
                 for key in purpose_keys:
                     self.assertEqual(content[key], expected[key])
                     self.assertNotEqual(content[key], self.base[key])

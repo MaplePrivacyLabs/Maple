@@ -48,7 +48,48 @@ transport; protected routes are not ordinary plaintext `fetch`, `curl`, or
   new-server and new-client / old-server behavior when they can update
   independently; gate or stage incompatible changes.
 
-### Inference request admission
+### Request limits
+
+`src/web/rate_limit.rs` holds every request limit. Limits run on the inner
+application routes, after the transport has authenticated and decrypted the
+logical request: the edge sees only the encrypted Transport V2 carrier and the
+backend has no trusted client address, so this is the first point where the
+route and the account are known. A rejection is an ordinary application
+response. Transport V2 keeps its status, headers and body inside the
+authenticated encrypted response.
+
+Each limit is one `Limiter` field of `RateLimits` with a policy written in Rust:
+admissions per rolling window, an optional fixed cooldown, and a key capacity.
+The key is the account a request acts on:
+
+- An authenticated route charges the verified caller. Mount the `enforce_user`
+  route layer inside authentication and transport/body decoding, so a request
+  counts only once it is well formed and attributed, and before the handler can
+  persist anything or contact a provider.
+- An unauthenticated route has no caller identity. Its handler resolves the
+  account the request targets and charges that with `Limiter::check`. Decide per
+  route whether a refusal is a 429 or the route's ordinary answer; a route that
+  hides whether an account exists must stay indistinguishable when throttled.
+
+Key only on identities the server resolved: an account row, or a value matched
+to one with `Key::scoped`. Never create a bucket per caller-chosen string, such
+as an unverified email or secret, because one caller could then fill the table.
+Where a caller can spend a target's allowance, say what that costs the target.
+
+A generic rejection is logical HTTP 429 with the flat body
+`{"status":429,"message":"Too many requests. Try again later."}`, integer
+`Retry-After` seconds rounded up, and `x-opensecret-error-code:
+rate_limit_exceeded`. It grants no automatic replay and requests neither a new
+session nor token refresh. Rejected requests never move a key's deadline.
+
+At most the policy's key capacity is retained, each key with at most its limit
+of timestamps. Expired keys are reclaimed on capacity pressure; a live window or
+block is never evicted to admit a new key. If every key is live, new keys
+receive 503. State is local to the process and resets on restart; routing across
+replicas multiplies the allowance. These are best-effort guardrails, not global
+quotas.
+
+#### Inference request admission
 
 Authenticated POSTs to `/v1/chat/completions`, `/v1/responses`, `/v1/systemone`,
 and `/v1/embeddings` share one account UUID bucket in each backend process.
@@ -64,18 +105,12 @@ starts a fixed 60-second cooldown; subsequent rejected requests do not extend
 it. Rejections carry logical HTTP 429, an OpenAI-shaped `rate_limit_exceeded`
 error, and integer `Retry-After` seconds rounded up from the remaining cooldown.
 They do not carry the upstream `inference_capacity` or automatic-replay marker.
-Transport V2 keeps status, headers and body inside its authenticated encrypted
-response. Clients can inspect the header without a new SDK; this does not
-promise that every client automatically waits and retries.
+Clients can inspect the header without a new SDK; this does not promise that
+every client automatically waits and retries.
 
 `INFERENCE_RATE_LIMIT_RPM` (1..1000, default 100) and
 `INFERENCE_RATE_LIMIT_COOLDOWN_SECONDS` (1..3600, default 60) configure startup.
-Invalid values fail startup. At most 10,000 account buckets are retained, each
-with at most the configured RPM timestamps. Expired buckets are reclaimed on
-capacity pressure; live windows/cooldowns are never evicted to admit a new
-account. If all buckets are active, new accounts receive 503. State is local to
-the process and resets on restart; routing across replicas multiplies the
-available allowance. This is a best-effort guardrail, not a global quota.
+Invalid values fail startup. At most 10,000 account buckets are retained.
 
 The opt-in SDK test `sdk/src/lib/test/integration/inferenceRateLimit.test.ts`
 exercises the default policy through a loopback Local backend. Supply the
@@ -91,6 +126,31 @@ submits provider-free validation failures across all four endpoints, verifies
 the shared JWT/API-key cooldown, independent-account and read access, and waits
 for actual cooldown recovery. Keep fixture credentials in private environment
 inputs, never in command arguments or logs.
+
+#### Password reset
+
+User (`/password-reset/*`) and platform (`/platform/password-reset/*`) accounts
+have the same two limits, each with its own state.
+
+Reset requests are limited to 5 per targeted account in a rolling hour. Past
+that, the request route returns its ordinary generic answer but creates no
+request and sends no email, so a throttled, unknown, OAuth-only and valid
+account stay indistinguishable. Because a request lives 24 hours, this also
+bounds the reset codes that can be live for one account. Any caller can spend an
+account's allowance; the cost to its owner is a delayed reset email, never a
+changed credential.
+
+Each reset request allows 5 confirmation attempts for its whole 24-hour life.
+The confirm route first matches the submitted secret to a request of that
+account. A submission whose secret matches none cannot complete anything and is
+refused without being counted. One that matches is charged to that request
+before its code is examined, and the sixth is a generic 429 even with the right
+code. Only the party that started a request holds its secret, so nobody else
+can spend its attempts; the owner of an exhausted request starts a new one.
+
+Every attempt is charged, including a correct one, which is safe only because a
+correct confirmation consumes its request. A route that verifies the same proof
+without consuming the request must not spend this budget on a correct proof.
 
 ### Responses context scope
 
@@ -164,6 +224,12 @@ upstream. Request compatibility alone does not establish that privacy boundary.
   current SSRF policy.
 - Keep usage tied to the actual provider and canonical public model while
   preserving the established user or API-key attribution.
+- The catalog drives how clients present the model picker, so a model ships
+  without a client release: each listed model names its `group`, the top-level
+  `groups` array gives the sections in display order with an English `label`,
+  and `badges` carries marks such as `Popular`. Group ids and badge strings are
+  stable keys clients translate; a client shows the served `label` for an id it
+  has no translation for. Give every model Maple Work offers a group.
 - Reasoning effort is one per-model table (`model_config::ModelReasoning`) that
   feeds the catalog `reasoning` object, request validation and tests. Clients
   choose a level only through OpenAI's `reasoning_effort` (Chat Completions) and

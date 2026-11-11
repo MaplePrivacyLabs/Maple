@@ -113,7 +113,8 @@ impl StorePaths {
         };
         verify_open_log(&file)?;
         // Recheck the path after opening as well as the actual descriptor. This
-        // never repairs unsafe metadata or writes through an existing alias.
+        // never writes through an existing alias; on Windows only objects no
+        // other account could have written are restored to the private ACL.
         verify_private_path(&path, false)?;
         #[cfg(unix)]
         {
@@ -199,10 +200,32 @@ impl StorePaths {
         Ok(Some(directory))
     }
 
+    /// A private directory beside `store-v1` for a runtime this build unpacks
+    /// for itself. It holds no application state: a backup of the store
+    /// leaves it out, and deleting it only costs unpacking it again.
+    pub fn prepare_runtime_directory(&self, name: &str) -> StoreResult<PathBuf> {
+        let mut components = Path::new(name).components();
+        if !self.root.is_absolute()
+            || !matches!(components.next(), Some(std::path::Component::Normal(_)))
+            || components.next().is_some()
+        {
+            return Err(StoreError::UnsafePath);
+        }
+        let parent = self.root.parent().ok_or(StoreError::UnsafePath)?;
+        fs::create_dir_all(parent)?;
+        let directory = parent.join(name);
+        if directory == self.root {
+            return Err(StoreError::UnsafePath);
+        }
+        private_directory(&directory)?;
+        Ok(directory)
+    }
+
     /// Prepare only this namespace's control and diagnostic directories.
     /// Frontends may resolve IPC before acquiring ownership, including while
     /// the owner has temporarily renamed db/. Never create that directory here.
-    /// Existing private components are checked, never chmodded or adopted.
+    /// Existing components are checked, never chmodded or adopted. On Windows
+    /// one only trusted accounts could have written gets its private ACL back.
     pub fn prepare_control_root(&self) -> StoreResult<Self> {
         if !self.root.is_absolute() {
             return Err(StoreError::UnsafePath);
@@ -462,23 +485,27 @@ mod windows_private {
     use std::ptr::null_mut;
 
     use windows_sys::Win32::Foundation::{
-        CloseHandle, GENERIC_READ, GENERIC_WRITE, INVALID_HANDLE_VALUE, LocalFree,
+        CloseHandle, GENERIC_ALL, GENERIC_READ, GENERIC_WRITE, INVALID_HANDLE_VALUE, LocalFree,
     };
     use windows_sys::Win32::Security::Authorization::{
         ConvertSidToStringSidW, ConvertStringSecurityDescriptorToSecurityDescriptorW,
         GetNamedSecurityInfoW, GetSecurityInfo, SDDL_REVISION_1, SE_FILE_OBJECT,
     };
     use windows_sys::Win32::Security::{
-        ACCESS_ALLOWED_ACE, ACL, DACL_SECURITY_INFORMATION, EqualSid, GetAce,
-        GetSecurityDescriptorControl, GetTokenInformation, OWNER_SECURITY_INFORMATION,
-        PSECURITY_DESCRIPTOR, PSID, SE_DACL_PROTECTED, SECURITY_ATTRIBUTES, TOKEN_QUERY,
-        TOKEN_USER, TokenUser,
+        ACCESS_ALLOWED_ACE, ACE_HEADER, ACL, CreateWellKnownSid, DACL_SECURITY_INFORMATION,
+        EqualSid, GetAce, GetSecurityDescriptorControl, GetTokenInformation, INHERIT_ONLY_ACE,
+        INHERITED_ACE, IsValidSid, OWNER_SECURITY_INFORMATION, PROTECTED_DACL_SECURITY_INFORMATION,
+        PSECURITY_DESCRIPTOR, PSID, SE_DACL_PROTECTED, SECURITY_ATTRIBUTES, SECURITY_MAX_SID_SIZE,
+        SetFileSecurityW, TOKEN_QUERY, TOKEN_USER, TokenUser, WELL_KNOWN_SID_TYPE,
+        WinBuiltinAdministratorsSid, WinCreatorOwnerRightsSid, WinLocalSystemSid,
     };
     use windows_sys::Win32::Storage::FileSystem::{
-        BY_HANDLE_FILE_INFORMATION, CREATE_NEW, CreateDirectoryW, CreateFileW, FILE_ALL_ACCESS,
-        FILE_APPEND_DATA, FILE_ATTRIBUTE_NORMAL, FILE_ATTRIBUTE_REPARSE_POINT,
-        FILE_FLAG_OPEN_REPARSE_POINT, FILE_READ_ATTRIBUTES, FILE_SHARE_READ, FILE_SHARE_WRITE,
-        GetFileInformationByHandle, OPEN_EXISTING, READ_CONTROL,
+        BY_HANDLE_FILE_INFORMATION, CREATE_NEW, CreateDirectoryW, CreateFileW, DELETE,
+        FILE_ALL_ACCESS, FILE_APPEND_DATA, FILE_ATTRIBUTE_NORMAL, FILE_ATTRIBUTE_REPARSE_POINT,
+        FILE_DELETE_CHILD, FILE_FLAG_BACKUP_SEMANTICS, FILE_FLAG_OPEN_REPARSE_POINT,
+        FILE_READ_ATTRIBUTES, FILE_SHARE_DELETE, FILE_SHARE_READ, FILE_SHARE_WRITE,
+        FILE_WRITE_ATTRIBUTES, FILE_WRITE_DATA, FILE_WRITE_EA, GetFileInformationByHandle,
+        OPEN_EXISTING, READ_CONTROL, WRITE_DAC, WRITE_OWNER,
     };
     use windows_sys::Win32::System::Threading::{GetCurrentProcess, OpenProcessToken};
 
@@ -656,7 +683,53 @@ mod windows_private {
         verify_security(owner, acl, descriptor, false)
     }
 
+    /// Check a store path and, when only the user, SYSTEM or Administrators
+    /// could have written it, restore the private form. Such objects come
+    /// from earlier runs: SQLite's WAL and shared-memory files created before
+    /// startup set the user as default owner were owned by Administrators in
+    /// any elevated run. An object another account could have written to is
+    /// refused and left untouched, because its contents may have been changed.
     pub(super) fn verify_acl(path: &Path, directory: bool) -> StoreResult<()> {
+        let name = || {
+            path.file_name()
+                .map(|name| name.to_string_lossy().into_owned())
+                .unwrap_or_default()
+        };
+        match named_verdict(path, directory)? {
+            Verdict::Private => Ok(()),
+            Verdict::Repairable(reason) => {
+                if let Err(error) = repair(path, directory) {
+                    log::warn!(
+                        "Store {} {reason}; Maple could not restore its private permissions: {error}",
+                        name()
+                    );
+                    return Err(StoreError::UnsafePath);
+                }
+                match named_verdict(path, directory)? {
+                    Verdict::Private => {
+                        log::warn!(
+                            "Store {} {reason}; Maple restored its private permissions",
+                            name()
+                        );
+                        Ok(())
+                    }
+                    _ => {
+                        log::warn!(
+                            "Store {} {reason}; it is still not private after repair",
+                            name()
+                        );
+                        Err(StoreError::UnsafePath)
+                    }
+                }
+            }
+            Verdict::Unsafe(found) => {
+                log::warn!("Maple refused store {}: {found}", name());
+                Err(StoreError::UnsafePath)
+            }
+        }
+    }
+
+    fn named_verdict(path: &Path, directory: bool) -> StoreResult<Verdict> {
         let mut owner = null_mut();
         let mut acl = null_mut();
         let mut descriptor = null_mut();
@@ -676,7 +749,208 @@ mod windows_private {
             return Err(io::Error::from_raw_os_error(result as i32).into());
         }
         let _owner = LocalAllocation(descriptor);
-        verify_security(owner, acl, descriptor, directory)
+        Ok(verdict(owner, acl, descriptor, directory)?)
+    }
+
+    /// Apply the private descriptor Maple creates store objects with. A
+    /// hard-linked file is refused: its security is shared with other names.
+    fn repair(path: &Path, directory: bool) -> io::Result<()> {
+        let handle = unsafe {
+            CreateFileW(
+                wide(path).as_ptr(),
+                FILE_READ_ATTRIBUTES,
+                FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE,
+                null_mut(),
+                OPEN_EXISTING,
+                FILE_FLAG_OPEN_REPARSE_POINT | FILE_FLAG_BACKUP_SEMANTICS,
+                null_mut(),
+            )
+        };
+        if handle == INVALID_HANDLE_VALUE {
+            return Err(io::Error::last_os_error());
+        }
+        let file = unsafe { File::from_raw_handle(handle) };
+        let mut information = BY_HANDLE_FILE_INFORMATION::default();
+        if unsafe { GetFileInformationByHandle(file.as_raw_handle(), &mut information) } == 0 {
+            return Err(io::Error::last_os_error());
+        }
+        if information.dwFileAttributes & FILE_ATTRIBUTE_REPARSE_POINT != 0
+            || (!directory && information.nNumberOfLinks != 1)
+        {
+            return Err(io::Error::from(io::ErrorKind::PermissionDenied));
+        }
+        drop(file);
+        let descriptor = descriptor()?;
+        if unsafe {
+            SetFileSecurityW(
+                wide(path).as_ptr(),
+                OWNER_SECURITY_INFORMATION
+                    | DACL_SECURITY_INFORMATION
+                    | PROTECTED_DACL_SECURITY_INFORMATION,
+                descriptor.0,
+            )
+        } == 0
+        {
+            return Err(io::Error::last_os_error());
+        }
+        Ok(())
+    }
+
+    /// Rights that let an account change an object's contents, name or
+    /// permissions.
+    const WRITE_RIGHTS: u32 = GENERIC_ALL
+        | GENERIC_WRITE
+        | DELETE
+        | WRITE_DAC
+        | WRITE_OWNER
+        | FILE_WRITE_DATA
+        | FILE_APPEND_DATA
+        | FILE_WRITE_EA
+        | FILE_WRITE_ATTRIBUTES
+        | FILE_DELETE_CHILD;
+
+    /// How a store object's security compares with the private form Maple
+    /// creates: owned by the user, a single full-control entry for the user,
+    /// and on folders nothing inherited.
+    enum Verdict {
+        Private,
+        /// Only the user, SYSTEM or Administrators could have written it.
+        /// Says how it differs from the private form.
+        Repairable(&'static str),
+        /// Another account could have changed it. Says what was found.
+        Unsafe(String),
+    }
+
+    fn well_known(kind: WELL_KNOWN_SID_TYPE) -> io::Result<Vec<u32>> {
+        let mut data = vec![0u32; (SECURITY_MAX_SID_SIZE as usize).div_ceil(4)];
+        let mut length = SECURITY_MAX_SID_SIZE;
+        if unsafe { CreateWellKnownSid(kind, null_mut(), data.as_mut_ptr().cast(), &mut length) }
+            == 0
+        {
+            return Err(io::Error::last_os_error());
+        }
+        Ok(data)
+    }
+
+    /// The SID in text for the local log only, so support can tell which
+    /// account could write. Store logs already name local paths.
+    fn sid_text(sid: PSID) -> String {
+        let mut text = null_mut();
+        if unsafe { ConvertSidToStringSidW(sid, &mut text) } == 0 {
+            return "an unreadable SID".into();
+        }
+        let allocation = LocalAllocation(text.cast());
+        let mut length = 0;
+        while length < 256 && unsafe { *text.add(length) } != 0 {
+            length += 1;
+        }
+        let value = String::from_utf16_lossy(unsafe { std::slice::from_raw_parts(text, length) });
+        drop(allocation);
+        value
+    }
+
+    fn verdict(
+        owner: PSID,
+        acl: *mut ACL,
+        descriptor: PSECURITY_DESCRIPTOR,
+        directory: bool,
+    ) -> io::Result<Verdict> {
+        const ACCESS_ALLOWED_ACE_TYPE: u8 = 0;
+        const ACCESS_DENIED_ACE_TYPE: u8 = 1;
+        let token = user_token()?;
+        let user = unsafe { &*token.as_ptr().cast::<TOKEN_USER>() }.User.Sid;
+        if owner.is_null() {
+            return Ok(Verdict::Unsafe("it has no owner".into()));
+        }
+        if acl.is_null() {
+            return Ok(Verdict::Unsafe(
+                "it has no DACL, so everyone has full access".into(),
+            ));
+        }
+        let mut control = 0;
+        let mut revision = 0;
+        if unsafe { GetSecurityDescriptorControl(descriptor, &mut control, &mut revision) } == 0 {
+            return Err(io::Error::last_os_error());
+        }
+        let protected = control & SE_DACL_PROTECTED != 0;
+        let count = unsafe { (*acl).AceCount };
+        let owned_by_user = unsafe { EqualSid(owner, user) } != 0;
+        if owned_by_user && (protected || !directory) && count == 1 {
+            let mut raw = null_mut();
+            if unsafe { GetAce(acl, 0, &mut raw) } != 0 && !raw.is_null() {
+                let ace = unsafe { &*raw.cast::<ACCESS_ALLOWED_ACE>() };
+                let sid: PSID = (&ace.SidStart as *const u32).cast_mut().cast();
+                if ace.Header.AceType == ACCESS_ALLOWED_ACE_TYPE
+                    && ace.Mask & FILE_ALL_ACCESS == FILE_ALL_ACCESS
+                    && unsafe { EqualSid(sid, user) } != 0
+                {
+                    return Ok(Verdict::Private);
+                }
+            }
+        }
+        let system = well_known(WinLocalSystemSid)?;
+        let admins = well_known(WinBuiltinAdministratorsSid)?;
+        let owner_rights = well_known(WinCreatorOwnerRightsSid)?;
+        let same = |a: PSID, b: &[u32]| unsafe { EqualSid(a, b.as_ptr().cast_mut().cast()) } != 0;
+        let trusted = |sid: PSID| {
+            (unsafe { EqualSid(sid, user) } != 0) || same(sid, &system) || same(sid, &admins)
+        };
+        if !trusted(owner) {
+            return Ok(Verdict::Unsafe(format!("its owner is {}", sid_text(owner))));
+        }
+        if count > 1024 {
+            return Ok(Verdict::Unsafe(format!("it has {count} entries")));
+        }
+        for index in 0..u32::from(count) {
+            let mut raw = null_mut();
+            if unsafe { GetAce(acl, index, &mut raw) } == 0 || raw.is_null() {
+                return Ok(Verdict::Unsafe("an entry could not be read".into()));
+            }
+            let header = unsafe { &*raw.cast::<ACE_HEADER>() };
+            // Inherit-only entries apply only to new children, and a deny
+            // entry grants nothing.
+            if u32::from(header.AceFlags) & INHERIT_ONLY_ACE != 0
+                || header.AceType == ACCESS_DENIED_ACE_TYPE
+            {
+                continue;
+            }
+            if header.AceType != ACCESS_ALLOWED_ACE_TYPE
+                || usize::from(header.AceSize) < size_of::<ACCESS_ALLOWED_ACE>() + 4
+            {
+                return Ok(Verdict::Unsafe(format!(
+                    "it has an entry of type {}",
+                    header.AceType
+                )));
+            }
+            let ace = unsafe { &*raw.cast::<ACCESS_ALLOWED_ACE>() };
+            let sid: PSID = (&ace.SidStart as *const u32).cast_mut().cast();
+            let subauthorities = usize::from(unsafe { *sid.cast::<u8>().add(1) });
+            if subauthorities > 15
+                || 16 + 4 * subauthorities > usize::from(header.AceSize)
+                || unsafe { IsValidSid(sid) } == 0
+            {
+                return Ok(Verdict::Unsafe("it has a malformed entry".into()));
+            }
+            if ace.Mask & WRITE_RIGHTS != 0 && !trusted(sid) && !same(sid, &owner_rights) {
+                return Ok(Verdict::Unsafe(format!(
+                    "{} can write to it (access 0x{:08X}, {})",
+                    sid_text(sid),
+                    ace.Mask,
+                    if u32::from(header.AceFlags) & INHERITED_ACE != 0 {
+                        "inherited"
+                    } else {
+                        "explicit"
+                    }
+                )));
+            }
+        }
+        Ok(Verdict::Repairable(if !owned_by_user {
+            "is owned by SYSTEM or Administrators"
+        } else if directory && !protected {
+            "inherits its parent's permissions"
+        } else {
+            "has entries besides the user's full control"
+        }))
     }
 
     fn verify_security(
@@ -685,34 +959,17 @@ mod windows_private {
         descriptor: PSECURITY_DESCRIPTOR,
         directory: bool,
     ) -> StoreResult<()> {
-        let token = user_token()?;
-        let user = unsafe { &*token.as_ptr().cast::<TOKEN_USER>() };
-        let mut control = 0;
-        let mut revision = 0;
-        if owner.is_null()
-            || acl.is_null()
-            || unsafe { EqualSid(owner, user.User.Sid) } == 0
-            || unsafe { GetSecurityDescriptorControl(descriptor, &mut control, &mut revision) } == 0
-            || (directory && control & SE_DACL_PROTECTED == 0)
-            || unsafe { (*acl).AceCount } != 1
-        {
-            return Err(StoreError::UnsafePath);
+        match verdict(owner, acl, descriptor, directory)? {
+            Verdict::Private => Ok(()),
+            Verdict::Repairable(reason) => {
+                log::warn!("Maple refused an open store file that {reason}");
+                Err(StoreError::UnsafePath)
+            }
+            Verdict::Unsafe(found) => {
+                log::warn!("Maple refused an open store file: {found}");
+                Err(StoreError::UnsafePath)
+            }
         }
-        let mut ace = null_mut();
-        if unsafe { GetAce(acl, 0, &mut ace) } == 0 || ace.is_null() {
-            return Err(StoreError::UnsafePath);
-        }
-        let ace = unsafe { &*ace.cast::<ACCESS_ALLOWED_ACE>() };
-        let sid = (&ace.SidStart as *const u32).cast_mut().cast();
-        // ACCESS_ALLOWED_ACE_TYPE is zero. Require exactly one allow ACE for
-        // the current owner; broad inherited permissions are never adopted.
-        if ace.Header.AceType != 0
-            || ace.Mask & FILE_ALL_ACCESS != FILE_ALL_ACCESS
-            || unsafe { EqualSid(sid, user.User.Sid) } == 0
-        {
-            return Err(StoreError::UnsafePath);
-        }
-        Ok(())
     }
 }
 
@@ -894,6 +1151,24 @@ mod tests {
         assert!(paths.prepare_resource_directory(&["accounts"]).is_err());
         assert!(!prior.join("accounts").exists());
         assert_eq!(fs::read(prior.join("sentinel")).unwrap(), b"unchanged");
+    }
+
+    #[test]
+    fn a_runtime_directory_is_private_and_sits_beside_the_store() {
+        let root = tempfile::tempdir().unwrap();
+        let root = root.path().canonicalize().unwrap();
+        let paths = StorePaths::new(root.join("profile"));
+        let directory = paths.prepare_runtime_directory("python-runtime").unwrap();
+        assert_eq!(directory, root.join("profile/python-runtime"));
+        verify_private_path(&directory, true).unwrap();
+        // A second preparation adopts it; a name is never a path.
+        assert_eq!(
+            paths.prepare_runtime_directory("python-runtime").unwrap(),
+            directory
+        );
+        for name in ["", "..", "store-v1", "store-v1/db", "/absolute"] {
+            assert!(paths.prepare_runtime_directory(name).is_err(), "{name}");
+        }
     }
 
     #[cfg(unix)]

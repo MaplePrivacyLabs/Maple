@@ -27,6 +27,7 @@ export type {
   ModelReasoningMetadata,
   ModelListItem,
   ModelCatalogItem,
+  ModelGroup,
   ModelAlias,
   ModelCatalogResponse,
   Conversation,

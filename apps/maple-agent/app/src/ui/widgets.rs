@@ -91,7 +91,34 @@ fn pill(id: impl Into<ElementId>) -> Stateful<Div> {
         .focus_visible(focus_ring)
 }
 
-/// Accent-filled action button: coral pill with a light label.
+/// The mark that says a control leaves the app for the browser. Goes after
+/// the label inside any button or link that opens a URL, in that control's
+/// text color.
+pub fn external_mark(color: u32) -> gpui::Svg {
+    icon("external-link", px(12.), color)
+}
+
+/// The mark for a control that navigates within the app (to another page or
+/// section), as opposed to [`external_mark`].
+pub fn navigate_mark(color: u32) -> gpui::Svg {
+    icon("arrow-right", px(12.), color)
+}
+
+/// Accessible default/primary action button: high-contrast neutral inverted pill.
+pub fn default_button(id: impl Into<ElementId>) -> HoverBackground {
+    hover_background(
+        pill(id)
+            .bg(gpui::rgb(theme::bg_default_button()))
+            .text_color(gpui::rgb(theme::text_on_default_button()))
+            .hover(|style| style.cursor_pointer())
+            .active(|style| press_depth(style.bg(gpui::rgb(theme::bg_default_button_active())))),
+        gpui::rgb(theme::bg_default_button()),
+        gpui::rgb(theme::bg_default_button_hover()),
+    )
+}
+
+/// Legacy accent-filled action button; new and Settings surfaces use
+/// [`default_button`] for WCAG contrast until legacy callers migrate globally.
 pub fn primary_button(id: impl Into<ElementId>) -> HoverBackground {
     hover_background(
         pill(id)
@@ -103,7 +130,6 @@ pub fn primary_button(id: impl Into<ElementId>) -> HoverBackground {
         gpui::rgb(theme::accent_hover()),
     )
 }
-
 /// Neutral pill for the second action beside a [`primary_button`]
 /// (Cancel, Back, alternate sign-in): a pebble fill that darkens on hover.
 pub fn secondary_button(id: impl Into<ElementId>) -> HoverBackground {
@@ -116,6 +142,29 @@ pub fn secondary_button(id: impl Into<ElementId>) -> HoverBackground {
         gpui::rgb(theme::bg_sidebar_pill()),
         gpui::rgb(theme::bg_sidebar_row_selected()),
     )
+}
+
+/// A key named beside the control it works: one fixed height, so a row of
+/// them shares a baseline with its labels whatever each one holds.
+pub fn keycap(label: impl Into<gpui::SharedString>) -> Div {
+    div()
+        .flex_none()
+        .h(px(18.))
+        .min_w(px(18.))
+        .px(px(5.))
+        .flex()
+        .items_center()
+        .justify_center()
+        .rounded(px(5.))
+        .border_1()
+        .border_color(gpui::rgb(theme::border()))
+        .bg(gpui::rgb(theme::bg_input()))
+        .font_family(crate::assets::FONT_MONO)
+        .font_weight(gpui::FontWeight::MEDIUM)
+        .text_size(px(10.5))
+        .line_height(px(16.))
+        .text_color(gpui::rgb(theme::text_muted()))
+        .child(label.into())
 }
 
 /// Text-only button for low-emphasis actions: no fill, no border, and
@@ -146,6 +195,19 @@ pub fn danger_button(id: impl Into<ElementId>) -> HoverBackground {
         error,
         gpui::hsla(error.h, error.s, error.l, 0.9),
     )
+}
+
+/// A destructive action at rest: outlined in the error color, filled only
+/// on hover. For the row that *starts* a destructive flow; the filled
+/// [`danger_button`] is for the step that commits it.
+pub fn danger_outline_button(id: impl Into<ElementId>) -> Stateful<Div> {
+    let error = theme::status_error();
+    pill(id)
+        .border_1()
+        .border_color(gpui::rgb(error))
+        .text_color(gpui::rgb(error))
+        .hover(move |style| style.bg(gpui::rgba((error << 8) | 0x1f)).cursor_pointer())
+        .active(move |style| press_depth(style.bg(gpui::rgba((error << 8) | 0x33))))
 }
 
 /// Square icon-only button with a hover plate, used in list rows and
@@ -401,21 +463,95 @@ pub fn input_frame() -> Div {
         .text_color(gpui::rgb(theme::text_primary()))
 }
 
-/// Full-width status message on a solid fill, such as
-/// `theme::status_error()` or `theme::status_warning()`. The label takes
-/// the on-accent white, which reads on every status fill.
-pub fn banner(background: u32) -> Div {
+/// What a [`banner`] reports. The tone picks the icon and the hue of its
+/// tile; the card itself stays neutral.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Tone {
+    /// Something failed or is blocked.
+    Error,
+    /// Something needs attention before it fails.
+    Warning,
+    /// Feedback without a severity of its own, such as a page that opened.
+    Info,
+}
+
+impl Tone {
+    fn icon(self) -> &'static str {
+        match self {
+            Tone::Error => "circle-alert",
+            Tone::Warning => "triangle-alert",
+            Tone::Info => "info",
+        }
+    }
+
+    fn hue(self) -> u32 {
+        match self {
+            Tone::Error => theme::status_error(),
+            Tone::Warning => theme::status_warning(),
+            Tone::Info => theme::text_muted(),
+        }
+    }
+}
+
+/// Full-width status message: a neutral card with the tone's icon on a
+/// tinted tile, then the message. Callers add any actions as further
+/// children; they line up at the end. Status colors stay on the tile, so
+/// the message keeps the body contrast of the surface it sits on.
+pub fn banner(tone: Tone, message: impl IntoElement) -> Div {
     div()
+        .flex()
+        .items_center()
+        .gap_2p5()
         .px_3()
-        .py_2()
-        .rounded(theme::RADIUS_MD)
-        .bg(gpui::rgb(background))
-        .text_color(gpui::rgb(theme::on_accent()))
+        .py_2p5()
+        .rounded(theme::RADIUS_LG)
+        .bg(gpui::rgb(theme::bg_elevated()))
+        .border_1()
+        .border_color(gpui::rgb(theme::border()))
         .text_sm()
+        .text_color(gpui::rgb(theme::text_primary()))
+        .child(tone_tile(tone))
+        .child(div().flex_1().min_w_0().child(message))
+}
+
+/// The tone's icon on a small tile tinted with its hue, lighter at the
+/// top on dark and deeper at the bottom on light, so it reads as lit
+/// from above in both themes. Info stays a whisper.
+fn tone_tile(tone: Tone) -> Div {
+    let hue = tone.hue();
+    let (top, bottom, edge) = match (tone, theme::is_light()) {
+        (Tone::Info, false) => (0.14, 0.05, 0.22),
+        (Tone::Info, true) => (0.06, 0.12, 0.2),
+        (_, false) => (0.24, 0.08, 0.3),
+        (_, true) => (0.07, 0.14, 0.26),
+    };
+    div()
+        .flex_none()
+        .size_7()
+        .flex()
+        .items_center()
+        .justify_center()
+        .rounded(theme::RADIUS_SM)
+        .bg(gpui::linear_gradient(
+            180.,
+            gpui::linear_color_stop(tint(hue, top), 0.),
+            gpui::linear_color_stop(tint(hue, bottom), 1.),
+        ))
+        .border_1()
+        .border_color(tint(hue, edge))
+        .child(icon(tone.icon(), px(15.), hue))
+}
+
+/// `color` at `alpha` opacity.
+fn tint(color: u32, alpha: f32) -> Hsla {
+    let mut color: Hsla = gpui::rgb(color).into();
+    color.a = alpha;
+    color
 }
 
 /// Transient notice: a soft surface with a leading icon and a close
-/// button. Softer than [`banner`], which is for errors that block.
+/// button, for news the user can dismiss. A [`banner`] stays until its
+/// cause is resolved.
 pub fn notice(
     id: impl Into<ElementId>,
     text: SharedString,

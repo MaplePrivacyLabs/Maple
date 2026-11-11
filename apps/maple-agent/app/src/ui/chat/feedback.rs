@@ -291,7 +291,7 @@ impl ChatScreen {
                                 .child(tr("chat-feedback-privacy")),
                         )
                         .when_some(form.error.clone(), |card, error| {
-                            card.child(widgets::banner(theme::status_error()).child(error))
+                            card.child(widgets::banner(widgets::Tone::Error, error))
                         })
                         .child(
                             div()

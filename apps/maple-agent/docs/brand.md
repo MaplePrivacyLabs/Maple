@@ -184,9 +184,12 @@ the dark background.
 | `accent_hover` | `#f67d57` Maple 600 | `#ffa88a` Maple 400 | |
 | `on_accent` | `#f7f7f9` | same | on primary (stays bright so coral stays readable) |
 | `accent_container`, `permission_fill` | `#ffe8e0` Maple 100 | `#3a2118` / `#2a1a14` | primary container |
+| `accent_ink` | `#d04926` Maple 800 | `#ff9771` Maple 500 | coral icon on a primary container, 3:1 or better |
+| `bg_composer_tray` | `#f7f7f9` Pebble 50 | `#222228` | panel docked inside the composer |
+| `bg_default_button`, `text_on_default_button` | `#171717` / `#f7f7f9` | `#e8e8ed` / `#18181c` | `default_button`: the inverted pill, held to 7:1 at rest, hover and press |
 | `link` | `#9e7469` Bark 500 | `#c29a8d` Bark 300 | tertiary |
 | `status_success` | `#7b8f4a` | `#8fa35a` | success |
-| `status_warning` | `#d4a35a` | same | warning |
+| `status_warning` | `#b45309` Amber 700 | `#d4a35a` | warning; the kit's `#d4a35a` is 2.3:1 on white |
 | `status_error` | `#d05e41` | `#e07052` | error |
 | `display_text` | `#474854` Pebble 800 | `#babccb` Pebble 300 | Array titles; large type can sit dimmer than body |
 
@@ -239,9 +242,10 @@ for it.
 
 ### Buttons
 
-`ui::widgets` provides `primary_button` (coral pill, `on_accent` label),
-`secondary_button` (Pebble 100 pill), and `ghost_button` (text only, hover
-overlay). All share 8 px vertical and 20 px horizontal padding
+`ui::widgets` provides `default_button` (inverted neutral pill: Pebble 100
+on dark, Neutral 900 on light), `primary_button` (coral pill, `on_accent`
+label), `secondary_button` (Pebble 100 pill), and `ghost_button` (text only,
+hover overlay). All share 8 px vertical and 20 px horizontal padding
 (`theme::SPACE_MD`, the kit's medium button) and a Manrope Medium label.
 
 The coral fill replaces the kit's translucent "glass" gradient, which is
@@ -249,6 +253,35 @@ designed to sit on a Pebble 300 panel and washes out on the app's white
 and near-black surfaces. The hover and press scale motion is not applied:
 gpui cannot scale a `div`. Hover eases the background instead, and press
 stays immediate; see [motion](motion.md).
+
+### Status banners
+
+A banner never paints a status color behind its text. `widgets::banner`
+takes a `Tone` (error, warning, info) and draws a neutral `bg_elevated` card
+with a hairline border; the tone shows only as its icon (`circle-alert`,
+`triangle-alert`, `info`) on a small tile tinted with the status hue. The
+message keeps `text_primary`, and actions line up at the card's end as
+ordinary default, secondary or ghost buttons. (`primary_button` and
+`danger_button` still put an `on_accent` label on coral and on
+`status_error`; that is the buttons' own follow-up.)
+
+A state that will turn the next message away sits with the composer
+instead of the transcript. When a task's latest turn ended out of usage, a
+panel docked inside the composer (`bg_composer_tray`, a coral
+`accent_container` tile) offers Billing through `default_button`; the field
+stays editable. The panel goes once a message is on its way, a run is
+active or a later row arrives, and it stays hidden while the loaded window
+does not hold the task's tail. It also stands down while the billing
+reading says extra credits extend the used-up plan, as after buying them,
+unless the refusal itself arrived while that was already so: then the
+credits did not pay, and Billing stays on offer. The transcript keeps a
+one-line marker of that turn.
+
+Extra credits wear a coral `coins` icon on `accent_container`. The Settings
+menu shows the balance under the plan, with whether they are in use or wait
+for the allowance to run out; once the allowance is used up, the plan bar
+turns `text_faint`, since nothing is wrong. The plan reads 100% only once
+it is used up; just short of that it reads 99%.
 
 ### Spacing
 

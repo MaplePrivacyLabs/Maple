@@ -8,7 +8,7 @@ use crate::ui::i18n::{UiText, tr, tr_args};
 use gpui::{Context, Div, Entity, Focusable, div, prelude::*};
 
 use super::billing::BillingTarget;
-use super::{SettingsScreen, SettingsTarget, section_title};
+use super::{SettingsScreen, SettingsTarget, subsection_title};
 use crate::billing::{
     CREDIT_PACKAGES_DOLLARS, CREDITS_PER_DOLLAR, MAX_CREDIT_PURCHASE_DOLLARS,
     MIN_CREDIT_PURCHASE_DOLLARS, PaymentMethod, format_count,
@@ -21,7 +21,6 @@ use maple_agent::maple_api::MapleLoginMethod;
 /// Credit controls that Application Vim can land on.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub(super) enum CreditsTarget {
-    Refresh,
     /// A preset purchase, in whole dollars.
     Package(u64),
     Custom,
@@ -187,6 +186,13 @@ impl SettingsScreen {
             .is_some_and(|account| account.login_method == MapleLoginMethod::Guest)
     }
 
+    /// Refetch the balance on request, dropping the note left by an earlier
+    /// checkout hand-off: a refresh answers "what is true now".
+    pub(super) fn refresh_credit_balance(&mut self, cx: &mut Context<Self>) {
+        self.billing.credits.notice = None;
+        self.load_credit_balance(cx);
+    }
+
     pub(super) fn load_credit_balance(&self, cx: &mut Context<Self>) {
         let backend = self.backend.clone();
         let user_id = self.user_id.clone();
@@ -213,7 +219,7 @@ impl SettingsScreen {
 
     pub(super) fn credits_targets(&self) -> Vec<SettingsTarget> {
         let target = |target| SettingsTarget::Billing(BillingTarget::Credits(target));
-        let mut targets = vec![target(CreditsTarget::Refresh)];
+        let mut targets = Vec::new();
         targets.extend(
             CREDIT_PACKAGES_DOLLARS
                 .iter()
@@ -237,7 +243,6 @@ impl SettingsScreen {
         cx: &mut Context<Self>,
     ) {
         match target {
-            CreditsTarget::Refresh => self.refresh_credit_balance(cx),
             CreditsTarget::Package(dollars) => {
                 self.choose_credits(CreditChoice::Package(dollars), cx)
             }
@@ -248,12 +253,6 @@ impl SettingsScreen {
             }
             CreditsTarget::Pay(method) => self.purchase_credits(method, cx),
         }
-    }
-
-    fn refresh_credit_balance(&mut self, cx: &mut Context<Self>) {
-        self.billing.credits.notice = None;
-        self.load_credit_balance(cx);
-        cx.notify();
     }
 
     fn choose_credits(&mut self, choice: CreditChoice, cx: &mut Context<Self>) {
@@ -294,6 +293,9 @@ impl SettingsScreen {
             cx,
             move |this, result, cx| {
                 this.billing.credits.purchasing = None;
+                if result.is_ok() {
+                    this.billing.awaiting_browser = Some(std::time::Instant::now());
+                }
                 this.billing.credits.notice = Some(match result {
                     Ok(()) => match method {
                         PaymentMethod::Stripe => UiText::key("settings-api-credits-opened-checkout-in-your-browser-refresh-after-paying-to-see-the-n"),
@@ -309,24 +311,11 @@ impl SettingsScreen {
     pub(super) fn render_credits(&self, cx: &mut Context<Self>) -> Div {
         let credits = &self.billing.credits;
         let target = |target| move || SettingsTarget::Billing(BillingTarget::Credits(target));
-        let mut section = div().flex().flex_col().gap_3().child(
-            div()
-                .flex()
-                .items_center()
-                .justify_between()
-                .child(section_title(&tr("settings-api-credits-api-credits")))
-                .child(
-                    self.application_target(
-                        target(CreditsTarget::Refresh),
-                        widgets::ghost_button("credits-refresh")
-                            .py_1p5()
-                            .on_click(cx.listener(|this, _event, _window, cx| {
-                                this.refresh_credit_balance(cx);
-                            }))
-                            .child(tr("settings-api-credits-refresh")),
-                    ),
-                ),
-        );
+        let mut section = div()
+            .flex()
+            .flex_col()
+            .gap_3()
+            .child(subsection_title(&tr("settings-api-credits-api-credits")));
 
         // A failed load keeps the last balance, if any, and says so below it.
         let balance = match (credits.balance, &credits.balance_error) {
@@ -492,7 +481,7 @@ impl SettingsScreen {
                 label
             };
             let button = match method {
-                PaymentMethod::Stripe => widgets::primary_button(id),
+                PaymentMethod::Stripe => widgets::default_button(id),
                 PaymentMethod::Zaprite => widgets::secondary_button(id),
             };
             button
@@ -506,6 +495,10 @@ impl SettingsScreen {
                     }))
                 })
                 .child(label)
+                .child(widgets::external_mark(match method {
+                    PaymentMethod::Stripe => theme::text_on_default_button(),
+                    PaymentMethod::Zaprite => theme::text_primary(),
+                }))
         };
         // Guests see card checkout disabled, as on the web.
         let card = pay_button(PaymentMethod::Stripe, ready && !guest).when(guest, |el| {
@@ -529,22 +522,19 @@ impl SettingsScreen {
         // Feedback goes right under the buttons, which are in view when
         // pressed; below the card it can fall past the window's edge.
         purchase = match &credits.notice {
-            Some(notice) => purchase.child(
-                widgets::banner(theme::bg_sidebar_pill())
-                    .text_sm()
-                    .text_color(gpui::rgb(theme::text_secondary()))
-                    .child(notice.clone()),
-            ),
-            None => purchase.child(
-                div()
-                    .text_xs()
-                    .text_color(gpui::rgb(theme::text_muted()))
-                    .child(if guest {
-                        tr("settings-api-credits-checkout-opens-in-your-browser-anonymous-accounts-pay-with-bitcoi")
-                    } else {
-                        tr("settings-api-credits-checkout-opens-in-your-browser")
-                    }),
-            ),
+            Some(notice) => purchase.child(widgets::banner(widgets::Tone::Info, notice.clone())),
+            // The buttons carry the external-link mark; only guests need a
+            // word about why card checkout is off.
+            None => purchase.when(guest, |purchase| {
+                purchase.child(
+                    div()
+                        .text_xs()
+                        .text_color(gpui::rgb(theme::text_muted()))
+                        .child(tr(
+                            "settings-api-credits-anonymous-accounts-pay-with-bitcoin",
+                        )),
+                )
+            }),
         };
         section.child(purchase)
     }
