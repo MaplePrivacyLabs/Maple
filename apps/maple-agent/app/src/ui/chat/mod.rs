@@ -6132,6 +6132,7 @@ impl ChatScreen {
             }
             let old = self.timeline[index].id.clone();
             self.local_error_text.remove(&old);
+            self.pages.weights.remove(&old);
             self.timeline_index.remove(&old);
             self.timeline[index].id = item.id.clone();
             self.timeline_index.insert(item.id.clone(), (index, 0));
@@ -6143,7 +6144,6 @@ impl ChatScreen {
         {
             return None;
         }
-        self.pages.weights.remove(&item.id);
         if item.revision > 0 {
             if let Some((index, _)) = self.timeline_index.get(&item.id)
                 && self.timeline[*index].revision >= item.revision
@@ -6237,7 +6237,7 @@ impl ChatScreen {
         let id = self.timeline[index].id.clone();
         let anchor = self.scroll_anchor();
         let count = self.timeline.len();
-        self.bound_transcript_window(self.list_state.is_following_tail());
+        self.bound_after_row_change(index, self.list_state.is_following_tail());
         if self.timeline.len() != count {
             self.rebuild_window(anchor);
         }

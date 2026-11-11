@@ -12339,6 +12339,28 @@ mod state_tests {
     }
 
     #[gpui::test]
+    fn test_application_vim_follows_a_stream_to_its_newest_selectable_row(cx: &mut TestAppContext) {
+        cx.executor().allow_parking();
+        let chat = screen(cx);
+        chat.update(cx, |this, cx| {
+            this.application_vim_enabled = true;
+            this.replace_timeline(vec![user_item("u1", "question")]);
+            assert_eq!(this.selected_transcript_id(), Some("u1"));
+
+            this.apply_incoming_item("s1", item("a1", "message", Some("answer")), cx);
+            assert_eq!(this.selected_transcript_id(), Some("a1"));
+
+            // Rows the transcript does not show never take the selection.
+            this.apply_incoming_item("s1", item("internal", "internal", Some("state")), cx);
+            this.apply_incoming_item("s1", todo_item("todo", serde_json::json!([])), cx);
+            assert_eq!(this.selected_transcript_id(), Some("a1"));
+
+            this.apply_incoming_item("s1", item("tool", "tool", None), cx);
+            assert_eq!(this.selected_transcript_id(), Some("tool"));
+        });
+    }
+
+    #[gpui::test]
     fn test_returning_from_settings_reclaims_chat_focus_without_a_preference_change(
         cx: &mut TestAppContext,
     ) {
