@@ -13005,10 +13005,9 @@ mod state_tests {
     }
 
     #[gpui::test]
-    fn update_card_sits_above_settings_and_routes_by_state(cx: &mut TestAppContext) {
+    fn update_badge_marks_settings_and_its_menu_row_routes_by_state(cx: &mut TestAppContext) {
         use std::cell::RefCell;
         use std::rc::Rc;
-        cx.update(|cx| cx.set_reduce_motion(true));
         let (chat, cx) = chat_window(cx, |_, _| {});
         let actions = Rc::new(RefCell::new(Vec::new()));
         let sections = Rc::new(RefCell::new(Vec::new()));
@@ -13046,140 +13045,46 @@ mod state_tests {
             cx.run_until_parked();
         };
 
-        assert!(cx.debug_bounds("sidebar-update-card").is_none());
+        assert!(cx.debug_bounds("settings-update-badge").is_none());
         press(cx, "open-settings");
         assert!(cx.debug_bounds("settings-menu-update").is_none());
         press(cx, "open-settings");
 
         set(cx, crate::update::State::Ready, true);
-        let card = cx.debug_bounds("sidebar-update-card").expect("update card");
+        // The menu row says which version is ready and what a click does.
+        let (title, detail, failed) = cx
+            .update(|_, app| chat.read(app).update_notice())
+            .expect("update notice");
+        assert_eq!(title.as_ref(), "Maple 0.0.14 is ready");
+        assert_eq!(detail.as_deref(), Some("Restart to install"));
+        assert!(!failed);
+        let badge = cx.debug_bounds("settings-update-badge").expect("badge");
         let settings = cx.debug_bounds("open-settings").expect("settings button");
         assert!(
-            card.bottom() <= settings.top() && card.left() >= settings.left(),
-            "the card sits above Settings, inside the sidebar: {card:?}, {settings:?}"
+            badge.left() > settings.left() + px(40.) && badge.right() < settings.center().x,
+            "the badge follows the Settings label: {badge:?}, {settings:?}"
         );
-        // Expanded, the card is the one place the update shows.
-        assert!(cx.debug_bounds("settings-update-dot").is_none());
+        assert!(badge.top() >= settings.top() && badge.bottom() <= settings.bottom());
         press(cx, "open-settings");
-        assert!(cx.debug_bounds("settings-menu-update").is_none());
-        press(cx, "open-settings");
-        press(cx, "sidebar-update-card-act");
-        assert_eq!(*actions.borrow(), [crate::update::UpdateAction::Restart]);
-        press(cx, "sidebar-update-card-later");
-        assert_eq!(
-            actions.borrow().last(),
-            Some(&crate::update::UpdateAction::Later)
+        assert!(
+            cx.debug_bounds("settings-menu-update").unwrap().top()
+                < cx.debug_bounds("settings-menu-account").unwrap().top()
         );
-
-        set(cx, crate::update::State::Error, true);
-        press(cx, "sidebar-update-card-act");
-        assert_eq!(*sections.borrow(), [Section::About]);
-
-        // Collapsed, the card hides; a dot and the menu row stand in.
-        set(cx, crate::update::State::Ready, true);
-        chat.update(cx, |this, cx| this.set_sidebar_collapsed(true, cx));
-        cx.run_until_parked();
-        assert!(cx.debug_bounds("sidebar-update-card").is_none());
-        assert!(cx.debug_bounds("settings-update-dot").is_some());
-        // The rail under the collapsed gear is a window drag region, which
-        // the test platform cannot run, so open the menu directly.
-        let open_settings = |cx: &mut gpui::VisualTestContext| {
-            chat.update(cx, |this, cx| this.popup.toggle(ChatPopup::Settings, cx));
-            cx.run_until_parked();
-        };
-        open_settings(cx);
         press(cx, "settings-menu-update");
         assert!(cx.debug_bounds("settings-menu").is_none());
-        assert_eq!(
-            actions.borrow().last(),
-            Some(&crate::update::UpdateAction::Restart)
-        );
-
-        // "Later" hides it everywhere until the next release.
-        set(cx, crate::update::State::Ready, false);
-        assert!(cx.debug_bounds("settings-update-dot").is_none());
-        open_settings(cx);
-        assert!(cx.debug_bounds("settings-menu-update").is_none());
-    }
-
-    /// Tab reaches the card's buttons and moves on from them; Space
-    /// presses them on release instead of typing into the composer.
-    #[gpui::test]
-    fn update_card_buttons_take_the_keyboard(cx: &mut TestAppContext) {
-        use std::cell::RefCell;
-        use std::rc::Rc;
-        cx.update(|cx| cx.set_reduce_motion(true));
-        let (chat, cx) = chat_window(cx, |_, _| {});
-        let actions = Rc::new(RefCell::new(Vec::new()));
-        let action_log = actions.clone();
-        let _actions = cx.update(|_, app| {
-            app.subscribe(
-                &chat,
-                move |_, request: &crate::update::UpdateRequested, _| {
-                    action_log.borrow_mut().push(request.0);
-                },
-            )
-        });
-        chat.update(cx, |chat, cx| {
-            chat.set_update(
-                crate::update::Snapshot {
-                    state: crate::update::State::Ready,
-                    label: "v0.0.14 is ready to install".into(),
-                    version: Some("0.0.14".into()),
-                    remote_candidate: None,
-                    primary: Some(crate::update::UpdateAction::Restart),
-                    primary_label: "Restart to Update",
-                    manual_download_url: None,
-                    show_banner: true,
-                },
-                cx,
-            )
-        });
-        cx.update(|window, _| window.refresh());
-        cx.run_until_parked();
-        let composer = cx.update(|_, app| chat.read(app).composer.clone().unwrap());
-        let composer_focus = cx.update(|_, app| composer.read(app).focus_handle(app));
-        composer.update(cx, |input, cx| input.set_text("Unsent draft", cx));
-        cx.update(|window, app| window.focus(&composer_focus, app));
-        // The card's buttons share Settings' tab index and paint before it,
-        // so the first stop at that index is Restart.
-        for _ in 0..20 {
-            cx.simulate_keystrokes("tab");
-            if cx.update(|window, app| window.focused(app).map(|focus| focus.tab_index)) == Some(6)
-            {
-                break;
-            }
-        }
-        let space = |cx: &mut gpui::VisualTestContext| {
-            cx.simulate_keystrokes("space");
-            cx.update(|window, app| {
-                window.dispatch_event(
-                    gpui::PlatformInput::KeyUp(gpui::KeyUpEvent {
-                        keystroke: gpui::Keystroke::parse("space").unwrap(),
-                    }),
-                    app,
-                );
-            });
-            cx.run_until_parked();
-        };
-        let restart = cx
-            .update(|window, app| window.focused(app))
-            .expect("Restart");
-        assert_eq!(restart.tab_index, 6);
-        space(cx);
-        assert_eq!(composer.update(cx, |input, _| input.text()), "Unsent draft");
         assert_eq!(*actions.borrow(), [crate::update::UpdateAction::Restart]);
 
-        cx.update(|window, app| window.focus(&restart, app));
-        cx.simulate_keystrokes("tab");
-        let later = cx.update(|window, app| window.focused(app)).expect("Later");
-        assert_ne!(later, restart, "Tab moves on from Restart");
-        space(cx);
-        assert_eq!(composer.update(cx, |input, _| input.text()), "Unsent draft");
-        assert_eq!(
-            actions.borrow().last(),
-            Some(&crate::update::UpdateAction::Later)
-        );
+        set(cx, crate::update::State::Error, true);
+        press(cx, "open-settings");
+        press(cx, "settings-menu-update");
+        assert_eq!(*sections.borrow(), [Section::About]);
+        assert_eq!(actions.borrow().len(), 1);
+
+        // "Later" in About hides both until the next release.
+        set(cx, crate::update::State::Ready, false);
+        assert!(cx.debug_bounds("settings-update-badge").is_none());
+        press(cx, "open-settings");
+        assert!(cx.debug_bounds("settings-menu-update").is_none());
     }
 
     #[gpui::test]

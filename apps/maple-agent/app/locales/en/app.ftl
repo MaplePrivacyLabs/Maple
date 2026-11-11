@@ -1661,14 +1661,12 @@ chat-update-error = Update failed
 chat-update-restart = Restart to finish update
 chat-update-available = Update available
 # $version is the application version, not translated.
-chat-update-card-ready = Maple { $version } is ready
-chat-update-card-ready-detail = Restart when you’re between tasks.
+chat-update-ready = Maple { $version } is ready
+chat-update-ready-detail = Restart to install
 # $version is the application version, not translated.
-chat-update-card-available = Maple { $version } is available
-chat-update-card-available-detail = You can download it from Settings.
-chat-update-card-failed-detail = Your current version still works.
-chat-update-card-restart = Restart
-chat-update-card-details = Details
+chat-update-available-version = Maple { $version } is available
+chat-update-available-detail = Download it from About.
+chat-update-error-detail = Your current version still works.
 chat-store-updating = Updating local data…
 chat-host-unavailable = The Maple host is unavailable. Reopen Maple to reload your tasks. No message was resent.
 # $message is the underlying error, which may be untranslated.

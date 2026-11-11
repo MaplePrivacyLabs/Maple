@@ -187,14 +187,6 @@ pub(super) enum SidebarEvent {
     Notice(UiText),
 }
 
-/// An update the user can act on, shown as a card above Settings while
-/// the sidebar is expanded. The screen derives it from the updater.
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub(super) struct UpdateCard {
-    pub(super) state: crate::update::State,
-    pub(super) version: String,
-}
-
 /// Activity a task row indicates beside its title.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(super) enum SessionActivity {
@@ -653,7 +645,6 @@ pub(super) struct Sidebar {
     /// Application Vim's region is the sidebar, so rows show its
     /// selection.
     vim_active: bool,
-    update_card: Option<UpdateCard>,
     // The list and its sections.
     list: gpui::ListState,
     entries: Vec<SidebarEntry>,
@@ -1010,7 +1001,6 @@ impl Sidebar {
             collapsed_computers: HashSet::new(),
             projects_expanded: true,
             archived_expanded: false,
-            update_card: None,
             view: settings.sidebar_layout,
             order: SidebarOrder::default(),
             order_loaded: false,
@@ -1114,13 +1104,6 @@ impl Sidebar {
             self.rebuild_sections();
         }
         cx.notify();
-    }
-
-    pub(super) fn set_update_card(&mut self, card: Option<UpdateCard>, cx: &mut Context<Self>) {
-        if self.update_card != card {
-            self.update_card = card;
-            cx.notify();
-        }
     }
 
     pub(super) fn set_recent_roots(
@@ -4499,120 +4482,9 @@ impl Render for Sidebar {
                         self.list.clone(),
                     )),
             )
-            .children(
-                self.update_card
-                    .as_ref()
-                    .map(|card| update_card(card, &self.messages, self.chat.clone())),
-            )
             // Settings stays opaque outside this cached, fading subtree.
             .child(div().h(px(54.)).flex_none())
     }
-}
-
-/// The update card: what's ready, what restarting means, and a way to act
-/// now or later. Neutral surface; only the glyph carries the accent.
-fn update_card(
-    card: &UpdateCard,
-    messages: &MessageCache,
-    chat: WeakEntity<ChatScreen>,
-) -> gpui::Stateful<Div> {
-    use crate::update::State;
-    let version = || [("version", card.version.clone().into())];
-    let (title, detail, act_now) = match card.state {
-        State::Ready => (
-            messages.get("chat-update-card-ready", version()),
-            "chat-update-card-ready-detail",
-            "chat-update-card-restart",
-        ),
-        State::Error => (
-            tr("chat-update-error"),
-            "chat-update-card-failed-detail",
-            "chat-update-card-details",
-        ),
-        _ => (
-            messages.get("chat-update-card-available", version()),
-            "chat-update-card-available-detail",
-            "chat-update-card-details",
-        ),
-    };
-    let later = chat.clone();
-    div()
-        .id("sidebar-update-card")
-        .debug_selector(|| "sidebar-update-card".to_string())
-        .flex_none()
-        .mx_2()
-        .mb_2()
-        .p_3()
-        .flex()
-        .flex_col()
-        .gap_1()
-        .rounded(theme::RADIUS_MD)
-        .bg(gpui::rgb(theme::bg_elevated()))
-        .border_1()
-        .border_color(gpui::rgb(theme::border()))
-        .role(gpui::Role::Status)
-        .child(
-            div()
-                .flex()
-                .items_center()
-                .gap_1p5()
-                .text_sm()
-                .font_weight(gpui::FontWeight::SEMIBOLD)
-                .text_color(gpui::rgb(theme::text_primary()))
-                .child(if card.state == State::Error {
-                    icon("circle-alert", px(14.), theme::text_muted())
-                } else {
-                    icon("download", px(14.), theme::accent())
-                })
-                .child(gpui::text!(title)),
-        )
-        .child(
-            div()
-                .text_xs()
-                .text_color(gpui::rgb(theme::text_muted()))
-                .child(gpui::text!(tr(detail))),
-        )
-        .child(
-            div()
-                .pt_1p5()
-                .flex()
-                .items_center()
-                .gap_1()
-                .child(
-                    widgets::default_button("sidebar-update-card-act")
-                        .debug_selector(|| "sidebar-update-card-act".to_string())
-                        .tab_index(6)
-                        .on_key_down(ChatScreen::sidebar_button_key_down)
-                        .px_3()
-                        .py_1()
-                        .text_xs()
-                        .child(gpui::text!(tr(act_now)))
-                        .on_click(move |_, _, cx| {
-                            if let Some(chat) = chat.upgrade() {
-                                chat.update(cx, |chat, cx| chat.open_update(cx));
-                            }
-                        }),
-                )
-                .child(
-                    widgets::ghost_button("sidebar-update-card-later")
-                        .debug_selector(|| "sidebar-update-card-later".to_string())
-                        .tab_index(6)
-                        .on_key_down(ChatScreen::sidebar_button_key_down)
-                        .px_3()
-                        .py_1()
-                        .text_xs()
-                        .child(gpui::text!(tr("update-confirmation-later")))
-                        .on_click(move |_, _, cx| {
-                            if let Some(chat) = later.upgrade() {
-                                chat.update(cx, |_, cx| {
-                                    cx.emit(crate::update::UpdateRequested(
-                                        crate::update::UpdateAction::Later,
-                                    ));
-                                });
-                            }
-                        }),
-                ),
-        )
 }
 
 /// Replace each line break, including CRLF, with one space.

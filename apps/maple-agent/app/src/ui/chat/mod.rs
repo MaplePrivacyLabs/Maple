@@ -4262,33 +4262,42 @@ impl ChatScreen {
     pub fn set_update(&mut self, snapshot: crate::update::Snapshot, cx: &mut Context<Self>) {
         if self.update != snapshot {
             self.update = snapshot;
-            // The updater names the version whenever it shows an update.
-            let card = self
-                .update
-                .version
-                .clone()
-                .filter(|_| self.update.show_banner)
-                .map(|version| sidebar::UpdateCard {
-                    state: self.update.state,
-                    version,
-                });
-            self.sidebar
-                .update(cx, |sidebar, cx| sidebar.set_update_card(card, cx));
             cx.notify();
         }
     }
 
     /// What the Settings menu says about the updater, when it has
-    /// something for the user: the row label and whether it failed.
-    fn update_notice(&self) -> Option<(SharedString, bool)> {
+    /// something for the user: a title, an optional line under it, and
+    /// whether it failed.
+    fn update_notice(&self) -> Option<(SharedString, Option<SharedString>, bool)> {
+        use crate::update::State;
         let snapshot = &self.update;
         if !snapshot.show_banner {
             return None;
         }
+        let titled = |key, fallback| match &snapshot.version {
+            Some(version) => self
+                .messages
+                .get(key, [("version", version.clone().into())]),
+            None => tr(fallback),
+        };
         Some(match snapshot.state {
-            crate::update::State::Error => (tr("chat-update-error"), true),
-            crate::update::State::RestartRequired => (tr("chat-update-restart"), false),
-            _ => (tr("chat-update-available"), false),
+            State::Error => (
+                tr("chat-update-error"),
+                Some(tr("chat-update-error-detail")),
+                true,
+            ),
+            State::RestartRequired => (tr("chat-update-restart"), None, false),
+            State::Ready => (
+                titled("chat-update-ready", "chat-update-available"),
+                Some(tr("chat-update-ready-detail")),
+                false,
+            ),
+            _ => (
+                titled("chat-update-available-version", "chat-update-available"),
+                Some(tr("chat-update-available-detail")),
+                false,
+            ),
         })
     }
 
@@ -7196,6 +7205,28 @@ fn transcript_list_state() -> gpui::ListState {
     state
 }
 
+/// The update mark beside Settings: a download glyph on the accent, or a
+/// muted alert when the update failed.
+fn update_badge(size: gpui::Pixels, failed: bool) -> Div {
+    let badge = div()
+        .flex_none()
+        .size(size)
+        .rounded_full()
+        .flex()
+        .items_center()
+        .justify_center();
+    if failed {
+        badge
+            .border_1()
+            .border_color(gpui::rgb(theme::border()))
+            .child(icon("circle-alert", size * 0.67, theme::text_muted()))
+    } else {
+        badge
+            .bg(gpui::rgb(theme::accent()))
+            .child(icon("download", size * 0.6, theme::on_accent()))
+    }
+}
+
 impl ChatScreen {
     /// Refresh only presentation derived from locale; keep task, draft, search,
     /// scroll anchors and all backend generations untouched.
@@ -7615,8 +7646,7 @@ impl ChatScreen {
                     .relative()
                     .flex_none()
                     .child(icon("settings", px(16.), theme::text_secondary()))
-                    // Collapsed, the card is hidden, so a dot on the gear
-                    // says an update waits in the menu.
+                    // Collapsed, a dot on the gear stands in for the badge.
                     .when(!expanded && update.is_some(), |gear| {
                         gear.child(
                             div()
@@ -7635,6 +7665,12 @@ impl ChatScreen {
                     .justify_start()
                     .gap_2()
                     .child(tr("chat-settings"))
+                    .when_some(update.clone(), |button, (_, _, failed)| {
+                        button.child(
+                            update_badge(px(18.), failed)
+                                .debug_selector(|| "settings-update-badge".to_string()),
+                        )
+                    })
                     .child(div().flex_1())
                     .child(
                         icon("chevron-down", px(12.), theme::text_muted()).when(!open, |icon| {
@@ -7802,12 +7838,20 @@ impl ChatScreen {
                     .content(usage),
                 )
                 .separator()
-                // Expanded, the update card above Settings carries this.
-                .items(update.filter(|_| !expanded).map(|(label, failed)| {
-                    MenuItem::new("settings-menu-update", label, |this: &mut Self, _, cx| {
-                        this.open_update(cx);
-                    })
-                    .icon(if failed { "circle-alert" } else { "download" })
+                .items(update.map(|(title, detail, failed)| {
+                    let row =
+                        MenuItem::new("settings-menu-update", title, |this: &mut Self, _, cx| {
+                            this.open_update(cx);
+                        })
+                        .icon(if failed {
+                            "circle-alert"
+                        } else {
+                            "download"
+                        });
+                    match detail {
+                        Some(detail) => row.note(detail),
+                        None => row,
+                    }
                 }))
                 .item(
                     // Shows the label of the Settings section it opens.
