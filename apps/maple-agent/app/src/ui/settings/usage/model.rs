@@ -29,6 +29,14 @@ pub(crate) enum PlanKind {
 }
 
 pub(crate) fn plan_kind(status: &BillingStatus) -> PlanKind {
+    use crate::billing::{BillingStatusExt, PlanTier};
+    // Billing's description of the plan decides when it sends one.
+    match status.plan_group.as_deref().map(str::trim) {
+        Some("free") => return PlanKind::Free,
+        Some("team") => return PlanKind::Team,
+        Some(group) if !group.is_empty() => return PlanKind::Credits,
+        _ => {}
+    }
     let name = status
         .product_name
         .as_deref()
@@ -38,11 +46,11 @@ pub(crate) fn plan_kind(status: &BillingStatus) -> PlanKind {
     if name == "free" {
         return PlanKind::Free;
     }
-    if name.contains("team") {
+    let tier = status.tier();
+    if tier == PlanTier::Team {
         return PlanKind::Team;
     }
-    let api_access = name.contains("pro") || name.contains("max");
-    if status.total_tokens.unwrap_or(0) > 0 || api_access {
+    if status.total_tokens.unwrap_or(0) > 0 || tier.has_api_access() {
         PlanKind::Credits
     } else {
         PlanKind::Free

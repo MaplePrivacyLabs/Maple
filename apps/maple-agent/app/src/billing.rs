@@ -52,6 +52,20 @@ impl PlanTier {
         }
     }
 
+    /// The tier of a plan billing described, or of its name when billing
+    /// sent no description (an older server, or a product it does not
+    /// recognize). Any described individual plan ranked at or above the
+    /// second one reads as Max, the top individual tier this app tells apart.
+    pub fn from_plan(group: Option<&str>, rank: Option<f64>, name: Option<&str>) -> Self {
+        match group.map(str::trim).filter(|group| !group.is_empty()) {
+            Some("free") => Self::Free,
+            Some("team") => Self::Team,
+            Some(_) if rank.is_some_and(|rank| rank >= 2.0) => Self::Max,
+            Some(_) => Self::Pro,
+            None => Self::from_product_name(name),
+        }
+    }
+
     /// API keys and credits need Pro or better (`hasApiAccess` on the web).
     pub fn has_api_access(self) -> bool {
         self >= Self::Pro
@@ -103,10 +117,43 @@ impl PlanAccess {
 /// [`PlanTier::from_product_name`], a missing or unknown name is not Free
 /// here: the gate needs a confirmed Free plan.
 fn names_free_plan(status: &BillingStatus) -> bool {
-    status
-        .product_name
+    match status.plan_group.as_deref().map(str::trim) {
+        Some(group) if !group.is_empty() => group == "free",
+        _ => status
+            .product_name
+            .as_deref()
+            .is_some_and(|name| name.trim().eq_ignore_ascii_case("free")),
+    }
+}
+
+/// The plan name to show. Billing's display name can differ from
+/// `product_name`, which older builds parse.
+pub fn plan_display_name(status: &BillingStatus) -> Option<String> {
+    [&status.plan_display_name, &status.product_name]
+        .into_iter()
+        .flatten()
+        .map(|name| name.trim())
+        .find(|name| !name.is_empty())
+        .map(str::to_string)
+}
+
+/// The name to show for a product on sale.
+pub fn product_display_name(product: &Product) -> &str {
+    product
+        .display_name
         .as_deref()
-        .is_some_and(|name| name.trim().eq_ignore_ascii_case("free"))
+        .map(str::trim)
+        .filter(|name| !name.is_empty())
+        .unwrap_or(product.name.as_str())
+}
+
+/// The tier a product on sale belongs to.
+pub fn product_tier(product: &Product) -> PlanTier {
+    PlanTier::from_plan(
+        product.plan_group.as_deref(),
+        product.plan_rank,
+        Some(&product.name),
+    )
 }
 
 /// Preset credit purchases in whole dollars, as on the web.
@@ -169,7 +216,11 @@ pub trait BillingStatusExt {
 
 impl BillingStatusExt for BillingStatus {
     fn tier(&self) -> PlanTier {
-        PlanTier::from_product_name(self.product_name.as_deref())
+        PlanTier::from_plan(
+            self.plan_group.as_deref(),
+            self.plan_rank,
+            self.product_name.as_deref(),
+        )
     }
 
     /// Whether the Stripe customer portal can manage this subscription:
@@ -268,7 +319,9 @@ impl PlanUsage {
         let used = status.used_tokens?.max(0);
         let percent = ((used as f64 / total as f64) * 100.0).clamp(0.0, 100.0);
         Some(Self {
-            product_name: status.product_name.clone(),
+            // The name shown is billing's display name. `plan_label` keeps the
+            // name every host parses to tell a paid plan, so it must not follow.
+            product_name: plan_display_name(status),
             reset_at: status.usage_reset_date.clone(),
             plan_label: plan_name_label(status.product_name.as_deref()),
             // 100% means used up: just short of it reads 99%, so the
@@ -446,6 +499,79 @@ mod tests {
     }
 
     #[test]
+    fn a_described_plan_overrides_what_its_name_suggests() {
+        let described = |group: &str, rank: Option<f64>, name: &str| BillingStatus {
+            product_name: Some(name.into()),
+            plan_group: Some(group.into()),
+            plan_rank: rank,
+            ..Default::default()
+        };
+        for (status, tier) in [
+            (described("individual", Some(1.0), "Max"), PlanTier::Pro),
+            (described("individual", Some(2.0), "Pro"), PlanTier::Max),
+            (described("individual", Some(3.0), "Studio"), PlanTier::Max),
+            (described("individual", None, "Studio"), PlanTier::Pro),
+            (described("team", None, "Studio"), PlanTier::Team),
+            (described("free", Some(0.0), "Max"), PlanTier::Free),
+            // A group this build has never seen is still a paid plan.
+            (described("enterprise", None, "Studio"), PlanTier::Pro),
+        ] {
+            assert_eq!(status.tier(), tier, "{status:?}");
+        }
+        // No description: the name decides, as before.
+        let named = BillingStatus {
+            product_name: Some("Max".into()),
+            plan_group: Some(" ".into()),
+            ..Default::default()
+        };
+        assert_eq!(named.tier(), PlanTier::Max);
+
+        let free = described("free", Some(0.0), "Max");
+        assert_eq!(PlanAccess::from_status(&Ok(free)), PlanAccess::Blocked);
+        let paid = described("individual", Some(1.0), "Free");
+        assert_eq!(PlanAccess::from_status(&Ok(paid)), PlanAccess::Allowed);
+    }
+
+    #[test]
+    fn display_names_come_from_billing_and_fall_back_to_the_plan_name() {
+        let mut status = BillingStatus {
+            product_name: Some("Max Studio".into()),
+            plan_display_name: Some("Studio".into()),
+            total_tokens: Some(100),
+            used_tokens: Some(10),
+            ..Default::default()
+        };
+        assert_eq!(plan_display_name(&status).as_deref(), Some("Studio"));
+        let usage = PlanUsage::from_status(&status, now()).unwrap();
+        assert_eq!(usage.product_name.as_deref(), Some("Studio"));
+        // Hosts tell a paid plan from this label, so it keeps the parsed name.
+        assert_eq!(usage.plan_label, "Max Studio Plan");
+
+        status.plan_display_name = Some("  ".into());
+        assert_eq!(plan_display_name(&status).as_deref(), Some("Max Studio"));
+        status.product_name = None;
+        assert_eq!(plan_display_name(&status), None);
+
+        let product = Product {
+            id: "p".into(),
+            name: "Max Studio".into(),
+            active: true,
+            plan_group: Some("individual".into()),
+            plan_rank: Some(3.0),
+            display_name: Some("Studio".into()),
+            ..Default::default()
+        };
+        assert_eq!(product_display_name(&product), "Studio");
+        assert_eq!(product_tier(&product), PlanTier::Max);
+        let named = Product {
+            name: "Team".into(),
+            ..Default::default()
+        };
+        assert_eq!(product_display_name(&named), "Team");
+        assert_eq!(product_tier(&named), PlanTier::Team);
+    }
+
+    #[test]
     fn tiers_come_from_the_product_name() {
         assert_eq!(PlanTier::from_product_name(None), PlanTier::Free);
         assert_eq!(
@@ -499,6 +625,7 @@ mod tests {
                 }),
             }),
             is_available: None,
+            ..Default::default()
         };
         assert_eq!(
             price_label(&product(2000, Some("month"))).unwrap(),
