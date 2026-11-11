@@ -361,6 +361,15 @@ pub(super) fn token_name(kind: TokenKind) -> SharedString {
     })
 }
 
+pub(super) fn model_group_name(group: &str) -> SharedString {
+    match group {
+        "capable" => tr("chat-model-group-capable"),
+        "uncensored" => tr("chat-model-group-uncensored"),
+        "fast" => tr("chat-model-group-fast"),
+        _ => group.into(),
+    }
+}
+
 pub(super) fn series_name(key: SeriesKey, label: Option<&str>) -> SharedString {
     if let Some(label) = label {
         return label.to_string().into();

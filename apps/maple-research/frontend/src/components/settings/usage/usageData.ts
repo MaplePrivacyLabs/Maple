@@ -9,10 +9,11 @@ import type {
   UsageRange
 } from "@/billing/usageApi";
 import {
-  HIGHLIGHT_MODELS,
+  HIGHLIGHT_GROUPS,
   MAX_NAMED_MODELS,
   MORE_MODELS_COLOR,
   MORE_MODELS_KEY,
+  highlightGroup,
   highlightIndex,
   modelColor,
   ORIGIN_COLOR,
@@ -407,7 +408,7 @@ export function sortModels(models: ModelSummary[], by: "credits" | "requests"): 
 // ---------------------------------------------------------------------------
 // Daily chart
 
-export type SeriesDef = { key: string; label: string; color: string };
+export type SeriesDef = { key: string; label: string; color: string; group?: string };
 
 export type DayBucket = {
   date: string;
@@ -433,12 +434,16 @@ function seriesBefore(left: string, right: string): number {
  * then the best models stay and the smallest of the rest fold. */
 function chooseNamed(totals: Map<string, number>): { named: string[]; folded: string[] } {
   const used = new Set([...totals].filter(([, value]) => value > 0).map(([id]) => id));
-  const named: string[] = HIGHLIGHT_MODELS.filter((id) => used.has(id));
+  // Keep one legend slot for overflow. If all highlights are used, fold the
+  // lowest-ranked one instead of displacing it with an uncatalogued model.
+  const limit = used.size > MAX_NAMED_MODELS ? MAX_NAMED_MODELS - 1 : MAX_NAMED_MODELS;
+  const highlighted = HIGHLIGHT_GROUPS.flatMap(({ models }) => models).filter((id) => used.has(id));
+  const named: string[] = highlighted.slice(0, limit);
   const others = [...totals]
     .filter(([id, value]) => value > 0 && highlightIndex(id) === undefined)
     .sort((a, b) => b[1] - a[1] || (a[0] < b[0] ? -1 : a[0] > b[0] ? 1 : 0));
-  const room = MAX_NAMED_MODELS - named.length;
-  const folded = others.splice(room).map(([id]) => id);
+  const room = limit - named.length;
+  const folded = [...highlighted.slice(limit), ...others.splice(room).map(([id]) => id)];
   named.push(...others.map(([id]) => id));
   named.sort(seriesBefore);
   return { named, folded };
@@ -493,11 +498,15 @@ export function buildDailyChart({
       ])
     );
     const { named, folded: foldedIds } = chooseNamed(totals);
-    const series: SeriesDef[] = named.map((id) => ({
-      key: id,
-      label: modelLabel(id, labels),
-      color: modelColor(id, named)
-    }));
+    const series: SeriesDef[] = named.map((id) => {
+      const group = highlightGroup(id);
+      return {
+        key: id,
+        label: modelLabel(id, labels),
+        color: modelColor(id, named),
+        ...(group ? { group } : {})
+      };
+    });
     if (foldedIds.length > 0) {
       series.push({
         key: MORE_MODELS_KEY,

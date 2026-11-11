@@ -328,17 +328,32 @@ impl SettingsScreen {
                 .text_color(gpui::rgb(theme::text_muted()))
                 .child(tr("settings-usage-no-usage"))
         } else {
-            div()
-                .flex()
-                .flex_wrap()
-                .gap_x_4()
-                .gap_y_1()
-                .children(chart_data.series.iter().map(|series| {
-                    legend_item(
-                        palette::series(series.key),
-                        series_name(series.key, series.label.as_deref()),
-                    )
-                }))
+            div().flex().flex_wrap().gap_x_4().gap_y_3().children(
+                chart_data.series.iter().enumerate().map(|(index, series)| {
+                    let heading = series.group.filter(|group| {
+                        index == 0 || chart_data.series[index - 1].group != Some(*group)
+                    });
+                    div()
+                        .flex()
+                        .items_center()
+                        .gap_2()
+                        .when_some(heading, |row, group| {
+                            row.child(
+                                div()
+                                    .text_xs()
+                                    .text_color(gpui::rgb(theme::text_muted()))
+                                    .child(gpui::text!(
+                                        id = ("usage-model-group", index),
+                                        model_group_name(group)
+                                    )),
+                            )
+                        })
+                        .child(legend_item(
+                            palette::series(series.key),
+                            series_name(series.key, series.label.as_deref()),
+                        ))
+                }),
+            )
         };
         widgets::card_row()
             .p_5()

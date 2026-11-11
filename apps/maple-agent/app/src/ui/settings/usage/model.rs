@@ -9,24 +9,34 @@ use crate::billing::{BillingStatus, UsageDayRow, UsageModelLabels, UsageMonthRow
 /// Longest date list built from server-supplied bounds.
 const MAX_DAYS: u64 = 400;
 
-/// Models worth a stable color, best first. A model keeps its color across
-/// ranges. GPT-OSS is not here: it is not a model we highlight. A model
-/// that is not listed still gets its own series until the chart runs out
-/// of colors.
-pub(crate) const HIGHLIGHT_MODELS: [&str; 7] = [
-    "glm-5-3",
-    "kimi-k3",
-    "deepseek-v4-1-flash",
-    "deepseek-v4-1-flash-1017-uncensored",
-    "glm-5-3-flash",
-    "kimi-k3-1-pro",
-    "gemma4-31b",
+/// Display groups matching the model picker, with a stable order within
+/// each group. Usage colors must not move when the picker promotes a
+/// selected model or a day's usage changes. GPT-OSS is deliberately not
+/// highlighted. Other models get a series until the seven-color chart fills.
+pub(crate) const HIGHLIGHT_GROUPS: [(&str, &[&str]); 3] = [
+    ("capable", &["kimi-k3-1-pro", "kimi-k3", "glm-5-3"]),
+    ("uncensored", &["deepseek-v4-1-flash-1017-uncensored"]),
+    (
+        "fast",
+        &["gemma4-31b", "glm-5-3-flash", "deepseek-v4-1-flash"],
+    ),
 ];
 
-/// Named series before the rest fold into "More models". One per color,
-/// which is also every model Maple Work offers, so using those does not
-/// produce a gray bucket.
-pub(crate) const MAX_NAMED_MODELS: usize = HIGHLIGHT_MODELS.len();
+/// Named series before the rest fold into "More models"; one per chart color.
+pub(crate) const MAX_NAMED_MODELS: usize = 7;
+
+fn highlight_models() -> impl Iterator<Item = &'static str> {
+    HIGHLIGHT_GROUPS
+        .iter()
+        .flat_map(|(_, models)| models.iter().copied())
+}
+
+pub(crate) fn model_group(model: &str) -> Option<&'static str> {
+    HIGHLIGHT_GROUPS
+        .iter()
+        .find(|(_, models)| models.contains(&model))
+        .map(|(group, _)| *group)
+}
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) enum PlanKind {
@@ -292,7 +302,7 @@ pub(crate) fn model_label(model: &str, labels: &UsageModelLabels) -> String {
 }
 
 pub(crate) fn model_slot(model: &str) -> Option<usize> {
-    HIGHLIGHT_MODELS.iter().position(|slot| *slot == model)
+    highlight_models().position(|slot| slot == model)
 }
 
 fn series_before(left: &str, right: &str) -> std::cmp::Ordering {
@@ -313,10 +323,18 @@ fn choose_named<'a>(totals: &[(&'a str, f64)]) -> (Vec<&'a str>, Vec<&'a str>) {
             .find(|(candidate, total)| *candidate == id && *total > 0.0)
             .map(|(_, total)| *total)
     };
-    let mut named: Vec<&str> = HIGHLIGHT_MODELS
-        .iter()
-        .copied()
+    // Overflow still occupies one of the seven legend slots. If every curated
+    // model is used, fold the lowest-ranked highlight rather than displace a
+    // better model with an uncatalogued one.
+    let used_models = totals.iter().filter(|(_, total)| *total > 0.0).count();
+    let limit = if used_models > MAX_NAMED_MODELS {
+        MAX_NAMED_MODELS - 1
+    } else {
+        MAX_NAMED_MODELS
+    };
+    let mut named: Vec<&str> = highlight_models()
         .filter(|id| used(id).is_some())
+        .take(limit)
         .collect();
     let mut others: Vec<(&str, f64)> = totals
         .iter()
@@ -324,10 +342,14 @@ fn choose_named<'a>(totals: &[(&'a str, f64)]) -> (Vec<&'a str>, Vec<&'a str>) {
         .map(|(id, total)| (*id, *total))
         .collect();
     others.sort_by(|left, right| right.1.total_cmp(&left.1).then_with(|| left.0.cmp(right.0)));
-    let room = MAX_NAMED_MODELS - named.len();
+    let room = limit - named.len();
     named.extend(others.iter().take(room).map(|(id, _)| *id));
     named.sort_by(|left, right| series_before(left, right));
-    let folded = others.into_iter().skip(room).map(|(id, _)| id).collect();
+    let mut folded: Vec<&'a str> = highlight_models()
+        .filter(|id| used(id).is_some())
+        .skip(limit)
+        .collect();
+    folded.extend(others.into_iter().skip(room).map(|(id, _)| id));
     (named, folded)
 }
 
@@ -438,6 +460,8 @@ pub(crate) struct Series {
     pub(crate) label: Option<String>,
     /// Canonical id for a named model, so matching tables get the same color.
     pub(crate) model: Option<String>,
+    /// The model picker's shared display-group id.
+    pub(crate) group: Option<&'static str>,
 }
 
 #[derive(Clone, Debug, PartialEq)]
@@ -506,6 +530,7 @@ fn build_model_chart(
             key: SeriesKey::Model(color_slot(id, &named).expect("a named model has a free color")),
             label: Some(model_label(id, labels)),
             model: Some((*id).to_string()),
+            group: model_group(id),
         })
         .collect();
     if !folded_ids.is_empty() {
@@ -514,6 +539,7 @@ fn build_model_chart(
             key: SeriesKey::MoreModels,
             label,
             model: None,
+            group: None,
         });
     }
 
@@ -636,6 +662,7 @@ pub(crate) fn build_daily_chart(
             key: keys[index],
             label: None,
             model: None,
+            group: None,
         })
         .collect();
     let days: Vec<ChartDay> = dates
@@ -1012,8 +1039,8 @@ mod tests {
                 .map(|s| (s.key, s.label.clone()))
                 .collect::<Vec<_>>(),
             [
-                (SeriesKey::Model(0), Some("glm-5-3".into())),
-                (SeriesKey::Model(1), Some("Llama X".into())),
+                (SeriesKey::Model(2), Some("glm-5-3".into())),
+                (SeriesKey::Model(0), Some("Llama X".into())),
             ]
         );
         assert_eq!(chart.days[0].values, [4.0, 0.0]);
@@ -1054,7 +1081,7 @@ mod tests {
         assert_eq!(color_slot("gpt-oss-120b", &[]), None);
         assert_eq!(model_slot("deepseek-v4-1-flash-1017-uncensored"), Some(3));
         assert_eq!(model_slot("gpt-oss-120b"), None);
-        assert_eq!(model_slot("glm-5-3"), Some(0));
+        assert_eq!(model_slot("glm-5-3"), Some(2));
 
         let dates = date_range(day("2026-10-01"), day("2026-10-01"));
         let rows = [
@@ -1128,12 +1155,13 @@ mod tests {
             Split::Model,
             &UsageModelLabels::default(),
         );
+        assert_eq!(chart.series.len(), MAX_NAMED_MODELS);
         assert_eq!(chart.series.last().unwrap().key, SeriesKey::MoreModels);
+        assert_eq!(chart.series.last().unwrap().label, None);
         assert_eq!(
-            chart.series.last().unwrap().label.as_deref(),
-            Some("overflow")
+            chart.days[0].folded,
+            [("m6".to_string(), 1.0), ("overflow".to_string(), 0.5)]
         );
-        assert!(chart.days[0].folded.is_empty());
 
         rows.push(row("2026-10-01", "also", "app", None, "plan", 0.25));
         let chart = build_daily_chart(
@@ -1143,18 +1171,22 @@ mod tests {
             Split::Model,
             &UsageModelLabels::default(),
         );
+        assert_eq!(chart.series.len(), MAX_NAMED_MODELS);
         assert_eq!(chart.series.last().unwrap().label, None);
         assert_eq!(
             chart.days[0].folded,
-            [("overflow".to_string(), 0.5), ("also".to_string(), 0.25)]
+            [
+                ("m6".to_string(), 1.0),
+                ("overflow".to_string(), 0.5),
+                ("also".to_string(), 0.25)
+            ]
         );
     }
 
     #[test]
     fn a_full_legend_keeps_the_best_models_over_heavier_others() {
         let dates = date_range(day("2026-10-01"), day("2026-10-01"));
-        let mut rows: Vec<UsageDayRow> = HIGHLIGHT_MODELS
-            .iter()
+        let mut rows: Vec<UsageDayRow> = highlight_models()
             .map(|model| row("2026-10-01", model, "app", None, "plan", 1.0))
             .collect();
         rows.push(row(
@@ -1188,10 +1220,30 @@ mod tests {
             .collect();
         assert_eq!(
             named,
-            HIGHLIGHT_MODELS
+            [
+                Some("kimi-k3-1-pro".into()),
+                Some("kimi-k3".into()),
+                Some("glm-5-3".into()),
+                Some("deepseek-v4-1-flash-1017-uncensored".into()),
+                Some("gemma4-31b".into()),
+                Some("glm-5-3-flash".into()),
+            ]
+        );
+        assert_eq!(
+            chart
+                .series
                 .iter()
-                .map(|model| Some((*model).to_string()))
-                .collect::<Vec<_>>()
+                .map(|series| series.group)
+                .collect::<Vec<_>>(),
+            [
+                Some("capable"),
+                Some("capable"),
+                Some("capable"),
+                Some("uncensored"),
+                Some("fast"),
+                Some("fast"),
+                None,
+            ]
         );
         assert_eq!(
             chart.series.last().map(|series| series.key),
@@ -1201,7 +1253,8 @@ mod tests {
             chart.days[0].folded,
             [
                 ("gpt-oss-120b".to_string(), 500.0),
-                ("llama3-3-70b".to_string(), 400.0)
+                ("llama3-3-70b".to_string(), 400.0),
+                ("deepseek-v4-1-flash".to_string(), 1.0)
             ]
         );
     }

@@ -136,7 +136,7 @@ mod tests {
         let peers = ["glm-5-3", "llama"];
         assert_eq!(
             model_table_color("llama", &peers, Split::Model),
-            series(SeriesKey::Model(1))
+            series(SeriesKey::Model(0))
         );
         assert_eq!(
             model_table_color("glm-5-3", &[], Split::Model),
@@ -146,7 +146,7 @@ mod tests {
         for split in [Split::Origin, Split::Pool, Split::Token] {
             assert_eq!(
                 model_table_color("glm-5-3", &peers, split),
-                series(SeriesKey::Model(0)),
+                series(SeriesKey::Model(2)),
                 "other charts leave the table's highlights intact"
             );
         }

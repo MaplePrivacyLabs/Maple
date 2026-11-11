@@ -4,20 +4,22 @@ import type { UsageClientApp, UsagePool } from "@/billing/usageApi";
 // ΔE >= 8, normal vision >= 15 against light and dark cards). Coral stays
 // reserved for the plan meter and Chat; models never use it.
 
-/**
- * Best models, in legend order. Each keeps its color across ranges. GPT-OSS
- * is not here: it is not a model we highlight. A model that is not listed
- * still gets its own series until the chart runs out of colors.
+/** Display groups matching the model picker. Selection and daily usage do
+ * not reorder these stable identities. Unlisted models retain a series until
+ * the seven-color chart fills; overflow folds into "More models".
  */
-export const HIGHLIGHT_MODELS = [
-  "glm-5-3",
-  "kimi-k3",
-  "deepseek-v4-1-flash",
-  "deepseek-v4-1-flash-1017-uncensored",
-  "glm-5-3-flash",
-  "kimi-k3-1-pro",
-  "gemma4-31b"
+export const HIGHLIGHT_GROUPS = [
+  { label: "Most capable", models: ["kimi-k3-1-pro", "kimi-k3", "glm-5-3"] },
+  { label: "Uncensored", models: ["deepseek-v4-1-flash-1017-uncensored"] },
+  { label: "Fast & cheap", models: ["gemma4-31b", "glm-5-3-flash", "deepseek-v4-1-flash"] }
 ] as const;
+
+const HIGHLIGHT_MODELS: readonly string[] = HIGHLIGHT_GROUPS.flatMap(({ models }) => models);
+
+export function highlightGroup(model: string): string | undefined {
+  return HIGHLIGHT_GROUPS.find(({ models }) => (models as readonly string[]).includes(model))
+    ?.label;
+}
 
 /** Named series before the rest fold. One per color, and every model Work offers. */
 export const MAX_NAMED_MODELS = HIGHLIGHT_MODELS.length;
@@ -26,7 +28,7 @@ export const MORE_MODELS_KEY = "more";
 export const MORE_MODELS_COLOR = "var(--series-other)";
 
 export function highlightIndex(model: string): number | undefined {
-  const index = HIGHLIGHT_MODELS.indexOf(model as (typeof HIGHLIGHT_MODELS)[number]);
+  const index = HIGHLIGHT_MODELS.indexOf(model);
   return index === -1 ? undefined : index;
 }
 

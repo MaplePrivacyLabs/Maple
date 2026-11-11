@@ -325,13 +325,14 @@ describe("buildDailyChart", () => {
 
   test("model split names every used model, including ones outside the highlight list", () => {
     const chart = buildDailyChart({ dates, rows, metric: "credits", split: "model", labels });
-    // glm(0), kimi(1), gemma(6) are highlights; llama3-3-70b is not but is still
-    // named, borrowing free slot 2. No "More models": only four models were used.
-    expect(chart.series.map((s) => [s.key, s.label, s.color])).toEqual([
-      ["glm-5-3", "GLM-5.3", "var(--series-1)"],
-      ["kimi-k3", "Kimi K3", "var(--series-2)"],
-      ["gemma4-31b", "Gemma 4 31B", "var(--series-7)"],
-      ["llama3-3-70b", "Llama 3.3 70B", "var(--series-3)"]
+    // The capable group precedes fast models, independent of their usage totals.
+    // The ungrouped llama is still named and borrows the first free color.
+    // No "More models": only four models were used.
+    expect(chart.series.map((s) => [s.key, s.label, s.color, s.group])).toEqual([
+      ["kimi-k3", "Kimi K3", "var(--series-2)", "Most capable"],
+      ["glm-5-3", "GLM-5.3", "var(--series-3)", "Most capable"],
+      ["gemma4-31b", "Gemma 4 31B", "var(--series-5)", "Fast & cheap"],
+      ["llama3-3-70b", "Llama 3.3 70B", "var(--series-1)", undefined]
     ]);
     expect(chart.days.map((d) => d.date)).toEqual(dates);
     expect(chart.days[0].values).toEqual({
@@ -377,7 +378,7 @@ describe("buildDailyChart", () => {
     expect(chart.series.some((s) => s.key === MORE_MODELS_KEY)).toBe(false);
   });
 
-  test("one model folds at overflow, two fold when usage exceeds colors", () => {
+  test("overflow reserves a legend series and folds every excess model", () => {
     const count = MAX_NAMED_MODELS;
     const fill = Array.from({ length: count }, (_, i) => `model-${i}`);
     // Exactly at the cap: all named, no fold.
@@ -391,7 +392,7 @@ describe("buildDailyChart", () => {
     expect(atCap.series.some((s) => s.key === MORE_MODELS_KEY)).toBe(false);
     expect(atCap.series).toHaveLength(count);
 
-    // One past the cap: one overflow model, named outright, day values sum into "more".
+    // One past the cap reserves a slot, so two models share the gray series.
     const oneOver = buildDailyChart({
       dates,
       rows: [...fill, "overflow"].map((m) => row({ date: "2026-10-01", model: m, credits: 10 })),
@@ -399,11 +400,12 @@ describe("buildDailyChart", () => {
       split: "model",
       labels
     });
+    expect(oneOver.series).toHaveLength(count);
     const last = oneOver.series.at(-1)!;
     expect(last.key).toBe(MORE_MODELS_KEY);
-    expect(last.label).toBe("overflow");
-    expect(oneOver.days[0].values[MORE_MODELS_KEY]).toBe(10);
-    expect(oneOver.days[0].folded).toEqual([]);
+    expect(last.label).toBe("More models");
+    expect(oneOver.days[0].values[MORE_MODELS_KEY]).toBe(20);
+    expect(oneOver.days[0].folded.map((f) => f.model)).toEqual(["model-6", "overflow"]);
 
     // Two past the cap: real fold, with a per-day breakdown.
     const twoOver = buildDailyChart({
@@ -415,19 +417,20 @@ describe("buildDailyChart", () => {
       split: "model",
       labels
     });
+    expect(twoOver.series).toHaveLength(count);
     expect(twoOver.series.at(-1)!.label).toBe("More models");
-    expect(twoOver.days[0].folded.map((f) => f.model)).toEqual(["overflow", "also"]);
+    expect(twoOver.days[0].folded.map((f) => f.model)).toEqual(["model-6", "overflow", "also"]);
   });
 
   test("a full legend keeps highlights over higher-usage other models", () => {
     const highlights = [
-      "glm-5-3",
-      "kimi-k3",
-      "deepseek-v4-1-flash",
-      "deepseek-v4-1-flash-1017-uncensored",
-      "glm-5-3-flash",
       "kimi-k3-1-pro",
-      "gemma4-31b"
+      "kimi-k3",
+      "glm-5-3",
+      "deepseek-v4-1-flash-1017-uncensored",
+      "gemma4-31b",
+      "glm-5-3-flash",
+      "deepseek-v4-1-flash"
     ];
     const chart = buildDailyChart({
       dates,
@@ -441,11 +444,17 @@ describe("buildDailyChart", () => {
       labels
     });
     const named = chart.series.filter((s) => s.key !== MORE_MODELS_KEY).map((s) => s.key);
-    expect(named).toEqual(highlights);
+    expect(named).toEqual(highlights.slice(0, -1));
+    expect(chart.series).toHaveLength(MAX_NAMED_MODELS);
     expect(chart.series.at(-1)!.label).toBe("More models");
-    expect(chart.days[0].folded.map((f) => f.model)).toEqual(["gpt-oss-120b", "llama3-3-70b"]);
+    expect(chart.days[0].folded.map((f) => f.model)).toEqual([
+      "gpt-oss-120b",
+      "llama3-3-70b",
+      "deepseek-v4-1-flash"
+    ]);
     const namedIds = chart.series.filter((s) => s.key !== MORE_MODELS_KEY).map((s) => s.key);
     expect(modelColor("gpt-oss-120b", namedIds)).toBe(MORE_MODELS_COLOR);
+    expect(modelColor("deepseek-v4-1-flash", namedIds)).toBe(MORE_MODELS_COLOR);
     expect(modelColor("glm-5-3", [])).toBe(MORE_MODELS_COLOR);
   });
 

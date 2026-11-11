@@ -48,15 +48,18 @@ export function Swatch({ color, className }: { color: string; className?: string
 export function Legend({
   items
 }: {
-  items: Array<{ key: string; label: string; color: string; value?: string }>;
+  items: Array<{ key: string; label: string; color: string; value?: string; group?: string }>;
 }) {
   return (
     <div className="flex flex-wrap items-center gap-x-4 gap-y-1.5 text-xs text-muted-foreground">
-      {items.map((item) => (
-        <span key={item.key} className="inline-flex items-center gap-1.5">
-          <Swatch color={item.color} />
-          <span className="text-foreground/80">{item.label}</span>
-          {item.value && <span className="tabular-nums">{item.value}</span>}
+      {items.map((item, index) => (
+        <span key={item.key} className="inline-flex items-center gap-2">
+          {item.group && items[index - 1]?.group !== item.group && <span>{item.group}</span>}
+          <span className="inline-flex items-center gap-1.5">
+            <Swatch color={item.color} />
+            <span className="text-foreground/80">{item.label}</span>
+            {item.value && <span className="tabular-nums">{item.value}</span>}
+          </span>
         </span>
       ))}
     </div>
@@ -71,7 +74,7 @@ function ChartTooltip({ children }: { children: ReactNode }) {
   );
 }
 
-export type StackSeries = { key: string; label: string; color: string };
+export type StackSeries = { key: string; label: string; color: string; group?: string };
 export type StackDatum = {
   key: string;
   tick: string;
