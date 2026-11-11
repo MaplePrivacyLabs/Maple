@@ -2443,6 +2443,22 @@ impl Render for MapleApp {
                         }
                     }),
             );
+        // The Quit confirmation floats in its own OS window; dim this window
+        // behind it so the prompt reads as on top of the app, with the same
+        // scrim the in-app dialogs use.
+        let quit_prompt_open = cx.try_global::<QuitPromptOpen>().is_some_and(|open| open.0);
+        let root = root.when(quit_prompt_open, |root| {
+            root.child(
+                div()
+                    .id("quit-scrim")
+                    .absolute()
+                    .size_full()
+                    .top_0()
+                    .left_0()
+                    .occlude()
+                    .bg(ui::theme::scrim()),
+            )
+        });
         #[cfg(target_os = "linux")]
         let root = root.children(self.restart_confirmation.clone());
         root
@@ -2944,7 +2960,7 @@ fn show_quit_prompt(kind: QuitPromptKind, cx: &mut App) {
     };
     let bounds = Bounds::centered(None, size(px(520.), px(height)), cx);
     let reopen_kind = kind.clone();
-    if let Err(error) = cx.open_window(
+    match cx.open_window(
         WindowOptions {
             window_bounds: Some(WindowBounds::Windowed(bounds)),
             titlebar: Some(gpui::TitlebarOptions {
@@ -2974,8 +2990,11 @@ fn show_quit_prompt(kind: QuitPromptKind, cx: &mut App) {
             prompt
         },
     ) {
-        cancel_quit(cx);
-        log::error!("Could not show Quit confirmation: {error}");
+        Ok(_) => set_quit_prompt_open(true, cx),
+        Err(error) => {
+            cancel_quit(cx);
+            log::error!("Could not show Quit confirmation: {error}");
+        }
     }
     cx.activate(true);
 }
@@ -3047,6 +3066,26 @@ enum QuitPromptKind {
     UnknownActivity,
     Failed(UiText),
 }
+
+/// Whether the Quit confirmation window is on screen, so the main window
+/// dims behind it with the same scrim the in-app dialogs use.
+struct QuitPromptOpen(bool);
+impl gpui::Global for QuitPromptOpen {}
+
+/// Mark the Quit confirmation open or closed and redraw the main window,
+/// whose scrim follows the prompt.
+fn set_quit_prompt_open(open: bool, cx: &mut App) {
+    if cx.try_global::<QuitPromptOpen>().map(|flag| flag.0) != Some(open) {
+        cx.set_global(QuitPromptOpen(open));
+        for handle in cx.windows() {
+            let _ = handle.update(cx, |_, window, cx| {
+                if let Some(app) = window.root::<MapleApp>().flatten() {
+                    app.update(cx, |_, cx| cx.notify());
+                }
+            });
+        }
+    }
+}
 struct QuitPrompt {
     kind: QuitPromptKind,
     closing: bool,
@@ -3062,6 +3101,7 @@ impl QuitPrompt {
     /// only the root, which answers safely. zed-industries/zed#64143 fixes
     /// the adapter's lifetime; this can go when the pin includes it.
     fn close(&mut self, cx: &mut Context<Self>) {
+        set_quit_prompt_open(false, cx);
         self.closing = true;
         cx.notify();
     }
@@ -6085,9 +6125,7 @@ mod tests {
     }
 
     #[gpui::test]
-    fn a_second_quit_prompt_replaces_the_first_instead_of_stacking(
-        cx: &mut gpui::TestAppContext,
-    ) {
+    fn a_second_quit_prompt_replaces_the_first_instead_of_stacking(cx: &mut gpui::TestAppContext) {
         assert!(cx.windows().is_empty());
         cx.update(|cx| show_quit_warning("A first drain failed.".into(), cx));
         cx.update(|cx| show_quit_warning("A second drain failed.".into(), cx));
