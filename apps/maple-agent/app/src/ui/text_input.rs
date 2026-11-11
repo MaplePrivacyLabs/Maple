@@ -11,7 +11,7 @@ pub mod vim;
 pub(crate) mod vim_actions;
 
 use super::popup::{Menu, MenuItem, Placement, Popup};
-use super::{application_vim, spell, theme};
+use super::{application_vim, motion, spell, theme};
 use std::collections::VecDeque;
 use std::ops::Range;
 use std::sync::Arc;
@@ -134,6 +134,9 @@ pub struct TextInput {
     /// layout does not re-shape unchanged text every frame, and a chat
     /// face/size change does not keep a stale row count.
     measure_cache: Option<(SharedString, Pixels, Font, Pixels, Pixels, usize)>,
+    /// Drawn height of a multi-line input that sizes to its text, eased
+    /// between row counts (see [`Growth`]).
+    growth: Option<Growth>,
     /// Shaped lines from the last prepaint with the inputs they came
     /// from; reused while nothing that affects shaping has changed.
     shape_cache: Option<ShapeCache>,
@@ -286,6 +289,7 @@ impl TextInput {
             fill_height: false,
             max_lines: 8,
             measure_cache: None,
+            growth: None,
             shape_cache: None,
             is_selecting: false,
             popup: Popup::new(|this| &mut this.popup, cx),
@@ -430,7 +434,69 @@ impl TextInput {
     pub fn set_fill_height(&mut self, fill: bool, cx: &mut Context<Self>) {
         if self.fill_height != fill {
             self.fill_height = fill;
+            // Back to sizing by the text: start from its height rather
+            // than easing from the rows before the fill.
+            self.growth = None;
             cx.notify();
+        }
+    }
+
+    /// The field's height as drawn last frame, and the height its text
+    /// needs (one to `max_lines` rows). They differ while it fills its
+    /// parent; the expanded composer eases back to the text's height.
+    pub fn drawn_and_text_height(&self) -> Option<(Pixels, Pixels)> {
+        let (layout, bounds) = (self.last_layout.as_ref()?, self.last_bounds.as_ref()?);
+        let text = layout
+            .height()
+            .min(layout.line_height * self.max_lines as f32);
+        Some((bounds.size.height, text))
+    }
+
+    /// The height to draw for `rows` measured at `width` in `font`. A
+    /// new row count under the same measure comes from the text, so the
+    /// box eases to it from the height on screen; a new width or font
+    /// (a window resize, the sidebar sliding, a chat font change), the
+    /// first layout, and reduced motion snap.
+    fn grow(
+        &mut self,
+        rows: usize,
+        width: Pixels,
+        font: &Font,
+        font_size: Pixels,
+        line_height: Pixels,
+        reduced: bool,
+    ) -> Pixels {
+        let target = (line_height * rows as f32).as_f32();
+        match &mut self.growth {
+            Some(growth)
+                if growth.width == width
+                    && growth.font == *font
+                    && growth.font_size == font_size
+                    && growth.line_height == line_height =>
+            {
+                let now = motion::now();
+                let distance = px(target - growth.height.value(now));
+                let (height, _) = growth.height.step(
+                    target,
+                    motion::resize_duration(distance),
+                    motion::ease_out_cubic,
+                    now,
+                    reduced,
+                );
+                growth.drawn = height;
+                px(height)
+            }
+            _ => {
+                self.growth = Some(Growth {
+                    height: motion::Tween::new(target),
+                    drawn: target,
+                    width,
+                    font: font.clone(),
+                    font_size,
+                    line_height,
+                });
+                px(target)
+            }
         }
     }
 
@@ -2526,6 +2592,22 @@ fn snap_to_char_boundary(text: &str, offset: usize) -> usize {
     offset
 }
 
+/// The drawn height of a multi-line input that sizes to its text, and
+/// the measure it eases under. Rows that change at the same width and
+/// font came from the text and ease; anything else snaps.
+struct Growth {
+    /// Height in pixels, heading for `rows * line_height`.
+    height: motion::Tween,
+    /// The height layout drew this frame. While it differs from the
+    /// target, prepaint asks for another frame and lays the text out for
+    /// the target.
+    drawn: f32,
+    width: Pixels,
+    font: Font,
+    font_size: Pixels,
+    line_height: Pixels,
+}
+
 /// Everything `shape_text` was given last time, and what it returned.
 /// A cursor move or a blink must not re-shape the text: prepaint runs
 /// on every notify, and shaping is the expensive part of it.
@@ -2749,8 +2831,12 @@ impl Element for TextElement {
             style.min_size.height = window.line_height().into();
             return (window.request_layout(style, [], cx), ());
         }
-        // Grow with the wrapped content, one to `max_lines` rows.
+        // Grow with the wrapped content, one to `max_lines` rows. Layout
+        // runs the measure outside this element's text style, so take the
+        // style the text paints in now.
         let entity = self.input.clone();
+        let text_style = window.text_style();
+        let line_height = window.line_height();
         let layout = window.request_measured_layout(style, move |known, available, window, cx| {
             let input = entity.read(cx);
             let text = if input.content.is_empty() {
@@ -2758,54 +2844,74 @@ impl Element for TextElement {
             } else {
                 input.display_text()
             };
-            let line_height = window.line_height();
             let width = known.width.or(match available.width {
                 gpui::AvailableSpace::Definite(width) => Some(width),
                 _ => None,
             });
             let cache_width = width.unwrap_or(px(0.));
-            let style = window.text_style();
+            let style = &text_style;
             let font_size = style.font_size.to_pixels(window.rem_size());
             let font = style.font();
-            if let Some((
-                cached_text,
-                cached_width,
-                cached_font,
-                cached_font_size,
-                cached_line_height,
-                rows,
-            )) = input.measure_cache.as_ref()
-                && *cached_text == text
-                && *cached_width == cache_width
-                && *cached_font == font
-                && *cached_font_size == font_size
-                && *cached_line_height == line_height
-            {
-                return size(cache_width, line_height * *rows as f32);
-            }
-            let run = TextRun {
-                len: text.len(),
-                font: font.clone(),
-                color: style.color,
-                background_color: None,
-                underline: None,
-                strikethrough: None,
+            let cached = input
+                .measure_cache
+                .as_ref()
+                .filter(
+                    |(
+                        cached_text,
+                        cached_width,
+                        cached_font,
+                        cached_font_size,
+                        cached_line_height,
+                        _,
+                    )| {
+                        *cached_text == text
+                            && *cached_width == cache_width
+                            && *cached_font == font
+                            && *cached_font_size == font_size
+                            && *cached_line_height == line_height
+                    },
+                )
+                .map(|cache| cache.5);
+            let rows = match cached {
+                Some(rows) => rows,
+                None => {
+                    let run = TextRun {
+                        len: text.len(),
+                        font: font.clone(),
+                        color: style.color,
+                        background_color: None,
+                        underline: None,
+                        strikethrough: None,
+                    };
+                    let rows = window
+                        .text_system()
+                        .shape_text(text.clone(), font_size, &[run], width, None)
+                        .map(|lines| {
+                            lines
+                                .iter()
+                                .map(|line| line.wrap_boundaries().len() + 1)
+                                .sum::<usize>()
+                        })
+                        .unwrap_or(1)
+                        .clamp(1, input.max_lines);
+                    let font = font.clone();
+                    entity.update(cx, |input, _| {
+                        input.measure_cache =
+                            Some((text, cache_width, font, font_size, line_height, rows));
+                    });
+                    rows
+                }
             };
-            let rows = window
-                .text_system()
-                .shape_text(text.clone(), font_size, &[run], width, None)
-                .map(|lines| {
-                    lines
-                        .iter()
-                        .map(|line| line.wrap_boundaries().len() + 1)
-                        .sum::<usize>()
-                })
-                .unwrap_or(1)
-                .clamp(1, input.max_lines);
-            entity.update(cx, |input, _| {
-                input.measure_cache = Some((text, cache_width, font, font_size, line_height, rows));
+            // An intrinsic-size probe has no width to wrap at; it is not
+            // the box being drawn, so it leaves the eased height alone.
+            let Some(width) = width else {
+                return size(cache_width, line_height * rows as f32);
+            };
+            let reduced = cx.reduce_motion();
+            let height = entity.update(cx, |input, _| {
+                input.grow(rows, width, &font, font_size, line_height, reduced)
             });
-            size(cache_width, line_height * rows as f32)
+            size(width, height)
         });
         (layout, ())
     }
@@ -2896,6 +3002,19 @@ impl Element for TextElement {
         let last_scroll_x = input.scroll_x;
         let last_scroll_y = input.scroll_y;
         let keep_cursor_visible = input.keep_cursor_visible;
+        // While the box eases toward a new row count, lay the text out
+        // for the height it is heading to and let the box clip the rest,
+        // so following the cursor never scrolls on the way.
+        let easing_to = input
+            .growth
+            .as_ref()
+            .filter(|growth| {
+                multiline && !input.fill_height && growth.drawn != growth.height.target()
+            })
+            .map(|growth| px(growth.height.target()));
+        if easing_to.is_some() {
+            window.request_animation_frame();
+        }
         let wrap_width = multiline.then_some(bounds.size.width);
         // Reuse last frame's shaping when its inputs are unchanged. Lines
         // are Arc-backed, so the clone is a refcount per line.
@@ -2966,7 +3085,7 @@ impl Element for TextElement {
         // cursor after an edit or a cursor move, keep a wheel scroll put,
         // and clamp when the content shrinks.
         let scroll_y = if multiline {
-            let viewport = bounds.size.height;
+            let viewport = easing_to.unwrap_or(bounds.size.height);
             let max_scroll = (layout.height() - viewport).max(px(0.));
             let mut sy = last_scroll_y.min(max_scroll).max(px(0.));
             if keep_cursor_visible {
@@ -3672,6 +3791,163 @@ mod tests {
             followed > wheeled,
             "an edit must scroll the cursor back into view, got {followed:?}"
         );
+    }
+
+    /// A column like the composer's, so a multi-line field sizes to its
+    /// text at `width`.
+    struct GrowHost {
+        input: Entity<TextInput>,
+        width: Pixels,
+    }
+
+    impl Render for GrowHost {
+        fn render(&mut self, _window: &mut Window, _cx: &mut Context<Self>) -> impl IntoElement {
+            div()
+                .w(self.width)
+                .h(px(400.))
+                .flex()
+                .flex_col()
+                .child(self.input.clone())
+        }
+    }
+
+    /// A multi-line field holding `text`, drawn with the clock at `start`.
+    fn growing_field<'a>(
+        cx: &'a mut TestAppContext,
+        text: &str,
+        start: std::time::Instant,
+    ) -> (
+        Entity<TextInput>,
+        Entity<GrowHost>,
+        &'a mut gpui::VisualTestContext,
+    ) {
+        cx.executor().allow_parking();
+        cx.update(|cx| cx.set_reduce_motion(false));
+        motion::set_test_now(Some(start));
+        let input = cx.new(|cx| TextInput::new("", cx).multiline(8));
+        input.update(cx, |input, cx| input.set_text(text, cx));
+        let (host, cx) = cx.add_window_view(|_window, _cx| GrowHost {
+            input: input.clone(),
+            width: px(300.),
+        });
+        cx.run_until_parked();
+        (input, host, cx)
+    }
+
+    fn drawn_height(input: &Entity<TextInput>, cx: &mut gpui::VisualTestContext) -> Pixels {
+        cx.update(|_window, app| input.read(app).last_bounds.expect("drawn").size.height)
+    }
+
+    fn line_height(input: &Entity<TextInput>, cx: &mut gpui::VisualTestContext) -> Pixels {
+        cx.update(|_window, app| {
+            input
+                .read(app)
+                .growth
+                .as_ref()
+                .expect("measured")
+                .line_height
+        })
+    }
+
+    fn set_text_drawn(input: &Entity<TextInput>, text: &str, cx: &mut gpui::VisualTestContext) {
+        cx.update(|_window, app| input.update(app, |input, cx| input.set_text(text, cx)));
+        cx.run_until_parked();
+    }
+
+    /// Deliver the next frame with the clock at `at`; how many frame
+    /// requests it answered.
+    fn frame_at(at: std::time::Instant, cx: &mut gpui::VisualTestContext) -> usize {
+        motion::set_test_now(Some(at));
+        let requests = cx.update(|window, app| window.simulate_next_frame(app));
+        cx.run_until_parked();
+        requests
+    }
+
+    #[gpui::test]
+    fn a_growing_field_eases_to_its_new_rows_and_settles(cx: &mut TestAppContext) {
+        let start = std::time::Instant::now();
+        let (input, _host, cx) = growing_field(cx, "one", start);
+        let row = line_height(&input, cx);
+        assert_eq!(drawn_height(&input, cx), row, "the first layout snaps");
+
+        set_text_drawn(&input, "one\ntwo\nthree", cx);
+        assert_eq!(
+            drawn_height(&input, cx),
+            row,
+            "new rows ease in from the height on screen"
+        );
+        let duration = motion::resize_duration(row * 2.);
+        assert!(
+            frame_at(start + duration / 3, cx) > 0,
+            "moving asks for frames"
+        );
+        let partway = drawn_height(&input, cx);
+        assert!(partway > row && partway < row * 3., "partway: {partway:?}");
+        assert_eq!(
+            cx.update(|_window, app| input.read(app).scroll_y),
+            px(0.),
+            "the text is laid out for the height it heads to, so the cursor \
+             on the third row does not scroll it"
+        );
+
+        frame_at(start + duration, cx);
+        assert_eq!(drawn_height(&input, cx), row * 3.);
+        assert_eq!(
+            frame_at(start + duration * 2, cx),
+            0,
+            "settled asks for none"
+        );
+        motion::set_test_now(None);
+    }
+
+    #[gpui::test]
+    fn a_growing_field_turns_back_from_the_height_on_screen(cx: &mut TestAppContext) {
+        let start = std::time::Instant::now();
+        let (input, _host, cx) = growing_field(cx, "one", start);
+        let row = line_height(&input, cx);
+
+        set_text_drawn(&input, "1\n2\n3\n4\n5", cx);
+        let half = motion::resize_duration(row * 4.) / 2;
+        frame_at(start + half, cx);
+        let partway = drawn_height(&input, cx);
+        assert!(partway > row && partway < row * 5., "partway: {partway:?}");
+
+        // Clearing after a send while it still grows.
+        set_text_drawn(&input, "", cx);
+        assert_eq!(drawn_height(&input, cx), partway, "no jump on reversal");
+        frame_at(start + half + std::time::Duration::from_millis(40), cx);
+        let back = drawn_height(&input, cx);
+        assert!(back < partway && back > row, "heading back: {back:?}");
+
+        frame_at(start + motion::PANEL * 4, cx);
+        assert_eq!(drawn_height(&input, cx), row);
+        assert_eq!(frame_at(start + motion::PANEL * 5, cx), 0);
+        motion::set_test_now(None);
+    }
+
+    #[gpui::test]
+    fn a_growing_field_snaps_to_a_new_width_and_under_reduced_motion(cx: &mut TestAppContext) {
+        let start = std::time::Instant::now();
+        let (input, host, cx) = growing_field(cx, &"word ".repeat(20), start);
+        let row = line_height(&input, cx);
+        let wide = drawn_height(&input, cx);
+
+        // A window resize or the sidebar sliding rewraps the text.
+        host.update(cx, |host, cx| {
+            host.width = px(150.);
+            cx.notify();
+        });
+        cx.run_until_parked();
+        let narrow = drawn_height(&input, cx);
+        assert!(narrow > wide, "narrower wraps to more rows");
+        assert_eq!(frame_at(start, cx), 0, "a width change snaps");
+        assert_eq!(drawn_height(&input, cx), narrow);
+
+        cx.update(|_window, app| app.set_reduce_motion(true));
+        set_text_drawn(&input, "one", cx);
+        assert_eq!(drawn_height(&input, cx), row, "reduced motion snaps");
+        assert_eq!(frame_at(start, cx), 0);
+        motion::set_test_now(None);
     }
 
     #[gpui::test]

@@ -1,9 +1,8 @@
 //! Shared chrome for the gpui screens: popup panels, buttons, switches,
 //! tooltips, card rows, input frames, and banners.
 //!
-//! Every helper returns a bare `div()` builder, so it costs the same as
-//! the inline chain it replaces: no allocation, no parsing, nothing
-//! cached. Callers keep their own ids, children, and click handlers.
+//! Helpers preserve the div builder API and callers keep their ids, children,
+//! and click handlers. Hover backgrounds share a short reversible transition.
 //!
 //! Shapes follow the brand kit: buttons are pills, small controls use
 //! `theme::RADIUS_SM`, popups and inputs `theme::RADIUS_MD`, cards
@@ -20,6 +19,7 @@ use gpui::{
 };
 
 use super::icons::icon;
+use super::motion::{self, HoverBackground, hover_background};
 use super::theme;
 
 /// How long an icon-only control waits before showing its tooltip. Icons
@@ -105,39 +105,43 @@ pub fn navigate_mark(color: u32) -> gpui::Svg {
 }
 
 /// Accessible default/primary action button: high-contrast neutral inverted pill.
-pub fn default_button(id: impl Into<ElementId>) -> Stateful<Div> {
-    pill(id)
-        .bg(gpui::rgb(theme::bg_default_button()))
-        .text_color(gpui::rgb(theme::text_on_default_button()))
-        .hover(|style| {
-            style
-                .bg(gpui::rgb(theme::bg_default_button_hover()))
-                .cursor_pointer()
-        })
-        .active(|style| press_depth(style.bg(gpui::rgb(theme::bg_default_button_active()))))
+pub fn default_button(id: impl Into<ElementId>) -> HoverBackground {
+    hover_background(
+        pill(id)
+            .bg(gpui::rgb(theme::bg_default_button()))
+            .text_color(gpui::rgb(theme::text_on_default_button()))
+            .hover(|style| style.cursor_pointer())
+            .active(|style| press_depth(style.bg(gpui::rgb(theme::bg_default_button_active())))),
+        gpui::rgb(theme::bg_default_button()),
+        gpui::rgb(theme::bg_default_button_hover()),
+    )
 }
 
 /// Legacy accent-filled action button; new and Settings surfaces use
 /// [`default_button`] for WCAG contrast until legacy callers migrate globally.
-pub fn primary_button(id: impl Into<ElementId>) -> Stateful<Div> {
-    pill(id)
-        .bg(gpui::rgb(theme::accent()))
-        .text_color(gpui::rgb(theme::on_accent()))
-        .hover(|style| style.bg(gpui::rgb(theme::accent_hover())).cursor_pointer())
-        .active(|style| press_depth(style.bg(gpui::rgb(theme::send_bottom()))))
+pub fn primary_button(id: impl Into<ElementId>) -> HoverBackground {
+    hover_background(
+        pill(id)
+            .bg(gpui::rgb(theme::accent()))
+            .text_color(gpui::rgb(theme::on_accent()))
+            .hover(|style| style.cursor_pointer())
+            .active(|style| press_depth(style.bg(gpui::rgb(theme::send_bottom())))),
+        gpui::rgb(theme::accent()),
+        gpui::rgb(theme::accent_hover()),
+    )
 }
 /// Neutral pill for the second action beside a [`primary_button`]
 /// (Cancel, Back, alternate sign-in): a pebble fill that darkens on hover.
-pub fn secondary_button(id: impl Into<ElementId>) -> Stateful<Div> {
-    pill(id)
-        .bg(gpui::rgb(theme::bg_sidebar_pill()))
-        .text_color(gpui::rgb(theme::text_primary()))
-        .hover(|style| {
-            style
-                .bg(gpui::rgb(theme::bg_sidebar_row_selected()))
-                .cursor_pointer()
-        })
-        .active(|style| press_depth(style.bg(gpui::rgb(theme::border()))))
+pub fn secondary_button(id: impl Into<ElementId>) -> HoverBackground {
+    hover_background(
+        pill(id)
+            .bg(gpui::rgb(theme::bg_sidebar_pill()))
+            .text_color(gpui::rgb(theme::text_primary()))
+            .hover(|style| style.cursor_pointer())
+            .active(|style| press_depth(style.bg(gpui::rgb(theme::border())))),
+        gpui::rgb(theme::bg_sidebar_pill()),
+        gpui::rgb(theme::bg_sidebar_row_selected()),
+    )
 }
 
 /// A key named beside the control it works: one fixed height, so a row of
@@ -165,25 +169,32 @@ pub fn keycap(label: impl Into<gpui::SharedString>) -> Div {
 
 /// Text-only button for low-emphasis actions: no fill, no border, and
 /// the label brightens on hover.
-pub fn ghost_button(id: impl Into<ElementId>) -> Stateful<Div> {
-    pill(id)
-        .text_color(gpui::rgb(theme::text_secondary()))
-        .hover(|style| {
-            style
-                .text_color(gpui::rgb(theme::text_primary()))
-                .bg(theme::overlay_hover())
-                .cursor_pointer()
-        })
-        .active(|style| style.bg(gpui::rgb(theme::bg_sidebar_pill())))
+pub fn ghost_button(id: impl Into<ElementId>) -> HoverBackground {
+    hover_background(
+        pill(id)
+            .text_color(gpui::rgb(theme::text_secondary()))
+            .hover(|style| {
+                style
+                    .text_color(gpui::rgb(theme::text_primary()))
+                    .cursor_pointer()
+            })
+            .active(|style| style.bg(gpui::rgb(theme::bg_sidebar_pill()))),
+        gpui::transparent_black(),
+        theme::overlay_hover(),
+    )
 }
 
 /// Destructive pill (Remove, Deny): error fill with a light label.
-pub fn danger_button(id: impl Into<ElementId>) -> Stateful<Div> {
-    pill(id)
-        .bg(gpui::rgb(theme::status_error()))
-        .text_color(gpui::rgb(theme::on_accent()))
-        .hover(|style| style.opacity(0.9).cursor_pointer())
-        .active(|style| press_depth(style.opacity(0.85)))
+pub fn danger_button(id: impl Into<ElementId>) -> HoverBackground {
+    let error: Hsla = gpui::rgb(theme::status_error()).into();
+    hover_background(
+        pill(id)
+            .text_color(gpui::rgb(theme::on_accent()))
+            .hover(|style| style.cursor_pointer())
+            .active(|style| press_depth(style.opacity(0.85))),
+        error,
+        gpui::hsla(error.h, error.s, error.l, 0.9),
+    )
 }
 
 /// A destructive action at rest: outlined in the error color, filled only
@@ -209,7 +220,7 @@ pub fn icon_button(
     label: impl Into<SharedString>,
     size: Pixels,
     color: u32,
-) -> Stateful<Div> {
+) -> HoverBackground {
     let label = label.into();
     icon_button_base(id, name, label.clone(), size, color).tooltip(tooltip(label, None))
 }
@@ -224,7 +235,7 @@ pub fn icon_button_for_action(
     size: Pixels,
     color: u32,
     action: &dyn Action,
-) -> Stateful<Div> {
+) -> HoverBackground {
     let label = label.into();
     icon_button_base(id, name, label.clone(), size, color)
         .tooltip(tooltip_for_action(label, action))
@@ -236,26 +247,26 @@ fn icon_button_base(
     label: impl Into<SharedString>,
     size: Pixels,
     color: u32,
-) -> Stateful<Div> {
-    div()
-        .id(id)
-        .role(Role::Button)
-        .aria_label(label)
-        .flex_none()
-        .size_7()
-        .flex()
-        .items_center()
-        .justify_center()
-        .rounded(theme::RADIUS_SM)
-        .focus_visible(focus_ring)
-        .hover(|style| {
-            style
-                .bg(gpui::rgb(theme::bg_sidebar_row_hover()))
-                .cursor_pointer()
-        })
-        .active(|style| style.bg(gpui::rgb(theme::bg_sidebar_row_selected())))
-        .tooltip_show_delay(ICON_TOOLTIP_DELAY)
-        .child(icon(name, size, color))
+) -> HoverBackground {
+    hover_background(
+        div()
+            .id(id)
+            .role(Role::Button)
+            .aria_label(label)
+            .flex_none()
+            .size_7()
+            .flex()
+            .items_center()
+            .justify_center()
+            .rounded(theme::RADIUS_SM)
+            .focus_visible(focus_ring)
+            .hover(|style| style.cursor_pointer())
+            .active(|style| style.bg(gpui::rgb(theme::bg_sidebar_row_selected())))
+            .tooltip_show_delay(ICON_TOOLTIP_DELAY)
+            .child(icon(name, size, color)),
+        gpui::transparent_black(),
+        gpui::rgb(theme::bg_sidebar_row_hover()),
+    )
 }
 
 /// On/off switch: a pill track with a knob that sits right when `on`.
@@ -277,12 +288,17 @@ pub fn switch(id: impl Into<ElementId>, on: bool) -> Stateful<Div> {
 
 /// A labeled checkbox row. The caller supplies its tab index and click/key
 /// handlers, so mouse and keyboard activation share the same state change.
+/// The box's fill cross-fades and the check scales in over
+/// [`motion::TOGGLE`].
 pub fn checkbox(
     id: impl Into<ElementId>,
     checked: bool,
     label: impl Into<SharedString>,
 ) -> Stateful<Div> {
     let label = label.into();
+    let unchecked_border: Hsla = gpui::rgb(theme::text_muted()).into();
+    let unchecked_fill: Hsla = gpui::rgb(theme::bg_input()).into();
+    let accent = accent();
     div()
         .id(id)
         .role(Role::CheckBox)
@@ -302,56 +318,81 @@ pub fn checkbox(
         .focus_visible(focus_ring)
         .hover(|style| style.cursor_pointer())
         .active(|style| style.opacity(0.85))
-        .child(
-            div()
-                .flex_none()
-                .size(px(18.))
-                .rounded(px(4.))
-                .border_1()
-                .border_color(gpui::rgb(if checked {
-                    theme::accent()
-                } else {
-                    theme::text_muted()
-                }))
-                .bg(gpui::rgb(if checked {
-                    theme::accent()
-                } else {
-                    theme::bg_input()
-                }))
-                .flex()
-                .items_center()
-                .justify_center()
-                .when(checked, |square| {
-                    square.child(icon("check", px(14.), theme::on_accent()))
-                }),
-        )
+        .child(motion::animated(
+            "checkbox-mark",
+            if checked { 1. } else { 0. },
+            motion::TOGGLE,
+            motion::ease_out_cubic,
+            move |checked| {
+                let scale = 0.6 + 0.4 * checked;
+                div()
+                    .flex_none()
+                    .size(px(18.))
+                    .rounded(px(4.))
+                    .border_1()
+                    .border_color(motion::mix(unchecked_border, accent, checked))
+                    .bg(motion::mix(unchecked_fill, accent, checked))
+                    .flex()
+                    .items_center()
+                    .justify_center()
+                    .when(checked > 0., |square| {
+                        square.child(div().flex().opacity(checked).child(
+                            icon("check", px(14.), theme::on_accent()).with_transformation(
+                                gpui::Transformation::scale(gpui::size(scale, scale)),
+                            ),
+                        ))
+                    })
+                    .into_any_element()
+            },
+        ))
         .child(label)
 }
 
+/// How far a [`switch`] knob travels: the track's width, less its padding
+/// and the knob.
+const KNOB_TRAVEL: Pixels = px(34. - 2. * 3. - 14.);
+
 /// The look of a [`switch`] without its role or input, for a row that is
-/// itself the control, such as a switch item in a popup menu.
+/// itself the control, such as a switch item in a popup menu. Its knob
+/// slides and its track cross-fades over [`motion::TOGGLE`], reversing
+/// from wherever it is; it is still when it first appears. The enclosing
+/// element's id keys the motion.
 pub fn switch_track(on: bool) -> Div {
+    let off_track: Hsla = gpui::rgb(theme::bg_sidebar_row_selected()).into();
+    let on_track = accent();
+    let knob: Hsla = gpui::rgb(theme::on_accent()).into();
     div()
         .flex_none()
         .w(px(34.))
         .h(px(20.))
-        .p(px(3.))
         .rounded_full()
-        .bg(gpui::rgb(if on {
-            theme::accent()
-        } else {
-            theme::bg_sidebar_row_selected()
-        }))
-        .flex()
-        .items_center()
-        .when(on, |track| track.justify_end())
-        .child(
-            div()
-                .size(px(14.))
-                .rounded_full()
-                .bg(gpui::rgb(theme::on_accent()))
-                .shadow_2xs(),
-        )
+        .child(motion::animated(
+            "switch-knob",
+            if on { 1. } else { 0. },
+            motion::TOGGLE,
+            motion::ease_out_cubic,
+            move |on| {
+                div()
+                    .size_full()
+                    .p(px(3.))
+                    .rounded_full()
+                    .bg(motion::mix(off_track, on_track, on))
+                    .flex()
+                    .items_center()
+                    .child(
+                        motion::shifted(
+                            div()
+                                .debug_selector(|| "switch-knob".into())
+                                .size(px(14.))
+                                .rounded_full()
+                                .bg(knob)
+                                .shadow_2xs(),
+                        )
+                        .offset(gpui::point(KNOB_TRAVEL * on, px(0.))),
+                    )
+                    .into_any_element()
+            },
+        ))
 }
 
 /// Small status pill beside a card's title (an integration's availability,
@@ -547,10 +588,45 @@ pub fn notice(
 /// Icon size in a popup menu row or an [`icon_button`] in a list row.
 pub const ROW_ICON: Pixels = px(14.);
 
+// ---- Dialogs --------------------------------------------------------------
+
+/// How far a dialog card rises as it opens.
+const DIALOG_RISE: Pixels = px(8.);
+
+/// The dimmed layer behind a modal card. Put it first inside the dialog's
+/// full-window backdrop, which keeps the pointer handling and centers the
+/// card: the scrim fades in over [`motion::ENTER`] on its own, so the
+/// card's fade is not multiplied by it. A dialog closes at once.
+pub fn dialog_scrim() -> impl IntoElement {
+    use gpui::AnimationExt as _;
+    div()
+        .absolute()
+        .inset_0()
+        .bg(theme::scrim())
+        .with_animation(
+            "dialog-scrim",
+            gpui::Animation::new(motion::ENTER).with_easing(motion::ease_out_quint),
+            |scrim, shown| scrim.opacity(shown),
+        )
+}
+
+/// A modal card arriving: it fades in and rises from 8 px below over
+/// [`motion::ENTER`]. Layout uses its resting place throughout, and it
+/// takes keys and focus from its first frame.
+pub fn dialog_card<E: IntoElement + Styled + 'static>(card: E) -> impl IntoElement {
+    motion::slide_in(
+        card,
+        "dialog-card",
+        motion::ENTER,
+        gpui::point(px(0.), DIALOG_RISE),
+    )
+}
+
 // ---- Tooltips -------------------------------------------------------------
 
 /// Small label shown above the pointer after gpui's hover delay, with an
-/// optional fixed shortcut hint. Attach with `.tooltip(widgets::tooltip(..))`.
+/// optional fixed shortcut hint. It fades in over [`motion::REVEAL`] and
+/// goes at once. Attach with `.tooltip(widgets::tooltip(..))`.
 /// Prefer [`tooltip_for_action`] when the control fires an action: that
 /// reads the live keymap instead of a literal that a rebind would outdate.
 pub fn tooltip(
@@ -676,7 +752,7 @@ const TOOLTIP_GAP: Pixels = px(16.);
 const TOOLTIP_CURSOR_CLEARANCE: Pixels = px(20.);
 
 impl Render for Tooltip {
-    fn render(&mut self, _window: &mut Window, _cx: &mut gpui::Context<Self>) -> impl IntoElement {
+    fn render(&mut self, _window: &mut Window, cx: &mut gpui::Context<Self>) -> impl IntoElement {
         // gpui puts a tooltip's corner just past the pointer, where the
         // cursor covers it. The view stays zero-sized there and anchors the
         // label at the pointer itself: centered, 16 px above it.
@@ -717,7 +793,10 @@ impl Render for Tooltip {
                     div()
                         .pt(TOOLTIP_CURSOR_CLEARANCE)
                         .pb(TOOLTIP_GAP)
-                        .child(label),
+                        .child(motion::fade_in(
+                            label,
+                            ElementId::NamedInteger("tooltip".into(), cx.entity_id().as_u64()),
+                        )),
                 ),
         )
     }
@@ -759,7 +838,7 @@ pub fn copy_button(
     text: SharedString,
     reveal: Option<&SharedString>,
     view: Option<gpui::EntityId>,
-) -> Stateful<Div> {
+) -> super::motion::HoverBackground {
     let id = id.into();
     let copied = copied_recently(&id);
     let click_id = id.clone();
@@ -787,7 +866,6 @@ pub fn copy_button(
         .focus_visible(focus_ring)
         .hover(|style| {
             style
-                .bg(theme::overlay_hover())
                 .text_color(gpui::rgb(theme::text_secondary()))
                 .cursor_pointer()
         })
@@ -821,6 +899,13 @@ pub fn copy_button(
         } else {
             "common-copy"
         }))
+        .map(|button| {
+            super::motion::hover_background(
+                button,
+                gpui::transparent_black(),
+                theme::overlay_hover(),
+            )
+        })
 }
 
 #[cfg(test)]
@@ -944,5 +1029,84 @@ mod tests {
                 "{selector}: the tooltip {tooltip:?} is the gap above the pointer {pointer:?}"
             );
         }
+    }
+
+    /// A lone switch and checkbox the test turns on and off.
+    struct Toggles {
+        on: bool,
+    }
+
+    impl Render for Toggles {
+        fn render(
+            &mut self,
+            _window: &mut Window,
+            _cx: &mut gpui::Context<Self>,
+        ) -> impl IntoElement {
+            div()
+                .size_full()
+                .p(px(20.))
+                .child(switch("test-switch", self.on))
+                .child(checkbox("test-checkbox", self.on, "Check"))
+        }
+    }
+
+    /// A switch turned back mid-flight reverses from where its knob is
+    /// instead of jumping to an end, settles, and then asks for no more
+    /// frames. It is still when it first appears, and reduced motion moves
+    /// it at once.
+    #[gpui::test]
+    fn a_switch_reversed_mid_flight_turns_back_from_its_knob(cx: &mut TestAppContext) {
+        let start = Instant::now();
+        motion::set_test_now(Some(start));
+        cx.update(|cx| cx.set_reduce_motion(false));
+        let (host, cx) = cx.add_window_view(|_, _| Toggles { on: false });
+        cx.run_until_parked();
+        let knob =
+            |cx: &mut VisualTestContext| cx.debug_bounds("switch-knob").expect("knob").left();
+        let frames =
+            |cx: &mut VisualTestContext| cx.update(|window, cx| window.simulate_next_frame(cx));
+        let frame_at = |at: Instant, cx: &mut VisualTestContext| {
+            motion::set_test_now(Some(at));
+            cx.update(|window, cx| {
+                window.simulate_next_frame(cx);
+            });
+            cx.run_until_parked();
+        };
+        let turn = |on: bool, cx: &mut VisualTestContext| {
+            host.update(cx, |host, cx| {
+                host.on = on;
+                cx.notify();
+            });
+            cx.run_until_parked();
+        };
+        let off = knob(cx);
+        assert_eq!(frames(cx), 0, "a switch is still when it first appears");
+
+        turn(true, cx);
+        assert_eq!(knob(cx), off, "the knob sets out from where it is");
+        frame_at(start + motion::TOGGLE / 3, cx);
+        let partway = knob(cx);
+        assert!(
+            off < partway && partway < off + KNOB_TRAVEL,
+            "the knob {partway:?} is on its way from {off:?}"
+        );
+
+        turn(false, cx);
+        assert_eq!(knob(cx), partway, "turning back starts from the knob");
+        frame_at(start + motion::TOGGLE / 3 + motion::TOGGLE / 4, cx);
+        let returning = knob(cx);
+        assert!(
+            off < returning && returning < partway,
+            "the knob {returning:?} heads back from {partway:?}"
+        );
+        frame_at(start + motion::TOGGLE * 2, cx);
+        assert_eq!(knob(cx), off);
+        assert_eq!(frames(cx), 0, "a settled switch asks for no frames");
+
+        cx.update(|_, cx| cx.set_reduce_motion(true));
+        turn(true, cx);
+        assert_eq!(knob(cx), off + KNOB_TRAVEL, "reduced motion moves at once");
+        assert_eq!(frames(cx), 0);
+        motion::set_test_now(None);
     }
 }

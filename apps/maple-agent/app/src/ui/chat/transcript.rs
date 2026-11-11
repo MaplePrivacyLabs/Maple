@@ -2,10 +2,13 @@
 //! shared `TranscriptCtx` caches; nothing here parses or derives on a
 //! frame.
 
+use std::cell::{Cell, RefCell};
 use std::collections::HashMap;
+use std::rc::Rc;
 use std::sync::Arc;
+use std::time::Instant;
 
-use gpui::{Div, Entity, IntoElement, SharedString, Window, div, prelude::*, px};
+use gpui::{Bounds, Div, Entity, IntoElement, Pixels, SharedString, Window, div, prelude::*, px};
 use maple_agent::agent::{
     AgentPermissionReason, AgentTimelineItem, EXTERNAL_AGENT_ACTIVITY_KEY, ExternalAgentActivity,
     ExternalAgentRef, USAGE_LIMIT_MESSAGE,
@@ -40,6 +43,14 @@ impl ChatScreen {
             self.list_state
                 .reset_with_uniform_height(count, super::TRANSCRIPT_ROW_ESTIMATE);
         }
+        // Entrances read one clock for the whole frame and ask for the next
+        // frame only while one is still running.
+        let now = motion::now();
+        let reduced = cx.reduce_motion();
+        if self.row_motion.settle(now, reduced) {
+            window.request_animation_frame();
+        }
+        let switch_reveal = self.row_motion.switch_progress(now, reduced);
         let show_jump = count > 0 && !self.list_state.is_following_tail();
         let tool_details = self.tool_details;
         let entity = cx.entity().downgrade();
@@ -57,6 +68,12 @@ impl ChatScreen {
                 return div().into_any_element();
             };
             let chat = chat_entity.read(cx);
+            // A row that arrived live enters, timed from view state so
+            // scrolling it away and back never replays the entrance.
+            let entrance = chat
+                .timeline
+                .get(ix)
+                .and_then(|item| chat.row_motion.entrance(&item.id, now, reduced));
             let row = match chat.timeline.get(ix) {
                 Some(item) => {
                     let render_ctx = RenderCtx {
@@ -79,6 +96,7 @@ impl ChatScreen {
                         speech: chat.speech.as_ref(),
                         speech_available: chat.audio_caps.speech,
                         position: (ix + 1, chat.timeline.len()),
+                        reveal: chat.row_motion.disclosure(&item.id, now, reduced),
                     };
                     let expanded = tool_details != chat.toggled_tools.contains(&item.id);
                     let revision = chat
@@ -139,7 +157,7 @@ impl ChatScreen {
             // measured for overdraw are not, and a focused row kept alive
             // off screen lands outside the mask.
             let painted_rows = painted_rows.clone();
-            div()
+            let row = div()
                 .child(row)
                 .on_children_prepainted(move |bounds, window, _cx| {
                     let view = window.content_mask().bounds;
@@ -152,8 +170,31 @@ impl ChatScreen {
                             None => (ix, ix + 1),
                         }));
                     }
-                })
-                .into_any_element()
+                });
+            match entrance {
+                None => row.into_any_element(),
+                // Scrolled up: paint offset and opacity only, so nothing
+                // on screen moves.
+                Some(Entrance {
+                    progress,
+                    grow: None,
+                    ..
+                }) => motion::arrive(row, progress).into_any_element(),
+                // At the tail: the row opens to its height and the rows
+                // above glide up with it.
+                Some(Entrance {
+                    progress,
+                    grow: Some(grow),
+                    natural,
+                }) => grow_in(
+                    row,
+                    progress,
+                    grow,
+                    natural,
+                    chat.row_motion.heights.clone(),
+                    chat.timeline[ix].id.clone(),
+                ),
+            }
         })
         .size_full();
         div()
@@ -215,6 +256,10 @@ impl ChatScreen {
                     .mx_auto()
                     .px_6()
                     .pb_4()
+                    // Another task's transcript fades in when it lands.
+                    .when(switch_reveal < 1., |rows| {
+                        rows.opacity(motion::ease_out_quint(switch_reveal))
+                    })
                     .child(
                         // The list's own wheel scrolls it; the pane's must
                         // not scroll it a second time.
@@ -338,6 +383,388 @@ impl ChatScreen {
                 "jump-to-latest-reveal",
             ))
     }
+
+    /// The slot under the transcript: the message being sent with its
+    /// status line, or the waiting dots, both `WAITING_ROW_HEIGHT` tall so
+    /// one taking over from the other moves nothing.
+    ///
+    /// It sits outside the list, so its height is taken from the list's
+    /// viewport. When it appears, or its content grows, it opens over
+    /// `ENTER` instead of all at once, and the transcript above glides up.
+    /// Its content stays pinned to its bottom while the top is clipped. It
+    /// shrinks at once: the row taking its place opens from the space it
+    /// leaves.
+    pub(super) fn render_under_transcript(
+        &mut self,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> Option<gpui::AnyElement> {
+        let appeared = !self.row_motion.slot_on_screen;
+        let snap = std::mem::take(&mut self.row_motion.slot_snap);
+        let preview = self.render_send_preview(window, cx);
+        let dots = self.awaiting_first_token && self.is_run_active() && !self.has_send_feedback();
+        let slot = &mut self.row_motion;
+        slot.slot_on_screen = preview.is_some() || dots;
+        if !slot.slot_on_screen {
+            slot.slot_open = None;
+            slot.slot_natural.set(None);
+            slot.slot_shown.set(px(0.));
+            return None;
+        }
+        let now = motion::now();
+        let reduced = cx.reduce_motion();
+        // Measured last frame; `None` on the frame it appears.
+        let natural = slot.slot_natural.get().map(f32::from);
+        if reduced {
+            slot.slot_open = None;
+        } else if appeared {
+            // A send opens it; a task switch or history load shows it at
+            // once.
+            slot.slot_open = (!snap).then(|| motion::Tween::new(0.));
+            slot.slot_since = Some(now);
+        }
+        let cap = match (&mut slot.slot_open, natural) {
+            (None, None) => None,
+            (None, Some(natural)) => {
+                if !reduced {
+                    slot.slot_open = Some(motion::Tween::new(natural));
+                }
+                None
+            }
+            // Closed on its first frame while its content is measured.
+            (Some(open), None) => {
+                window.request_animation_frame();
+                Some(px(open.value(now)))
+            }
+            (Some(open), Some(natural)) => {
+                // Shrinking follows the content at once; growing opens.
+                // The first opening runs from when the slot appeared, not
+                // from the frame its content was first measured.
+                if natural < open.value(now) {
+                    *open = motion::Tween::new(natural);
+                }
+                let start = match slot.slot_since.take() {
+                    Some(since) if open.target() == 0. => since,
+                    _ => now,
+                };
+                open.set(
+                    natural,
+                    motion::ENTER,
+                    motion::ease_out_cubic,
+                    start,
+                    reduced,
+                );
+                if open.is_moving(now) {
+                    window.request_animation_frame();
+                }
+                Some(px(open.value(now)))
+            }
+        };
+        let natural_height = slot.slot_natural.clone();
+        let shown_height = slot.slot_shown.clone();
+        let content = div()
+            .flex_none()
+            .w_full()
+            .flex()
+            .flex_col()
+            .children(preview)
+            .when(dots, |content| {
+                // Same gutter as transcript text so the dots line up.
+                content.child(
+                    div()
+                        .w_full()
+                        .max_w(CONTENT_WIDTH)
+                        .mx_auto()
+                        .px_6()
+                        .child(render_waiting_indicator()),
+                )
+            });
+        Some(
+            div()
+                .flex_none()
+                .w_full()
+                .flex()
+                .flex_col()
+                .justify_end()
+                .overflow_hidden()
+                .when_some(cap, |slot, cap| slot.max_h(cap))
+                .child(content)
+                .on_children_prepainted(move |bounds, _, _| {
+                    if let Some(content) = bounds.first() {
+                        let height = content.size.height;
+                        natural_height.set(Some(height));
+                        shown_height.set(cap.map_or(height, |cap| height.min(cap)));
+                    }
+                })
+                .into_any_element(),
+        )
+    }
+}
+
+/// Height of the row under the transcript that shows the waiting dots or,
+/// while a message is being sent, its status line. Both take the same
+/// slot so one replacing the other moves nothing.
+pub(super) const WAITING_ROW_HEIGHT: Pixels = px(36.);
+
+/// Space between the message being sent and its status line: the
+/// transcript's bottom padding, so the real row lands where the preview
+/// was.
+pub(super) const PREVIEW_GAP: Pixels = px(16.);
+
+/// Entrances in the transcript, timed from view state. A `gpui::list`
+/// drops a row's element state when it scrolls away, so an entrance kept
+/// there would replay; these start times outlive the elements, and a
+/// finished one is pruned, so a row animates once.
+#[derive(Default)]
+pub(super) struct RowMotion {
+    /// Rows that arrived live in the task on screen, by item id.
+    arrived: HashMap<String, Arrival>,
+    /// Natural heights of rows growing into place, measured as they
+    /// paint; a row's first frame has none and opens from its start.
+    pub(super) heights: Rc<RefCell<HashMap<String, Pixels>>>,
+    /// Rows whose details the user just opened, by item id.
+    disclosed: HashMap<String, Instant>,
+    /// When another task's transcript landed.
+    switched: Option<Instant>,
+    /// The user row that takes over from the send preview on screen,
+    /// where the preview's bubble was, and how tall the slot under the
+    /// transcript was then.
+    handed_off: Option<(String, Option<Bounds<Pixels>>, Pixels)>,
+    /// Where the send preview's bubble painted last frame, if it showed.
+    pub(super) preview_body: Rc<Cell<Option<Bounds<Pixels>>>>,
+    /// Rows apply without an entrance (events replayed on reconnect).
+    quiet: bool,
+    /// The slot under the transcript (waiting dots or the sent message's
+    /// status) showed last frame.
+    pub(super) slot_on_screen: bool,
+    /// The slot's height cap while it opens and after, so it grows rather
+    /// than appearing at full height; `None` draws it at its natural height.
+    slot_open: Option<motion::Tween>,
+    /// The slot's natural height and the height it drew, last frame.
+    slot_natural: Rc<Cell<Option<Pixels>>>,
+    slot_shown: Rc<Cell<Pixels>>,
+    /// The next slot to appear shows at once: it came with a task switch
+    /// or a history load, not a send.
+    slot_snap: bool,
+    /// When the slot last appeared, for its first opening.
+    slot_since: Option<Instant>,
+}
+
+#[derive(Clone, Copy)]
+struct Arrival {
+    at: Instant,
+    grow: Option<Grow>,
+}
+
+/// How a row that arrived at the followed tail opens.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub(super) struct Grow {
+    /// Height it opens from: 0, or the space a vanished preview or
+    /// waiting row left, so the rows above stay put on the first frame.
+    pub(super) from: Pixels,
+    /// Window y its content starts at (the preview's bubble), easing to
+    /// its own place; such a row is already visible and does not fade.
+    pub(super) glide_from: Option<Pixels>,
+}
+
+/// A row's entrance at one moment.
+pub(super) struct Entrance {
+    pub(super) progress: f32,
+    pub(super) grow: Option<Grow>,
+    pub(super) natural: Option<Pixels>,
+}
+
+impl RowMotion {
+    /// A row was added live; history, paging and snapshots never call this.
+    /// `at_tail`: the list follows its tail, so the row grows into place;
+    /// otherwise it only fades and rises.
+    pub(super) fn arrive(&mut self, id: &str, now: Instant, at_tail: bool) {
+        let handed_off = self.handed_off.take();
+        if self.quiet {
+            return;
+        }
+        let grow = match handed_off {
+            // The preview's bubble becomes this row: it opens from the
+            // space the bubble left (all of the slot but the status line
+            // that stays) and glides from where the bubble was.
+            Some((handed, body, slot)) if handed == id => {
+                let Some(body) = body.filter(|_| at_tail) else {
+                    return;
+                };
+                Some(Grow {
+                    from: (slot - WAITING_ROW_HEIGHT).max(px(0.)),
+                    glide_from: Some(body.origin.y),
+                })
+            }
+            _ => at_tail.then_some(Grow {
+                from: px(0.),
+                glide_from: None,
+            }),
+        };
+        self.arrived
+            .insert(id.to_owned(), Arrival { at: now, grow });
+    }
+
+    /// The row `id` also takes the place of `height` that left the space
+    /// under the transcript (the waiting row or the preview's status).
+    pub(super) fn open_from_more(&mut self, id: &str, height: Pixels) {
+        if let Some(Arrival {
+            grow: Some(grow), ..
+        }) = self.arrived.get_mut(id)
+        {
+            grow.from += height;
+        }
+    }
+
+    /// The slot's height on screen last frame.
+    pub(super) fn slot_height(&self) -> Pixels {
+        self.slot_shown.get()
+    }
+
+    /// The next row with `id` replaces the send preview on screen.
+    pub(super) fn hand_off(&mut self, id: String) {
+        self.handed_off = Some((id, self.preview_body.get(), self.slot_shown.get()));
+    }
+
+    /// Apply rows without an entrance until called again with `false`.
+    pub(super) fn set_quiet(&mut self, quiet: bool) {
+        self.quiet = quiet;
+    }
+
+    /// A live row took its persisted id; its entrance carries on.
+    pub(super) fn rekey(&mut self, old: &str, new: &str) {
+        if let Some(arrival) = self.arrived.remove(old) {
+            self.arrived.insert(new.to_owned(), arrival);
+        }
+        if let Some(at) = self.disclosed.remove(old) {
+            self.disclosed.insert(new.to_owned(), at);
+        }
+        let mut heights = self.heights.borrow_mut();
+        if let Some(height) = heights.remove(old) {
+            heights.insert(new.to_owned(), height);
+        }
+    }
+
+    /// The user opened or closed a row's details. Closing is immediate.
+    pub(super) fn disclose(&mut self, id: &str, open: bool, now: Instant) {
+        if open {
+            self.disclosed.insert(id.to_owned(), now);
+        } else {
+            self.disclosed.remove(id);
+        }
+    }
+
+    /// Another task's transcript landed.
+    pub(super) fn switch_task(&mut self, now: Instant) {
+        self.switched = Some(now);
+    }
+
+    /// A new transcript replaced every row; none of them is arriving.
+    pub(super) fn clear_rows(&mut self) {
+        self.arrived.clear();
+        self.heights.borrow_mut().clear();
+        self.disclosed.clear();
+        self.handed_off = None;
+        self.slot_snap = true;
+    }
+
+    /// The empty state shows: nothing sits under a transcript, and the next
+    /// slot to appear comes with a send, so it opens.
+    pub(super) fn show_empty_state(&mut self) {
+        self.slot_on_screen = false;
+        self.slot_snap = false;
+    }
+
+    /// The row's entrance, or `None` for a row that did not arrive live or
+    /// has settled.
+    pub(super) fn entrance(&self, id: &str, now: Instant, reduced: bool) -> Option<Entrance> {
+        let arrival = self.arrived.get(id)?;
+        let progress = motion::progress(arrival.at, motion::ENTER, now, reduced);
+        (progress < 1.).then(|| Entrance {
+            progress,
+            grow: arrival.grow,
+            natural: arrival
+                .grow
+                .and_then(|_| self.heights.borrow().get(id).copied()),
+        })
+    }
+
+    /// Progress of the row's entrance; 1 when it has none.
+    #[cfg(test)]
+    pub(super) fn arrival(&self, id: &str, now: Instant, reduced: bool) -> f32 {
+        self.entrance(id, now, reduced)
+            .map_or(1., |entrance| entrance.progress)
+    }
+
+    /// Progress of the fade of details the user just opened.
+    pub(super) fn disclosure(&self, id: &str, now: Instant, reduced: bool) -> f32 {
+        self.disclosed
+            .get(id)
+            .map_or(1., |at| motion::progress(*at, motion::REVEAL, now, reduced))
+    }
+
+    /// Progress of the fade of a task's transcript after a switch.
+    pub(super) fn switch_progress(&self, now: Instant, reduced: bool) -> f32 {
+        self.switched
+            .map_or(1., |at| motion::progress(at, motion::REVEAL, now, reduced))
+    }
+
+    /// Drop what has finished; true while something still moves, so the
+    /// caller asks for another frame.
+    pub(super) fn settle(&mut self, now: Instant, reduced: bool) -> bool {
+        if reduced {
+            self.arrived.clear();
+            self.heights.borrow_mut().clear();
+            self.disclosed.clear();
+            self.switched = None;
+            return false;
+        }
+        let running = |at: &Instant, duration| now.saturating_duration_since(*at) < duration;
+        self.arrived
+            .retain(|_, arrival| running(&arrival.at, motion::ENTER));
+        self.heights
+            .borrow_mut()
+            .retain(|id, _| self.arrived.contains_key(id));
+        self.disclosed.retain(|_, at| running(at, motion::REVEAL));
+        self.switched = self.switched.filter(|at| running(at, motion::REVEAL));
+        !self.arrived.is_empty() || !self.disclosed.is_empty() || self.switched.is_some()
+    }
+}
+
+/// A row opening at the tail: its box eases from `grow.from` to its
+/// natural height, clipped, so the rows above glide up rather than jump.
+/// Its natural height is measured from the unclipped content each frame,
+/// so a reply streaming in meanwhile still ends at its true height.
+fn grow_in(
+    row: Div,
+    progress: f32,
+    grow: Grow,
+    natural: Option<Pixels>,
+    heights: Rc<RefCell<HashMap<String, Pixels>>>,
+    id: String,
+) -> gpui::AnyElement {
+    let eased = motion::ease_out_cubic(progress);
+    let height = natural.map_or(grow.from, |natural| {
+        grow.from + (natural - grow.from) * eased
+    });
+    let content = div().absolute().top_0().left_0().right_0().child(row);
+    let content = match grow.glide_from {
+        Some(from_y) => motion::glide_from(content, from_y, progress).into_any_element(),
+        None => content
+            .opacity(motion::ease_out_quint(progress))
+            .into_any_element(),
+    };
+    div()
+        .relative()
+        .h(height)
+        .overflow_hidden()
+        .child(content)
+        .on_children_prepainted(move |bounds, _, _| {
+            if let Some(content) = bounds.first() {
+                heights.borrow_mut().insert(id.clone(), content.size.height);
+            }
+        })
+        .into_any_element()
 }
 
 pub(super) fn render_timeline_item(
@@ -471,7 +898,7 @@ fn copy_message_button(
     group: &SharedString,
     text: SharedString,
     view: Option<gpui::EntityId>,
-) -> gpui::Stateful<Div> {
+) -> crate::ui::motion::HoverBackground {
     widgets::copy_button(
         SharedString::from(format!("copy-message-{item_id}")),
         text,
@@ -749,12 +1176,9 @@ fn render_thinking(
             })
             .ok();
         })
-        .child(icon(
-            if expanded {
-                "chevron-down"
-            } else {
-                "chevron-right"
-            },
+        .child(motion::chevron(
+            SharedString::from(format!("thinking-chevron-{}", item.id)),
+            expanded,
             px(14.),
             theme::text_muted(),
         ))
@@ -779,7 +1203,7 @@ fn render_thinking(
     if !expanded {
         return card;
     }
-    card.child(
+    card.child(revealed(
         typography::chat_reading(div())
             .text_color(gpui::rgb(theme::text_secondary()))
             .child(markdown::render_with(
@@ -788,7 +1212,18 @@ fn render_thinking(
                     .get(&item.id, MarkdownKind::Body, revision, &text),
                 transcript.render,
             )),
-    )
+        transcript.reveal,
+    ))
+}
+
+/// Details the user just opened fade in; `reveal` is how far along they
+/// are. Their height is there at once, so the list measures it once.
+fn revealed<E: Styled>(details: E, reveal: f32) -> E {
+    if reveal < 1. {
+        details.opacity(motion::ease_out_quint(reveal))
+    } else {
+        details
+    }
 }
 
 fn tool_status_style(status: Option<&str>) -> (SharedString, u32) {
@@ -798,6 +1233,42 @@ fn tool_status_style(status: Option<&str>) -> (SharedString, u32) {
         Some("cancelled") => (tr("chat-status-stopped"), theme::text_muted()),
         _ => (tr("chat-status-running"), theme::status_running()),
     }
+}
+
+/// A tool card's spinner and status label. When the call finishes on
+/// screen the running state goes at once and the outcome fades in over
+/// [`motion::TOGGLE`]: two labels drawn over each other would read as
+/// one garbled word. A card that mounts finished (history, a row scrolled
+/// back) shows its state at once.
+fn tool_status(item_id: &str, running: bool, label: SharedString, color: u32) -> motion::Animated {
+    let spinner_id = SharedString::from(format!("tool-spinner-{item_id}"));
+    motion::animated(
+        SharedString::from(format!("tool-status-{item_id}")),
+        if running { 0. } else { 1. },
+        motion::TOGGLE,
+        motion::ease_out_cubic,
+        move |done| {
+            div()
+                .flex()
+                .items_center()
+                .gap_2()
+                .opacity(if running { 1. - done } else { done })
+                .when(running, |state| {
+                    state.child(spinner_with_id(
+                        spinner_id.clone(),
+                        px(12.),
+                        theme::accent(),
+                    ))
+                })
+                .child(
+                    div()
+                        .text_xs()
+                        .text_color(gpui::rgb(color))
+                        .child(label.clone()),
+                )
+                .into_any_element()
+        },
+    )
 }
 
 /// True when the tool call input has the given top-level key.
@@ -963,24 +1434,22 @@ fn render_finished_plan(
                         .text_color(gpui::rgb(theme::text_muted()))
                         .child(count),
                 )
-                .child(icon(
-                    if details {
-                        "chevron-down"
-                    } else {
-                        "chevron-right"
-                    },
+                .child(motion::chevron(
+                    SharedString::from(format!("plan-chevron-{}", item.id)),
+                    details,
                     px(14.),
                     theme::text_muted(),
                 )),
         );
     if details {
-        card = card.child(
+        card = card.child(revealed(
             div()
                 .flex()
                 .flex_col()
                 .gap_1()
                 .children(plan.iter().map(render_plan_row)),
-        );
+            transcript.reveal,
+        ));
     }
     Some(div().child(card))
 }
@@ -1217,7 +1686,7 @@ fn render_tool_with_diff(
         );
     }
     // The diff is content: swallow clicks so selecting it does not toggle.
-    card.child(
+    card.child(revealed(
         div()
             .id(gpui::SharedString::from(format!("tool-diff-{}", item.id)))
             .on_click(
@@ -1226,7 +1695,8 @@ fn render_tool_with_diff(
                 },
             )
             .child(diff),
-    )
+        transcript.reveal,
+    ))
 }
 
 /// Title shown before the model summary arrives: just the tool label from
@@ -1329,25 +1799,10 @@ fn render_tool(
                         .debug_selector(|| "tool-title".to_string())
                         .child(title),
                 )
-                .when(running, |header| {
-                    header.child(spinner_with_id(
-                        SharedString::from(format!("tool-spinner-{}", item.id)),
-                        px(12.),
-                        theme::accent(),
-                    ))
-                })
-                .child(
-                    div()
-                        .text_xs()
-                        .text_color(gpui::rgb(status_color))
-                        .child(label),
-                )
-                .child(icon(
-                    if details {
-                        "chevron-down"
-                    } else {
-                        "chevron-right"
-                    },
+                .child(tool_status(&item.id, running, label, status_color))
+                .child(motion::chevron(
+                    SharedString::from(format!("tool-chevron-{}", item.id)),
+                    details,
                     px(14.),
                     theme::text_muted(),
                 )),
@@ -1359,8 +1814,9 @@ fn render_tool(
     }
     let derived = transcript.derived.get(item, revision);
     if let Some(activity) = &derived.external_agent {
-        return div().child(card.child(render_external_agent_activity(
-            item, revision, activity, transcript,
+        return div().child(card.child(revealed(
+            render_external_agent_activity(item, revision, activity, transcript),
+            transcript.reveal,
         )));
     }
     // A click anywhere on the card, payload included, toggles it.
@@ -1397,7 +1853,7 @@ fn render_tool(
                 )),
         );
     }
-    div().child(card.child(payload))
+    div().child(card.child(revealed(payload, transcript.reveal)))
 }
 
 /// Keep a card's output out of the shared selection, which would treat its
@@ -1849,12 +2305,9 @@ pub(super) fn render_question_card(
         .on_click(cx.listener(|this, _event, _window, cx| {
             this.toggle_question_collapsed(cx);
         }))
-        .child(lead().child(icon(
-            if collapsed {
-                "chevron-right"
-            } else {
-                "chevron-down"
-            },
+        .child(lead().child(motion::chevron(
+            "question-card-chevron",
+            !collapsed,
             px(14.),
             theme::text_secondary(),
         )))
@@ -1977,6 +2430,13 @@ pub(super) fn render_question_card(
                             .child(option.description.clone()),
                     )
                 });
+            // A single choice answers on the click, so the only row it
+            // marks is the one the keyboard is on.
+            let marked = if entry.multi_select {
+                is_cursor
+            } else {
+                is_picked
+            };
             let row = div()
                 .id(gpui::SharedString::from(format!(
                     "question-option-{question_index}-{option_index}"
@@ -1990,21 +2450,22 @@ pub(super) fn render_question_card(
                 .px_1p5()
                 .py_1()
                 .rounded(theme::RADIUS_SM)
-                // A single choice answers on the click, so the only row it
-                // marks is the one the keyboard is on.
-                .when(
-                    if entry.multi_select {
-                        is_cursor
-                    } else {
-                        is_picked
-                    },
-                    |row| row.bg(gpui::rgb(theme::bg_sidebar_row_hover())),
-                )
-                .hover(|style| {
-                    style
-                        .bg(gpui::rgb(theme::bg_sidebar_row_hover()))
-                        .cursor_pointer()
+                .when(marked, |row| {
+                    row.bg(gpui::rgb(theme::bg_sidebar_row_hover()))
                 })
+                .map(|element| {
+                    let rest: gpui::Hsla = if marked {
+                        gpui::rgb(theme::bg_sidebar_row_hover()).into()
+                    } else {
+                        gpui::transparent_black()
+                    };
+                    crate::ui::motion::hover_background(
+                        element,
+                        rest,
+                        gpui::rgb(theme::bg_sidebar_row_hover()),
+                    )
+                })
+                .hover(|style| style.cursor_pointer())
                 .on_click({
                     cx.listener(move |this, _event, _window, cx| {
                         this.toggle_question_option(question_index, option_index, cx);
@@ -2137,7 +2598,8 @@ pub(super) fn render_question_card(
                 .child(gpui::text!(tr("chat-skip")))
                 .child(widgets::keycap("esc")),
         );
-    let footer_button = |button: gpui::Stateful<Div>| button.flex_none().px_3().py_1().text_xs();
+    let footer_button =
+        |button: motion::HoverBackground| button.flex_none().px_3().py_1().text_xs();
     if permission.is_some() {
         // Deny and Allow once sit here at every width, never beside the call.
         for (option_index, button) in [
@@ -2173,10 +2635,11 @@ pub(super) fn render_question_card(
 
 /// Pulsing dots shown between send and the first streamed content. They
 /// breathe on the shared low-rate clock, so waiting costs the same as a
-/// spinner rather than a full-rate animation.
-pub(super) fn render_waiting_indicator() -> gpui::Stateful<Div> {
+/// spinner rather than a full-rate animation. They fade in when they
+/// appear and leave at once when the reply arrives.
+pub(super) fn render_waiting_indicator() -> impl IntoElement {
     const CYCLE: std::time::Duration = std::time::Duration::from_millis(1400);
-    div()
+    let indicator = div()
         .id("waiting-indicator")
         .role(gpui::Role::Status)
         .aria_label(tr("chat-thinking-label"))
@@ -2184,7 +2647,8 @@ pub(super) fn render_waiting_indicator() -> gpui::Stateful<Div> {
         .items_center()
         .gap_2()
         .px_4()
-        .py_2()
+        // The send preview's status line takes the same slot.
+        .h(WAITING_ROW_HEIGHT)
         .child(motion::ticker("waiting-dots", CYCLE, |phase| {
             let mut row = div().flex().items_center().gap_1p5();
             for index in 0..3 {
@@ -2204,5 +2668,700 @@ pub(super) fn render_waiting_indicator() -> gpui::Stateful<Div> {
                 .text_sm()
                 .text_color(gpui::rgb(theme::text_muted()))
                 .child(tr("chat-thinking-label")),
-        )
+        );
+    motion::fade_in(indicator, "waiting-indicator-reveal")
+}
+
+#[cfg(test)]
+mod motion_tests {
+    use std::time::{Duration, Instant};
+
+    use gpui::{Bounds, Context, Pixels, TestAppContext};
+
+    use super::WAITING_ROW_HEIGHT;
+
+    use crate::ui::chat::*;
+    use crate::ui::motion;
+
+    fn item(id: &str, item_type: &str, text: Option<&str>) -> AgentTimelineItem {
+        AgentTimelineItem {
+            label: None,
+            persisted: None,
+            live: None,
+            truncated: None,
+            revision: 0,
+            id: id.to_string(),
+            item_type: item_type.to_string(),
+            role: None,
+            title: None,
+            text: text.map(str::to_string),
+            status: None,
+            input: None,
+            output: None,
+            created_ms: 0,
+            merge: "replace".to_string(),
+        }
+    }
+
+    fn user_item(id: &str, text: &str) -> AgentTimelineItem {
+        AgentTimelineItem {
+            role: Some("user".to_string()),
+            ..item(id, "message", Some(text))
+        }
+    }
+
+    fn screen(cx: &mut TestAppContext) -> Entity<ChatScreen> {
+        cx.executor().allow_parking();
+        cx.new(|cx| {
+            let _guard = crate::settings::SETTINGS_IO_LOCK.lock();
+            let backend = std::sync::Arc::new(
+                crate::backend::AgentBackend::for_test(
+                    "http://127.0.0.1:9".to_string(),
+                    String::new(),
+                )
+                .expect("backend"),
+            );
+            let mut chat = ChatScreen::new_inner_for_test(backend, "user".to_string(), cx);
+            chat.selected_session = Some("s1".to_string());
+            chat
+        })
+    }
+
+    /// Pins the motion clock for one test and returns it to the real
+    /// clock when the test ends, pass or fail.
+    struct Clock(Instant);
+
+    impl Clock {
+        fn start() -> Self {
+            let start = Instant::now();
+            motion::set_test_now(Some(start));
+            Self(start)
+        }
+
+        fn at(&self, offset: Duration) -> Instant {
+            motion::set_test_now(Some(self.0 + offset));
+            self.0 + offset
+        }
+    }
+
+    impl Drop for Clock {
+        fn drop(&mut self) {
+            motion::set_test_now(None);
+        }
+    }
+
+    /// Whether any transcript entrance still asks for frames at `now`.
+    fn in_flight(
+        chat: &Entity<ChatScreen>,
+        now: Instant,
+        cx: &mut gpui::VisualTestContext,
+    ) -> bool {
+        chat.update(cx, |chat, _| chat.row_motion.settle(now, false))
+    }
+
+    /// The chat pane's middle: the transcript and the slot under it.
+    struct PaneHost {
+        chat: Entity<ChatScreen>,
+    }
+
+    impl Render for PaneHost {
+        fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+            let pane = self.chat.update(cx, |chat, cx| {
+                let transcript = chat.render_transcript(window, cx);
+                let under = chat.render_under_transcript(window, cx);
+                div()
+                    .size_full()
+                    .flex()
+                    .flex_col()
+                    .child(transcript)
+                    .children(under)
+            });
+            div().w(px(1200.)).h(px(800.)).flex().flex_col().child(pane)
+        }
+    }
+
+    fn pane(
+        cx: &mut TestAppContext,
+        rows: usize,
+    ) -> (Entity<ChatScreen>, &mut gpui::VisualTestContext) {
+        let chat = screen(cx);
+        chat.update(cx, |chat, _| {
+            chat.replace_timeline(
+                (0..rows)
+                    .map(|index| item(&format!("h{index}"), "message", Some("Earlier row")))
+                    .collect(),
+            );
+        });
+        let (_host, cx) = cx.add_window_view(|_, _| PaneHost { chat: chat.clone() });
+        cx.simulate_resize(gpui::size(px(1200.), px(800.)));
+        cx.run_until_parked();
+        (chat, cx)
+    }
+
+    fn redraw(chat: &Entity<ChatScreen>, cx: &mut gpui::VisualTestContext) {
+        chat.update(cx, |_, cx| cx.notify());
+        cx.run_until_parked();
+    }
+
+    fn bounds(cx: &mut gpui::VisualTestContext, selector: &'static str) -> Bounds<Pixels> {
+        cx.debug_bounds(selector)
+            .unwrap_or_else(|| panic!("{selector} painted"))
+    }
+
+    /// Samples each selector's top at 60 fps through one entrance that
+    /// began at `start`.
+    fn tops_through_entrance(
+        chat: &Entity<ChatScreen>,
+        clock: &Clock,
+        start: Duration,
+        selectors: &[&'static str],
+        cx: &mut gpui::VisualTestContext,
+    ) -> Vec<Vec<Pixels>> {
+        let mut tops = vec![Vec::new(); selectors.len()];
+        let mut at = Duration::ZERO;
+        while at <= motion::ENTER + Duration::from_millis(16) {
+            clock.at(start + at);
+            redraw(chat, cx);
+            for (selector, tops) in selectors.iter().zip(&mut tops) {
+                tops.push(bounds(cx, selector).origin.y);
+            }
+            at += Duration::from_millis(16);
+        }
+        tops
+    }
+
+    /// Every frame-to-frame move stays within what the easing allows: no
+    /// single-frame jump.
+    fn assert_glides(tops: &[Pixels], label: &str) {
+        let total = (tops[0] - tops[tops.len() - 1]).abs();
+        // ease_out_cubic is steepest at its start: 3x the mean speed, or
+        // 16 ms * 3 / 180 ms of the distance per frame.
+        let limit = total * 0.3 + px(1.);
+        for pair in tops.windows(2) {
+            assert!(
+                (pair[1] - pair[0]).abs() <= limit,
+                "{label} jumped {:?} in one frame (limit {limit:?}): {tops:?}",
+                pair[1] - pair[0]
+            );
+        }
+    }
+
+    #[gpui::test]
+    fn a_row_arriving_while_scrolled_up_rises_without_a_layout_change(cx: &mut TestAppContext) {
+        let clock = Clock::start();
+        let (chat, cx) = pane(cx, 3);
+        assert!(!in_flight(&chat, clock.0, cx), "history arrives at rest");
+        chat.update(cx, |chat, cx| {
+            chat.list_state.pause_following_tail();
+            chat.apply_incoming_item("s1", item("live", "message", Some("Hello")), cx);
+        });
+        redraw(&chat, cx);
+        let entering = bounds(cx, "timeline-row-live");
+
+        let midway = clock.at(motion::ENTER / 2);
+        let progress = chat.update(cx, |chat, _| chat.row_motion.arrival("live", midway, false));
+        assert!(
+            progress > 0. && progress < 1.,
+            "mid-entrance, got {progress}"
+        );
+        assert!(in_flight(&chat, midway, cx), "frames continue mid-entrance");
+
+        let done = clock.at(motion::ENTER);
+        redraw(&chat, cx);
+        let settled = bounds(cx, "timeline-row-live");
+        assert_eq!(entering.size, settled.size, "the rise never changes layout");
+        assert_eq!(entering.origin.y - settled.origin.y, motion::RISE);
+        assert!(!in_flight(&chat, done, cx), "frames stop once it settles");
+
+        // Scrolled away and back, the row is drawn at rest: no replay.
+        chat.update(cx, |chat, _| {
+            chat.list_state.scroll_to(gpui::ListOffset {
+                item_ix: 0,
+                offset_in_item: px(0.),
+            });
+        });
+        redraw(&chat, cx);
+        chat.update(cx, |chat, _| chat.list_state.scroll_to_end());
+        redraw(&chat, cx);
+        assert_eq!(cx.debug_bounds("timeline-row-live"), Some(settled));
+        assert!(!in_flight(&chat, done, cx));
+    }
+
+    #[gpui::test]
+    fn a_tail_row_grows_into_place_and_older_rows_glide(cx: &mut TestAppContext) {
+        let clock = Clock::start();
+        let (chat, cx) = pane(cx, 30);
+        let before = bounds(cx, "timeline-row-h29");
+        chat.update(cx, |chat, cx| {
+            chat.apply_incoming_item(
+                "s1",
+                item("live", "message", Some("Hello\n\nA second paragraph")),
+                cx,
+            );
+        });
+        let tops = tops_through_entrance(&chat, &clock, Duration::ZERO, &["timeline-row-h29"], cx)
+            .remove(0);
+        assert!(
+            (tops[0] - before.origin.y).abs() <= px(1.),
+            "older rows hold still on the arrival frame: {before:?} then {tops:?}"
+        );
+        assert!(
+            tops[tops.len() - 1] < before.origin.y,
+            "older rows made room"
+        );
+        assert!(
+            tops.windows(2).all(|pair| pair[1] <= pair[0]),
+            "older rows only rise: {tops:?}"
+        );
+        assert_glides(&tops, "an older row");
+        assert!(!in_flight(&chat, clock.at(motion::ENTER), cx));
+
+        // The settled layout is the one without motion.
+        let older = bounds(cx, "timeline-row-h29");
+        let live = bounds(cx, "timeline-row-live");
+        chat.update(cx, |chat, _| {
+            let rows = chat.timeline.clone();
+            chat.replace_timeline(rows);
+        });
+        redraw(&chat, cx);
+        assert_eq!(bounds(cx, "timeline-row-h29"), older);
+        assert_eq!(bounds(cx, "timeline-row-live"), live);
+    }
+
+    #[gpui::test]
+    fn a_reply_streaming_while_it_opens_ends_at_its_true_height(cx: &mut TestAppContext) {
+        let clock = Clock::start();
+        let (chat, cx) = pane(cx, 30);
+        chat.update(cx, |chat, cx| {
+            chat.apply_incoming_item("s1", item("reply", "message", Some("Answer:")), cx);
+        });
+        redraw(&chat, cx);
+        clock.at(motion::ENTER / 3);
+        redraw(&chat, cx);
+        chat.update(cx, |chat, cx| {
+            chat.apply_incoming_item(
+                "s1",
+                AgentTimelineItem {
+                    merge: "append".to_string(),
+                    text: Some("\n\nMore lines\n\nAnd more".to_string()),
+                    ..item("reply", "message", None)
+                },
+                cx,
+            );
+        });
+        for step in [motion::ENTER / 2, motion::ENTER * 3 / 4, motion::ENTER] {
+            clock.at(step);
+            redraw(&chat, cx);
+        }
+        let older = bounds(cx, "timeline-row-h29");
+        let reply = bounds(cx, "timeline-row-reply");
+        chat.update(cx, |chat, _| {
+            let rows = chat.timeline.clone();
+            chat.replace_timeline(rows);
+        });
+        redraw(&chat, cx);
+        assert_eq!(bounds(cx, "timeline-row-h29"), older);
+        assert_eq!(bounds(cx, "timeline-row-reply"), reply);
+    }
+
+    #[gpui::test]
+    fn the_sent_bubble_rises_in_and_its_status_does_not(cx: &mut TestAppContext) {
+        let clock = Clock::start();
+        let (chat, cx) = pane(cx, 3);
+        chat.update(cx, |chat, _| {
+            let preview = sending::SendPreview::new(Some("s1".into()), "hello", &[])
+                .capture_timeline(&chat.timeline);
+            chat.sending_previews.insert("send-1".into(), preview);
+        });
+        redraw(&chat, cx);
+        let entering = bounds(cx, "pending-send-body");
+        let status = bounds(cx, "pending-send-status");
+        clock.at(motion::ENTER);
+        redraw(&chat, cx);
+        let settled = bounds(cx, "pending-send-body");
+        assert_eq!(entering.origin.y - settled.origin.y, motion::RISE);
+        assert_eq!(entering.size, settled.size);
+        assert_eq!(
+            bounds(cx, "pending-send-status"),
+            status,
+            "the status line has no offset of its own or its parent's"
+        );
+        assert_eq!(status.size.height, WAITING_ROW_HEIGHT);
+    }
+
+    #[gpui::test]
+    fn sending_opens_the_slot_so_older_rows_glide_up(cx: &mut TestAppContext) {
+        let clock = Clock::start();
+        let (chat, cx) = pane(cx, 30);
+        let before = bounds(cx, "timeline-row-h29");
+        chat.update(cx, |chat, _| {
+            let preview = sending::SendPreview::new(Some("s1".into()), "hello", &[])
+                .capture_timeline(&chat.timeline);
+            chat.sending_previews.insert("send-1".into(), preview);
+        });
+        let tops = tops_through_entrance(&chat, &clock, Duration::ZERO, &["timeline-row-h29"], cx)
+            .remove(0);
+        assert!(
+            (tops[0] - before.origin.y).abs() <= px(1.),
+            "older rows hold still on the send frame: {before:?} then {tops:?}"
+        );
+        assert!(tops[tops.len() - 1] < before.origin.y, "the slot made room");
+        assert!(
+            tops.windows(2).all(|pair| pair[1] <= pair[0]),
+            "older rows only rise: {tops:?}"
+        );
+        assert_glides(&tops, "an older row");
+        let older = bounds(cx, "timeline-row-h29");
+        let bubble = bounds(cx, "pending-send-body");
+        let status = bounds(cx, "pending-send-status");
+
+        // The settled layout is the one without motion.
+        cx.update(|_, cx| cx.set_reduce_motion(true));
+        redraw(&chat, cx);
+        assert_eq!(bounds(cx, "timeline-row-h29"), older);
+        assert_eq!(bounds(cx, "pending-send-body"), bubble);
+        assert_eq!(bounds(cx, "pending-send-status"), status);
+    }
+
+    #[gpui::test]
+    fn the_first_send_in_an_empty_task_opens_its_slot(cx: &mut TestAppContext) {
+        // The whole screen, so the empty state draws in place of the
+        // transcript until the first send.
+        struct ScreenHost {
+            chat: Entity<ChatScreen>,
+        }
+        impl Render for ScreenHost {
+            fn render(&mut self, _: &mut Window, _: &mut Context<Self>) -> impl IntoElement {
+                div().size_full().flex().flex_col().child(self.chat.clone())
+            }
+        }
+        let clock = Clock::start();
+        let chat = screen(cx);
+        // A new task: a blank transcript replaced the last one.
+        chat.update(cx, |chat, _| chat.replace_timeline(Vec::new()));
+        let (_host, cx) = cx.add_window_view(|_, _| ScreenHost { chat: chat.clone() });
+        cx.simulate_resize(gpui::size(px(1200.), px(800.)));
+        cx.run_until_parked();
+        assert!(chat.read_with(cx, |chat, _| chat.shows_empty_state()));
+        chat.update(cx, |chat, _| {
+            let preview = sending::SendPreview::new(Some("s1".into()), "hello", &[])
+                .capture_timeline(&chat.timeline);
+            chat.sending_previews.insert("send-1".into(), preview);
+        });
+        redraw(&chat, cx);
+        let shown = |chat: &Entity<ChatScreen>, cx: &mut gpui::VisualTestContext| {
+            chat.read_with(cx, |chat, _| chat.row_motion.slot_shown.get())
+        };
+        let sent = shown(&chat, cx);
+        clock.at(motion::ENTER * 2);
+        redraw(&chat, cx);
+        let open = shown(&chat, cx);
+        assert!(open > px(0.), "the slot shows its status");
+        assert!(
+            sent < open,
+            "the send opens the slot rather than showing it at full height: {sent:?} then {open:?}"
+        );
+    }
+
+    /// The newest history row's top before `land`, and through the entrance
+    /// of the row it adds, once the slot under the transcript is open.
+    fn older_row_through_error(
+        chat: &Entity<ChatScreen>,
+        clock: &Clock,
+        land: impl FnOnce(&mut ChatScreen, &mut Context<ChatScreen>),
+        cx: &mut gpui::VisualTestContext,
+    ) -> (Pixels, Vec<Pixels>) {
+        // The slot appears, then opens over ENTER.
+        redraw(chat, cx);
+        let start = motion::ENTER * 2;
+        clock.at(start);
+        redraw(chat, cx);
+        assert!(
+            chat.read_with(cx, |chat, _| chat.row_motion.slot_shown.get()) > px(0.),
+            "the slot is open before the error"
+        );
+        let before = bounds(cx, "timeline-row-h29").origin.y;
+        chat.update(cx, land);
+        let tops = tops_through_entrance(chat, clock, start, &["timeline-row-h29"], cx).remove(0);
+        (before, tops)
+    }
+
+    #[gpui::test]
+    fn a_run_error_takes_the_waiting_rows_place(cx: &mut TestAppContext) {
+        let clock = Clock::start();
+        let (chat, cx) = pane(cx, 30);
+        // A run is going and nothing has come back yet: the waiting dots show.
+        chat.update(cx, |chat, _| {
+            chat.active_runs.insert("s1".into(), "run-1".into());
+            chat.awaiting_first_token = true;
+        });
+        let (before, tops) = older_row_through_error(
+            &chat,
+            &clock,
+            |chat, cx| {
+                for event in [
+                    maple_agent::agent::AgentRunEvent::Error(item(
+                        "failed",
+                        "error",
+                        Some("The model is unavailable."),
+                    )),
+                    maple_agent::agent::AgentRunEvent::Finished(
+                        maple_agent::agent::AgentRunTerminal::Completed,
+                    ),
+                ] {
+                    chat.handle_service_event(
+                        AgentServiceEvent::Run {
+                            session_id: "s1".into(),
+                            run_id: "run-1".into(),
+                            event,
+                        },
+                        cx,
+                    );
+                }
+            },
+            cx,
+        );
+        assert!(
+            (tops[0] - before).abs() <= px(1.),
+            "older rows hold still as the error replaces the dots: {before:?} then {tops:?}"
+        );
+        assert_glides(&tops, "an older row");
+    }
+
+    #[gpui::test]
+    fn a_failed_send_reports_its_error_in_the_slots_place(cx: &mut TestAppContext) {
+        let clock = Clock::start();
+        let (chat, cx) = pane(cx, 30);
+        chat.update(cx, |chat, _| {
+            let preview = sending::SendPreview::new(Some("s1".into()), "hello", &[])
+                .capture_timeline(&chat.timeline);
+            chat.sending_previews.insert("send-1".into(), preview);
+            chat.awaiting_first_token = true;
+        });
+        let (before, tops) = older_row_through_error(
+            &chat,
+            &clock,
+            |chat, cx| {
+                let backend = chat.backend.clone();
+                chat.finish_send(
+                    "send-1".into(),
+                    UnresolvedSend {
+                        backend,
+                        outcome: None,
+                        session: "s1".into(),
+                        text: "hello".into(),
+                        attachments: vec![],
+                        from_composer: false,
+                    },
+                    Err(UiFailure::Local(
+                        "chat-upload-cancelled-unsent",
+                        "Upload cancelled. No message was sent.",
+                    )),
+                    cx,
+                );
+            },
+            cx,
+        );
+        assert!(
+            chat.read_with(cx, |chat, _| chat
+                .timeline
+                .iter()
+                .any(|row| row.item_type == "error")),
+            "the failure shows as an error row"
+        );
+        assert!(
+            (tops[0] - before).abs() <= px(1.),
+            "older rows hold still as the error replaces the bubble: {before:?} then {tops:?}"
+        );
+        assert_glides(&tops, "an older row");
+    }
+
+    #[gpui::test]
+    fn the_real_row_takes_over_from_the_bubble_without_a_jump(cx: &mut TestAppContext) {
+        let clock = Clock::start();
+        let (chat, cx) = pane(cx, 30);
+        chat.update(cx, |chat, _| {
+            let preview = sending::SendPreview::new(Some("s1".into()), "hello", &[])
+                .capture_timeline(&chat.timeline);
+            chat.sending_previews.insert("send-1".into(), preview);
+        });
+        redraw(&chat, cx);
+        let start = motion::ENTER * 2;
+        clock.at(start);
+        redraw(&chat, cx);
+        let bubble = bounds(cx, "pending-send-body");
+        let older = bounds(cx, "timeline-row-h29");
+        let status = bounds(cx, "pending-send-status");
+
+        chat.update(cx, |chat, cx| {
+            chat.handle_service_event(
+                AgentServiceEvent::TimelineItem {
+                    session_id: "s1".into(),
+                    run_id: Some("run-1".into()),
+                    item: user_item("mine", "hello"),
+                },
+                cx,
+            );
+        });
+        let tops = tops_through_entrance(
+            &chat,
+            &clock,
+            start,
+            &[
+                "timeline-row-mine",
+                "timeline-row-h29",
+                "pending-send-status",
+            ],
+            cx,
+        );
+        assert!(cx.debug_bounds("pending-send-body").is_none(), "handed off");
+        assert!(
+            (tops[0][0] - bubble.origin.y).abs() <= px(1.),
+            "the row starts where the bubble was: {bubble:?} then {:?}",
+            tops[0]
+        );
+        assert!(
+            (tops[1][0] - older.origin.y).abs() <= px(1.),
+            "older rows hold still on the handoff frame: {older:?} then {:?}",
+            tops[1]
+        );
+        assert!(
+            tops[2].iter().all(|top| *top == status.origin.y),
+            "the status line keeps its slot: {:?}",
+            tops[2]
+        );
+        assert_glides(&tops[0], "the handed-off row");
+        assert_glides(&tops[1], "an older row");
+    }
+
+    #[gpui::test]
+    fn history_task_switches_paging_and_reconnects_do_not_animate(cx: &mut TestAppContext) {
+        let clock = Clock::start();
+        let chat = screen(cx);
+        chat.update(cx, |chat, cx| {
+            let now = clock.0;
+            // A history load.
+            chat.replace_timeline(vec![
+                user_item("u1", "hi"),
+                item("a1", "message", Some("yo")),
+            ]);
+            assert_eq!(chat.row_motion.arrival("a1", now, false), 1.);
+            // Another task's snapshot replaces a row that was still entering.
+            chat.apply_incoming_item("s1", item("a2", "message", Some("more")), cx);
+            assert!(chat.row_motion.arrival("a2", now, false) < 1.);
+            chat.set_active_session(
+                AgentSessionSummary {
+                    web_enabled: true,
+                    permission_mode: Default::default(),
+                    state: maple_agent::agent::AgentTaskState::Active,
+                    acp: false,
+                    id: "s2".to_string(),
+                    title: "Other".to_string(),
+                    project_root: "/tmp/proj".to_string(),
+                    created_ms: 0,
+                    updated_ms: 0,
+                    message_count: 1,
+                    model: None,
+                    thinking_level: None,
+                },
+                vec![
+                    item("a2", "message", Some("more")),
+                    item("b1", "message", None),
+                ],
+                HashMap::new(),
+                cx,
+            );
+            assert_eq!(chat.row_motion.arrival("a2", now, false), 1.);
+            assert_eq!(chat.row_motion.arrival("b1", now, false), 1.);
+            // A forward history page is open: live rows wait for a reload.
+            chat.pages.after = true;
+            chat.apply_incoming_item("s2", item("paged", "message", Some("x")), cx);
+            assert_eq!(chat.row_motion.arrival("paged", now, false), 1.);
+            chat.pages.after = false;
+            // Pushes replayed after a reconnect rebuild the transcript.
+            chat.replay_after_reconnect(
+                vec![AgentServiceEvent::TimelineItem {
+                    session_id: "s2".into(),
+                    run_id: None,
+                    item: item("replayed", "message", Some("x")),
+                }],
+                cx,
+            );
+            assert!(
+                chat.timeline.iter().any(|row| row.id == "replayed"),
+                "the replayed push landed"
+            );
+            assert_eq!(chat.row_motion.arrival("replayed", now, false), 1.);
+            assert!(!chat.row_motion.settle(now, false));
+            // Reduced motion: a live row is at rest at once.
+            chat.apply_incoming_item("s2", item("live", "message", Some("x")), cx);
+            assert_eq!(chat.row_motion.arrival("live", now, true), 1.);
+            assert!(!chat.row_motion.settle(now, true));
+        });
+    }
+
+    #[gpui::test]
+    fn streaming_into_a_row_does_not_restart_its_entrance(cx: &mut TestAppContext) {
+        let clock = Clock::start();
+        let chat = screen(cx);
+        let chunk = || AgentTimelineItem {
+            merge: "append".to_string(),
+            text: Some(" more".to_string()),
+            ..item("reply", "message", None)
+        };
+        chat.update(cx, |chat, cx| {
+            chat.apply_incoming_item("s1", item("reply", "message", Some("Hi")), cx);
+            let midway = clock.at(motion::ENTER / 2);
+            let before = chat.row_motion.arrival("reply", midway, false);
+            chat.apply_incoming_item("s1", chunk(), cx);
+            assert_eq!(chat.row_motion.arrival("reply", midway, false), before);
+            let done = clock.at(motion::ENTER);
+            assert!(!chat.row_motion.settle(done, false));
+            chat.apply_incoming_item("s1", chunk(), cx);
+            assert_eq!(chat.timeline[0].text.as_deref(), Some("Hi more more"));
+            assert_eq!(chat.row_motion.arrival("reply", done, false), 1.);
+            assert!(!chat.row_motion.settle(done, false));
+        });
+    }
+
+    #[gpui::test]
+    fn the_row_replacing_the_send_preview_does_not_enter_again(cx: &mut TestAppContext) {
+        let clock = Clock::start();
+        let chat = screen(cx);
+        chat.update(cx, |chat, cx| {
+            let preview = sending::SendPreview::new(Some("s1".into()), "hello", &[])
+                .capture_timeline(&chat.timeline);
+            chat.sending_previews.insert("send-1".into(), preview);
+            assert!(chat.has_send_feedback());
+            let projected = |id: &str, run: &str| AgentServiceEvent::TimelineItem {
+                session_id: "s1".into(),
+                run_id: Some(run.into()),
+                item: user_item(id, "hello"),
+            };
+            chat.handle_service_event(projected("mine", "run-1"), cx);
+            assert_eq!(chat.timeline.len(), 1);
+            assert_eq!(chat.row_motion.arrival("mine", clock.0, false), 1.);
+            // A message sent from another computer has no preview here.
+            chat.handle_service_event(projected("theirs", "run-2"), cx);
+            assert!(chat.row_motion.arrival("theirs", clock.0, false) < 1.);
+        });
+    }
+
+    #[gpui::test]
+    fn opening_a_task_shows_the_spinner_only_after_a_moment(cx: &mut TestAppContext) {
+        let clock = Clock::start();
+        let chat = screen(cx);
+        chat.update(cx, |chat, cx| {
+            chat.select_session("s2", cx);
+            assert_eq!(chat.loading_session.as_deref(), Some("s2"));
+            assert!(!chat.loading_spinner_due());
+            clock.at(super::super::LOADING_SPINNER_DELAY - Duration::from_millis(1));
+            assert!(!chat.loading_spinner_due());
+            clock.at(super::super::LOADING_SPINNER_DELAY);
+            assert!(chat.loading_spinner_due());
+            // Clicking the same task again keeps the open's start time.
+            chat.select_session("s2", cx);
+            assert!(chat.loading_spinner_due());
+        });
+    }
 }
