@@ -164,6 +164,12 @@ class LaneTableTests(unittest.TestCase):
             with self.subTest(path=path):
                 self.assertIn("repo", selected([path]))
 
+    def test_dev_release_statement_uses_the_existing_repo_checks(self):
+        for path in (".github/workflows/opensecret-release-statement-dev.yml",
+                     "scripts/ci/opensecret_release_statement.py", "scripts/ci/test_opensecret_release_statement.py"):
+            with self.subTest(path=path):
+                self.assertEqual(selected([path]), {"repo"})
+
     def test_rust_sdk_tests_and_proxy_container_select_no_agent_lane(self):
         self.assertEqual(selected(["sdk/rust/tests/x.rs"], PUSH), {"sdk-rust", "os-sdk-e2e"})
         self.assertEqual(agent_lanes(selected(["proxy/src/main.rs"])), AGENT_PR)

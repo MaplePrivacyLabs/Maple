@@ -57,7 +57,6 @@ jq -e '
   exit 1
 }
 
-(cd "$output_dir" && sha256sum image.eif pcr.json > SHA256SUMS)
 eif_sha256=$(sha256sum -- "$output_dir/image.eif" | cut -d' ' -f1)
 pcr0=$(jq -r .PCR0 "$output_dir/pcr.json")
 if cmp -s -- "$reference" "$output_dir/pcr.json"; then
@@ -71,6 +70,8 @@ jq -n --arg environment "$mode" --arg source_sha "$source_sha" --arg eif_sha256 
   --argjson approval_needed "$approval_needed" --slurpfile measurements "$output_dir/pcr.json" \
   '{environment: $environment, source_sha: $source_sha, measurements: $measurements[0],
     eif_sha256: $eif_sha256, approval_needed: $approval_needed}' > "$output_dir/handoff.json"
+# Bind the mode and full source SHA to the same build provenance as the EIF.
+(cd "$output_dir" && sha256sum image.eif pcr.json handoff.json > SHA256SUMS)
 
 if [[ -n "${GITHUB_OUTPUT:-}" ]]; then
   printf 'approval_needed=%s\npcr0=%s\neif_sha256=%s\nartifact=%s\n' \

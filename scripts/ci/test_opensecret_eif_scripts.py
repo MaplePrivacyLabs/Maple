@@ -104,6 +104,10 @@ class EifReleaseBuildCommandTests(unittest.TestCase):
             self.assertEqual((candidate / name).stat().st_mode & 0o777, 0o644)
         digest = hashlib.sha256(b"fixture EIF, not a real image").hexdigest()
         self.assertEqual((candidate / "SHA256SUMS").read_text().splitlines()[0], f"{digest}  image.eif")
+        # Mode/source evidence must be signed by the builder, not merely carried
+        # alongside the attested EIF and measurement files.
+        handoff_digest = hashlib.sha256((candidate / "handoff.json").read_bytes()).hexdigest()
+        self.assertIn(f"{handoff_digest}  handoff.json", (candidate / "SHA256SUMS").read_text().splitlines())
         handoff = json.loads((candidate / "handoff.json").read_text())
         self.assertEqual(handoff, {
             "environment": "dev", "source_sha": "1" * 40, "measurements": VALID_MEASUREMENTS,
@@ -465,9 +469,31 @@ class ApprovalPublishCommandTests(unittest.TestCase):
     def branch(self):
         return f"opensecret/pcr-approval-{self.source_sha[:12]}"
 
-    def run_publish(self, mode="dev", path=None):
+    def test_verified_older_source_can_be_approved_from_a_newer_trusted_checkout(self):
+        (self.repo / "reviewed-later-change").write_text("later master source\n")
+        self.git("-C", str(self.repo), "add", "reviewed-later-change")
+        self.git("-C", str(self.repo), "commit", "-q", "-m", "later reviewed master change")
+        checkout_sha = self.git("-C", str(self.repo), "rev-parse", "HEAD")
+        self.change_approvals()
+        result = self.run_publish(EXPECTED_SOURCE_SHA=self.source_sha)
+        self.assertEqual(result.returncode, 0, result.stderr)
+        branch = f"{self.branch()}-{checkout_sha[:12]}"
+        message = self.git("-C", str(self.origin), "log", "-1", "--format=%B", branch)
+        self.assertIn(f"Source commit: {self.source_sha}", message)
+        self.assertEqual(self.git("-C", str(self.origin), "show", f"{branch}:reviewed-later-change"),
+                         "later master source")
+
+    def test_explicit_source_must_be_a_full_reachable_commit_matching_the_handoff(self):
+        self.change_approvals()
+        for source in (self.source_sha[:12], "f" * 40, "bad\nsource"):
+            with self.subTest(source=source):
+                result = self.run_publish(EXPECTED_SOURCE_SHA=source)
+                self.assertNotEqual(result.returncode, 0)
+
+    def run_publish(self, mode="dev", path=None, **extra_env):
         env = {"PATH": path or os.environ["PATH"], "HOME": str(self.root), "GITHUB_TOKEN": "fixture-token",
-               "GITHUB_REPOSITORY": "fixture/repo", "GITHUB_RUN_ID": "7", "GITHUB_STEP_SUMMARY": str(self.summary)}
+               "GITHUB_REPOSITORY": "fixture/repo", "GITHUB_RUN_ID": "7", "GITHUB_STEP_SUMMARY": str(self.summary),
+               **extra_env}
         return subprocess.run(
             [shutil.which("bash"), "--noprofile", "--norc",
              str(self.repo / "scripts/ci/publish_opensecret_approval.sh"), mode, str(self.artifact)],

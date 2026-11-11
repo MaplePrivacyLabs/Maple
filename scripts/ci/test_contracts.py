@@ -57,6 +57,7 @@ OIDC_JOBS = frozenset({
     ("desktop-build.yml", "build-macos"), ("desktop-build.yml", "build-linux"), ("desktop-build.yml", "build-windows"),
     ("dev-credential-requester-image.yml", "build"), ("ios-dev-testflight.yml", "build-ios-dev"),
     ("mobile-build.yml", "build-ios"), ("opensecret-eif-release.yml", "build"),
+    ("opensecret-release-statement-dev.yml", "sign"),
     ("ci.yml", "os-eif"), ("opensecret-eif.yml", "eif-trusted"),
     *(("release.yml", job) for job in ("build-tauri", "build-windows", "build-android", "build-ios", "build-web",
                                        "publish-proxy-release-artifacts", "update-latest-json",
@@ -83,6 +84,7 @@ CONSUMERS = {
     ("mobile-build.yml", "build-ios"): "apple-signing",
     ("mobile-build.yml", "submit-ios-testflight"): "apple-signing",
     ("opensecret-eif-release.yml", "sign"): "pcr-signing",
+    ("opensecret-release-statement-dev.yml", "sign"): "pcr-signing-dev",
     ("pages-publish.yml", "preview"): "pages-preview",
     ("pages-publish.yml", "production"): "pages-production",
     ("release.yml", "build-tauri"): "desktop-signing",
@@ -633,12 +635,37 @@ class ContractTests(unittest.TestCase):
         self.assertNotIn("environment", build)
         self.assertFalse(re.search(r"\bsecrets\b|github\.token|\bGH_TOKEN\b", json.dumps(build)))
         self.assertEqual(sign["needs"], "build")
-        self.assertEqual(sign["if"], "inputs.dry_run == false && needs.build.outputs.approval_needed == 'true'")
+        self.assertEqual(sign["if"], "inputs.environment == 'prod' && inputs.dry_run == false && needs.build.outputs.approval_needed == 'true'")
         self.assertEqual(sign["permissions"], {"contents": "write"})
         self.assertNotRegex(json.dumps(sign), r"id-token|flakehub-cache")
         key = [step for step in sign["steps"] if "outputs.SIGNING_PRIVATE_KEY" in json.dumps(step)]
         self.assertEqual(len(key), 1)  # the signing key reaches exactly one step
         self.assertEqual(key[0]["env"], {"SIGNING_PRIVATE_KEY": "${{ steps.signing-key.outputs.SIGNING_PRIVATE_KEY }}"})
+
+    def test_c5_dev_statement_identity_has_only_one_gated_job(self):
+        config = workflows()["opensecret-release-statement-dev.yml"]
+        self.assertEqual(set(config["on"]), {"workflow_dispatch"})
+        self.assertEqual(set(config["on"]["workflow_dispatch"]["inputs"]), {"build_run_id"})
+        self.assertEqual(set(config["jobs"]), {"sign"})
+        sign = config["jobs"]["sign"]
+        self.assertEqual(environment(sign), "pcr-signing-dev")
+        for repo in ("MaplePrivacyLabs/Maple", "attacker/Maple"):
+            for ref in ("refs/heads/master", "refs/heads/feature", "refs/tags/master"):
+                self.assertEqual(evaluate(expression(sign), {"github.repository": repo, "github.ref": ref}),
+                                 repo == "MaplePrivacyLabs/Maple" and ref == "refs/heads/master")
+        self.assertEqual(sign["permissions"], {"contents": "write", "actions": "read",
+                                               "id-token": "write", "attestations": "write"})
+        attest = [step for step in sign["steps"] if step.get("uses", "").startswith("actions/attest@")]
+        self.assertEqual(len(attest), 1)
+        self.assertEqual(attest[0]["with"], {"subject-path": "candidate/image.eif",
+                         "predicate-type": "https://maple.ai/attestations/enclave-release/v1",
+                         "predicate-path": "release/predicate.json"})
+        for step in sign["steps"]:
+            if step.get("uses", "").startswith("bitwarden/sm-action@"):
+                self.assertIs(step["with"]["set_env"], False)
+        key_users = [step for step in sign["steps"] if "outputs.SIGNING_PRIVATE_KEY" in json.dumps(step)]
+        self.assertEqual(len(key_users), 1)
+        self.assertEqual(key_users[0]["env"]["EXPECTED_EIF_SHA256"], "${{ steps.candidate.outputs.eif_sha256 }}")
 
     def test_c6_protected_environments_have_fixed_consumers(self):
         self.assertEqual({(name, job_id): environment(job) for name, job_id, job in jobs() if environment(job)},
