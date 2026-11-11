@@ -4608,7 +4608,6 @@ fn activity_indicator(spinner_id: &SharedString, activity: SessionActivity) -> A
             name,
             if activity == state { 1. } else { 0. },
             motion::TOGGLE,
-            motion::ease_out_cubic,
             move |shown| {
                 if shown <= 0. {
                     return div().into_any_element();
@@ -5037,7 +5036,7 @@ mod tests {
         cx.run_until_parked();
         assert!(frames(cx) > 0, "the new status fades in");
         cx.run_until_parked();
-        motion::set_test_now(Some(start + motion::TOGGLE));
+        motion::set_test_now(Some(start + motion::TOGGLE.settle));
         frames(cx);
         cx.run_until_parked();
         assert_eq!(frames(cx), 0, "settled, the cached sidebar goes idle");

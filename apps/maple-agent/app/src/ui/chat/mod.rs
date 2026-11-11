@@ -1200,25 +1200,18 @@ impl ChatScreen {
             return;
         }
         let now = crate::ui::motion::now();
-        let from = self
-            .sidebar_transition
-            .as_ref()
-            .map(|transition| transition.value(now))
-            .unwrap_or(if self.sidebar_collapsed { 0. } else { 1. });
+        let rest = if self.sidebar_collapsed { 0. } else { 1. };
         let to = if collapsed { 0. } else { 1. };
         self.sidebar_collapsed = collapsed;
-        let distance = (to - from).abs();
-        self.sidebar_transition = (!cx.reduce_motion() && distance > f32::EPSILON).then(|| {
-            let mut transition = crate::ui::motion::Tween::new(from);
-            transition.set(
-                to,
-                crate::ui::motion::PANEL.mul_f32(distance),
-                crate::ui::motion::ease_out_cubic,
-                now,
-                false,
-            );
-            transition
-        });
+        // Retarget the transition under way rather than starting another,
+        // so a second press turns back from where the sidebar is, at the
+        // speed it has.
+        let mut transition = self
+            .sidebar_transition
+            .take()
+            .unwrap_or(crate::ui::motion::Tween::new(rest));
+        transition.set(to, crate::ui::motion::PANEL, now, cx.reduce_motion());
+        self.sidebar_transition = transition.is_moving(now).then_some(transition);
         if self.popup.is_open(&ChatPopup::Settings) {
             self.popup.close(cx);
         }
@@ -4309,30 +4302,21 @@ impl ChatScreen {
 
     fn toggle_composer_expanded(&mut self, cx: &mut Context<Self>) {
         let now = motion::now();
-        let from = self
-            .composer_resize
-            .map(|transition| transition.value(now))
-            .unwrap_or(if self.composer_expanded { 1. } else { 0. });
+        let rest = if self.composer_expanded { 1. } else { 0. };
         self.composer_expanded = !self.composer_expanded;
         let expanded = self.composer_expanded;
         let to = if expanded { 1. } else { 0. };
-        let distance = (to - from).abs();
-        // Eases between heights measured on screen, so it needs a frame
-        // drawn first; reduced motion switches at once.
+        // Moves between heights measured on screen, so it needs a frame
+        // drawn first; reduced motion switches at once. A transition under
+        // way is retargeted, so it turns back at the speed it has.
         let frame = self.composer_frame.get();
         let measured = frame.region.is_some() && frame.room.is_some();
-        self.composer_resize =
-            (!cx.reduce_motion() && measured && distance > f32::EPSILON).then(|| {
-                let mut transition = motion::Tween::new(from);
-                transition.set(
-                    to,
-                    motion::PANEL.mul_f32(distance),
-                    motion::ease_out_cubic,
-                    now,
-                    false,
-                );
-                transition
-            });
+        let mut transition = self
+            .composer_resize
+            .take()
+            .unwrap_or(motion::Tween::new(rest));
+        transition.set(to, motion::PANEL, now, cx.reduce_motion() || !measured);
+        self.composer_resize = transition.is_moving(now).then_some(transition);
         // The field fills the box while it moves, so typed text stays put
         // and the box's text height can be read off the field.
         let fill = self.composer_fills();
@@ -7822,7 +7806,6 @@ impl ChatScreen {
                         "settings-menu-chevron",
                         if open { 1. } else { 0. },
                         motion::TOGGLE,
-                        motion::ease_out_cubic,
                         |open| {
                             // Points up at the menu above while closed, and
                             // turns down once it is open.

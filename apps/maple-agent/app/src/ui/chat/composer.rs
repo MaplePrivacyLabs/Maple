@@ -1308,7 +1308,7 @@ impl ChatScreen {
             self.controls_revealed = Some((std::time::Instant::now(), generation));
         }
         let row = match self.controls_revealed {
-            Some((at, generation)) if at.elapsed() < motion::REVEAL * 2 => {
+            Some((at, generation)) if at.elapsed() < motion::REVEAL.duration * 2 => {
                 motion::fade_in(row, ("composer-controls-reveal", generation as usize))
                     .into_any_element()
             }
@@ -1520,13 +1520,7 @@ impl ChatScreen {
             let now = motion::now();
             let reduced = cx.reduce_motion();
             let step = |tween: &mut motion::Tween, on: bool| {
-                tween.step(
-                    if on { 1. } else { 0. },
-                    motion::TOGGLE,
-                    motion::ease_out_cubic,
-                    now,
-                    reduced,
-                )
+                tween.step(if on { 1. } else { 0. }, motion::TOGGLE, now, reduced)
             };
             let (stop, stop_moving) = step(&mut self.send_stop, show_stop);
             let (ready, ready_moving) = step(&mut self.send_ready, can_send);
@@ -2329,10 +2323,10 @@ mod resize_tests {
             rest,
             "starts from the height on screen"
         );
-        frame_at(start + motion::PANEL - Duration::from_millis(1), cx);
+        frame_at(start + motion::PANEL.settle - Duration::from_millis(1), cx);
         let landing = composer_height(cx);
         assert_eq!(tail_gap(cx), pinned, "the transcript keeps its tail");
-        frame_at(start + motion::PANEL, cx);
+        frame_at(start + motion::PANEL.settle, cx);
         let expanded = composer_height(cx);
         assert!(expanded > rest * 2., "expanded: {expanded:?}");
         assert!(
@@ -2342,10 +2336,10 @@ mod resize_tests {
         assert_eq!(tail_gap(cx), pinned, "the transcript keeps its tail");
 
         // Shrink, then expand again halfway down.
-        let shrink = start + motion::PANEL * 2;
+        let shrink = start + motion::PANEL.settle * 2;
         motion::set_test_now(Some(shrink));
         toggle(&chat, cx);
-        frame_at(shrink + motion::PANEL / 2, cx);
+        frame_at(shrink + motion::PANEL.settle / 2, cx);
         let partway = composer_height(cx);
         assert!(partway > rest && partway < expanded, "partway: {partway:?}");
         assert_eq!(tail_gap(cx), pinned, "the tail stays put mid-flight");
@@ -2355,9 +2349,12 @@ mod resize_tests {
             partway,
             "a reversal starts where it is"
         );
-        frame_at(shrink + motion::PANEL / 2 + Duration::from_millis(30), cx);
+        frame_at(
+            shrink + motion::PANEL.settle / 2 + Duration::from_millis(30),
+            cx,
+        );
         assert!(composer_height(cx) > partway, "heading back up");
-        frame_at(shrink + motion::PANEL * 2, cx);
+        frame_at(shrink + motion::PANEL.settle * 2, cx);
         assert_eq!(composer_height(cx), expanded);
         assert!(chat.read_with(cx, |chat, _| chat.composer_resize.is_none()));
 
@@ -2383,12 +2380,12 @@ mod resize_tests {
             Some(rest),
             "the heading and the note are still there on the first frame"
         );
-        frame_at(start + motion::PANEL / 2, cx);
+        frame_at(start + motion::PANEL.settle / 2, cx);
         let partway = composer_height(cx);
         assert!(partway > rest.size.height, "partway: {partway:?}");
-        frame_at(start + motion::PANEL - Duration::from_millis(1), cx);
+        frame_at(start + motion::PANEL.settle - Duration::from_millis(1), cx);
         let landing = cx.debug_bounds("composer-box").expect("composer");
-        frame_at(start + motion::PANEL, cx);
+        frame_at(start + motion::PANEL.settle, cx);
         let expanded = cx.debug_bounds("composer-box").expect("composer");
         assert!(
             (expanded.top() - landing.top()).abs() < px(1.),
@@ -2399,14 +2396,14 @@ mod resize_tests {
             "{landing:?} {expanded:?}"
         );
 
-        let shrink = start + motion::PANEL * 2;
+        let shrink = start + motion::PANEL.settle * 2;
         motion::set_test_now(Some(shrink));
         toggle(&chat, cx);
         assert_eq!(cx.debug_bounds("composer-box"), Some(expanded));
         // On the way back the heading rides above the composer at its full
         // size: the folding box never cuts it against the composer's edge.
         for step in 1..8 {
-            frame_at(shrink + motion::PANEL * step / 8, cx);
+            frame_at(shrink + motion::PANEL.settle * step / 8, cx);
             let composer = cx.debug_bounds("composer-box").expect("composer");
             let title = cx
                 .debug_bounds("empty-title")
@@ -2416,9 +2413,9 @@ mod resize_tests {
                 "the heading stays clear of the composer: {title:?} {composer:?}"
             );
         }
-        frame_at(shrink + motion::PANEL - Duration::from_millis(1), cx);
+        frame_at(shrink + motion::PANEL.settle - Duration::from_millis(1), cx);
         let landing = cx.debug_bounds("composer-box").expect("composer");
-        frame_at(shrink + motion::PANEL, cx);
+        frame_at(shrink + motion::PANEL.settle, cx);
         assert!(
             (rest.top() - landing.top()).abs() < px(1.),
             "{landing:?} {rest:?}"
@@ -2443,14 +2440,14 @@ mod resize_tests {
         cx.run_until_parked();
         let rest = cx.debug_bounds("composer-box").expect("composer");
         toggle(&chat, cx);
-        frame_at(start + motion::PANEL * 2, cx);
+        frame_at(start + motion::PANEL.settle * 2, cx);
         let expanded = cx.debug_bounds("composer-box").expect("composer");
         assert!(
             expanded.size.height > rest.size.height,
             "{rest:?} {expanded:?}"
         );
 
-        let shrink = start + motion::PANEL * 3;
+        let shrink = start + motion::PANEL.settle * 3;
         motion::set_test_now(Some(shrink));
         toggle(&chat, cx);
         assert_eq!(
@@ -2460,7 +2457,7 @@ mod resize_tests {
         );
         let mut heights = vec![expanded.size.height];
         for step in 1..8 {
-            frame_at(shrink + motion::PANEL * step / 8, cx);
+            frame_at(shrink + motion::PANEL.settle * step / 8, cx);
             heights.push(composer_height(cx));
         }
         assert!(
@@ -2471,7 +2468,7 @@ mod resize_tests {
             heights[1] > rest.size.height,
             "it eases rather than snapping to rest: {heights:?}"
         );
-        frame_at(shrink + motion::PANEL * 2, cx);
+        frame_at(shrink + motion::PANEL.settle * 2, cx);
         assert_eq!(
             cx.debug_bounds("composer-box"),
             Some(rest),
@@ -2523,12 +2520,12 @@ mod resize_tests {
         );
         let mut last = first.top();
         for step in 1..=12 {
-            frame_at(start + motion::PANEL * step / 12, cx);
+            frame_at(start + motion::PANEL.settle * step / 12, cx);
             let top = cx.debug_bounds("composer-box").expect("composer").top();
             assert!(top >= last, "only moves down: {last:?} then {top:?}");
             last = top;
         }
-        frame_at(start + motion::PANEL * 2, cx);
+        frame_at(start + motion::PANEL.settle * 2, cx);
         let rest = cx.debug_bounds("composer-box").expect("composer");
         assert!(rest.top() > hero.top() + px(100.), "{hero:?} {rest:?}");
         assert_eq!(cx.update(|window, app| window.simulate_next_frame(app)), 0);

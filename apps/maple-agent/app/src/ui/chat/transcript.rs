@@ -420,14 +420,14 @@ impl ChatScreen {
         } else if appeared {
             // A send opens it; a task switch or history load shows it at
             // once.
-            slot.slot_open = (!snap).then(|| motion::Tween::new(0.));
+            slot.slot_open = (!snap).then(|| motion::Tween::pixels(0.));
             slot.slot_since = Some(now);
         }
         let cap = match (&mut slot.slot_open, natural) {
             (None, None) => None,
             (None, Some(natural)) => {
                 if !reduced {
-                    slot.slot_open = Some(motion::Tween::new(natural));
+                    slot.slot_open = Some(motion::Tween::pixels(natural));
                 }
                 None
             }
@@ -441,19 +441,13 @@ impl ChatScreen {
                 // The first opening runs from when the slot appeared, not
                 // from the frame its content was first measured.
                 if natural < open.value(now) {
-                    *open = motion::Tween::new(natural);
+                    *open = motion::Tween::pixels(natural);
                 }
                 let start = match slot.slot_since.take() {
                     Some(since) if open.target() == 0. => since,
                     _ => now,
                 };
-                open.set(
-                    natural,
-                    motion::ENTER,
-                    motion::ease_out_cubic,
-                    start,
-                    reduced,
-                );
+                open.set(natural, motion::ENTER, start, reduced);
                 if open.is_moving(now) {
                     window.request_animation_frame();
                 }
@@ -721,12 +715,15 @@ impl RowMotion {
         }
         let running = |at: &Instant, duration| now.saturating_duration_since(*at) < duration;
         self.arrived
-            .retain(|_, arrival| running(&arrival.at, motion::ENTER));
+            .retain(|_, arrival| running(&arrival.at, motion::ENTER.duration));
         self.heights
             .borrow_mut()
             .retain(|id, _| self.arrived.contains_key(id));
-        self.disclosed.retain(|_, at| running(at, motion::REVEAL));
-        self.switched = self.switched.filter(|at| running(at, motion::REVEAL));
+        self.disclosed
+            .retain(|_, at| running(at, motion::REVEAL.duration));
+        self.switched = self
+            .switched
+            .filter(|at| running(at, motion::REVEAL.duration));
         !self.arrived.is_empty() || !self.disclosed.is_empty() || self.switched.is_some()
     }
 }
@@ -1246,7 +1243,6 @@ fn tool_status(item_id: &str, running: bool, label: SharedString, color: u32) ->
         SharedString::from(format!("tool-status-{item_id}")),
         if running { 0. } else { 1. },
         motion::TOGGLE,
-        motion::ease_out_cubic,
         move |done| {
             div()
                 .flex()
@@ -2819,7 +2815,7 @@ mod motion_tests {
     ) -> Vec<Vec<Pixels>> {
         let mut tops = vec![Vec::new(); selectors.len()];
         let mut at = Duration::ZERO;
-        while at <= motion::ENTER + Duration::from_millis(16) {
+        while at <= motion::ENTER.settle + Duration::from_millis(16) {
             clock.at(start + at);
             redraw(chat, cx);
             for (selector, tops) in selectors.iter().zip(&mut tops) {
@@ -2858,7 +2854,7 @@ mod motion_tests {
         redraw(&chat, cx);
         let entering = bounds(cx, "timeline-row-live");
 
-        let midway = clock.at(motion::ENTER / 2);
+        let midway = clock.at(motion::ENTER.settle / 2);
         let progress = chat.update(cx, |chat, _| chat.row_motion.arrival("live", midway, false));
         assert!(
             progress > 0. && progress < 1.,
@@ -2866,7 +2862,7 @@ mod motion_tests {
         );
         assert!(in_flight(&chat, midway, cx), "frames continue mid-entrance");
 
-        let done = clock.at(motion::ENTER);
+        let done = clock.at(motion::ENTER.settle);
         redraw(&chat, cx);
         let settled = bounds(cx, "timeline-row-live");
         assert_eq!(entering.size, settled.size, "the rise never changes layout");
@@ -2914,7 +2910,7 @@ mod motion_tests {
             "older rows only rise: {tops:?}"
         );
         assert_glides(&tops, "an older row");
-        assert!(!in_flight(&chat, clock.at(motion::ENTER), cx));
+        assert!(!in_flight(&chat, clock.at(motion::ENTER.settle), cx));
 
         // The settled layout is the one without motion.
         let older = bounds(cx, "timeline-row-h29");
@@ -2936,7 +2932,7 @@ mod motion_tests {
             chat.apply_incoming_item("s1", item("reply", "message", Some("Answer:")), cx);
         });
         redraw(&chat, cx);
-        clock.at(motion::ENTER / 3);
+        clock.at(motion::ENTER.settle / 3);
         redraw(&chat, cx);
         chat.update(cx, |chat, cx| {
             chat.apply_incoming_item(
@@ -2949,7 +2945,11 @@ mod motion_tests {
                 cx,
             );
         });
-        for step in [motion::ENTER / 2, motion::ENTER * 3 / 4, motion::ENTER] {
+        for step in [
+            motion::ENTER.settle / 2,
+            motion::ENTER.settle * 3 / 4,
+            motion::ENTER.settle,
+        ] {
             clock.at(step);
             redraw(&chat, cx);
         }
@@ -2976,7 +2976,7 @@ mod motion_tests {
         redraw(&chat, cx);
         let entering = bounds(cx, "pending-send-body");
         let status = bounds(cx, "pending-send-status");
-        clock.at(motion::ENTER);
+        clock.at(motion::ENTER.settle);
         redraw(&chat, cx);
         let settled = bounds(cx, "pending-send-body");
         assert_eq!(entering.origin.y - settled.origin.y, motion::RISE);
@@ -3053,7 +3053,7 @@ mod motion_tests {
             chat.read_with(cx, |chat, _| chat.row_motion.slot_shown.get())
         };
         let sent = shown(&chat, cx);
-        clock.at(motion::ENTER * 2);
+        clock.at(motion::ENTER.settle * 2);
         redraw(&chat, cx);
         let open = shown(&chat, cx);
         assert!(open > px(0.), "the slot shows its status");
@@ -3073,7 +3073,7 @@ mod motion_tests {
     ) -> (Pixels, Vec<Pixels>) {
         // The slot appears, then opens over ENTER.
         redraw(chat, cx);
-        let start = motion::ENTER * 2;
+        let start = motion::ENTER.settle * 2;
         clock.at(start);
         redraw(chat, cx);
         assert!(
@@ -3186,7 +3186,7 @@ mod motion_tests {
             chat.sending_previews.insert("send-1".into(), preview);
         });
         redraw(&chat, cx);
-        let start = motion::ENTER * 2;
+        let start = motion::ENTER.settle * 2;
         clock.at(start);
         redraw(&chat, cx);
         let bubble = bounds(cx, "pending-send-body");
@@ -3311,11 +3311,11 @@ mod motion_tests {
         };
         chat.update(cx, |chat, cx| {
             chat.apply_incoming_item("s1", item("reply", "message", Some("Hi")), cx);
-            let midway = clock.at(motion::ENTER / 2);
+            let midway = clock.at(motion::ENTER.settle / 2);
             let before = chat.row_motion.arrival("reply", midway, false);
             chat.apply_incoming_item("s1", chunk(), cx);
             assert_eq!(chat.row_motion.arrival("reply", midway, false), before);
-            let done = clock.at(motion::ENTER);
+            let done = clock.at(motion::ENTER.settle);
             assert!(!chat.row_motion.settle(done, false));
             chat.apply_incoming_item("s1", chunk(), cx);
             assert_eq!(chat.timeline[0].text.as_deref(), Some("Hi more more"));

@@ -2250,7 +2250,7 @@ mod tests {
 
         click(cx, "b-trigger");
         let arriving = top("menu-b", cx);
-        frame_at(start + motion::REVEAL, cx);
+        frame_at(start + motion::REVEAL.settle, cx);
         assert_eq!(
             top("menu-b", cx) - arriving,
             SLIDE,
@@ -2260,13 +2260,13 @@ mod tests {
 
         click(cx, "a-trigger");
         let arriving = top("menu-a", cx);
-        frame_at(start + motion::REVEAL * 2, cx);
+        frame_at(start + motion::REVEAL.settle * 2, cx);
         let rest = top("menu-a", cx);
         assert_eq!(rest - arriving, SLIDE, "the next menu opens the same way");
 
         click(cx, "low-trigger");
         let arriving = top("menu-low", cx);
-        frame_at(start + motion::REVEAL * 3, cx);
+        frame_at(start + motion::REVEAL.settle * 3, cx);
         assert_eq!(
             arriving - top("menu-low", cx),
             SLIDE,
@@ -2294,7 +2294,7 @@ mod tests {
             |cx: &mut VisualTestContext| cx.update(|window, cx| window.simulate_next_frame(cx));
         host.update(cx, |host, cx| host.popup.open(Which::A, cx));
         cx.run_until_parked();
-        motion::set_test_now(Some(start + motion::REVEAL));
+        motion::set_test_now(Some(start + motion::REVEAL.settle));
         frames(cx);
         cx.run_until_parked();
         assert_eq!(frames(cx), 0, "the menu has arrived");
@@ -2327,7 +2327,7 @@ mod tests {
         cx.update(|_, cx| cx.set_reduce_motion(false));
         let top = |cx: &mut VisualTestContext| cx.debug_bounds("menu-a").expect("menu").top();
         click(cx, "a-trigger");
-        motion::set_test_now(Some(start + motion::REVEAL));
+        motion::set_test_now(Some(start + motion::REVEAL.settle));
         cx.update(|window, cx| {
             window.simulate_next_frame(cx);
         });

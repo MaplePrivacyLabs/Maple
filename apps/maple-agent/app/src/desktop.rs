@@ -2458,7 +2458,6 @@ impl Render for MapleApp {
                     }),
                 "maple-screen",
                 screen_kind,
-                gpui::rgb(ui::theme::bg_app()),
             ));
         #[cfg(target_os = "linux")]
         let root = root.children(self.restart_confirmation.clone());
@@ -5411,7 +5410,7 @@ mod tests {
         cx.run_until_parked();
         // Let the screen fade and anything the sidebar eases settle.
         for step in 1..=4 {
-            ui::motion::set_test_now(Some(start + ui::motion::PANEL * step));
+            ui::motion::set_test_now(Some(start + ui::motion::PANEL.settle * step));
             cx.update(|window, cx| {
                 window.simulate_next_frame(cx);
             });
