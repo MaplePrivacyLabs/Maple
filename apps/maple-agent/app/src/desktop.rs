@@ -2746,7 +2746,7 @@ fn quit_app(cx: &mut App) {
         .map_err(|_| "The host did not answer its activity check".to_string())?
     });
     cx.spawn(async move |cx| match activity.await {
-        Ok(Ok(activity)) if activity.needs_confirmation() => {
+        Ok(Ok(activity)) if activity.needs_confirmation() || DEBUG_QUIT_PROMPT_LOOP => {
             cx.update(|cx| show_quit_prompt(QuitPromptKind::Confirm(activity), cx));
         }
         Ok(Ok(_)) => cx.update(|cx| drain_and_quit(state, cx)),
@@ -2928,10 +2928,19 @@ fn main_window_failure(error: &impl std::fmt::Display) -> String {
 
 /// A separate window also works when Quit comes from a tray with no open window.
 fn show_quit_prompt(kind: QuitPromptKind, cx: &mut App) {
-    let bounds = Bounds::centered(None, size(px(560.), px(270.)), cx);
+    let height = match &kind {
+        QuitPromptKind::Failed(_) => 340.,
+        _ => 300.,
+    };
+    let bounds = Bounds::centered(None, size(px(520.), px(height)), cx);
+    let reopen_kind = kind.clone();
     if let Err(error) = cx.open_window(
         WindowOptions {
             window_bounds: Some(WindowBounds::Windowed(bounds)),
+            titlebar: Some(gpui::TitlebarOptions {
+                title: Some(crate::profile::DISPLAY_NAME.into()),
+                ..Default::default()
+            }),
             ..Default::default()
         },
         |window, cx| {
@@ -2943,7 +2952,14 @@ fn show_quit_prompt(kind: QuitPromptKind, cx: &mut App) {
             let closing = prompt.downgrade();
             window.on_window_should_close(cx, move |_, cx| {
                 cancel_quit(cx);
-                closing.update(cx, |prompt, cx| prompt.close(cx)).is_err()
+                closing
+                    .update(cx, |prompt, cx| {
+                        if !prompt.closing {
+                            prompt.close(cx);
+                            reopen_quit_prompt_after_close(reopen_kind.clone(), cx);
+                        }
+                    })
+                    .is_err()
             });
             prompt
         },
@@ -2958,6 +2974,64 @@ fn show_quit_warning(message: UiText, cx: &mut App) {
     show_quit_prompt(QuitPromptKind::Failed(message), cx);
 }
 
+/// Debug builds (never tests, never release) confirm every Quit and bring the
+/// prompt back after it is dismissed, so the dialog can be exercised without
+/// live host activity. Release and test binaries keep today's behavior.
+const DEBUG_QUIT_PROMPT_LOOP: bool = cfg!(debug_assertions) && !cfg!(test);
+
+/// The [`DEBUG_QUIT_PROMPT_LOOP`] test loop: re-open the Quit prompt shortly
+/// after it is dismissed. A no-op in release builds and tests.
+fn reopen_quit_prompt_after_close(kind: QuitPromptKind, cx: &mut App) {
+    if !DEBUG_QUIT_PROMPT_LOOP {
+        return;
+    }
+    cx.spawn(async move |cx| {
+        cx.background_executor()
+            .timer(std::time::Duration::from_millis(400))
+            .await;
+        cx.update(|cx| show_quit_prompt(kind, cx));
+    })
+    .detach();
+}
+
+/// The Editorial prompt's body: the host's live work as one sentence, then
+/// what quitting does with it. Zero counts are omitted; the local API joins
+/// the second sentence when its listener is running.
+fn quit_activity_body(
+    activity: &HostActivity,
+    messages: &ui::i18n::MessageCache,
+) -> gpui::SharedString {
+    let mut items: Vec<String> = Vec::new();
+    for (count, key) in [
+        (activity.running_tasks, "native-quit-item-tasks"),
+        (activity.acp_clients, "native-quit-item-editors"),
+        (activity.remote_controllers, "native-quit-item-controllers"),
+        (activity.background_tasks, "native-quit-item-jobs"),
+        (activity.local_api_requests, "native-quit-item-requests"),
+    ] {
+        if count > 0 {
+            items.push(messages.get(key, [("count", count.into())]).to_string());
+        }
+    }
+    let api = if activity.local_api_running {
+        tr("native-quit-api-clause").to_string()
+    } else {
+        String::new()
+    };
+    let count = items.len();
+    let item_args = ["a", "b", "c", "d", "e"]
+        .into_iter()
+        .zip(items)
+        .map(|(name, item)| (name, item.into()));
+    messages.get(
+        "native-quit-activity",
+        [("count", count.into()), ("api", api.into())]
+            .into_iter()
+            .chain(item_args),
+    )
+}
+
+#[derive(Clone)]
 enum QuitPromptKind {
     Confirm(HostActivity),
     UnknownActivity,
@@ -2985,16 +3059,7 @@ impl QuitPrompt {
         match &self.kind {
             QuitPromptKind::Confirm(activity) => (
                 tr("native-stop-title"),
-                self.messages.get(
-                    "native-quit-activity",
-                    [
-                        ("tasks", activity.running_tasks.into()),
-                        ("editors", activity.acp_clients.into()),
-                        ("controllers", activity.remote_controllers.into()),
-                        ("jobs", activity.background_tasks.into()),
-                        ("requests", activity.local_api_requests.into()),
-                    ],
-                ),
+                quit_activity_body(activity, &self.messages),
                 false,
             ),
             QuitPromptKind::Failed(message) => (tr("native-still-open"), message.resolve(), true),
@@ -3012,38 +3077,61 @@ impl Render for QuitPrompt {
             window.on_next_frame(|window, _| window.remove_window());
             return div()
                 .size_full()
-                .bg(gpui::rgb(ui::theme::bg_app()))
+                .bg(gpui::rgb(ui::theme::bg_elevated()))
                 .into_any_element();
         }
-        let (title, message, retry) = self.presentation();
+        // The Editorial prompt: an Array headline, one calm sentence about the
+        // live work, and a quiet Keep open beside the single accent Quit pill.
+        let (headline, body, retry) = self.presentation();
+        let kind = self.kind.clone();
         div()
             .id("quit-prompt")
             .role(gpui::Role::Dialog)
-            .aria_label(title.clone())
+            .aria_label(headline.clone())
             .size_full()
             .flex()
             .flex_col()
-            .gap_4()
-            .p_6()
-            .bg(gpui::rgb(ui::theme::bg_app()))
+            .px(px(36.))
+            .pt(px(20.))
+            .pb(px(28.))
+            .bg(gpui::rgb(ui::theme::bg_elevated()))
             .text_color(gpui::rgb(ui::theme::text_primary()))
-            .child(div().text_lg().child(gpui::text!(title)))
-            .child(gpui::text!(message))
+            .child(
+                div()
+                    .font_family(crate::assets::FONT_DISPLAY)
+                    .text_size(px(40.))
+                    .line_height(px(42.))
+                    .text_color(gpui::rgb(ui::theme::text_heading()))
+                    .child(gpui::text!(headline)),
+            )
+            .child(
+                div()
+                    .mt_4()
+                    .max_w(px(360.))
+                    .text_size(px(15.))
+                    .line_height(px(24.))
+                    .text_color(gpui::rgb(ui::theme::text_secondary()))
+                    .child(gpui::text!(body)),
+            )
+            .child(div().flex_1())
             .child(
                 div()
                     .flex()
-                    .gap_4()
+                    .items_center()
+                    .justify_end()
+                    .gap_2()
                     .child(
-                        ui::widgets::secondary_button("keep-maple-open")
+                        ui::widgets::ghost_button("keep-maple-open")
                             .debug_selector(|| "keep-maple-open".to_string())
                             .child(gpui::text!(tr("native-keep-open")))
-                            .on_click(cx.listener(|prompt, _, _, cx| {
+                            .on_click(cx.listener(move |prompt, _, _, cx| {
                                 cancel_quit(cx);
                                 prompt.close(cx);
+                                reopen_quit_prompt_after_close(kind.clone(), cx);
                             })),
                     )
                     .child(
-                        ui::widgets::secondary_button("retry-maple-quit")
+                        ui::widgets::primary_button("retry-maple-quit")
                             .debug_selector(|| "retry-maple-quit".to_string())
                             .child(gpui::text!(tr(if retry {
                                 "native-retry-quit"
@@ -4270,6 +4358,19 @@ mod tests {
     #[test]
     fn quit_warning_preserves_all_counts_when_switching_locale() {
         let _locale = ui::i18n::TestLocalizationGuard::enable();
+        // The Editorial body omits zero counts, so an idle host with only the
+        // API listener reads as the host draining alone.
+        let items = |count: usize, singular: [&str; 5], plural: [&str; 5]| {
+            if count == 0 {
+                Vec::new()
+            } else {
+                let labels = if count == 1 { singular } else { plural };
+                labels
+                    .iter()
+                    .map(|label| format!("{count} {label}"))
+                    .collect::<Vec<_>>()
+            }
+        };
         for count in [0, 1, 2] {
             let prompt = QuitPrompt {
                 closing: false,
@@ -4283,48 +4384,76 @@ mod tests {
                 }),
                 messages: Default::default(),
             };
-            for (locale, labels, drain) in [
+            let english = items(
+                count,
+                [
+                    "running task",
+                    "attached editor",
+                    "remote controller",
+                    "background job",
+                    "API request",
+                ],
+                [
+                    "running tasks",
+                    "attached editors",
+                    "remote controllers",
+                    "background jobs",
+                    "API requests",
+                ],
+            );
+            let spanish = items(
+                count,
+                [
+                    "tarea en ejecución",
+                    "editor conectado",
+                    "controlador remoto",
+                    "trabajo en segundo plano",
+                    "solicitud de API",
+                ],
+                [
+                    "tareas en ejecución",
+                    "editores conectados",
+                    "controladores remotos",
+                    "trabajos en segundo plano",
+                    "solicitudes de API",
+                ],
+            );
+            for (locale, labels, api_clause, drain) in [
                 (
                     "en",
-                    [
-                        "running tasks",
-                        "attached editors",
-                        "remote controllers",
-                        "background jobs",
-                        "active requests",
-                    ],
-                    "waits for them to drain",
+                    english.clone(),
+                    ", including the local API,",
+                    if count == 0 {
+                        "waits for it to drain"
+                    } else {
+                        "waits for them to drain"
+                    },
                 ),
                 (
                     "es",
-                    [
-                        "tareas en ejecución",
-                        "editores conectados",
-                        "controladores remotos",
-                        "trabajos en segundo plano",
-                        "solicitudes activas",
-                    ],
-                    "espera a que terminen",
+                    spanish,
+                    ", incluida la API local,",
+                    "espera a que todo termine",
                 ),
                 (
                     "en",
-                    [
-                        "running tasks",
-                        "attached editors",
-                        "remote controllers",
-                        "background jobs",
-                        "active requests",
-                    ],
-                    "waits for them to drain",
+                    english,
+                    ", including the local API,",
+                    if count == 0 {
+                        "waits for it to drain"
+                    } else {
+                        "waits for them to drain"
+                    },
                 ),
             ] {
                 ui::i18n::apply_preference(Some(locale));
                 let (_, detail, retry) = prompt.presentation();
                 assert!(!retry);
-                for label in labels {
-                    assert!(detail.contains(&format!("{label} ({count})")), "{detail}");
+                for label in &labels {
+                    assert!(detail.contains(label.as_str()), "{detail}");
                 }
-                assert!(detail.contains(drain));
+                assert!(detail.contains(api_clause), "{detail}");
+                assert!(detail.contains(drain), "{detail}");
                 assert!(
                     matches!(&prompt.kind, QuitPromptKind::Confirm(activity) if activity.needs_confirmation())
                 );
@@ -5942,6 +6071,51 @@ mod tests {
         assert!(
             cx.windows().is_empty(),
             "Keep open dismisses the confirmation, not the app"
+        );
+    }
+
+    #[test]
+    fn quit_prompt_body_lists_live_work_in_one_sentence() {
+        let _localization = ui::i18n::TestLocalizationGuard::enable();
+        let messages = ui::i18n::MessageCache::default();
+        let activity = HostActivity {
+            running_tasks: 2,
+            acp_clients: 1,
+            remote_controllers: 1,
+            background_tasks: 1,
+            local_api_running: true,
+            local_api_requests: 3,
+        };
+        assert_eq!(
+            quit_activity_body(&activity, &messages).as_ref(),
+            "2 running tasks, 1 attached editor, 1 remote controller, 1 background job, and 3 API \
+             requests. Quitting stops the host, including the local API, and waits for them to \
+             drain."
+        );
+        // Only the API listener is live: no list, and the host drains alone.
+        let activity = HostActivity {
+            local_api_running: true,
+            ..Default::default()
+        };
+        assert_eq!(
+            quit_activity_body(&activity, &messages).as_ref(),
+            "Quitting stops the host, including the local API, and waits for it to drain."
+        );
+        // An idle host, as the debug loop shows, has nothing to list.
+        assert_eq!(
+            quit_activity_body(&HostActivity::default(), &messages).as_ref(),
+            "Quitting stops the host and waits for it to drain."
+        );
+        // Two items join without the serial comma.
+        let activity = HostActivity {
+            running_tasks: 1,
+            acp_clients: 2,
+            ..Default::default()
+        };
+        assert_eq!(
+            quit_activity_body(&activity, &messages).as_ref(),
+            "1 running task and 2 attached editors. Quitting stops the host and waits for them to \
+             drain."
         );
     }
 
