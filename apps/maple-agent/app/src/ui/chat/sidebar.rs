@@ -4545,6 +4545,7 @@ fn update_card(card: &UpdateCard, chat: WeakEntity<ChatScreen>) -> gpui::Statefu
         ),
     };
     let failed = card.state == State::Error;
+    let detail = tr(detail);
     let later = chat.clone();
     div()
         .id("sidebar-update-card")
@@ -4561,6 +4562,7 @@ fn update_card(card: &UpdateCard, chat: WeakEntity<ChatScreen>) -> gpui::Statefu
         .border_1()
         .border_color(gpui::rgb(theme::border()))
         .role(gpui::Role::Status)
+        .aria_label(SharedString::from(format!("{title}. {detail}")))
         .child(
             div()
                 .flex()
@@ -4580,7 +4582,7 @@ fn update_card(card: &UpdateCard, chat: WeakEntity<ChatScreen>) -> gpui::Statefu
             div()
                 .text_xs()
                 .text_color(gpui::rgb(theme::text_muted()))
-                .child(tr(detail)),
+                .child(detail),
         )
         .child(
             div()
@@ -4596,6 +4598,7 @@ fn update_card(card: &UpdateCard, chat: WeakEntity<ChatScreen>) -> gpui::Statefu
                         .px_3()
                         .py_1()
                         .text_xs()
+                        .aria_label(tr(act_now))
                         .child(tr(act_now))
                         .on_click(move |_, _, cx| {
                             if let Some(chat) = chat.upgrade() {
@@ -4612,6 +4615,7 @@ fn update_card(card: &UpdateCard, chat: WeakEntity<ChatScreen>) -> gpui::Statefu
                             .px_3()
                             .py_1()
                             .text_xs()
+                            .aria_label(tr("chat-update-card-later"))
                             .child(tr("chat-update-card-later"))
                             .on_click(move |_, _, cx| {
                                 if let Some(chat) = later.upgrade() {
