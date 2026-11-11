@@ -1473,6 +1473,14 @@ chat-stop-run = Ausführung stoppen
 chat-queue-next-turn = Für nächsten Durchlauf einreihen
 chat-send = Senden
 chat-model = Modell
+# The model panel's sections and the badge on a popular model.
+chat-model-group-capable = Am leistungsfähigsten
+chat-model-group-uncensored = Unzensiert
+chat-model-group-fast = Schnell und günstig
+chat-model-group-more = Weitere Modelle
+chat-model-popular = Beliebt
+# $model is the model's name. The model row's accessible name when it carries the Popular badge.
+chat-model-popular-row = { $model }, beliebt
 # $count is the number of integrations.
 chat-integration-count = { $count ->
     [one] 1 Integration

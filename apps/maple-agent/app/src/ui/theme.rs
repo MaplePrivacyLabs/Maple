@@ -224,6 +224,12 @@ tokens! {
     code_text: 0xe8e8ed, 0x171717;
     /// Links take the tertiary Bark scale (bark-300 / bark-500).
     link: 0xc29a8d, 0x9e7469;
+    /// A short label's pill, such as the Popular badge: coral on the dark
+    /// coral container on dark; on light, where coral read like an alert,
+    /// secondary grey on pebble-200, a step darker than a highlighted
+    /// row so the pill stays visible on one. 4.5:1 or better.
+    badge_fill: 0x3a2118, 0xd1d2dc;
+    badge_text: 0xff9771, 0x525252;
 
     /// Elicitation row fill/border: the coral container and maple-300.
     permission_fill: 0x2a1a14, 0xffe8e0;
@@ -403,6 +409,10 @@ mod contrast_tests {
                         failures.push(format!("{name}: {role} on {surface} is {ratio:.2}:1"));
                     }
                 }
+            }
+            let ratio = contrast(palette.badge_text, palette.badge_fill);
+            if ratio < 4.5 {
+                failures.push(format!("{name}: badge_text on badge_fill is {ratio:.2}:1"));
             }
             for (label, fg, bg) in [
                 (

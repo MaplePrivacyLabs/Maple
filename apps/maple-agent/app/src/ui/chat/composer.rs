@@ -1,6 +1,7 @@
 //! The chat pane chrome: the header and its menus, the slash palette,
 //! the plan and side-question cards, and the composer itself.
 
+use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
 
 // Literal command token; never translate the text entered into the composer.
@@ -605,17 +606,49 @@ impl ChatScreen {
             .max_height(px(480.))
             .application_vim(self.application_vim_enabled)
             .on_adjust(|this: &mut Self, step, _, cx| this.step_effort(step, cx));
-        menu = menu.items(self.models.iter().map(|model| {
-            let pick = model.clone();
-            MenuItem::new(
-                SharedString::from(format!("model-{model}")),
-                self.model_label(model).to_string(),
-                move |this: &mut Self, _: &mut Window, cx: &mut Context<Self>| {
-                    this.pick_model(pick.clone(), cx);
-                },
-            )
-            .current(selected == Some(model.as_str()))
-        }));
+        let sections = self.model_sections.group(&self.models);
+        for (index, (heading, models)) in sections.into_iter().enumerate() {
+            if let Some(heading) = heading {
+                if index > 0 {
+                    menu = menu.separator();
+                }
+                menu = menu.header(heading);
+            }
+            menu = menu.items(models.into_iter().map(|model| {
+                let pick = model.to_string();
+                let label = self.model_label(model).to_string();
+                let popular = self.model_sections.is_popular(model);
+                // The badge is drawn content; the row's name carries it for
+                // assistive technology.
+                let name: SharedString = if popular {
+                    self.messages
+                        .get("chat-model-popular-row", [("model", label.clone().into())])
+                } else {
+                    label.clone().into()
+                };
+                let row = MenuItem::new(
+                    SharedString::from(format!("model-{model}")),
+                    name,
+                    move |this: &mut Self, _: &mut Window, cx: &mut Context<Self>| {
+                        this.pick_model(pick.clone(), cx);
+                    },
+                )
+                .current(selected == Some(model));
+                if popular {
+                    row.content(
+                        div()
+                            .min_w_0()
+                            .flex()
+                            .items_center()
+                            .gap_2()
+                            .child(div().min_w_0().truncate().child(label))
+                            .child(popular_badge()),
+                    )
+                } else {
+                    row
+                }
+            }));
+        }
         // Levels that failed to load: Retry is a row, so the keyboard
         // reaches it, and the panel stays open while they load again.
         if self.effort_failed() {
@@ -1690,4 +1723,106 @@ fn chip(
         .when(chevron, |el| {
             el.child(icon("chevron-down", px(14.), color).flex_none())
         })
+}
+
+/// The Popular badge on a model row: coral on dark, grey on light (see
+/// `badge_fill`), held to 4.5:1 by the contrast test.
+fn popular_badge() -> Div {
+    div()
+        .flex_none()
+        .px_1p5()
+        .py(px(1.))
+        .rounded_full()
+        .bg(gpui::rgb(theme::badge_fill()))
+        .text_xs()
+        .font_weight(gpui::FontWeight::SEMIBOLD)
+        .text_color(gpui::rgb(theme::badge_text()))
+        .child(tr("chat-model-popular"))
+}
+
+/// How the catalog presents the models: the panel's sections in display
+/// order, each model's section, and the models it marks Popular. The server
+/// owns all three, so a model deployed without an app release lists where
+/// its release put it.
+#[derive(Clone, Debug, Default)]
+pub(super) struct ModelSections {
+    groups: Vec<maple_sdk::CatalogGroup>,
+    group_of: HashMap<String, String>,
+    popular: HashSet<String>,
+}
+
+/// The badge string the catalog marks a popular model with.
+const POPULAR_BADGE: &str = "Popular";
+
+impl ModelSections {
+    pub(super) fn from_catalog(catalog: &maple_sdk::ModelCatalogResponse) -> Self {
+        Self {
+            groups: catalog.groups.clone(),
+            group_of: catalog
+                .data
+                .iter()
+                .filter_map(|model| Some((model.id.clone(), model.group.clone()?)))
+                .collect(),
+            popular: catalog
+                .data
+                .iter()
+                .filter(|model| model.badges.iter().any(|badge| badge == POPULAR_BADGE))
+                .map(|model| model.id.clone())
+                .collect(),
+        }
+    }
+
+    pub(super) fn is_popular(&self, model: &str) -> bool {
+        self.popular.contains(model)
+    }
+
+    /// `models` in their sections: the catalog's groups in its order, each
+    /// holding its models in the order `models` lists them, then the models
+    /// without a served group. When no model has one (an older server, or a
+    /// catalog that failed to load) the list is one unnamed section.
+    pub(super) fn group<'a>(
+        &self,
+        models: &'a [String],
+    ) -> Vec<(Option<SharedString>, Vec<&'a str>)> {
+        let served = |model: &str| {
+            self.group_of
+                .get(model)
+                .filter(|id| self.groups.iter().any(|group| &group.id == *id))
+        };
+        let rest: Vec<&str> = models
+            .iter()
+            .map(String::as_str)
+            .filter(|model| served(model).is_none())
+            .collect();
+        if rest.len() == models.len() {
+            return vec![(None, rest)];
+        }
+        let mut sections: Vec<_> = self
+            .groups
+            .iter()
+            .filter_map(|group| {
+                let members: Vec<&str> = models
+                    .iter()
+                    .map(String::as_str)
+                    .filter(|model| served(model) == Some(&group.id))
+                    .collect();
+                (!members.is_empty()).then(|| (Some(group_heading(group)), members))
+            })
+            .collect();
+        if !rest.is_empty() {
+            sections.push((Some(tr("chat-model-group-more")), rest));
+        }
+        sections
+    }
+}
+
+/// A section's heading: the app's translation for a group it knows, and
+/// the catalog's English label for one added since this build.
+fn group_heading(group: &maple_sdk::CatalogGroup) -> SharedString {
+    match group.id.as_str() {
+        "capable" => tr("chat-model-group-capable"),
+        "uncensored" => tr("chat-model-group-uncensored"),
+        "fast" => tr("chat-model-group-fast"),
+        _ => group.label.clone().into(),
+    }
 }
