@@ -5,7 +5,7 @@
 
 use std::rc::Rc;
 
-use gpui::{Action, App, DummyKeyboardMapper, KeyBinding, KeyBindingContextPredicate};
+use gpui::{Action, App, KeyBinding, KeyBindingContextPredicate};
 
 use crate::{
     desktop::{Hide, HideOthers, QuitApp},
@@ -339,6 +339,16 @@ impl HostOs {
         } else {
             Self::Linux
         }
+    }
+}
+
+/// The operating system this build runs on, for gpui's keystroke parsing
+/// and display, which name the host explicitly.
+pub(crate) fn host_os() -> gpui::OperatingSystem {
+    match HostOs::current() {
+        HostOs::Macos => gpui::OperatingSystem::Mac,
+        HostOs::Linux => gpui::OperatingSystem::Linux,
+        HostOs::Windows => gpui::OperatingSystem::Windows,
     }
 }
 
@@ -1914,13 +1924,17 @@ fn add_vim_mode_slots(slots: &mut Vec<ShortcutSlot>, mode: &'static str, context
 pub(crate) fn bootstrap(cx: &mut App) {
     let bindings = catalog()
         .into_iter()
-        .map(|slot| build_binding(&slot, slot.default_sequence))
+        .map(|slot| build_binding(&slot, slot.default_sequence, cx))
         .collect::<Result<Vec<_>, _>>()
         .expect("the compiled-in shortcut catalog must always be valid");
     install(bindings, cx);
 }
 
-pub(crate) fn build_binding(slot: &ShortcutSlot, sequence: &str) -> Result<KeyBinding, String> {
+pub(crate) fn build_binding(
+    slot: &ShortcutSlot,
+    sequence: &str,
+    cx: &App,
+) -> Result<KeyBinding, String> {
     let predicate = slot
         .context
         .map(KeyBindingContextPredicate::parse)
@@ -1933,15 +1947,7 @@ pub(crate) fn build_binding(slot: &ShortcutSlot, sequence: &str) -> Result<KeyBi
             )
         })?
         .map(Rc::new);
-    KeyBinding::load(
-        sequence,
-        slot.action.build(),
-        predicate,
-        false,
-        None,
-        &DummyKeyboardMapper,
-    )
-    .map_err(|error| {
+    KeyBinding::load(sequence, slot.action.build(), predicate, false, None, cx).map_err(|error| {
         format!(
             "shortcut '{}' has invalid sequence '{}': {error}",
             slot.id, sequence
@@ -1963,8 +1969,10 @@ mod tests {
     use super::*;
     use std::collections::BTreeSet;
 
-    #[test]
-    fn catalog_contains_existing_shortcuts_and_the_application_vim_layer() {
+    #[gpui::test]
+    fn catalog_contains_existing_shortcuts_and_the_application_vim_layer(
+        cx: &mut gpui::TestAppContext,
+    ) {
         for os in [HostOs::Macos, HostOs::Linux, HostOs::Windows] {
             let catalog = catalog_for(os);
             let ids = catalog.iter().map(|slot| slot.id).collect::<BTreeSet<_>>();
@@ -2017,7 +2025,7 @@ mod tests {
             assert!(windows.iter().all(|slot| slot.id != id), "{id} off Windows");
         }
         for slot in &mac {
-            build_binding(slot, slot.default_sequence)
+            cx.update(|cx| build_binding(slot, slot.default_sequence, cx))
                 .unwrap_or_else(|error| panic!("macOS shortcut '{}' is invalid: {error}", slot.id));
         }
         for (id, mac_sequence, other_sequence) in [

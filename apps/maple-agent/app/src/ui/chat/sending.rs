@@ -321,7 +321,7 @@ impl ChatScreen {
                             .overflow_y_scroll()
                             // A long message scrolls inside its bubble; the
                             // pane must not scroll the transcript as well.
-                            .on_scroll_wheel(|_, _, cx| cx.stop_propagation())
+                            .on_scroll(|_, _, cx| cx.stop_propagation())
                             .px_4()
                             .py_2()
                             .rounded(theme::RADIUS_MD)

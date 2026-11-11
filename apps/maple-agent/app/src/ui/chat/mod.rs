@@ -259,7 +259,7 @@ fn question_key_label(index: usize, window: &Window) -> SharedString {
             binding
                 .keystrokes()
                 .iter()
-                .map(ToString::to_string)
+                .map(|stroke| stroke.display(crate::keymap::host_os()).to_string())
                 .collect::<Vec<_>>()
                 .join(" ")
         })
@@ -7310,7 +7310,7 @@ impl Render for ChatScreen {
                 .min_w_0()
                 // Whatever the pointer is over, a wheel that nothing there
                 // takes scrolls the transcript.
-                .on_scroll_wheel(cx.listener(Self::scroll_transcript_from_pane))
+                .on_scroll(cx.listener(Self::scroll_transcript_from_pane))
                 .child(self.render_transcript(window, cx))
                 .children(self.render_send_preview())
                 .when(
@@ -7374,7 +7374,7 @@ impl Render for ChatScreen {
                         // The composer, its cards and the palette keep their
                         // own wheel; the space beside them scrolls the
                         // transcript.
-                        .on_scroll_wheel(|_, _, cx| cx.stop_propagation())
+                        .on_scroll(|_, _, cx| cx.stop_propagation())
                         .children(self.render_btw_card(cx))
                         .children(self.render_subagents_card(cx))
                         .children(self.render_plan_card(cx))
@@ -7447,7 +7447,7 @@ impl Render for ChatScreen {
                                 // The header is the window's title bar; a wheel
                                 // over it scrolls nothing.
                                 self.render_header(sidebar_expansion, window, cx)
-                                    .on_scroll_wheel(|_, _, cx| cx.stop_propagation()),
+                                    .on_scroll(|_, _, cx| cx.stop_propagation()),
                             )
                             .child(
                                 div()

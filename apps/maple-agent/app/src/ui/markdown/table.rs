@@ -140,15 +140,9 @@ fn measure_columns(
                     .runs
                     .iter()
                     .flat_map(|run| run.glyphs.iter())
-                    .map(|glyph| {
-                        let ch = text
-                            .get(glyph.index..)
-                            .and_then(|rest| rest.chars().next())
-                            .unwrap_or('\0');
-                        (ch, glyph.position.x)
-                    });
+                    .map(|glyph| (glyph.index, glyph.position.x));
                 column.max = column.max.max(layout.width);
-                column.min = column.min.max(longest_segment(glyphs, layout.width));
+                column.min = column.min.max(longest_segment(text, glyphs, layout.width));
             }
         }
     }
@@ -183,72 +177,44 @@ fn cell_runs(base: &TextStyle, cell: &TableCell) -> Vec<TextRun> {
 }
 
 /// The widest stretch of a shaped line that wrapping keeps together, from
-/// the glyphs' characters and x positions and the line's width. gpui
-/// breaks before a word that follows a space and before any character
-/// that is not part of a word, never inside a run of word characters
-/// unless nothing else fits; a segment therefore runs from one such
-/// break opportunity to the next and includes the space that trails it.
-fn longest_segment(glyphs: impl IntoIterator<Item = (char, Pixels)>, width: Pixels) -> Pixels {
+/// the line's text, its glyphs' byte offsets and x positions, and its
+/// width. gpui wraps only where the Unicode line breaking rules allow and
+/// never ahead of the line's first visible character, so a segment runs
+/// from one such opportunity to the next and includes the space that
+/// trails it. The opportunities come from the call gpui's own
+/// `LineWrapper::break_indices` makes, which is not public; a rule that
+/// allowed more breaks than gpui's would let a word split.
+fn longest_segment(
+    text: &str,
+    glyphs: impl IntoIterator<Item = (usize, Pixels)>,
+    width: Pixels,
+) -> Pixels {
+    let mut breaks = icu_segmenter::LineSegmenter::new_for_non_complex_scripts(Default::default())
+        .segment_str(text)
+        .peekable();
     let mut longest = px(0.);
     let mut segment_start = px(0.);
     let mut seen_ink = false;
-    let mut prev = '\0';
-    for (ch, x) in glyphs {
-        let opportunity = if is_word_char(ch) {
-            prev == ' ' && seen_ink
-        } else {
-            ch != ' ' && seen_ink
-        };
-        if opportunity {
+    for (index, x) in glyphs {
+        // An opportunity inside a ligature falls to the glyph after it,
+        // which only makes the segment longer.
+        let mut opportunity = false;
+        while breaks.next_if(|at| *at <= index).is_some() {
+            opportunity = true;
+        }
+        if opportunity && seen_ink {
             longest = longest.max(x - segment_start);
             segment_start = x;
         }
-        if ch != ' ' {
+        if text
+            .get(index..)
+            .and_then(|rest| rest.chars().next())
+            .is_some_and(|ch| ch != ' ')
+        {
             seen_ink = true;
         }
-        prev = ch;
     }
     longest.max(width - segment_start)
-}
-
-/// The characters gpui's line wrapper keeps together in a word (its
-/// `LineWrapper::is_word_char` at the pinned revision, which is not
-/// public). A character missing here becomes a break opportunity to us
-/// but not to gpui, which could let a word split, so keep the list at
-/// least as wide as gpui's.
-fn is_word_char(c: char) -> bool {
-    c.is_ascii_alphanumeric()
-        // Latin-1 Supplement, Latin Extended-A and -B.
-        || matches!(c, '\u{00C0}'..='\u{024F}')
-        // Cyrillic.
-        || matches!(c, '\u{0400}'..='\u{04FF}')
-        // Latin Extended Additional and combining diacritical marks.
-        || matches!(c, '\u{1E00}'..='\u{1EFF}')
-        || matches!(c, '\u{0300}'..='\u{036F}')
-        // Bengali.
-        || matches!(c, '\u{0980}'..='\u{09FF}')
-        // Punctuation that stays attached to a word.
-        || matches!(
-            c,
-            '-' | '_'
-                | '.'
-                | '\''
-                | '’'
-                | '‘'
-                | '$'
-                | '%'
-                | '@'
-                | '#'
-                | '^'
-                | '~'
-                | ','
-                | '='
-                | ':'
-                | ';'
-                | '⋯'
-        )
-        // Non-breaking glue.
-        || matches!(c, '\u{202F}' | '\u{00A0}' | '\u{2011}')
 }
 
 /// What every cell of one column tells the flex row, border-box.
@@ -526,15 +492,20 @@ mod tests {
     use crate::ui::markdown;
     use gpui::{Context, Render, TestAppContext, VisualTestContext, size};
 
-    fn glyphs(text: &str, advance: f32) -> Vec<(char, Pixels)> {
-        text.chars()
+    /// One glyph per character, each `advance` wide.
+    fn glyphs(text: &str, advance: f32) -> Vec<(usize, Pixels)> {
+        text.char_indices()
             .enumerate()
-            .map(|(ix, ch)| (ch, px(ix as f32 * advance)))
+            .map(|(ix, (offset, _))| (offset, px(ix as f32 * advance)))
             .collect()
     }
 
     fn segment(text: &str) -> Pixels {
-        longest_segment(glyphs(text, 10.), px(text.chars().count() as f32 * 10.))
+        longest_segment(
+            text,
+            glyphs(text, 10.),
+            px(text.chars().count() as f32 * 10.),
+        )
     }
 
     #[test]
@@ -550,13 +521,15 @@ mod tests {
     }
 
     #[test]
-    fn punctuation_that_is_not_part_of_a_word_is_a_break_opportunity() {
-        // Before `/`: "src" and "/main.rs"; `.` stays inside the word.
-        assert_eq!(segment("src/main.rs"), px(80.));
+    fn breaks_follow_the_unicode_line_breaking_rules() {
+        // After `/`: "src/" and "main.rs"; `.` stays inside the word.
+        assert_eq!(segment("src/main.rs"), px(70.));
         // A hash of word characters never breaks.
         assert_eq!(segment("5d2f3b62d733"), px(120.));
         // Trailing punctuation stays with its word.
         assert_eq!(segment("done, then"), px(60.));
+        // Brackets hold what they wrap: nothing breaks around `(` or `)`.
+        assert_eq!(segment("f(x) y"), px(50.));
     }
 
     #[test]

@@ -2006,7 +2006,7 @@ impl TextInput {
     /// wheel over a short input still reaches the surface behind it.
     fn on_scroll_wheel(
         &mut self,
-        event: &gpui::ScrollWheelEvent,
+        event: &gpui::ScrollEvent,
         _window: &mut Window,
         cx: &mut Context<Self>,
     ) {
@@ -3380,7 +3380,7 @@ impl Render for TextInput {
             .on_mouse_up_out(gpui::MouseButton::Left, cx.listener(Self::on_mouse_up))
             .on_mouse_move(cx.listener(Self::on_mouse_move))
             .when(self.multiline, |el| {
-                el.on_scroll_wheel(cx.listener(Self::on_scroll_wheel))
+                el.on_scroll(cx.listener(Self::on_scroll_wheel))
             })
             .w_full()
             .when(self.multiline && self.fill_height, |el| el.h_full())
@@ -3649,7 +3649,7 @@ mod tests {
 
         // A wheel over the input moves the view up and stays put: prepaint
         // must not snap back to the cursor without a new edit.
-        cx.simulate_event(gpui::ScrollWheelEvent {
+        cx.simulate_event(gpui::ScrollEvent {
             position: point(px(150.), px(10.)),
             delta: gpui::ScrollDelta::Pixels(gpui::point(px(0.), px(50.))),
             ..Default::default()
