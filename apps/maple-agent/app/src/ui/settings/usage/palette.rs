@@ -3,7 +3,7 @@
 //! at least 8). Coral stays with the plan meter and Chat; models never use
 //! it.
 
-use super::model::{Origin, SeriesKey, TokenKind};
+use super::model::{Origin, SeriesKey, Split, TokenKind};
 use crate::ui::theme;
 
 struct Palette {
@@ -109,10 +109,46 @@ pub(super) fn model_among(model: &str, peers: &[&str]) -> u32 {
     }
 }
 
+/// Follow the model chart even when the selected metric leaves it empty.
+/// With another split, retain the table's stable model highlights.
+pub(super) fn model_table_color(model: &str, peers: &[&str], split: Split) -> u32 {
+    if split == Split::Model {
+        model_among(model, peers)
+    } else {
+        self::model(model)
+    }
+}
+
 pub(super) fn grid() -> u32 {
     palette().grid
 }
 
 pub(super) fn axis() -> u32 {
     palette().axis
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn table_colors_follow_the_selected_model_chart() {
+        let peers = ["glm-5-3", "llama"];
+        assert_eq!(
+            model_table_color("llama", &peers, Split::Model),
+            series(SeriesKey::Model(1))
+        );
+        assert_eq!(
+            model_table_color("glm-5-3", &[], Split::Model),
+            series(SeriesKey::MoreModels),
+            "zero usage for the selected metric stays gray"
+        );
+        for split in [Split::Origin, Split::Pool, Split::Token] {
+            assert_eq!(
+                model_table_color("glm-5-3", &peers, split),
+                series(SeriesKey::Model(0)),
+                "other charts leave the table's highlights intact"
+            );
+        }
+    }
 }

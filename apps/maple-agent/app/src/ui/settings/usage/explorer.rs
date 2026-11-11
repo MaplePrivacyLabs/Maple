@@ -471,11 +471,7 @@ impl SettingsScreen {
             .filter_map(|series| series.model.as_deref())
             .collect();
         let rows = models.iter().map(|model| {
-            let color = if peers.is_empty() {
-                palette::model(&model.model)
-            } else {
-                palette::model_among(&model.model, &peers)
-            };
+            let color = palette::model_table_color(&model.model, &peers, self.usage.split);
             let (mix, more) = &model.mix;
             // One app needs no percentage: `Work`, not `100% Work`.
             let mut mix: Vec<String> = match mix.as_slice() {
