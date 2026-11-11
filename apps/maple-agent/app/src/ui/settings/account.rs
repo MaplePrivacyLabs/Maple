@@ -518,12 +518,7 @@ impl SettingsScreen {
             .child(subsection_title(&tr("settings-account-profile")))
             .child(widgets::card_stack(profile_rows));
         if let Some(notice) = &self.account.verification_notice {
-            pane = pane.child(
-                widgets::banner(theme::bg_sidebar_pill())
-                    .text_sm()
-                    .text_color(gpui::rgb(theme::text_secondary()))
-                    .child(notice.clone()),
-            );
+            pane = pane.child(widgets::banner(widgets::Tone::Info, notice.clone()));
         }
         pane = pane.child(subsection_title(&tr("settings-account-security-group")));
         if info.login_method.has_password() {

@@ -431,14 +431,13 @@ impl Render for LoginScreen {
 
         match &self.oauth {
             OAuthFlow::Idle if self.deletion_notice.is_some() => {
-                card = card.child(
-                    widgets::banner(theme::status_warning()).child(
-                        self.deletion_notice
-                            .as_ref()
-                            .map(UiText::resolve)
-                            .unwrap_or_default(),
-                    ),
-                );
+                card = card.child(widgets::banner(
+                    widgets::Tone::Warning,
+                    self.deletion_notice
+                        .as_ref()
+                        .map(UiText::resolve)
+                        .unwrap_or_default(),
+                ));
             }
             OAuthFlow::Idle if self.guest => {
                 card = card
@@ -611,7 +610,7 @@ impl Render for LoginScreen {
         }
 
         if let Some(message) = self.error.clone() {
-            card = card.child(widgets::banner(theme::status_error()).child(message));
+            card = card.child(widgets::banner(widgets::Tone::Error, message));
         }
 
         div()

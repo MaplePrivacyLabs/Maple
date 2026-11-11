@@ -175,11 +175,7 @@ impl Render for PlanGate {
                         card.child(self.render_guest_id(id, cx))
                     })
                     .when_some(self.notice.clone(), |card, notice| {
-                        card.child(
-                            widgets::banner(theme::bg_sidebar_pill())
-                                .text_color(gpui::rgb(theme::text_secondary()))
-                                .child(notice),
-                        )
+                        card.child(widgets::banner(widgets::Tone::Info, notice))
                     })
                     .child(
                         // Sign out stays apart from the plan actions; on a

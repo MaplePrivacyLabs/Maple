@@ -12780,22 +12780,21 @@ mod state_tests {
              width before truncating (title {thinking_title:?}, card {card:?})"
         );
     }
+
     #[gpui::test]
-    fn out_of_usage_banner_opens_billing(cx: &mut TestAppContext) {
+    fn out_of_usage_offers_billing_from_the_composer_until_a_later_turn(cx: &mut TestAppContext) {
         use std::cell::Cell;
         use std::rc::Rc;
 
         use maple_agent::agent::USAGE_LIMIT_MESSAGE;
 
-        let (chat, cx) = chat_window(cx, |chat, _cx| {
-            chat.replace_timeline(vec![
-                item("usage-1", "error", Some(USAGE_LIMIT_MESSAGE)),
-                item(
-                    "other-1",
-                    "error",
-                    Some("Maple rejected the inference request (status 403)"),
-                ),
-            ]);
+        let out_of_usage = vec![
+            user_item("user-1", "test"),
+            item("usage-1", "error", Some(USAGE_LIMIT_MESSAGE)),
+        ];
+        let (chat, cx) = chat_window(cx, {
+            let timeline = out_of_usage.clone();
+            move |chat, _cx| chat.replace_timeline(timeline)
         });
         let opened = Rc::new(Cell::new(0));
         let observed = opened.clone();
@@ -12808,11 +12807,89 @@ mod state_tests {
                 },
             )
         });
-        assert!(cx.debug_bounds("open-billing-usage-1").is_some());
-        assert!(cx.debug_bounds("open-billing-other-1").is_none());
-        press(cx, "open-billing-usage-1");
+        press(cx, "composer-open-billing");
         cx.run_until_parked();
         assert_eq!(opened.get(), 1);
+        // The transcript keeps the turn as its one-line marker row.
+        assert!(cx.debug_bounds("timeline-row-usage-1").is_some());
+
+        let offered = |cx: &mut gpui::VisualTestContext| {
+            cx.update(|window, _| window.refresh());
+            cx.run_until_parked();
+            cx.debug_bounds("composer-open-billing").is_some()
+        };
+
+        // A message sent since, or a next turn that failed for another
+        // reason, takes the offer away; the transcript keeps the history.
+        let retried = [user_item("user-2", "try again")];
+        let failed_otherwise = [
+            user_item("user-2", "try again"),
+            item(
+                "other-1",
+                "error",
+                Some("Maple rejected the inference request (status 403)"),
+            ),
+        ];
+        for later in [&retried[..], &failed_otherwise[..]] {
+            let mut timeline = out_of_usage.clone();
+            timeline.extend_from_slice(later);
+            chat.update(cx, |chat, cx| {
+                chat.replace_timeline(timeline);
+                cx.notify();
+            });
+            assert!(!offered(cx));
+        }
+
+        // The refusal usually arrives live as the run ends, labelled by the
+        // runtime rather than matched by its text.
+        let labelled: AgentTimelineItem = serde_json::from_value(serde_json::json!({
+            "id": "usage-2", "itemType": "error", "createdMs": 1, "merge": "replace",
+            "text": "opaque retained diagnostic", "label": {"kind": "error-usage"}
+        }))
+        .unwrap();
+        chat.update(cx, |chat, cx| {
+            chat.replace_timeline(vec![user_item("user-1", "test")]);
+            chat.apply_incoming_item("s1", labelled, cx);
+            cx.notify();
+        });
+        assert!(offered(cx));
+
+        // Nor while a run is active, or while the next message is on its way.
+        chat.update(cx, |chat, cx| {
+            chat.selected_session = Some("s1".into());
+            chat.active_runs.insert("s1".into(), "r1".into());
+            cx.notify();
+        });
+        assert!(!offered(cx));
+        chat.update(cx, |chat, cx| {
+            chat.active_runs.clear();
+            chat.sending_previews.insert(
+                "send-1".into(),
+                sending::SendPreview::new(Some("s1".into()), "try again", &[])
+                    .capture_timeline(&chat.timeline),
+            );
+            cx.notify();
+        });
+        assert!(!offered(cx));
+        chat.update(cx, |chat, cx| {
+            chat.sending_previews.clear();
+            cx.notify();
+        });
+        assert!(offered(cx));
+
+        // A window that does not hold the tail cannot tell what came last:
+        // live rows past its budget, or a page back into history.
+        chat.update(cx, |chat, cx| {
+            chat.pages.live_has_more = true;
+            cx.notify();
+        });
+        assert!(!offered(cx));
+        chat.update(cx, |chat, cx| {
+            chat.pages.live_has_more = false;
+            chat.pages.after = true;
+            cx.notify();
+        });
+        assert!(!offered(cx));
     }
 
     #[gpui::test]

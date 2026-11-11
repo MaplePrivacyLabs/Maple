@@ -212,6 +212,9 @@ tokens! {
     on_accent: 0xf7f7f9, 0xf7f7f9;
     /// Soft coral container (maple-100 / a dark coral tint).
     accent_container: 0x3a2118, 0xffe8e0;
+    /// Coral for an icon on a coral container: maple-500 on dark,
+    /// maple-800 on light, where lighter steps wash out (3:1 or better).
+    accent_ink: 0xff9771, 0xd04926;
 
     status_running: 0xbabccb, 0xa3a3a3;
     status_success: 0x8fa35a, 0x7b8f4a;
@@ -234,6 +237,10 @@ tokens! {
     /// Elicitation row fill/border: the coral container and maple-300.
     permission_fill: 0x2a1a14, 0xffe8e0;
     permission_border: 0x784a38, 0xffbaa2;
+
+    /// Panel docked inside the composer (the out-of-usage notice): half a
+    /// step above the composer's well.
+    bg_composer_tray: 0x222228, 0xf7f7f9;
 
     user_bubble_border: 0x3a3a44, 0xe8e8ed;
 
@@ -382,6 +389,7 @@ mod contrast_tests {
                 ("bg_input", palette.bg_input),
                 ("bg_sidebar_card", palette.bg_sidebar_card),
                 ("bg_tool_card", palette.bg_tool_card),
+                ("bg_composer_tray", palette.bg_composer_tray),
             ];
             let body = [
                 ("text_primary", palette.text_primary),
@@ -396,6 +404,12 @@ mod contrast_tests {
                 ("status_warning", palette.status_warning),
                 ("link", palette.link),
             ];
+            let ratio = contrast(palette.accent_ink, palette.accent_container);
+            if ratio < 3. {
+                failures.push(format!(
+                    "{name}: accent_ink on accent_container is {ratio:.2}:1"
+                ));
+            }
             for (surface, fill) in surfaces {
                 for (role, color) in body {
                     let ratio = contrast(color, fill);

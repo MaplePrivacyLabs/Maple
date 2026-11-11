@@ -7817,23 +7817,34 @@ impl ChatScreen {
                 .w_full()
                 .pt_2()
                 .child(
-                    widgets::banner(theme::status_error())
-                        .flex()
-                        .flex_col()
-                        .items_start()
-                        .gap_2()
-                        .child(crate::ui::host_errors::persistence_text(failure).resolve())
-                        .when(remote, |panel| panel.child(tr("chat-retry-save-remote")))
-                        .when(!remote, |panel| {
-                            panel.child(
-                                widgets::secondary_button("retry-local-store-persistence")
-                                    .debug_selector(|| "retry-local-store-persistence".to_string())
-                                    .child(gpui::text!(tr("chat-retry-save")))
-                                    .on_click(cx.listener(|_this, _event, _window, cx| {
-                                        cx.emit(crate::ui::store_gate::RetryStorePersistence);
-                                    })),
-                            )
-                        }),
+                    widgets::banner(
+                        widgets::Tone::Error,
+                        div()
+                            .flex()
+                            .flex_col()
+                            .gap_0p5()
+                            .child(gpui::text!(
+                                crate::ui::host_errors::persistence_text(failure).resolve()
+                            ))
+                            .when(remote, |message| {
+                                message.child(
+                                    div()
+                                        .text_color(gpui::rgb(theme::text_muted()))
+                                        .child(gpui::text!(tr("chat-retry-save-remote"))),
+                                )
+                            }),
+                    )
+                    .when(!remote, |panel| {
+                        panel.child(
+                            widgets::secondary_button("retry-local-store-persistence")
+                                .flex_none()
+                                .debug_selector(|| "retry-local-store-persistence".to_string())
+                                .child(gpui::text!(tr("chat-retry-save")))
+                                .on_click(cx.listener(|_this, _event, _window, cx| {
+                                    cx.emit(crate::ui::store_gate::RetryStorePersistence);
+                                })),
+                        )
+                    }),
                 ),
         )
     }
@@ -7999,7 +8010,7 @@ impl ChatScreen {
                         )
                     })
                     .when_some(self.runtime_error.clone(), |column, error| {
-                        column.child(widgets::banner(theme::status_error()).child(error))
+                        column.child(widgets::banner(widgets::Tone::Error, error))
                     })
                     .children(self.render_persistence_failure(cx))
                     .children(self.render_notice(cx)),

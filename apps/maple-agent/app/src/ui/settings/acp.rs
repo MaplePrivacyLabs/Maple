@@ -309,12 +309,11 @@ impl SettingsScreen {
                     .child(tr("settings-acp-intro")),
             )
             .when(self.acp.temporary_location, |pane| {
-                pane.child(
-                    widgets::banner(theme::status_warning()).child(
-                        self.messages
-                            .get("settings-acp-temporary", [("name", name.into())]),
-                    ),
-                )
+                pane.child(widgets::banner(
+                    widgets::Tone::Warning,
+                    self.messages
+                        .get("settings-acp-temporary", [("name", name.into())]),
+                ))
             })
             .child(
                 widgets::card_row()

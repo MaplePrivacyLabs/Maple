@@ -345,7 +345,7 @@ pub struct SettingsScreen {
     shortcut_search: Entity<TextInput>,
     shortcut_query: String,
     shortcut_list_cache: ShortcutListCache,
-    shortcut_notice: Option<UiText>,
+    shortcut_notice: Option<(widgets::Tone, UiText)>,
     shortcut_recorder: Option<ShortcutRecorder>,
     shortcut_interceptor: Option<Subscription>,
     /// Refetches billing when the window comes back from a portal or checkout
@@ -1612,10 +1612,16 @@ impl SettingsScreen {
             self.reconcile_application_vim_target();
         }
         self.shortcut_notice = Some(match result {
-            Ok(()) => UiText::key("settings-settings-shortcut-settings-applied"),
-            Err(message) => UiText::message(
-                "settings-shortcut-change-failed",
-                [("message", (message).to_string().into())],
+            Ok(()) => (
+                widgets::Tone::Info,
+                UiText::key("settings-settings-shortcut-settings-applied"),
+            ),
+            Err(message) => (
+                widgets::Tone::Error,
+                UiText::message(
+                    "settings-shortcut-change-failed",
+                    [("message", (message).to_string().into())],
+                ),
             ),
         });
         cx.notify();
@@ -1661,8 +1667,9 @@ impl SettingsScreen {
         match (plain, keystroke.key.as_str()) {
             (true, "escape") => {
                 self.stop_shortcut_recording();
-                self.shortcut_notice = Some(UiText::key(
-                    "settings-settings-shortcut-recording-cancelled",
+                self.shortcut_notice = Some((
+                    widgets::Tone::Info,
+                    UiText::key("settings-settings-shortcut-recording-cancelled"),
                 ));
             }
             (true, "backspace") => {
@@ -1678,8 +1685,11 @@ impl SettingsScreen {
                 if recorder.strokes.len() < 4 {
                     recorder.strokes.push(portable_keystroke_token(keystroke));
                 } else {
-                    self.shortcut_notice = Some(UiText::key(
-                        "settings-settings-a-shortcut-can-contain-at-most-four-strokes",
+                    self.shortcut_notice = Some((
+                        widgets::Tone::Warning,
+                        UiText::key(
+                            "settings-settings-a-shortcut-can-contain-at-most-four-strokes",
+                        ),
                     ));
                 }
             }
@@ -1692,8 +1702,9 @@ impl SettingsScreen {
             return;
         };
         if recorder.strokes.is_empty() {
-            self.shortcut_notice = Some(UiText::key(
-                "settings-settings-press-at-least-one-shortcut-key",
+            self.shortcut_notice = Some((
+                widgets::Tone::Warning,
+                UiText::key("settings-settings-press-at-least-one-shortcut-key"),
             ));
             return;
         }
@@ -1721,9 +1732,12 @@ impl SettingsScreen {
                 }
             }
             Err(message) => {
-                self.shortcut_notice = Some(UiText::message(
-                    "settings-shortcut-invalid",
-                    [("message", (message).to_string().into())],
+                self.shortcut_notice = Some((
+                    widgets::Tone::Error,
+                    UiText::message(
+                        "settings-shortcut-invalid",
+                        [("message", (message).to_string().into())],
+                    ),
                 ));
             }
         }
@@ -2528,57 +2542,55 @@ impl SettingsScreen {
             );
 
         if let Some(error) = &self.shortcut_snapshot.last_error {
-            pane = pane.child(
-                widgets::banner(theme::status_warning()).child(
-                    self.messages
-                        .get(
-                            "settings-shortcut-overrides-invalid",
-                            [("error", (error).to_string().into())],
-                        )
-                        .to_string(),
-                ),
-            );
+            pane = pane.child(widgets::banner(
+                widgets::Tone::Warning,
+                self.messages
+                    .get(
+                        "settings-shortcut-overrides-invalid",
+                        [("error", (error).to_string().into())],
+                    )
+                    .to_string(),
+            ));
         }
         if let Some(warning) = &self.shortcut_snapshot.compatibility_warning {
-            pane = pane.child(widgets::banner(theme::status_warning()).child(warning.clone()));
+            pane = pane.child(widgets::banner(widgets::Tone::Warning, warning.clone()));
         }
-        if let Some(notice) = &self.shortcut_notice {
-            pane = pane.child(widgets::banner(theme::status_warning()).child(notice.clone()));
+        if let Some((tone, notice)) = &self.shortcut_notice {
+            pane = pane.child(widgets::banner(*tone, notice.clone()));
         }
         if self.shortcut_reset_confirmation {
             pane = pane.child(
-                widgets::banner(theme::status_warning())
-                    .flex()
-                    .items_center()
-                    .gap_3()
-                    .child(div().flex_1().child(
-                        if self.shortcut_snapshot.last_error.is_some() && modified_count == 0 {
-                            tr("settings-settings-clear-the-invalid-saved-shortcut-overrides")
-                                .to_string()
-                        } else {
-                            self.messages
-                                .get(
-                                    "settings-shortcut-reset-confirm",
-                                    [("modified-count", (modified_count).to_string().into())],
-                                )
-                                .to_string()
-                        },
-                    ))
-                    .child(
-                        widgets::default_button("shortcuts-reset-all-confirm")
-                            .on_click(cx.listener(|this, _event, _window, cx| {
-                                this.request_shortcut_change(ShortcutSettingsChange::ResetAll, cx);
-                            }))
-                            .child(tr("settings-settings-reset")),
-                    )
-                    .child(
-                        widgets::ghost_button("shortcuts-reset-all-cancel")
-                            .on_click(cx.listener(|this, _event, _window, cx| {
-                                this.shortcut_reset_confirmation = false;
-                                cx.notify();
-                            }))
-                            .child(tr("settings-settings-cancel")),
-                    ),
+                widgets::banner(
+                    widgets::Tone::Warning,
+                    if self.shortcut_snapshot.last_error.is_some() && modified_count == 0 {
+                        tr("settings-settings-clear-the-invalid-saved-shortcut-overrides")
+                            .to_string()
+                    } else {
+                        self.messages
+                            .get(
+                                "settings-shortcut-reset-confirm",
+                                [("modified-count", (modified_count).to_string().into())],
+                            )
+                            .to_string()
+                    },
+                )
+                .child(
+                    widgets::default_button("shortcuts-reset-all-confirm")
+                        .flex_none()
+                        .on_click(cx.listener(|this, _event, _window, cx| {
+                            this.request_shortcut_change(ShortcutSettingsChange::ResetAll, cx);
+                        }))
+                        .child(gpui::text!(tr("settings-settings-reset"))),
+                )
+                .child(
+                    widgets::ghost_button("shortcuts-reset-all-cancel")
+                        .flex_none()
+                        .on_click(cx.listener(|this, _event, _window, cx| {
+                            this.shortcut_reset_confirmation = false;
+                            cx.notify();
+                        }))
+                        .child(gpui::text!(tr("settings-settings-cancel"))),
+                ),
             );
         }
         if let Some(recorder) = self.shortcut_recorder.as_ref() {
@@ -2950,7 +2962,7 @@ impl SettingsScreen {
         }
 
         if let (Some(notice), None) = (&self.mcp_notice, &self.mcp_editor) {
-            pane = pane.child(widgets::banner(theme::status_warning()).child(notice.clone()));
+            pane = pane.child(widgets::banner(widgets::Tone::Warning, notice.clone()));
         }
 
         if let Some(featured) = self.render_featured_apps(cx) {
@@ -3475,11 +3487,7 @@ impl SettingsScreen {
                 )
             })
             .when_some(self.mcp_notice.clone(), |form, notice| {
-                form.child(
-                    widgets::banner(theme::status_warning())
-                        .text_sm()
-                        .child(notice),
-                )
+                form.child(widgets::banner(widgets::Tone::Warning, notice))
             })
             .child(
                 div()

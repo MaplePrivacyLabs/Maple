@@ -102,6 +102,7 @@ assets!(
     "icons/square.svg",
     "icons/terminal.svg",
     "icons/trash-2.svg",
+    "icons/triangle-alert.svg",
     "icons/undo-2.svg",
     "icons/users.svg",
     "icons/volume-2.svg",

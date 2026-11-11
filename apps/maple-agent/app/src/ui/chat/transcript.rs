@@ -20,7 +20,6 @@ use crate::ui::icons::{icon, spinner, spinner_with_id};
 use crate::ui::markdown;
 use crate::ui::motion;
 use crate::ui::rich_text::{self, RenderCtx};
-use crate::ui::settings::{OpenSettingsSection, Section};
 use crate::ui::text_input::TextInput;
 use crate::ui::theme;
 use crate::ui::typography;
@@ -264,12 +263,7 @@ impl ChatScreen {
                 )
             })
             .when_some(self.runtime_error.clone(), |container, error| {
-                container.child(
-                    widgets::banner(theme::status_error())
-                        .mx_6()
-                        .mb_2()
-                        .child(error),
-                )
+                container.child(widgets::banner(widgets::Tone::Error, error).mx_6().mb_2())
             })
             .children(self.render_notice(cx).map(|notice| notice.mx_6().mb_2()))
     }
@@ -1620,6 +1614,9 @@ pub(super) fn error_presentation(
 }
 
 fn render_error(item: &AgentTimelineItem, transcript: &TranscriptCtx) -> Div {
+    if is_usage_limit(item) {
+        return render_usage_marker();
+    }
     let text = error_presentation(item, transcript.local_error_text, transcript.messages)
         .1
         .map(|text| text.to_string())
@@ -1628,42 +1625,42 @@ fn render_error(item: &AgentTimelineItem, transcript: &TranscriptCtx) -> Div {
     if text.trim().is_empty() {
         return div();
     }
-    let banner = widgets::banner(theme::status_error());
-    if item
-        .label
-        .as_ref()
-        .is_none_or(|label| label.kind != "error-usage")
-        && !item
-            .text
-            .as_deref()
-            .is_some_and(|text| text.contains(USAGE_LIMIT_MESSAGE))
-    {
-        return banner.child(gpui::text!(text));
-    }
-    let chat = transcript.chat.clone();
-    let button_id = format!("open-billing-{}", item.id);
-    banner
+    widgets::banner(widgets::Tone::Error, gpui::text!(text))
+}
+
+/// Whether an error row is Maple's out-of-usage refusal. Rows stored
+/// before error labels existed carry only the fixed message.
+pub(super) fn is_usage_limit(item: &AgentTimelineItem) -> bool {
+    item.item_type == "error"
+        && (item
+            .label
+            .as_ref()
+            .is_some_and(|label| label.kind == "error-usage")
+            || item
+                .text
+                .as_deref()
+                .is_some_and(|text| text.contains(USAGE_LIMIT_MESSAGE)))
+}
+
+/// An out-of-usage turn leaves a quiet one-line marker in the history;
+/// the way out (Billing) is offered by the composer, where the next
+/// message would go. The row's alert role still announces the full text.
+fn render_usage_marker() -> Div {
+    div()
         .flex()
-        .flex_col()
-        .items_start()
-        .gap_2()
-        .child(gpui::text!(text))
+        .items_center()
+        .gap_2p5()
+        .py_1()
+        .text_sm()
+        .font_weight(gpui::FontWeight::MEDIUM)
+        .text_color(gpui::rgb(theme::text_muted()))
+        .child(icon("gauge", px(15.), theme::status_error()))
+        .child(gpui::text!(tr("runtime-timeline-error-usage")))
         .child(
-            widgets::secondary_button(button_id.clone())
-                .debug_selector({
-                    let button_id = button_id.clone();
-                    move || button_id.clone()
-                })
-                .child(gpui::text!(tr("chat-billing-open")))
-                .on_click(move |_event, _window, cx| {
-                    cx.stop_propagation();
-                    let Some(chat) = chat.upgrade() else {
-                        return;
-                    };
-                    chat.update(cx, |_chat, cx| {
-                        cx.emit(OpenSettingsSection(Section::Billing));
-                    });
-                }),
+            div()
+                .flex_1()
+                .h(px(1.))
+                .bg(gpui::rgb(theme::border_subtle())),
         )
 }
 

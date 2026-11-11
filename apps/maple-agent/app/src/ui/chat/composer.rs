@@ -1229,6 +1229,87 @@ impl ChatScreen {
         (row, false)
     }
 
+    /// The selected task's latest turn ended out of usage and nothing has
+    /// gone out since. A window that does not hold the tail (paged back
+    /// into history, or with live rows past its budget) cannot tell.
+    fn usage_limit_reached(&self) -> bool {
+        !self.pages.after
+            && !self.pages.live_has_more
+            && !self.is_run_active()
+            && !self.has_send_feedback()
+            && self
+                .timeline
+                .last()
+                .is_some_and(super::transcript::is_usage_limit)
+    }
+
+    /// The out-of-usage notice, docked on top of the composer where the
+    /// next message would go. It offers Billing until a message is sent;
+    /// the transcript keeps a one-line marker of the turn.
+    fn render_usage_tray(&self, cx: &mut Context<Self>) -> Div {
+        div()
+            .debug_selector(|| "composer-usage-limit".to_string())
+            .flex()
+            .items_center()
+            .gap_3()
+            .mx_2()
+            .mt_2()
+            .pl_2p5()
+            .pr_2()
+            .py_2()
+            .rounded(theme::RADIUS_LG)
+            .bg(gpui::rgb(theme::bg_composer_tray()))
+            .border_1()
+            .border_color(gpui::rgb(theme::border_subtle()))
+            .child(
+                div()
+                    .flex_none()
+                    .size_8()
+                    .flex()
+                    .items_center()
+                    .justify_center()
+                    .rounded(theme::RADIUS_SM)
+                    .bg(gpui::rgb(theme::accent_container()))
+                    .child(icon("gauge", px(16.), theme::accent_ink())),
+            )
+            .child(
+                div()
+                    .flex_1()
+                    .min_w_0()
+                    .flex()
+                    .flex_col()
+                    .child(
+                        div()
+                            .text_sm()
+                            .font_weight(gpui::FontWeight::SEMIBOLD)
+                            .text_color(gpui::rgb(theme::text_heading()))
+                            .child(gpui::text!(tr("chat-usage-limit-title"))),
+                    )
+                    .child(
+                        div()
+                            .text_xs()
+                            .text_color(gpui::rgb(theme::text_muted()))
+                            .child(gpui::text!(tr("chat-usage-limit-body"))),
+                    ),
+            )
+            .child(
+                widgets::default_button("composer-open-billing")
+                    .flex_none()
+                    .pr_4()
+                    .debug_selector(|| "composer-open-billing".to_string())
+                    .child(gpui::text!(tr("chat-billing-open")))
+                    .child(icon(
+                        "arrow-right",
+                        px(14.),
+                        theme::text_on_default_button(),
+                    ))
+                    .on_click(cx.listener(|_this, _event, _window, cx| {
+                        cx.stop_propagation();
+                        cx.emit(OpenSettingsSection(Section::Billing));
+                    })),
+            )
+    }
+
     pub(super) fn render_composer(&mut self, window: &mut Window, cx: &mut Context<Self>) -> Div {
         let running = self.is_run_active();
         // The first send's create keeps the composer's text on show and
@@ -1254,6 +1335,9 @@ impl ChatScreen {
         // turns it back into Send, which queues behind the run.
         let drafting = has_text || has_attachments;
         let show_stop = running && !self.booting && !pending_create && !drafting;
+        let usage_tray = self
+            .usage_limit_reached()
+            .then(|| self.render_usage_tray(cx));
         let queue_chips = self.render_queue(cx);
         let expanded = self.composer_expanded;
         let composer = self.composer.clone();
@@ -1340,6 +1424,7 @@ impl ChatScreen {
                     this.add_attachment_paths(paths.paths().to_vec(), cx);
                 }),
             )
+            .children(usage_tray)
             .children(queue_chips)
             .when_some(upload, |container, (id, label)| {
                 container.child(

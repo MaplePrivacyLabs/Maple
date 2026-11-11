@@ -510,12 +510,7 @@ impl SettingsScreen {
         // Feedback goes right under the buttons, which are in view when
         // pressed; below the card it can fall past the window's edge.
         purchase = match &credits.notice {
-            Some(notice) => purchase.child(
-                widgets::banner(theme::bg_sidebar_pill())
-                    .text_sm()
-                    .text_color(gpui::rgb(theme::text_secondary()))
-                    .child(notice.clone()),
-            ),
+            Some(notice) => purchase.child(widgets::banner(widgets::Tone::Info, notice.clone())),
             // The buttons carry the external-link mark; only guests need a
             // word about why card checkout is off.
             None => purchase.when(guest, |purchase| {
