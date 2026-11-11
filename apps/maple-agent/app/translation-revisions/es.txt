@@ -1442,6 +1442,7 @@ settings-remote-find-computers-signed-in-to-your-account-turn-on-remote-access-t
 settings-remote-finding-computers 2c35493bbb696790
 settings-remote-it-already-runs-this-version d43d11a2283ac525
 settings-remote-it-restarts-when-done-check-again-once-it-s-back fc9b06ac321b335b
+settings-remote-it-restarts-when-done-this-updates-on-its-own b0b5e1d39b3de997
 settings-remote-last-seen 4bb8f590236cdbd1
 settings-remote-loading 3b379fec07bb6105
 settings-remote-more 8af0ed2e981ebe1f
