@@ -1,11 +1,12 @@
 //! Voice input and output for the chat screen: microphone capture that
 //! routes through Whisper, and text-to-speech playback of messages.
 
+use crate::ui::motion::HoverBg as _;
 use std::sync::Arc;
 
 use gpui::{
     Context, InteractiveElement, IntoElement, ParentElement, SharedString,
-    StatefulInteractiveElement, Styled, div, prelude::FluentBuilder, px,
+    StatefulInteractiveElement, Styled, div, px,
 };
 
 use crate::ui::i18n::{UiText, tr};
@@ -257,10 +258,7 @@ pub(super) fn speak_message_button(
         .text_color(gpui::rgb(theme::text_muted()))
         .opacity(if active { 1. } else { 0. })
         .group_hover(group.clone(), |style| style.opacity(1.))
-        .map(|element| {
-            let rest: gpui::Hsla = gpui::transparent_black();
-            crate::ui::motion::hover_background(element, rest, gpui::rgb(theme::bg_elevated()))
-        })
+        .hover_bg(gpui::rgb(theme::bg_elevated()))
         .hover(|style| {
             style
                 .text_color(gpui::rgb(theme::text_secondary()))

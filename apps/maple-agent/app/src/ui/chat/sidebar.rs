@@ -24,6 +24,7 @@ use super::computers::{
     Computer, Destination, Navigate, ProjectRenameRequest, ProjectTarget, TaskAction,
     TaskActionRequest,
 };
+use crate::ui::motion::HoverBg as _;
 use crate::ui::task::Failure as UiFailure;
 use computers::{ComputerPages, OtherTask};
 use paging::{PageKind, SidebarPages};
@@ -3136,14 +3137,7 @@ impl Sidebar {
                         .items_center()
                         .justify_center()
                         .rounded(theme::RADIUS_SM)
-                        .map(|element| {
-                            let rest: gpui::Hsla = gpui::transparent_black();
-                            crate::ui::motion::hover_background(
-                                element,
-                                rest,
-                                gpui::rgb(theme::bg_sidebar_row_selected()),
-                            )
-                        })
+                        .hover_bg(gpui::rgb(theme::bg_sidebar_row_selected()))
                         .hover(|style| style.cursor_pointer())
                         .tooltip(widgets::tooltip_for_action(
                             tr("chat-clear-search"),
@@ -3249,13 +3243,7 @@ impl Sidebar {
                     })
                     .child(icon(name, px(16.), color))
                     .child(label)
-                    .map(|element| {
-                        crate::ui::motion::hover_background(
-                            element,
-                            gpui::transparent_black(),
-                            gpui::rgb(theme::bg_sidebar_row_hover()),
-                        )
-                    })
+                    .hover_bg(gpui::rgb(theme::bg_sidebar_row_hover()))
                     .into_any_element()
             }
             Some(SidebarEntry::ProjectsHeader) => self.render_projects_header(window, cx),
@@ -3298,14 +3286,7 @@ impl Sidebar {
                     .px_2()
                     .py_1()
                     .rounded(ROW_RADIUS)
-                    .map(|element| {
-                        let rest: gpui::Hsla = gpui::transparent_black();
-                        crate::ui::motion::hover_background(
-                            element,
-                            rest,
-                            gpui::rgb(theme::bg_sidebar_row_hover()),
-                        )
-                    })
+                    .hover_bg(gpui::rgb(theme::bg_sidebar_row_hover()))
                     .hover(|style| style.cursor_pointer())
                     .on_click(cx.listener(move |this, _event, _window, cx| {
                         this.toggle_section_expanded(section, cx);
@@ -3387,14 +3368,7 @@ impl Sidebar {
                     .px_2()
                     .h(px(34.))
                     .rounded(ROW_RADIUS)
-                    .map(|element| {
-                        let rest: gpui::Hsla = gpui::transparent_black();
-                        crate::ui::motion::hover_background(
-                            element,
-                            rest,
-                            gpui::rgb(theme::bg_sidebar_row_hover()),
-                        )
-                    })
+                    .hover_bg(gpui::rgb(theme::bg_sidebar_row_hover()))
                     .hover(|style| style.cursor_pointer())
                     .on_click(cx.listener(|this, _event, _window, cx| {
                         this.toggle_archived_visibility(cx);
@@ -3627,14 +3601,7 @@ impl Sidebar {
                 theme::text_secondary(),
             ));
         if section == SidebarHoverSection::Projects {
-            crate::ui::motion::hover_background(
-                chevron,
-                gpui::transparent_black(),
-                gpui::transparent_black(),
-            )
-            .highlighted(false)
-            .revealed(visible)
-            .into_any_element()
+            crate::ui::motion::reveal(chevron, visible).into_any_element()
         } else {
             chevron
                 .opacity(if visible { 1. } else { 0. })
@@ -3968,19 +3935,8 @@ impl Sidebar {
             .when(menu_open, |row| {
                 row.bg(gpui::rgb(theme::bg_sidebar_row_hover()))
             })
-            .map(|row| {
-                let rest = if menu_open {
-                    gpui::rgb(theme::bg_sidebar_row_hover()).into()
-                } else {
-                    gpui::transparent_black()
-                };
-                crate::ui::motion::hover_background(
-                    row,
-                    rest,
-                    gpui::rgb(theme::bg_sidebar_row_hover()),
-                )
-                .when(!hover || self.dragging, |row| row.highlighted(false))
-            })
+            .hover_bg(gpui::rgb(theme::bg_sidebar_row_hover()))
+            .when(!hover || self.dragging, |row| row.highlighted(false))
             .on_click(cx.listener(move |this, _event, _window, cx| {
                 if !this.collapsed_projects.remove(&toggle_target) {
                     this.collapsed_projects.insert(toggle_target.clone());
@@ -4339,17 +4295,10 @@ impl Sidebar {
             .text_color(gpui::rgb(theme::text_sidebar()))
             // A row being renamed is a text field: no hover highlight and
             // no hover actions over it, so the edit is plain to see.
-            .map(|row| {
-                let rest = if is_selected {
-                    gpui::rgb(theme::bg_sidebar_row_selected()).into()
-                } else {
-                    gpui::transparent_black()
-                };
-                crate::ui::motion::hover_background(row, rest, gpui::rgb(hover_bg))
-                    .when(renaming || self.dragging, |row| row.highlighted(false))
-                    .when(!renaming && !self.dragging, |row| {
-                        row.hover(|style| style.cursor_pointer())
-                    })
+            .hover_bg(gpui::rgb(hover_bg))
+            .when(renaming || self.dragging, |row| row.highlighted(false))
+            .when(!renaming && !self.dragging, |row| {
+                row.hover(|style| style.cursor_pointer())
             })
             .on_click(cx.listener(move |_this, _event, _window, cx| {
                 cx.emit(SidebarEvent::Select(session_id.to_string()));
@@ -4393,14 +4342,7 @@ impl Sidebar {
                         .items_center()
                         .justify_center()
                         .rounded(theme::RADIUS_SM)
-                        .map(|element| {
-                            let rest: gpui::Hsla = gpui::transparent_black();
-                            crate::ui::motion::hover_background(
-                                element,
-                                rest,
-                                gpui::rgb(theme::bg_sidebar_row_selected()),
-                            )
-                        })
+                        .hover_bg(gpui::rgb(theme::bg_sidebar_row_selected()))
                         .hover(|style| style.cursor_pointer())
                         .tooltip(widgets::tooltip(tr("chat-unpin"), None))
                         .on_click(cx.listener(move |this, _event, _window, cx| {
@@ -4738,14 +4680,7 @@ fn header_button(
         .items_center()
         .justify_center()
         .rounded(theme::RADIUS_SM)
-        .map(|element| {
-            let rest: gpui::Hsla = gpui::transparent_black();
-            crate::ui::motion::hover_background(
-                element,
-                rest,
-                gpui::rgb(theme::bg_sidebar_row_hover()),
-            )
-        })
+        .hover_bg(gpui::rgb(theme::bg_sidebar_row_hover()))
         .hover(|style| style.cursor_pointer())
         .when(open, |button| {
             button.bg(gpui::rgb(theme::bg_sidebar_row_selected()))
@@ -4777,14 +4712,7 @@ fn row_button(
         .rounded(theme::RADIUS_SM)
         .opacity(0.)
         .group_hover(group.clone(), |style| style.opacity(1.))
-        .map(|element| {
-            let rest: gpui::Hsla = gpui::transparent_black();
-            crate::ui::motion::hover_background(
-                element,
-                rest,
-                gpui::rgb(theme::bg_sidebar_row_selected()),
-            )
-        })
+        .hover_bg(gpui::rgb(theme::bg_sidebar_row_selected()))
         .hover(|style| style.cursor_pointer())
         .active(|style| style.bg(gpui::rgb(theme::border())))
         .child(icon(icon_name, px(14.), theme::text_secondary()))

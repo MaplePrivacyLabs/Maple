@@ -2,6 +2,7 @@
 //! shared `TranscriptCtx` caches; nothing here parses or derives on a
 //! frame.
 
+use crate::ui::motion::HoverBg as _;
 use std::cell::{Cell, RefCell};
 use std::collections::HashMap;
 use std::rc::Rc;
@@ -2297,7 +2298,7 @@ pub(super) fn render_question_card(
         .py_1()
         .rounded(theme::RADIUS_SM)
         .cursor_pointer()
-        .hover(|style| style.bg(theme::overlay_hover()))
+        .hover_bg(theme::overlay_hover())
         .on_click(cx.listener(|this, _event, _window, cx| {
             this.toggle_question_collapsed(cx);
         }))
@@ -2449,18 +2450,7 @@ pub(super) fn render_question_card(
                 .when(marked, |row| {
                     row.bg(gpui::rgb(theme::bg_sidebar_row_hover()))
                 })
-                .map(|element| {
-                    let rest: gpui::Hsla = if marked {
-                        gpui::rgb(theme::bg_sidebar_row_hover()).into()
-                    } else {
-                        gpui::transparent_black()
-                    };
-                    crate::ui::motion::hover_background(
-                        element,
-                        rest,
-                        gpui::rgb(theme::bg_sidebar_row_hover()),
-                    )
-                })
+                .hover_bg(gpui::rgb(theme::bg_sidebar_row_hover()))
                 .hover(|style| style.cursor_pointer())
                 .on_click({
                     cx.listener(move |this, _event, _window, cx| {
@@ -2585,9 +2575,9 @@ pub(super) fn render_question_card(
                 .hover(|style| {
                     style
                         .text_color(gpui::rgb(theme::text_secondary()))
-                        .bg(theme::overlay_hover())
                         .cursor_pointer()
                 })
+                .hover_bg(theme::overlay_hover())
                 .on_click(cx.listener(|this, _event, _window, cx| {
                     this.skip_question(cx);
                 }))

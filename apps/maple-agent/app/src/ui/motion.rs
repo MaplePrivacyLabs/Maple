@@ -12,7 +12,7 @@
 //! - Reversible state changes keep a [`Tween`], which retargets from the
 //!   value on screen: in view state for transitions a view owns (the
 //!   sidebar, the composer), or in element state through [`animated`] and
-//!   [`hover_background`] for render code that owns none.
+//!   [`HoverBg::hover_bg`] for render code that owns none.
 //!
 //! Everything settles at its end state under reduced motion. gpui cannot
 //! transform a `div`, so movement is a paint offset ([`Shifted`]) that
@@ -1078,18 +1078,54 @@ pub fn mix(from: gpui::Hsla, to: gpui::Hsla, amount: f32) -> gpui::Hsla {
     .into()
 }
 
-/// Animate a control's background without changing its layout, identity,
-/// handlers, tooltip, or accessibility node. Keep native `.hover()` for
-/// non-background styles and native `.active()` for immediate press feedback.
-pub fn hover_background(
+/// Gives a control a background that eases in under the pointer.
+pub trait HoverBg {
+    /// Ease this control's background to `hover` under the pointer and
+    /// back to the background it has at rest, which is read from the
+    /// control itself: set that first, with `.bg(..)`, and leave it unset
+    /// for a control with no fill. Layout, identity, handlers, tooltip and
+    /// accessibility node are untouched. Keep native `.hover()` for styles
+    /// other than the background and native `.active()` for press feedback,
+    /// which stays immediate.
+    fn hover_bg(self, hover: impl Into<gpui::Hsla>) -> HoverBackground;
+}
+
+impl HoverBg for gpui::Stateful<gpui::Div> {
+    fn hover_bg(mut self, hover: impl Into<gpui::Hsla>) -> HoverBackground {
+        let rest = resting_background(&mut self);
+        hover_background(self, rest, hover.into())
+    }
+}
+
+/// Fade a control in and out in place as `visible` changes, keeping its
+/// layout and hitbox. Its background does not react to the pointer.
+pub fn reveal(mut element: gpui::Stateful<gpui::Div>, visible: bool) -> HoverBackground {
+    let rest = resting_background(&mut element);
+    hover_background(element, rest, rest)
+        .highlighted(false)
+        .revealed(visible)
+}
+
+/// The solid background a control was given, or none.
+fn resting_background(element: &mut gpui::Stateful<gpui::Div>) -> gpui::Hsla {
+    element
+        .style()
+        .background
+        .as_ref()
+        .and_then(gpui::Fill::color)
+        .and_then(|background| background.as_solid())
+        .unwrap_or_else(gpui::transparent_black)
+}
+
+fn hover_background(
     element: gpui::Stateful<gpui::Div>,
-    rest: impl Into<gpui::Hsla>,
-    hover: impl Into<gpui::Hsla>,
+    rest: gpui::Hsla,
+    hover: gpui::Hsla,
 ) -> HoverBackground {
     HoverBackground {
         element,
-        rest: rest.into(),
-        hover: hover.into(),
+        rest,
+        hover,
         highlighted: None,
         revealed: None,
         instant: false,
