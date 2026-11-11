@@ -15,6 +15,7 @@ import { cn } from "@/utils/utils";
 import { Legend, ShareBar, SplitBar, StackedBars, Swatch, type StackDatum } from "./charts";
 import {
   modelColor,
+  MORE_MODELS_KEY,
   ORIGIN_COLOR,
   ORIGIN_LABEL,
   ORIGINS,
@@ -259,11 +260,13 @@ function DailyChart({
   usage,
   dates,
   kind,
+  summary,
   periodStartDate
 }: {
   usage: UsageResponse;
   dates: string[];
   kind: UsagePlanKind;
+  summary: RangeSummary;
   periodStartDate: string | null;
 }) {
   const free = kind === "free";
@@ -314,60 +317,76 @@ function DailyChart({
     ...(metric === "tokens" ? [{ value: "token" as const, label: "Token type" }] : [])
   ];
   const unit = metricLabel(metric).toLowerCase();
+  const namedModels =
+    split === "model"
+      ? chart.series.filter(({ key }) => key !== MORE_MODELS_KEY).map(({ key }) => key)
+      : undefined;
 
   return (
-    <SettingsSection>
-      <SectionHeader
-        title={`Daily ${unit}`}
-        description={`Each bar is one day, split by ${SPLIT_WORD[split]}.`}
-        right={
-          <div className="flex flex-col items-start gap-2 sm:items-end">
-            <div className="flex items-center gap-2 text-xs text-muted-foreground">
-              Show
-              <Segmented
-                label="Show"
-                value={metric}
-                onChange={changeMetric}
-                options={metricOptions.map((m) => ({ value: m, label: metricLabel(m) }))}
-              />
-            </div>
-            {splitOptions.length > 1 && (
+    <>
+      <SettingsSection>
+        <SectionHeader
+          title={`Daily ${unit}`}
+          description={`Each bar is one day, split by ${SPLIT_WORD[split]}.`}
+          right={
+            <div className="flex flex-col items-start gap-2 sm:items-end">
               <div className="flex items-center gap-2 text-xs text-muted-foreground">
-                Split by
+                Show
                 <Segmented
-                  label="Split by"
-                  value={split}
-                  onChange={setSplit}
-                  options={splitOptions}
+                  label="Show"
+                  value={metric}
+                  onChange={changeMetric}
+                  options={metricOptions.map((m) => ({ value: m, label: metricLabel(m) }))}
                 />
               </div>
-            )}
+              {splitOptions.length > 1 && (
+                <div className="flex items-center gap-2 text-xs text-muted-foreground">
+                  Split by
+                  <Segmented
+                    label="Split by"
+                    value={split}
+                    onChange={setSplit}
+                    options={splitOptions}
+                  />
+                </div>
+              )}
+            </div>
+          }
+        />
+        <StackedBars
+          data={data}
+          series={chart.series}
+          height={250}
+          format={fmtCompact}
+          formatValue={fmt}
+          unit={unit}
+          ariaLabel={`Daily ${unit}, split by ${SPLIT_WORD[split]}`}
+          markers={markers}
+          ranges={ranges}
+        />
+        {chart.series.length > 0 ? (
+          <div className="mt-4">
+            <Legend items={chart.series} />
           </div>
-        }
-      />
-      <StackedBars
-        data={data}
-        series={chart.series}
-        height={250}
-        format={fmtCompact}
-        formatValue={fmt}
-        unit={unit}
-        ariaLabel={`Daily ${unit}, split by ${SPLIT_WORD[split]}`}
-        markers={markers}
-        ranges={ranges}
-      />
-      {chart.series.length > 0 ? (
-        <div className="mt-4">
-          <Legend items={chart.series} />
-        </div>
-      ) : (
-        <p className="mt-4 text-xs text-muted-foreground">No usage in this range.</p>
-      )}
-    </SettingsSection>
+        ) : (
+          <p className="mt-4 text-xs text-muted-foreground">No usage in this range.</p>
+        )}
+      </SettingsSection>
+      <ModelTable summary={summary} free={free} namedModels={namedModels} />
+    </>
   );
 }
 
-function ModelTable({ summary, free }: { summary: RangeSummary; free: boolean }) {
+function ModelTable({
+  summary,
+  free,
+  namedModels
+}: {
+  summary: RangeSummary;
+  free: boolean;
+  /** The chart's named models; folded and zero-for-this-metric models stay gray. */
+  namedModels?: readonly string[];
+}) {
   const rows = sortModels(summary.byModel, free ? "requests" : "credits");
   const shareOf = (r: (typeof rows)[number]) => (free ? r.requests : r.credits);
   const max = Math.max(...rows.map(shareOf), 1);
@@ -405,7 +424,7 @@ function ModelTable({ summary, free }: { summary: RangeSummary; free: boolean })
             </thead>
             <tbody>
               {rows.map((row) => {
-                const color = modelColor(row.model);
+                const color = modelColor(row.model, namedModels);
                 return (
                   <tr key={row.model} className="border-b border-border/50 last:border-0">
                     <td className="px-4 py-2.5 sm:pl-6">
@@ -507,8 +526,13 @@ export function UsageExplorer({
           aria-busy={usage.isPlaceholderData || undefined}
         >
           <StatTiles summary={summary} kind={kind} label={label} />
-          <DailyChart usage={data} dates={dates} kind={kind} periodStartDate={periodStartDate} />
-          <ModelTable summary={summary} free={kind === "free"} />
+          <DailyChart
+            usage={data}
+            dates={dates}
+            kind={kind}
+            summary={summary}
+            periodStartDate={periodStartDate}
+          />
         </div>
       ) : usage.isError ? (
         <ErrorBlock message="Couldn't load usage for this range." onRetry={usage.refetch} />

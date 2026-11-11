@@ -5,23 +5,66 @@ import type { UsageClientApp, UsagePool } from "@/billing/usageApi";
 // reserved for the plan meter and Chat; models never use it.
 
 /**
- * Fixed slots for current flagship models. Colors follow model identity, never
- * rank, so a model keeps its color across ranges. Every other model folds into
- * the gray "More models" series in charts; tables still list it by name.
+ * Best models, in legend order. Each keeps its color across ranges. GPT-OSS
+ * is not here: it is not a model we highlight. A model that is not listed
+ * still gets its own series until the chart runs out of colors.
  */
-export const MODEL_SLOTS: Readonly<Record<string, string>> = {
-  "glm-5-3": "var(--series-1)",
-  "kimi-k3": "var(--series-2)",
-  "deepseek-v4-1-flash": "var(--series-3)",
-  "gpt-oss-120b": "var(--series-4)",
-  "glm-5-3-flash": "var(--series-5)"
-};
+export const HIGHLIGHT_MODELS = [
+  "glm-5-3",
+  "kimi-k3",
+  "deepseek-v4-1-flash",
+  "deepseek-v4-1-flash-1017-uncensored",
+  "glm-5-3-flash",
+  "kimi-k3-1-pro",
+  "gemma4-31b"
+] as const;
+
+/** Named series before the rest fold. One per color, and every model Work offers. */
+export const MAX_NAMED_MODELS = HIGHLIGHT_MODELS.length;
 
 export const MORE_MODELS_KEY = "more";
 export const MORE_MODELS_COLOR = "var(--series-other)";
 
-export function modelColor(model: string): string {
-  return MODEL_SLOTS[model] ?? MORE_MODELS_COLOR;
+export function highlightIndex(model: string): number | undefined {
+  const index = HIGHLIGHT_MODELS.indexOf(model as (typeof HIGHLIGHT_MODELS)[number]);
+  return index === -1 ? undefined : index;
+}
+
+export function seriesColor(slot: number): string {
+  return `var(--series-${slot + 1})`;
+}
+
+/**
+ * Color slot for a model drawn with `peers`. Highlights keep a fixed slot.
+ * Other peers take the lowest free slot, in id order. Undefined when the
+ * model is not highlighted and no free slot is left.
+ */
+export function modelColorSlot(model: string, peers: readonly string[]): number | undefined {
+  if (!peers.includes(model)) return undefined;
+  const pinned = highlightIndex(model);
+  if (pinned !== undefined) return pinned;
+  const taken = new Set<number>();
+  for (const peer of peers) {
+    const slot = highlightIndex(peer);
+    if (slot !== undefined) taken.add(slot);
+  }
+  const rank = peers.filter((peer) => highlightIndex(peer) === undefined && peer < model).length;
+  let free = 0;
+  for (let slot = 0; slot < MAX_NAMED_MODELS; slot++) {
+    if (taken.has(slot)) continue;
+    if (free === rank) return slot;
+    free += 1;
+  }
+  return undefined;
+}
+
+export function modelColor(model: string, peers?: readonly string[]): string {
+  if (peers) {
+    const slot = modelColorSlot(model, peers);
+    return slot === undefined ? MORE_MODELS_COLOR : seriesColor(slot);
+  }
+  const pinned = highlightIndex(model);
+  return pinned === undefined ? MORE_MODELS_COLOR : seriesColor(pinned);
 }
 
 export type TokenKind = "input" | "cached" | "output";

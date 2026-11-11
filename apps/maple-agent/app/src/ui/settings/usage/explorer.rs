@@ -464,8 +464,18 @@ impl SettingsScreen {
             .into_iter()
             .map(|(label, column)| (column, header_cell(label))),
         );
+        let peers: Vec<&str> = range
+            .chart
+            .series
+            .iter()
+            .filter_map(|series| series.model.as_deref())
+            .collect();
         let rows = models.iter().map(|model| {
-            let color = palette::model(&model.model);
+            let color = if peers.is_empty() {
+                palette::model(&model.model)
+            } else {
+                palette::model_among(&model.model, &peers)
+            };
             let (mix, more) = &model.mix;
             // One app needs no percentage: `Work`, not `100% Work`.
             let mut mix: Vec<String> = match mix.as_slice() {

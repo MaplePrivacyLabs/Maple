@@ -7,7 +7,7 @@ use super::model::{Origin, SeriesKey, TokenKind};
 use crate::ui::theme;
 
 struct Palette {
-    series: [u32; 5],
+    series: [u32; 7],
     more_models: u32,
     chat: u32,
     work: u32,
@@ -23,7 +23,9 @@ struct Palette {
 }
 
 const LIGHT: Palette = Palette {
-    series: [0x2f7ed8, 0x1a9e7a, 0xe09b12, 0x7a5cc8, 0xd2578f],
+    series: [
+        0x2f7ed8, 0x1a9e7a, 0xe09b12, 0x7a5cc8, 0xd2578f, 0x8d0da0, 0x237915,
+    ],
     more_models: 0xa3a3a3,
     chat: 0xe5683f,
     work: 0x0e9fb3,
@@ -39,7 +41,9 @@ const LIGHT: Palette = Palette {
 };
 
 const DARK: Palette = Palette {
-    series: [0x3987e5, 0x199e70, 0xc98500, 0x9085e9, 0xd55181],
+    series: [
+        0x3987e5, 0x199e70, 0xc98500, 0x9085e9, 0xd55181, 0xe198e1, 0x5ae25a,
+    ],
     more_models: 0x6b6b6b,
     chat: 0xdd6236,
     work: 0x17a2b8,
@@ -95,6 +99,14 @@ pub(super) fn model(model: &str) -> u32 {
             .map(SeriesKey::Model)
             .unwrap_or(SeriesKey::MoreModels),
     )
+}
+
+/// Same color the chart uses when `peers` are the models drawn beside this one.
+pub(super) fn model_among(model: &str, peers: &[&str]) -> u32 {
+    match super::model::color_slot(model, peers) {
+        Some(slot) => series(SeriesKey::Model(slot)),
+        None => palette().more_models,
+    }
 }
 
 pub(super) fn grid() -> u32 {

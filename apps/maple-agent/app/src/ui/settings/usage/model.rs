@@ -9,16 +9,24 @@ use crate::billing::{BillingStatus, UsageDayRow, UsageModelLabels, UsageMonthRow
 /// Longest date list built from server-supplied bounds.
 const MAX_DAYS: u64 = 400;
 
-/// Fixed color slots for the current flagship models. A model keeps its
-/// color across ranges; every other model folds into "More models" in
-/// charts, while tables still list it by name.
-pub(crate) const MODEL_SLOTS: [&str; 5] = [
+/// Models worth a stable color, best first. A model keeps its color across
+/// ranges. GPT-OSS is not here: it is not a model we highlight. A model
+/// that is not listed still gets its own series until the chart runs out
+/// of colors.
+pub(crate) const HIGHLIGHT_MODELS: [&str; 7] = [
     "glm-5-3",
     "kimi-k3",
     "deepseek-v4-1-flash",
-    "gpt-oss-120b",
+    "deepseek-v4-1-flash-1017-uncensored",
     "glm-5-3-flash",
+    "kimi-k3-1-pro",
+    "gemma4-31b",
 ];
+
+/// Named series before the rest fold into "More models". One per color,
+/// which is also every model Maple Work offers, so using those does not
+/// produce a gray bucket.
+pub(crate) const MAX_NAMED_MODELS: usize = HIGHLIGHT_MODELS.len();
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) enum PlanKind {
@@ -284,7 +292,61 @@ pub(crate) fn model_label(model: &str, labels: &UsageModelLabels) -> String {
 }
 
 pub(crate) fn model_slot(model: &str) -> Option<usize> {
-    MODEL_SLOTS.iter().position(|slot| *slot == model)
+    HIGHLIGHT_MODELS.iter().position(|slot| *slot == model)
+}
+
+fn series_before(left: &str, right: &str) -> std::cmp::Ordering {
+    match (model_slot(left), model_slot(right)) {
+        (Some(left), Some(right)) => left.cmp(&right),
+        (Some(_), None) => std::cmp::Ordering::Less,
+        (None, Some(_)) => std::cmp::Ordering::Greater,
+        (None, None) => left.cmp(right),
+    }
+}
+
+/// Every model used in the range gets its own series until the chart runs out
+/// of colors. Past that, highlights stay and the smallest other models fold.
+fn choose_named<'a>(totals: &[(&'a str, f64)]) -> (Vec<&'a str>, Vec<&'a str>) {
+    let used = |id: &str| {
+        totals
+            .iter()
+            .find(|(candidate, total)| *candidate == id && *total > 0.0)
+            .map(|(_, total)| *total)
+    };
+    let mut named: Vec<&str> = HIGHLIGHT_MODELS
+        .iter()
+        .copied()
+        .filter(|id| used(id).is_some())
+        .collect();
+    let mut others: Vec<(&str, f64)> = totals
+        .iter()
+        .filter(|(id, total)| *total > 0.0 && model_slot(id).is_none())
+        .map(|(id, total)| (*id, *total))
+        .collect();
+    others.sort_by(|left, right| right.1.total_cmp(&left.1).then_with(|| left.0.cmp(right.0)));
+    let room = MAX_NAMED_MODELS - named.len();
+    named.extend(others.iter().take(room).map(|(id, _)| *id));
+    named.sort_by(|left, right| series_before(left, right));
+    let folded = others.into_iter().skip(room).map(|(id, _)| id).collect();
+    (named, folded)
+}
+
+/// Color slot for a model drawn with `named`. Highlights keep their fixed
+/// slots; each other model takes the next free slot.
+pub(crate) fn color_slot(model: &str, named: &[&str]) -> Option<usize> {
+    if !named.contains(&model) {
+        return None;
+    }
+    if let Some(slot) = model_slot(model) {
+        return Some(slot);
+    }
+    let rank = named
+        .iter()
+        .filter(|peer| model_slot(peer).is_none() && **peer < model)
+        .count();
+    (0..MAX_NAMED_MODELS)
+        .filter(|slot| named.iter().all(|peer| model_slot(peer) != Some(*slot)))
+        .nth(rank)
 }
 
 #[derive(Clone, Debug, PartialEq)]
@@ -374,6 +436,8 @@ pub(crate) struct Series {
     /// The model's name for model series, and for "More models" when one
     /// model alone folded into it; `None` takes the key's localized label.
     pub(crate) label: Option<String>,
+    /// Canonical id for a named model, so matching tables get the same color.
+    pub(crate) model: Option<String>,
 }
 
 #[derive(Clone, Debug, PartialEq)]
@@ -396,12 +460,116 @@ pub(crate) struct DailyChart {
     pub(crate) scale: NiceScale,
 }
 
+fn build_model_chart(
+    dates: &[NaiveDate],
+    rows: &[UsageDayRow],
+    metric: Metric,
+    labels: &UsageModelLabels,
+) -> DailyChart {
+    let mut model_ids: Vec<&str> = Vec::new();
+    let mut per_model: Vec<Vec<f64>> = Vec::new();
+    let mut requests = vec![0u64; dates.len()];
+    let mut extra_credits = vec![0.0; dates.len()];
+    for row in rows {
+        let Some(day) =
+            parse_date(&row.date).and_then(|date| dates.iter().position(|d| *d == date))
+        else {
+            continue;
+        };
+        requests[day] += row.counts.requests;
+        if row.pool == "extra" {
+            extra_credits[day] += row.counts.credits;
+        }
+        let mut counts = Counts::default();
+        counts.add(&row.counts);
+        let value = counts.metric(metric);
+        let index = match model_ids.iter().position(|id| *id == row.model.as_str()) {
+            Some(index) => index,
+            None => {
+                model_ids.push(row.model.as_str());
+                per_model.push(vec![0.0; dates.len()]);
+                model_ids.len() - 1
+            }
+        };
+        per_model[index][day] += value;
+    }
+
+    let totals: Vec<(&str, f64)> = model_ids
+        .iter()
+        .zip(&per_model)
+        .map(|(id, days)| (*id, days.iter().sum()))
+        .collect();
+    let (named, folded_ids) = choose_named(&totals);
+    let mut series: Vec<Series> = named
+        .iter()
+        .map(|id| Series {
+            key: SeriesKey::Model(color_slot(id, &named).expect("a named model has a free color")),
+            label: Some(model_label(id, labels)),
+            model: Some((*id).to_string()),
+        })
+        .collect();
+    if !folded_ids.is_empty() {
+        let label = (folded_ids.len() == 1).then(|| model_label(folded_ids[0], labels));
+        series.push(Series {
+            key: SeriesKey::MoreModels,
+            label,
+            model: None,
+        });
+    }
+
+    let several_folded = folded_ids.len() > 1;
+    let days: Vec<ChartDay> = dates
+        .iter()
+        .enumerate()
+        .map(|(day, &date)| {
+            let mut values: Vec<f64> = named
+                .iter()
+                .map(|id| {
+                    model_ids
+                        .iter()
+                        .position(|candidate| *candidate == *id)
+                        .map(|index| per_model[index][day])
+                        .unwrap_or(0.0)
+                })
+                .collect();
+            let mut folded = Vec::new();
+            let mut folded_total = 0.0;
+            for id in &folded_ids {
+                let value = model_ids
+                    .iter()
+                    .position(|candidate| *candidate == *id)
+                    .map(|index| per_model[index][day])
+                    .unwrap_or(0.0);
+                if value > 0.0 {
+                    folded_total += value;
+                    folded.push((model_label(id, labels), value));
+                }
+            }
+            if !folded_ids.is_empty() {
+                values.push(folded_total);
+            }
+            folded.sort_by(|left, right| right.1.total_cmp(&left.1));
+            ChartDay {
+                date,
+                total: values.iter().sum(),
+                values,
+                requests: requests[day],
+                extra_credits: extra_credits[day],
+                folded: if several_folded { folded } else { Vec::new() },
+            }
+        })
+        .collect();
+    let peak = days.iter().map(|day| day.total).fold(0.0, f64::max);
+    DailyChart {
+        series,
+        days,
+        scale: nice_scale((peak.max(1.0)) * 1.04),
+    }
+}
+
 fn split_keys(split: Split) -> Vec<SeriesKey> {
     match split {
-        Split::Model => (0..MODEL_SLOTS.len())
-            .map(SeriesKey::Model)
-            .chain([SeriesKey::MoreModels])
-            .collect(),
+        Split::Model => Vec::new(),
         Split::Origin => Origin::ALL.into_iter().map(SeriesKey::Origin).collect(),
         Split::Pool => vec![SeriesKey::Plan, SeriesKey::Extra],
         Split::Token => TokenKind::ALL.into_iter().map(SeriesKey::Token).collect(),
@@ -413,15 +581,16 @@ pub(crate) fn build_daily_chart(
     rows: &[UsageDayRow],
     metric: Metric,
     split: Split,
-    labels: &UsageModelLabels,
+    _labels: &UsageModelLabels,
 ) -> DailyChart {
+    if split == Split::Model {
+        return build_model_chart(dates, rows, metric, _labels);
+    }
     let keys = split_keys(split);
     let mut values = vec![vec![0.0; keys.len()]; dates.len()];
     let mut requests = vec![0u64; dates.len()];
     let mut extra_credits = vec![0.0; dates.len()];
-    // Models behind "More models", by id: two models can share a name.
-    let mut folded: Vec<Vec<(&str, f64)>> = vec![Vec::new(); dates.len()];
-    let mut folded_models: Vec<&str> = Vec::new();
+
     for row in rows {
         let Some(day) =
             parse_date(&row.date).and_then(|date| dates.iter().position(|d| *d == date))
@@ -446,9 +615,7 @@ pub(crate) fn build_daily_chart(
         counts.add(&row.counts);
         let value = counts.metric(metric);
         let key = match split {
-            Split::Model => model_slot(&row.model)
-                .map(SeriesKey::Model)
-                .unwrap_or(SeriesKey::MoreModels),
+            Split::Model => unreachable!("handled above"),
             Split::Origin => SeriesKey::Origin(Origin::of(&row.source, row.client_app.as_deref())),
             Split::Pool if row.pool == "extra" => SeriesKey::Extra,
             Split::Pool => SeriesKey::Plan,
@@ -459,57 +626,30 @@ pub(crate) fn build_daily_chart(
             .position(|k| *k == key)
             .expect("key of this split");
         values[day][index] += value;
-        if key == SeriesKey::MoreModels && value > 0.0 {
-            let model = row.model.as_str();
-            if !folded_models.contains(&model) {
-                folded_models.push(model);
-            }
-            match folded[day].iter_mut().find(|(id, _)| *id == model) {
-                Some((_, total)) => *total += value,
-                None => folded[day].push((model, value)),
-            }
-        }
     }
     let used: Vec<usize> = (0..keys.len())
         .filter(|&index| values.iter().map(|day| day[index]).sum::<f64>() > 0.0)
         .collect();
     let series = used
         .iter()
-        .map(|&index| {
-            let key = keys[index];
-            let label = match key {
-                SeriesKey::Model(slot) => Some(model_label(MODEL_SLOTS[slot], labels)),
-                SeriesKey::MoreModels if folded_models.len() == 1 => {
-                    Some(model_label(folded_models[0], labels))
-                }
-                _ => None,
-            };
-            Series { key, label }
+        .map(|&index| Series {
+            key: keys[index],
+            label: None,
+            model: None,
         })
         .collect();
-    let several_folded = folded_models.len() > 1;
     let days: Vec<ChartDay> = dates
         .iter()
         .enumerate()
         .map(|(day, &date)| {
             let day_values: Vec<f64> = used.iter().map(|&index| values[day][index]).collect();
-            let day_folded = if several_folded {
-                let mut models = std::mem::take(&mut folded[day]);
-                models.sort_by(|a, b| b.1.total_cmp(&a.1));
-                models
-                    .into_iter()
-                    .map(|(id, value)| (model_label(id, labels), value))
-                    .collect()
-            } else {
-                Vec::new()
-            };
             ChartDay {
                 date,
                 total: day_values.iter().sum(),
                 values: day_values,
                 requests: requests[day],
                 extra_credits: extra_credits[day],
-                folded: day_folded,
+                folded: Vec::new(),
             }
         })
         .collect();
@@ -850,7 +990,7 @@ mod tests {
     }
 
     #[test]
-    fn daily_chart_folds_unslotted_models_and_names_a_lone_one() {
+    fn daily_chart_names_every_used_model_until_the_legend_is_full() {
         let dates = date_range(day("2026-10-01"), day("2026-10-03"));
         let rows = [
             row("2026-10-01", "glm-5-3", "app", None, "plan", 4.0),
@@ -873,27 +1013,197 @@ mod tests {
                 .collect::<Vec<_>>(),
             [
                 (SeriesKey::Model(0), Some("glm-5-3".into())),
-                (SeriesKey::MoreModels, Some("Llama X".into())),
+                (SeriesKey::Model(1), Some("Llama X".into())),
             ]
         );
         assert_eq!(chart.days[0].values, [4.0, 0.0]);
         assert_eq!(chart.days[1].values, [0.0, 3.0]);
-        // One folded model needs no per-day breakdown.
         assert!(chart.days[1].folded.is_empty());
         assert_eq!(chart.days[2].total, 0.0);
 
+        // Two models outside the highlight list are still named. "More models"
+        // is an overflow bucket, not a home for everything we did not pin.
         let rows = [
             row("2026-10-02", "llama-x", "app", None, "plan", 3.0),
             row("2026-10-02", "qwen-y", "app", None, "extra", 5.0),
         ];
         let chart = build_daily_chart(&dates, &rows, Metric::Credits, Split::Model, &labels);
-        assert_eq!(chart.series[0].label, None);
         assert_eq!(
-            chart.days[1].folded,
-            [("qwen-y".to_string(), 5.0), ("Llama X".to_string(), 3.0)]
+            chart
+                .series
+                .iter()
+                .map(|series| series.label.clone())
+                .collect::<Vec<_>>(),
+            [Some("Llama X".into()), Some("qwen-y".into())]
         );
+        assert!(
+            chart
+                .series
+                .iter()
+                .all(|series| series.key != SeriesKey::MoreModels)
+        );
+        assert_eq!(chart.days[1].values, [3.0, 5.0]);
+        assert!(chart.days[1].folded.is_empty());
         assert_eq!(chart.days[1].extra_credits, 5.0);
         assert_eq!(extra_credit_span(&chart.days), Some((1, 1)));
+    }
+
+    #[test]
+    fn uncensored_keeps_a_color_and_oss_does_not_take_one() {
+        assert_eq!(color_slot("gemma4-31b", &[]), None);
+        assert_eq!(color_slot("gpt-oss-120b", &[]), None);
+        assert_eq!(model_slot("deepseek-v4-1-flash-1017-uncensored"), Some(3));
+        assert_eq!(model_slot("gpt-oss-120b"), None);
+        assert_eq!(model_slot("glm-5-3"), Some(0));
+
+        let dates = date_range(day("2026-10-01"), day("2026-10-01"));
+        let rows = [
+            row(
+                "2026-10-01",
+                "deepseek-v4-1-flash-1017-uncensored",
+                "app",
+                None,
+                "plan",
+                40.0,
+            ),
+            row("2026-10-01", "gpt-oss-120b", "app", None, "plan", 2.0),
+        ];
+        let chart = build_daily_chart(
+            &dates,
+            &rows,
+            Metric::Credits,
+            Split::Model,
+            &UsageModelLabels::default(),
+        );
+        assert_eq!(
+            chart
+                .series
+                .iter()
+                .map(|series| series.key)
+                .collect::<Vec<_>>(),
+            [SeriesKey::Model(3), SeriesKey::Model(0)]
+        );
+        assert!(
+            chart
+                .series
+                .iter()
+                .all(|series| series.key != SeriesKey::MoreModels)
+        );
+    }
+
+    #[test]
+    fn more_models_appears_only_after_the_legend_is_full() {
+        let dates = date_range(day("2026-10-01"), day("2026-10-01"));
+        let mut rows = Vec::new();
+        for index in 0..MAX_NAMED_MODELS {
+            rows.push(row(
+                "2026-10-01",
+                &format!("m{index}"),
+                "app",
+                None,
+                "plan",
+                (MAX_NAMED_MODELS - index) as f64,
+            ));
+        }
+        let chart = build_daily_chart(
+            &dates,
+            &rows,
+            Metric::Credits,
+            Split::Model,
+            &UsageModelLabels::default(),
+        );
+        assert!(
+            chart
+                .series
+                .iter()
+                .all(|series| series.key != SeriesKey::MoreModels)
+        );
+        assert_eq!(chart.series.len(), MAX_NAMED_MODELS);
+
+        rows.push(row("2026-10-01", "overflow", "app", None, "plan", 0.5));
+        let chart = build_daily_chart(
+            &dates,
+            &rows,
+            Metric::Credits,
+            Split::Model,
+            &UsageModelLabels::default(),
+        );
+        assert_eq!(chart.series.last().unwrap().key, SeriesKey::MoreModels);
+        assert_eq!(
+            chart.series.last().unwrap().label.as_deref(),
+            Some("overflow")
+        );
+        assert!(chart.days[0].folded.is_empty());
+
+        rows.push(row("2026-10-01", "also", "app", None, "plan", 0.25));
+        let chart = build_daily_chart(
+            &dates,
+            &rows,
+            Metric::Credits,
+            Split::Model,
+            &UsageModelLabels::default(),
+        );
+        assert_eq!(chart.series.last().unwrap().label, None);
+        assert_eq!(
+            chart.days[0].folded,
+            [("overflow".to_string(), 0.5), ("also".to_string(), 0.25)]
+        );
+    }
+
+    #[test]
+    fn a_full_legend_keeps_the_best_models_over_heavier_others() {
+        let dates = date_range(day("2026-10-01"), day("2026-10-01"));
+        let mut rows: Vec<UsageDayRow> = HIGHLIGHT_MODELS
+            .iter()
+            .map(|model| row("2026-10-01", model, "app", None, "plan", 1.0))
+            .collect();
+        rows.push(row(
+            "2026-10-01",
+            "gpt-oss-120b",
+            "app",
+            None,
+            "plan",
+            500.0,
+        ));
+        rows.push(row(
+            "2026-10-01",
+            "llama3-3-70b",
+            "app",
+            None,
+            "plan",
+            400.0,
+        ));
+        let chart = build_daily_chart(
+            &dates,
+            &rows,
+            Metric::Credits,
+            Split::Model,
+            &UsageModelLabels::default(),
+        );
+        let named: Vec<_> = chart
+            .series
+            .iter()
+            .filter(|series| series.key != SeriesKey::MoreModels)
+            .map(|series| series.label.clone())
+            .collect();
+        assert_eq!(
+            named,
+            HIGHLIGHT_MODELS
+                .iter()
+                .map(|model| Some((*model).to_string()))
+                .collect::<Vec<_>>()
+        );
+        assert_eq!(
+            chart.series.last().map(|series| series.key),
+            Some(SeriesKey::MoreModels)
+        );
+        assert_eq!(
+            chart.days[0].folded,
+            [
+                ("gpt-oss-120b".to_string(), 500.0),
+                ("llama3-3-70b".to_string(), 400.0)
+            ]
+        );
     }
 
     #[test]

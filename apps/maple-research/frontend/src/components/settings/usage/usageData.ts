@@ -9,9 +9,12 @@ import type {
   UsageRange
 } from "@/billing/usageApi";
 import {
-  MODEL_SLOTS,
+  HIGHLIGHT_MODELS,
+  MAX_NAMED_MODELS,
   MORE_MODELS_COLOR,
   MORE_MODELS_KEY,
+  highlightIndex,
+  modelColor,
   ORIGIN_COLOR,
   ORIGIN_LABEL,
   ORIGINS,
@@ -417,12 +420,34 @@ export type DayBucket = {
 
 export type DailyChart = { series: SeriesDef[]; days: DayBucket[] };
 
-const SLOT_ORDER = Object.keys(MODEL_SLOTS);
+function seriesBefore(left: string, right: string): number {
+  const l = highlightIndex(left);
+  const r = highlightIndex(right);
+  if (l !== undefined && r !== undefined) return l - r;
+  if (l !== undefined) return -1;
+  if (r !== undefined) return 1;
+  return left < right ? -1 : left > right ? 1 : 0;
+}
 
-function seriesKey(row: UsageDayRow, split: Split): string {
+/** Which models get their own series. Everything used, until the legend is full;
+ * then the best models stay and the smallest of the rest fold. */
+function chooseNamed(totals: Map<string, number>): { named: string[]; folded: string[] } {
+  const used = new Set([...totals].filter(([, value]) => value > 0).map(([id]) => id));
+  const named: string[] = HIGHLIGHT_MODELS.filter((id) => used.has(id));
+  const others = [...totals]
+    .filter(([id, value]) => value > 0 && highlightIndex(id) === undefined)
+    .sort((a, b) => b[1] - a[1] || (a[0] < b[0] ? -1 : a[0] > b[0] ? 1 : 0));
+  const room = MAX_NAMED_MODELS - named.length;
+  const folded = others.splice(room).map(([id]) => id);
+  named.push(...others.map(([id]) => id));
+  named.sort(seriesBefore);
+  return { named, folded };
+}
+
+function seriesKey(row: UsageDayRow, split: "origin" | "pool"): string {
   if (split === "origin") return usageOrigin(row);
   if (split === "pool") return row.pool;
-  return row.model in MODEL_SLOTS ? row.model : MORE_MODELS_KEY;
+  return row.model;
 }
 
 /**
@@ -443,11 +468,67 @@ export function buildDailyChart({
   split: Split;
   labels: UsageModelLabels;
 }): DailyChart {
+  if (split === "model") {
+    const buckets = new Map<string, DayBucket>(
+      dates.map((date) => [date, { date, values: {}, requests: 0, extraCredits: 0, folded: [] }])
+    );
+    const perModel = new Map<string, Map<string, number>>();
+    for (const row of rows) {
+      const day = buckets.get(row.date);
+      if (!day) continue;
+      day.requests += row.requests;
+      if (row.pool === "extra") day.extraCredits += row.credits;
+      const value = metricOf(row, metric);
+      let values = perModel.get(row.model);
+      if (!values) {
+        values = new Map();
+        perModel.set(row.model, values);
+      }
+      values.set(row.date, (values.get(row.date) ?? 0) + value);
+    }
+    const totals = new Map(
+      [...perModel].map(([id, values]) => [
+        id,
+        [...values.values()].reduce((sum, value) => sum + value, 0)
+      ])
+    );
+    const { named, folded: foldedIds } = chooseNamed(totals);
+    const series: SeriesDef[] = named.map((id) => ({
+      key: id,
+      label: modelLabel(id, labels),
+      color: modelColor(id, named)
+    }));
+    if (foldedIds.length > 0) {
+      series.push({
+        key: MORE_MODELS_KEY,
+        label: foldedIds.length === 1 ? modelLabel(foldedIds[0], labels) : "More models",
+        color: MORE_MODELS_COLOR
+      });
+    }
+    for (const day of buckets.values()) {
+      for (const id of named) {
+        day.values[id] = perModel.get(id)?.get(day.date) ?? 0;
+      }
+      if (foldedIds.length > 0) {
+        let total = 0;
+        const folded: DayBucket["folded"] = [];
+        for (const id of foldedIds) {
+          const value = perModel.get(id)?.get(day.date) ?? 0;
+          if (value > 0) {
+            total += value;
+            folded.push({ model: id, label: modelLabel(id, labels), value });
+          }
+        }
+        day.values[MORE_MODELS_KEY] = total;
+        day.folded = foldedIds.length > 1 ? folded.sort((a, b) => b.value - a.value) : [];
+      }
+    }
+    return { series, days: [...buckets.values()] };
+  }
   const buckets = new Map<string, DayBucket>(
     dates.map((date) => [date, { date, values: {}, requests: 0, extraCredits: 0, folded: [] }])
   );
   const totals = new Map<string, number>();
-  const foldedModels = new Set<string>();
 
   for (const row of rows) {
     const day = buckets.get(row.date);
@@ -468,13 +549,6 @@ export function buildDailyChart({
     const key = seriesKey(row, split);
     day.values[key] = (day.values[key] ?? 0) + value;
     totals.set(key, (totals.get(key) ?? 0) + value);
-
-    if (key === MORE_MODELS_KEY && value > 0) {
-      foldedModels.add(row.model);
-      const existing = day.folded.find((f) => f.model === row.model);
-      if (existing) existing.value += value;
-      else day.folded.push({ model: row.model, label: modelLabel(row.model, labels), value });
-    }
   }
 
   const used = (key: string) => (totals.get(key) ?? 0) > 0;
@@ -491,37 +565,14 @@ export function buildDailyChart({
       label: ORIGIN_LABEL[origin],
       color: ORIGIN_COLOR[origin]
     }));
-  } else if (split === "pool") {
+  } else {
     series = POOLS.filter(used).map((p) => ({
       key: p,
       label: POOL_LABEL[p],
       color: POOL_COLOR[p]
     }));
-  } else {
-    series = SLOT_ORDER.filter(used).map((m) => ({
-      key: m,
-      label: modelLabel(m, labels),
-      color: MODEL_SLOTS[m]
-    }));
-    if (used(MORE_MODELS_KEY)) {
-      // One unslotted model is named outright; only a real fold says "More models".
-      const only = foldedModels.size === 1 ? [...foldedModels][0] : null;
-      series.push({
-        key: MORE_MODELS_KEY,
-        label: only ? modelLabel(only, labels) : "More models",
-        color: MORE_MODELS_COLOR
-      });
-    }
   }
-
-  const days = [...buckets.values()];
-  for (const day of days) {
-    day.folded =
-      foldedModels.size > 1
-        ? day.folded.sort((a, b) => b.value - a.value)
-        : ([] as DayBucket["folded"]);
-  }
-  return { series, days };
+  return { series, days: [...buckets.values()] };
 }
 
 /** First and last day in the range that drew on Extra credits. */

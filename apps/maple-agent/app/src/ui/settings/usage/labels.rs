@@ -366,7 +366,7 @@ pub(super) fn series_name(key: SeriesKey, label: Option<&str>) -> SharedString {
         return label.to_string().into();
     }
     match key {
-        SeriesKey::Model(slot) => model::MODEL_SLOTS[slot].into(),
+        SeriesKey::Model(_) => unreachable!("model series have catalog labels"),
         SeriesKey::MoreModels => tr("settings-usage-more-models"),
         SeriesKey::Origin(origin) => origin_name(origin),
         SeriesKey::Plan => tr("settings-usage-pool-plan"),
