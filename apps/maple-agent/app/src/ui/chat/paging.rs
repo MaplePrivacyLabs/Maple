@@ -8,6 +8,7 @@ use crate::ui::task::Failure as UiFailure;
 use base64::Engine;
 use gpui::{Context, ListOffset};
 use maple_agent::agent::AgentTimelineItem;
+use std::collections::hash_map::Entry;
 use std::collections::{HashMap, HashSet};
 
 const MAX_ROWS: usize = 2000;
@@ -22,7 +23,79 @@ pub(super) struct TranscriptPages {
     pub live_has_more: bool,
     pub generation: u64,
     pub expanding: HashSet<String>,
-    pub weights: HashMap<String, usize>,
+    pub weights: RowWeights,
+}
+
+/// What each loaded row counts against the byte budget, and the sum. A row
+/// that changes adjusts the sum in place, so bounding the window after a
+/// streamed chunk never rescans the transcript.
+#[derive(Default)]
+pub(super) struct RowWeights {
+    by_id: HashMap<String, usize>,
+    /// Always the sum of `by_id`.
+    total: usize,
+}
+
+impl RowWeights {
+    pub(super) fn total(&self) -> usize {
+        self.total
+    }
+
+    /// Record what `item` weighs now, in place of what it weighed before.
+    pub(super) fn set(&mut self, item: &AgentTimelineItem) {
+        let bytes = item_bytes(item);
+        match self.by_id.get_mut(&item.id) {
+            Some(previous) => {
+                self.total = self.total - *previous + bytes;
+                *previous = bytes;
+            }
+            None => {
+                self.by_id.insert(item.id.clone(), bytes);
+                self.total += bytes;
+            }
+        }
+    }
+
+    /// Forget a row that left the window or took another key.
+    pub(super) fn remove(&mut self, id: &str) {
+        if let Some(bytes) = self.by_id.remove(id) {
+            self.total -= bytes;
+        }
+    }
+
+    pub(super) fn clear(&mut self) {
+        self.by_id.clear();
+        self.total = 0;
+    }
+
+    fn retain(&mut self, mut keep: impl FnMut(&str) -> bool) {
+        let total = &mut self.total;
+        self.by_id.retain(|id, bytes| {
+            let kept = keep(id);
+            if !kept {
+                *total -= *bytes;
+            }
+            kept
+        });
+    }
+
+    /// Weigh exactly the rows of `timeline`, for when rows arrived or left
+    /// in bulk. A row weighed before keeps that weight: `set` refreshes it
+    /// whenever the row changes.
+    fn weigh(&mut self, timeline: &[AgentTimelineItem]) {
+        let mut known = std::mem::take(&mut self.by_id);
+        self.by_id.reserve(timeline.len());
+        self.total = 0;
+        for item in timeline {
+            let (id, bytes) = known
+                .remove_entry(&item.id)
+                .unwrap_or_else(|| (item.id.clone(), item_bytes(item)));
+            if let Entry::Vacant(slot) = self.by_id.entry(id) {
+                slot.insert(bytes);
+                self.total += bytes;
+            }
+        }
+    }
 }
 
 impl TranscriptPages {
@@ -199,7 +272,7 @@ impl ChatScreen {
             .retain(|id| self.timeline_index.contains_key(id));
         self.pages
             .weights
-            .retain(|id, _| self.timeline_index.contains_key(id));
+            .retain(|id| self.timeline_index.contains_key(id));
         self.list_state
             .reset_with_uniform_height(self.timeline.len(), super::TRANSCRIPT_ROW_ESTIMATE);
         if let Some((id, mut offset)) = anchor
@@ -210,20 +283,25 @@ impl ChatScreen {
         }
     }
 
+    /// Bound the window after rows arrived or left in bulk.
     pub(super) fn bound_transcript_window(&mut self, keep_tail: bool) {
-        let mut bytes = self
-            .timeline
-            .iter()
-            .map(|item| {
-                *self
-                    .pages
-                    .weights
-                    .entry(item.id.clone())
-                    .or_insert_with(|| item_bytes(item))
-            })
-            .sum::<usize>();
+        self.pages.weights.weigh(&self.timeline);
+        self.evict_past_budget(keep_tail);
+    }
+
+    /// Bound the window after the row at `index` arrived or changed. Every
+    /// other row keeps its weight, so this costs the same at any transcript
+    /// length; streaming calls it once per chunk.
+    pub(super) fn bound_after_row_change(&mut self, index: usize, keep_tail: bool) {
+        self.pages.weights.set(&self.timeline[index]);
+        self.evict_past_budget(keep_tail);
+    }
+
+    fn evict_past_budget(&mut self, keep_tail: bool) {
         let mut changed = false;
-        while self.timeline.len() > MAX_ROWS || (bytes > MAX_BYTES && self.timeline.len() > 1) {
+        while self.timeline.len() > MAX_ROWS
+            || (self.pages.weights.total() > MAX_BYTES && self.timeline.len() > 1)
+        {
             let item = if keep_tail {
                 self.pages.before = true;
                 self.timeline.remove(0)
@@ -232,7 +310,7 @@ impl ChatScreen {
                 self.timeline.pop().unwrap()
             };
             self.local_error_text.remove(&item.id);
-            bytes = bytes.saturating_sub(item_bytes(&item));
+            self.pages.weights.remove(&item.id);
             changed = true;
         }
         if changed {
@@ -347,6 +425,7 @@ impl ChatScreen {
                             this.pages.weights.remove(&key);
                             this.local_error_text.remove(&key);
                             this.timeline[index] = item;
+                            this.pages.weights.set(&this.timeline[index]);
                             this.markdown_cache.clear();
                             this.derived.clear();
                             this.messages = Default::default();
@@ -373,8 +452,118 @@ mod tests {
     use super::*;
     use crate::backend::AgentBackend;
     use gpui::AppContext;
-    use maple_agent::agent::{AgentSessionSummary, AgentTaskState};
+    use maple_agent::agent::{
+        AgentLiveRowIdentity, AgentPersistedRowIdentity, AgentSessionSummary, AgentTaskState,
+    };
     use std::sync::Arc;
+
+    fn chat_with_task(cx: &mut gpui::TestAppContext) -> gpui::Entity<ChatScreen> {
+        let _settings = crate::settings::SETTINGS_IO_LOCK.lock();
+        cx.executor().allow_parking();
+        let backend =
+            Arc::new(AgentBackend::for_test("http://127.0.0.1:9".into(), String::new()).unwrap());
+        cx.new(|cx| {
+            let mut chat = ChatScreen::new_without_start(backend, "user".into(), cx);
+            chat.selected_session = Some("task".into());
+            chat
+        })
+    }
+
+    fn message(text: &str) -> AgentTimelineItem {
+        serde_json::from_value(serde_json::json!({
+            "id": "message", "itemType": "message", "text": text, "createdMs": 1,
+            "merge": "replace"
+        }))
+        .unwrap()
+    }
+
+    fn stored(row_seq: i64, text: &str) -> AgentTimelineItem {
+        AgentTimelineItem {
+            persisted: Some(AgentPersistedRowIdentity {
+                task_id: "task".into(),
+                rows_epoch: 0,
+                row_seq,
+                update_seq: row_seq,
+            }),
+            ..message(text)
+        }
+    }
+
+    fn live(occurrence: u64, text: &str) -> AgentTimelineItem {
+        AgentTimelineItem {
+            live: Some(AgentLiveRowIdentity {
+                run_id: "run".into(),
+                occurrence,
+            }),
+            ..message(text)
+        }
+    }
+
+    /// The running total must match a fresh sum over the loaded rows.
+    #[track_caller]
+    fn assert_weights_exact(chat: &ChatScreen) {
+        assert_eq!(
+            chat.pages.weights.total(),
+            chat.timeline.iter().map(item_bytes).sum::<usize>()
+        );
+        assert_eq!(chat.pages.weights.by_id.len(), chat.timeline.len());
+    }
+
+    #[gpui::test]
+    fn row_weights_follow_streamed_rekeyed_and_evicted_rows(cx: &mut gpui::TestAppContext) {
+        let chat = chat_with_task(cx);
+        chat.update(cx, |chat, _| {
+            chat.replace_timeline((1..=3).map(|seq| stored(seq, "history")).collect());
+            assert_weights_exact(chat);
+
+            // A live row arrives, grows with each chunk, and can shrink.
+            for text in ["An", "An answer", "An answer that grows", "Edited"] {
+                chat.apply_timeline_item("task", live(1, text));
+                assert_eq!(chat.timeline.len(), 4);
+                assert_eq!(chat.timeline[3].text.as_deref(), Some(text));
+                assert_weights_exact(chat);
+            }
+
+            // Its commit moves the same row to its stored key.
+            let mut committed = stored(4, "Committed");
+            committed.live = live(1, "").live;
+            chat.apply_timeline_item("task", committed);
+            assert_eq!(chat.timeline.len(), 4);
+            assert_eq!(chat.timeline[3].id, "stored:task:0:4");
+            assert_weights_exact(chat);
+
+            // Rows past the cap push the oldest out of the window.
+            for occurrence in 2..=(MAX_ROWS as u64 + 2) {
+                chat.apply_timeline_item("task", live(occurrence, "step"));
+            }
+            assert_eq!(chat.timeline.len(), MAX_ROWS);
+            assert!(chat.pages.before && !chat.pages.after);
+            assert_eq!(chat.timeline[0].id, "live:run:3");
+            assert_weights_exact(chat);
+        });
+    }
+
+    #[gpui::test]
+    fn a_streamed_row_past_the_byte_budget_evicts_the_oldest_row(cx: &mut gpui::TestAppContext) {
+        let chat = chat_with_task(cx);
+        chat.update(cx, |chat, _| {
+            let large = "x".repeat(MAX_BYTES / 4);
+            chat.replace_timeline((1..=3).map(|seq| stored(seq, &large)).collect());
+            assert_eq!(chat.timeline.len(), 3);
+
+            // The fourth quarter fits only until the row outgrows it.
+            chat.apply_timeline_item("task", live(1, &large[..large.len() / 2]));
+            assert_eq!(chat.timeline.len(), 4);
+            assert!(!chat.pages.before);
+
+            chat.apply_timeline_item("task", live(1, &large));
+            assert_eq!(chat.timeline.len(), 3);
+            assert_eq!(chat.timeline[0].id, "stored:task:0:2");
+            assert_eq!(chat.timeline[2].text.as_deref(), Some(large.as_str()));
+            assert!(chat.pages.before && !chat.pages.after);
+            assert_weights_exact(chat);
+        });
+    }
 
     #[test]
     fn a_late_history_reply_cannot_finish_the_next_tasks_request() {

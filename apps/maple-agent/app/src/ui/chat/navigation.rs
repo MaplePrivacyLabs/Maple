@@ -930,10 +930,17 @@ impl ChatScreen {
         if !self.application_vim.follows(Some(&task_id)) {
             return;
         }
-        if let Some(item_id) = self.navigable_timeline_ids().last().cloned() {
+        // Runs for every streamed chunk: look for the newest row from the
+        // end instead of collecting every row's id.
+        let newest = self
+            .timeline
+            .iter()
+            .rev()
+            .find(|item| timeline_item_is_navigable(item));
+        if let Some(item) = newest {
             self.application_vim
                 .transcript_by_task
-                .insert(task_id, item_id);
+                .insert(task_id, item.id.clone());
         }
     }
 
