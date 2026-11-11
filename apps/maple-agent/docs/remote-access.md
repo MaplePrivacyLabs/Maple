@@ -377,6 +377,15 @@ and check the change live with two isolated profiles where possible (see
 [configuration](#configuration-and-release-boundary)). Leaving a task feature
 local-only needs the owner's explicit agreement, stated in the PR.
 
+A fact about a task that every surface shows, such as its model or its
+thinking level, travels in the task summary as an optional field instead of a
+new method. Frames are JSON: a released peer leaves out a field it does not
+have and ignores one it does not know, so the field needs no capability and no
+version. The viewer treats a missing value as unknown and reads it the way it
+did before. A value from a later build that this one cannot name decodes as
+unknown too, never as a failed frame
+(`a_summarys_thinking_level_is_optional_in_both_directions`).
+
 ## Configuration and release boundary
 
 Packaged builds default to Maple-operated relays for their environment:

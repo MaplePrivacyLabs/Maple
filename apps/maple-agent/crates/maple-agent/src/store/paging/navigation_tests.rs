@@ -515,6 +515,7 @@ fn summary_fit_preserves_exact_identity_and_marks_shortened_metadata() {
         web_enabled: true,
         permission_mode: None,
         model: Some("test".repeat(1024)),
+        thinking_level: None,
         message_count: 1,
         created_ms: 1,
         updated_ms: 1,

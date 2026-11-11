@@ -5654,6 +5654,7 @@ mod tests {
             updated_ms: 2,
             message_count: 1,
             model: None,
+            thinking_level: None,
             web_enabled: true,
             permission_mode: Default::default(),
             state: maple_agent::agent::AgentTaskState::Active,

@@ -532,9 +532,12 @@ impl ChatScreen {
             .bg(gpui::rgb(theme::bg_sidebar_pill()))
             .text_xs()
             .text_color(gpui::rgb(theme::text_muted()))
-            .when(self.thinking_loading || self.thinking_saving, |row| {
-                row.child(spinner("effort-loading", px(12.), theme::text_muted()))
-            })
+            // A read that confirms what is already shown is not worth a
+            // spinner beside a model that does not think.
+            .when(
+                (self.thinking_loading && self.thinking.is_none()) || self.thinking_saving,
+                |row| row.child(spinner("effort-loading", px(12.), theme::text_muted())),
+            )
             .child(div().min_w_0().truncate().child(gpui::text!(text)))
     }
 }

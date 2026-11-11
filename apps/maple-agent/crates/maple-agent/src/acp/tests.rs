@@ -1169,6 +1169,7 @@ fn session_summary(id: &str) -> AgentSessionSummary {
         updated_ms: 1,
         message_count: 0,
         model: Some("model".to_string()),
+        thinking_level: None,
         web_enabled: false,
         permission_mode: Default::default(),
         state: AgentTaskState::Active,

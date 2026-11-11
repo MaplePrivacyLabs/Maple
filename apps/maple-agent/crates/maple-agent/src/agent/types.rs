@@ -1006,6 +1006,23 @@ pub struct AgentSessionSummary {
     pub state: AgentTaskState,
     /// Created by an ACP client, such as an editor, not in the desktop app.
     pub acp: bool,
+    /// The level the task last recorded, which goes with `model`. `None`
+    /// before the task's first message, from a host that predates the
+    /// field, and for a level this build does not know.
+    #[serde(
+        default,
+        skip_serializing_if = "Option::is_none",
+        deserialize_with = "known_thinking_level"
+    )]
+    pub thinking_level: Option<ThinkingLevel>,
+}
+
+/// A level a newer host names must not cost this build the whole summary.
+fn known_thinking_level<'de, D: serde::Deserializer<'de>>(
+    deserializer: D,
+) -> Result<Option<ThinkingLevel>, D::Error> {
+    let level = Option::<String>::deserialize(deserializer)?;
+    Ok(level.as_deref().and_then(ThinkingLevel::parse))
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

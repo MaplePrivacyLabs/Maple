@@ -738,6 +738,54 @@ mod tests {
             Err(Error::TimedOut)
         );
     }
+    /// A task's level rides its summary as an optional field, so it needs
+    /// no version or capability: a released host's summary without it
+    /// decodes, a released controller ignores a field it does not know,
+    /// and a level this build does not know reads as none instead of
+    /// failing the frame.
+    #[test]
+    fn a_summarys_thinking_level_is_optional_in_both_directions() {
+        use maple_agent::agent::{AgentSessionSummary, ThinkingLevel};
+        let examples: serde_json::Value =
+            serde_json::from_str(include_str!("wire_v7.json")).unwrap();
+        let released = examples["events"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find_map(|event| event["Event"]["SessionUpdated"].get("session"))
+            .expect("a released summary")
+            .clone();
+        let summary: AgentSessionSummary = serde_json::from_value(released.clone()).unwrap();
+        assert_eq!(summary.thinking_level, None);
+        assert_eq!(serde_json::to_value(&summary).unwrap(), released);
+
+        let mut leveled = released.clone();
+        leveled["thinkingLevel"] = "high".into();
+        let summary: AgentSessionSummary = serde_json::from_value(leveled.clone()).unwrap();
+        assert_eq!(summary.thinking_level, Some(ThinkingLevel::High));
+        assert_eq!(serde_json::to_value(&summary).unwrap(), leveled);
+
+        let mut newer = released.clone();
+        newer["thinkingLevel"] = "a-later-level".into();
+        newer["aLaterField"] = true.into();
+        let summary: AgentSessionSummary = serde_json::from_value(newer).unwrap();
+        assert_eq!(summary.thinking_level, None);
+
+        let released = examples["tasks"]["Response"]["result"]["Ok"]["tasks"][0].clone();
+        let task: maple_agent::store::TaskSummary =
+            serde_json::from_value(released.clone()).unwrap();
+        assert_eq!(task.thinking_level, None);
+        let mut leveled = released;
+        leveled["thinking_level"] = "high".into();
+        let task: maple_agent::store::TaskSummary =
+            serde_json::from_value(leveled.clone()).unwrap();
+        assert_eq!(serde_json::to_value(&task).unwrap(), leveled);
+        assert_eq!(
+            crate::backend::paging::summary_to_session(task).thinking_level,
+            Some(ThinkingLevel::High)
+        );
+    }
+
     #[test]
     fn wire_seven_examples_are_stable() {
         let examples: serde_json::Value =

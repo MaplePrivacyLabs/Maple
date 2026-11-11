@@ -51,6 +51,8 @@ pub(crate) struct TaskRow {
     pub(crate) created_ms: i64,
     /// Cache: the latest entry's time.
     pub(crate) updated_ms: i64,
+    /// Cache: the level the task last recorded, which goes with `model`.
+    pub(crate) thinking_level: Option<pi_ai::ThinkingLevel>,
     /// Maple's other per-task settings (MCP servers, integrations), as JSON.
     pub(crate) settings: Value,
 }
@@ -76,6 +78,7 @@ impl TaskRow {
             message_count: 0,
             created_ms: now_ms,
             updated_ms: now_ms,
+            thinking_level: None,
             settings: Value::Object(Default::default()),
         };
         // ACP callers run their tasks with no way to answer a prompt yet.
@@ -113,6 +116,7 @@ impl TaskRow {
             permission_mode: self.permission_mode(),
             state: self.state,
             acp: self.kind == TaskKind::Acp,
+            thinking_level: self.thinking_level,
         }
     }
 }
@@ -569,6 +573,11 @@ fn task_row(record: TaskRecord, project_root: String) -> TaskRow {
         message_count: usize::try_from(record.facts.message_count).unwrap_or(usize::MAX),
         created_ms: record.created_ms,
         updated_ms: record.updated_ms,
+        thinking_level: record
+            .facts
+            .thinking_level
+            .as_deref()
+            .and_then(pi_ai::ThinkingLevel::parse),
         settings,
     }
 }
