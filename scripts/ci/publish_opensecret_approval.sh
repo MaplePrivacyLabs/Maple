@@ -22,7 +22,12 @@ mode=$1
 repo_root=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/../.." && pwd -P)
 handoff=$(cd -- "$2" && pwd -P)/handoff.json
 cd "$repo_root"
-source_sha=$(git rev-parse HEAD)
+checkout_sha=$(git rev-parse HEAD)
+source_sha=${EXPECTED_SOURCE_SHA:-$checkout_sha}
+if [[ ! "$source_sha" =~ ^[0-9a-f]{40}$ ]] || ! git merge-base --is-ancestor "$source_sha" HEAD; then
+  echo "Approval source must be a full commit reachable from this reviewed checkout." >&2
+  exit 1
+fi
 [[ "$(jq -r .source_sha "$handoff")" == "$source_sha" ]] || {
   echo "Handoff was built from a different commit than this checkout." >&2
   exit 1
@@ -47,6 +52,12 @@ while read -r _ path; do
 done <<< "$changed"
 
 branch="opensecret/pcr-approval-${source_sha:0:12}"
+# An older artifact can be signed from newer reviewed master code. Give that
+# approval its own base-qualified branch rather than replaying unrelated source
+# changes onto the original build's approval branch.
+if [[ "$source_sha" != "$checkout_sha" ]]; then
+  branch+="-${checkout_sha:0:12}"
+fi
 # Same mechanism actions/checkout uses; the token never appears in a URL.
 authorization=$(printf 'x-access-token:%s' "$GITHUB_TOKEN" | base64 | tr -d '\n')
 git_auth() {
@@ -65,7 +76,7 @@ git_bot commit --quiet \
     -m "Source commit: ${source_sha}" \
     -m "PCR0: ${pcr0}" \
     -m "EIF SHA-256: ${eif_sha256}" \
-    -m "Signed by the OpenSecret EIF release workflow run ${GITHUB_RUN_ID:-local}."
+    -m "Signed by the reviewer-gated OpenSecret workflow run ${GITHUB_RUN_ID:-local}."
 
 # Land this commit on top of whatever the branch already holds for this source
 # commit. A push loses the race only to the other environment's run, which
@@ -74,8 +85,8 @@ pushed=0
 for attempt in 1 2 3 4 5; do
   if git_auth fetch --quiet origin "refs/heads/$branch:refs/remotes/origin/$branch" 2>/dev/null; then
     tip=$(git rev-parse "refs/remotes/origin/$branch")
-    git merge-base --is-ancestor "$source_sha" "$tip" || {
-      echo "Branch $branch does not descend from $source_sha; inspect it before rerunning." >&2
+    git merge-base --is-ancestor "$checkout_sha" "$tip" || {
+      echo "Branch $branch does not descend from $checkout_sha; inspect it before rerunning." >&2
       exit 1
     }
     while read -r path; do
@@ -88,7 +99,7 @@ for attempt in 1 2 3 4 5; do
         services/opensecret/pcrProd.json | services/opensecret/pcrProdHistory.json) ;;
         *) echo "Branch $branch changes more than approval files: $path" >&2; exit 1 ;;
       esac
-    done <<< "$(git diff --name-only "$source_sha" "$tip")"
+    done <<< "$(git diff --name-only "$checkout_sha" "$tip")"
     if [[ "$(git rev-parse HEAD~1)" != "$tip" ]]; then
       git_bot rebase --quiet "$tip" >/dev/null
     fi

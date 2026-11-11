@@ -20,17 +20,18 @@ credential-isolation and publication gates.
 
 ## EIF release workflow
 
-`opensecret-eif-release.yml` (`OpenSecret EIF release`) produces a signed
-approval from CI. It is manual only: dispatch it on `master` with the
+`opensecret-eif-release.yml` (`OpenSecret EIF release`) produces an attested
+candidate from CI. It is manual only: dispatch it on `master` with the
 environment (`dev` or `prod`), and leave `dry_run` checked to build, attest and
 compare without signing.
 
 1. The `build` job runs on the trusted ARM64 runner with FlakeHub cache, builds
    the EIF, copies `image.eif` and `pcr.json` into a workflow artifact named
    `opensecret-eif-<env>-<commit>` together with `SHA256SUMS` and
-   `handoff.json`, attests the artifact, and reports whether the approved
+   `handoff.json`, attests all three data files (including the build mode and
+   full source commit in the handoff), and reports whether the approved
    snapshot already covers the measurements.
-2. With `dry_run` unchecked and new measurements, the `sign` job waits for
+2. **Production only:** with `dry_run` unchecked and new measurements, the `sign` job waits for
    approval of the protected `pcr-signing` environment. It downloads the
    attested artifact, resolves the existing signing key through Bitwarden's
    Secrets Manager action using that environment's read-only machine token, and
@@ -50,7 +51,18 @@ compare without signing.
    manual [compatibility procedure](pcr-compatibility.md) and verify both
    public locations.
 
-The workflow never creates a GitHub Release or tag: `/releases/latest` and the
+**Dev signing uses `opensecret-release-statement-dev.yml`** (`OpenSecret Dev
+release statement`) instead. Dispatch it on `master` with the successful Dev
+build's run ID. Its single `pcr-signing-dev` job verifies the selected build's
+provenance, mode, source, EIF and measurements before one reviewer approval
+produces the legacy PCR signature and a Sigstore release statement. It publishes
+only the bundle to Dev's static R2 endpoint and pushes the legacy approval branch
+for the same ordinary review/mirror process above. Builds predating the attested
+handoff need a new build; there is no unsigned-mode fallback. See the
+[release-statement contract](../../../docs/enclave-release-attestations.md)
+for schema, identity, BWS configuration and publication evidence.
+
+These workflows never create a GitHub Release or tag: `/releases/latest` and the
 updater `latest.json` belong to the Maple desktop application. It does not
 deploy.
 

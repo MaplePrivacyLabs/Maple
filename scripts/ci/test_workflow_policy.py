@@ -62,6 +62,9 @@ ENVIRONMENTS = {
     "auth-pages-development": CLOUDFLARE,
     "auth-pages-production": CLOUDFLARE,
     "pcr-signing": frozenset({"OPENSECRET_PCR_SIGNING_BWS_ACCESS_TOKEN"}),
+    # Dev publisher has an independently scoped BWS machine credential. The
+    # legacy signing-key credential still resolves the existing compatibility key.
+    "pcr-signing-dev": frozenset({"OPENSECRET_PCR_SIGNING_BWS_ACCESS_TOKEN", "ATTESTATIONS_PUBLISH_BWS_ACCESS_TOKEN"}),
     "sdk-npm": frozenset({"NPM_BOOTSTRAP_TOKEN"}),
     "sdk-crates": frozenset({"CRATES_BOOTSTRAP_TOKEN"}),
 }
