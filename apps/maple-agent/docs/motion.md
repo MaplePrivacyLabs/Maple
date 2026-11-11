@@ -62,6 +62,12 @@ that spring takes to come to rest from a standstill.
 fastest that does not overshoot from rest. Below 1 it overshoots and comes
 back; above 1 it settles more slowly.
 
+The effort slider is the one control with physics of its own. It is dragged
+by hand, so it follows the pointer on springs tuned for that and lets the
+thumb overshoot a stop as it lands. Those tunings are constants at the top
+of `app/src/ui/effort_slider.rs` and `app/src/ui/chat/effort.rs`, and they
+stay out of the tokens on purpose: nothing else should move like it.
+
 Press feedback is immediate (`.active()`), and focus rings appear at once.
 Looping indicators (spinners, the waiting dots, the running ring) use the
 shared 15 fps `ticker` clock and pause in background windows.
