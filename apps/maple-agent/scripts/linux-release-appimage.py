@@ -293,7 +293,7 @@ def stage_metadata(appdir, component, metadata):
     desktop.parent.mkdir(parents=True, exist_ok=True)
     desktop.write_text(
         "[Desktop Entry]\nType=Application\n"
-        f"Name={metadata['app_name']}\nExec=maple-agent %U\n"
+        f"Name={metadata['app_name']}\nExec=maple-agent\n"
         f"Icon={metadata['bundle_id']}\nTerminal=false\nCategories=Office;Utility;\n"
         f"StartupWMClass={metadata['bundle_id']}\n"
     )

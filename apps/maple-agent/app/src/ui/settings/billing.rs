@@ -41,6 +41,8 @@ pub(super) struct BillingState {
     /// How many status loads have been issued; lets tests observe a fetch
     /// without depending on when the backend answers.
     pub(super) loads: u32,
+    /// Status loads still waiting for an answer.
+    pub(super) status_pending: u32,
     pub(super) credits: super::api_credits::CreditsState,
 }
 
@@ -58,6 +60,7 @@ impl BillingState {
             notice: None,
             awaiting_browser: None,
             loads: 0,
+            status_pending: 0,
             credits: super::api_credits::CreditsState::new(
                 application_vim_enabled,
                 application_focus,
@@ -112,6 +115,7 @@ pub(super) fn product_action(status: &BillingStatus, product: &Product) -> Produ
 impl SettingsScreen {
     pub(super) fn load_billing(&mut self, cx: &mut Context<Self>) {
         self.billing.loads = self.billing.loads.wrapping_add(1);
+        self.billing.status_pending += 1;
         self.load_credit_balance(cx);
         if self.section == Section::Usage {
             self.load_usage_flag(cx);
@@ -122,6 +126,8 @@ impl SettingsScreen {
             async move { backend.call_presented("billing_status", (&user_id,)).await },
             cx,
             |this, result, cx| {
+                this.billing.status_pending = this.billing.status_pending.saturating_sub(1);
+                let loaded = result.is_ok();
                 match result {
                     Ok(status) => {
                         this.billing.status = Some(status);
@@ -129,7 +135,7 @@ impl SettingsScreen {
                     }
                     Err(message) => this.billing.status_error = Some(message.into()),
                 }
-                this.usage_status_changed(cx);
+                this.usage_status_loaded(loaded, cx);
                 if this.settings.application_vim_enabled {
                     this.reconcile_application_vim_target();
                 }

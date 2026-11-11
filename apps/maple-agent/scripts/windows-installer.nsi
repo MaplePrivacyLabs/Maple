@@ -342,6 +342,9 @@ intent_removed:
   Delete "$SMPROGRAMS\${DISPLAY_NAME}\Uninstall.lnk"
   RMDir "$SMPROGRAMS\${DISPLAY_NAME}"
   DeleteRegKey HKCU "Software\Microsoft\Windows\CurrentVersion\Uninstall\${BUNDLE_ID}"
+  ; The python tool's CPython, which the app unpacked from its executable on
+  ; first use. It is a copy of installed files, not user data, which stays.
+  RMDir /r "$LOCALAPPDATA\${DATA_NAMESPACE}\python-runtime"
   ; The durable fence belongs to this NSIS process. Keep it while performing
   ; all installed-file, shortcut and registration changes, after the native
   ; helper releases its handles. No root/registration mutation may follow its

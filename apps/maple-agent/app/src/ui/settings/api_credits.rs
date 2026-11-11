@@ -186,6 +186,13 @@ impl SettingsScreen {
             .is_some_and(|account| account.login_method == MapleLoginMethod::Guest)
     }
 
+    /// Refetch the balance on request, dropping the note left by an earlier
+    /// checkout hand-off: a refresh answers "what is true now".
+    pub(super) fn refresh_credit_balance(&mut self, cx: &mut Context<Self>) {
+        self.billing.credits.notice = None;
+        self.load_credit_balance(cx);
+    }
+
     pub(super) fn load_credit_balance(&self, cx: &mut Context<Self>) {
         let backend = self.backend.clone();
         let user_id = self.user_id.clone();

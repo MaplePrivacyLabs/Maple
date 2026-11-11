@@ -10,7 +10,9 @@ use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 
 use super::{Cursor, ENVELOPE_RESERVE, PageTransport, cursor_scope, decode_cursor, encode_cursor};
-use crate::store::{AccountId, PinFilter, Store, StoreError, StoreResult, TaskSection, TaskState};
+use crate::store::{
+    AccountId, PinFilter, Store, StoreError, StoreResult, TaskSection, TaskState, connection,
+};
 
 const MAX_ROWS: u16 = 200;
 const MAX_TEXT_BYTES: usize = 16 * 1024;
@@ -314,13 +316,16 @@ impl Store {
                 AND (instr(title_fold,?)>0 OR project_id IN
                     (SELECT id FROM projects WHERE account_id=? AND
                         (root IN (SELECT value FROM json_each(?)) OR
-                            instr(maple_project_label_fold(root,display_name),?)>0)))"
+                            instr(maple_project_label_fold(root,display_name,?),?)>0)))"
             );
+            let workspace = connection::maple_workspace_path(tx)?
+                .map(|path| path.to_string_lossy().into_owned());
             let mut values = vec![
                 account.0.into(),
                 fold.clone().into(),
                 account.0.into(),
                 roots.clone().into(),
+                workspace.into(),
                 fold.clone().into(),
             ];
             if let Some(project) = project {
@@ -788,7 +793,7 @@ fn project_range(
             })
         })?
         .collect::<rusqlite::Result<Vec<_>>>()?;
-    let workspace = crate::agent::default_maple_workspace_path();
+    let workspace = connection::maple_workspace_path(tx)?;
     for row in &mut rows {
         validate_stored_root(&row.summary.root)?;
         row.summary.is_default_workspace = workspace
@@ -829,7 +834,7 @@ fn populate_roots(
             ))
         })?
         .collect::<rusqlite::Result<HashMap<_, _>>>()?;
-    let workspace = crate::agent::default_maple_workspace_path();
+    let workspace = connection::maple_workspace_path(tx)?;
     for row in rows {
         let (root, name, truncated) = roots.get(&row.project).ok_or(StoreError::InvalidData)?;
         validate_stored_root(root)?;

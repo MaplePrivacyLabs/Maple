@@ -6,6 +6,9 @@ use std::{
     path::{Component, Path, PathBuf},
 };
 
+/// The one CPython version every runtime manifest must declare.
+pub const PYTHON_VERSION: &str = "3.14.7";
+
 #[derive(Clone, Debug, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct RuntimeManifest {
@@ -51,7 +54,7 @@ impl PackagedPython {
         })?;
         if metadata.protocol_version != 1
             || metadata.implementation != "cpython"
-            || metadata.version != "3.14.7"
+            || metadata.version != PYTHON_VERSION
             || metadata.distribution.is_empty()
             || metadata.distribution.len() > 256
         {

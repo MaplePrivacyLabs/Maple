@@ -1123,6 +1123,67 @@ fn reasoning_catalog_shapes_define_levels_and_clamp_the_default() {
     }
 }
 
+/// A model starts at the catalog's `default_effort`; without one it can
+/// take, at Pi's Medium clamped to the model.
+#[test]
+fn the_recommended_level_is_the_catalogs_default_effort() {
+    use ThinkingLevel::{High, Max, Medium, Off};
+    let cases = [
+        // Kimi K3.1 Pro, Kimi K3 and GLM 5.3.
+        (
+            "kimi-k3-1-pro",
+            json!({"supported_efforts":["max","high","low"],"default_effort":"max"}),
+            Max,
+        ),
+        // DeepSeek V4.1 Flash.
+        (
+            "deepseek-v4-1-flash",
+            json!({"supported_efforts":["max","xhigh","high","low"],"default_effort":"high"}),
+            High,
+        ),
+        // Off is a default like any other.
+        (
+            "deepseek-v4-1-flash",
+            json!({"supported_efforts":["high","low"],"default_effort":"none"}),
+            Off,
+        ),
+        // A model without tiers takes any effort's name.
+        (
+            "gemma4-31b",
+            json!({"mandatory":false,"default_effort":"high"}),
+            High,
+        ),
+        // No default, or one the model does not accept: Medium, clamped.
+        (
+            "glm-5-3",
+            json!({"mandatory":true,"supported_efforts":["max","high","low"]}),
+            High,
+        ),
+        (
+            "glm-5-3",
+            json!({"mandatory":true,"supported_efforts":["max","high","low"],"default_effort":"none"}),
+            High,
+        ),
+        ("gemma4-31b", json!({"mandatory":false}), Medium),
+        ("llama3-3-70b", Value::Null, Off),
+    ];
+    for (id, reasoning, recommended) in cases {
+        let entry = CatalogEntry {
+            reasoning: serde_json::from_value(reasoning).unwrap(),
+            ..Default::default()
+        };
+        let model = maple_model(id, Some(&entry), None);
+        assert_eq!(
+            recommended_thinking_level(&model, Some(&entry)),
+            recommended,
+            "{id}: {:?}",
+            entry.reasoning
+        );
+    }
+    let model = maple_model("glm-5-3", None, None);
+    assert_eq!(recommended_thinking_level(&model, None), Off);
+}
+
 #[test]
 fn aliases_keep_their_reasoning_overrides_and_the_target_restrictions() {
     let catalog = serde_json::from_value(json!({

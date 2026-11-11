@@ -533,6 +533,9 @@ maple-agent host stop       Stop this profile's host and its running tasks.
 maple-agent --version       Print the version.
 ```
 
+Any other argument is an error with exit status 2; an unrecognized command
+(`maple-agent begin-pairing`) does not open the desktop app.
+
 ### `maple-agent login`
 
 Prompts for the account email (or takes `--email`) and the password, signs
@@ -655,10 +658,10 @@ ignored. See [build profiles](docs/release-profiles.md).
 | `MAPLE_DISABLE_UPDATE_CHECK` | `1` turns Agent update checks off. | unset |
 | `RUST_LOG` | Log filter. | `info` |
 
-`MAPLE_ENABLE_LOCALIZATION=1` enables the localization preview in **all** build
-profiles, including Dev and Prod. It defaults off: Language settings are hidden
-and UI text uses English. Restart to change the gate; saved locale preferences
-are preserved. See [localization](docs/localization.md).
+Settings → General → Language offers System, English, Español and Deutsch.
+Language changes apply immediately and are saved locally. The system locale is
+used before the local store is unlocked. See [localization](docs/localization.md)
+for coverage and platform validation requirements.
 
 ### File locations
 

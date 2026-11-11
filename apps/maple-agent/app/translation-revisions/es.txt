@@ -27,6 +27,7 @@ chat-btw-question 429cfbcba974d75b
 chat-cancel ab19decdab4115a3
 chat-checking-send 13ae0e39d789574e
 chat-choose-folder ebe6800ffff596d0
+chat-choose-folder-menu 0a156270a988ae9b
 chat-choose-project 8afc6dab74e013e7
 chat-clear-search 3cddadc352e9880e
 chat-close 13d547f7505df8cd
@@ -51,6 +52,10 @@ chat-delete-description da3b63413276b86e
 chat-delete-task c34f60d6df892bcc
 chat-delete-title 6050693f1a848384
 chat-dictate 2178ffdb2c070d39
+chat-effort e1d2b8e59dd08a77
+chat-effort-deeper ef4f0e96b38fc7b4
+chat-effort-faster 24e0efa5f4fa8a8c
+chat-effort-reset c9668fd3e101afca
 chat-empty-private e70b48b25f2756b6
 chat-empty-title d2c40e03ea3a1c8d
 chat-enable-composer-vim 2cd611f2434af345
@@ -143,6 +148,13 @@ chat-mode-read-only 0ed310bdfd6dd082
 chat-mode-read-only-chip b62b6d26048a5057
 chat-mode-read-only-note dcae1dab04125c66
 chat-model b4a11238c0c9b1e5
+chat-model-effort-chip 135d28e0079ffd0d
+chat-model-group-capable d87fa4070b26156c
+chat-model-group-fast c376ca3537291602
+chat-model-group-more da7bd78ff9ff2a0f
+chat-model-group-uncensored c2ff206f0e5718ad
+chat-model-popular 74e9e62ccf83bb9d
+chat-model-popular-row 2d08227acf6a9e67
 chat-month-1 0d679143b30162c2
 chat-month-10 cc8977badd170cd3
 chat-month-11 2902ca4e3ccd8885
@@ -162,7 +174,6 @@ chat-more-tasks 92ae015f42289e24
 chat-move-down c583e532582c3440
 chat-move-up cfeef885dbc0a67c
 chat-name d8bba8b563a63c8d
-chat-new-project b60ae66e401751c2
 chat-new-project-button 22cc25348cd1190b
 chat-new-project-on f94ce976fd5d274f
 chat-new-project-on-computer f95fd7399d807a56
@@ -254,6 +265,7 @@ chat-queue-editing 90a3a641ae156437
 chat-queue-next-turn af933f2f37669432
 chat-queue-remove 88aa4df45b3b6de1
 chat-queue-send-now a36a55f66a60511a
+chat-recent-projects c99c4880bde55214
 chat-reload-latest d85000ccceaff534
 chat-remote-computer 0c63b40a9d34efd4
 chat-remote-computer-settings 34705b763cab4fdb
@@ -269,6 +281,7 @@ chat-retry-save e40b6ebed81a2007
 chat-retry-save-remote 793858d46fd53ac4
 chat-runtime-start-failed 9947accdbc6dd68b
 chat-runtime-starting c2c0812013b25505
+chat-scratch-switched-computers dbc287b83f851b24
 chat-search 634b3c02b1fae3fb
 chat-search-again 6ed13f117284abd4
 chat-search-tasks 85b21c72756c0476
@@ -723,6 +736,7 @@ runtime-error-folder-browser-worker a00fa3d3fa0b49e1
 runtime-error-folder-create-worker c0b77be2e9df4112
 runtime-error-folder-cursor ae2435b303c00fd3
 runtime-error-folder-directory e5b030dcf452dd57
+runtime-error-folder-documents 89bbcfb42d3d833a
 runtime-error-folder-encode 1cb4e270d31ed066
 runtime-error-folder-exists fc19b6c19bce3a00
 runtime-error-folder-home c4d9351d8e4cde64
@@ -733,7 +747,9 @@ runtime-error-folder-missing c2351cc513626ff3
 runtime-error-folder-name 8c0e7ec2d36ed92c
 runtime-error-folder-path 8c2181a78f34905d
 runtime-error-folder-permission 50ae565331769827
+runtime-error-folder-scratch-worker 3c568856224bde39
 runtime-error-folder-unicode fc880982a42063d7
+runtime-error-folder-unique a48ce4bba9aeb13e
 runtime-error-guest-login 3275f643b005ca44
 runtime-error-host-disconnected 5bc169be967725cd
 runtime-error-host-disconnected-before-send b9d881b547a2531f

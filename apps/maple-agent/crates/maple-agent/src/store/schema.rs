@@ -7,6 +7,7 @@ use super::{StoreError, StoreResult};
 pub(super) const APPLICATION_ID: i64 = 1_296_126_028;
 pub(super) const SCHEMA_EPOCH: i64 = 1;
 pub(super) const VERSION: i64 = 5;
+pub(super) const NESTED_MAPLE_WORKSPACE_KEY: &str = "nested_maple_workspace";
 
 /// Original migration schema, including partial indexes and constraints.
 /// Validation executes the complete append-only migration chain as its reference.
@@ -404,6 +405,12 @@ pub(super) fn migrate(connection: &mut Connection, now_ms: i64) -> StoreResult<(
                 "INSERT INTO store_meta(key,value) VALUES ('schema_epoch',?1)",
                 [SCHEMA_EPOCH],
             )?;
+            // Only a new installation opts into the nested workspace. Keep
+            // the choice even when the workspace folder has yet to be created.
+            transaction.execute(
+                "INSERT INTO app_settings(key,value,updated_ms) VALUES (?1,'true',?2)",
+                rusqlite::params![NESTED_MAPLE_WORKSPACE_KEY, now_ms],
+            )?;
         }
         transaction.pragma_update(None, "user_version", migration.version)?;
         transaction.commit()?;
@@ -529,6 +536,27 @@ mod tests {
                 .unwrap(),
             VERSION
         );
+    }
+
+    #[test]
+    fn nested_workspace_is_only_enabled_for_new_stores() {
+        let has_marker = |connection: &Connection| {
+            connection
+                .query_row(
+                    "SELECT EXISTS(SELECT 1 FROM app_settings WHERE key=?1 AND value='true')",
+                    [NESTED_MAPLE_WORKSPACE_KEY],
+                    |row| row.get::<_, bool>(0),
+                )
+                .unwrap()
+        };
+        let mut fresh = empty();
+        migrate(&mut fresh, 42).unwrap();
+        assert!(has_marker(&fresh));
+
+        let mut existing = empty();
+        migrate_to_version(&mut existing, 1, 1).unwrap();
+        migrate(&mut existing, 42).unwrap();
+        assert!(!has_marker(&existing));
     }
 
     #[test]

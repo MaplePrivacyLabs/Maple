@@ -2,8 +2,8 @@
 
 Maple's built-in `python` tool runs bundled CPython 3.14 in the task's project
 directory. It is switched off by default: turn it on in Settings → Tools, which
-lists it only in a build that bundles the runtime (other builds have no
-`python` tool). The switch is saved for the account on the computer that runs
+lists it only in a build that bundles the runtime (macOS, Linux and Windows
+packages do; an executable built without one has no `python` tool). The switch is saved for the account on the computer that runs
 the tasks; new and reopened tasks start with it, and open tasks get it from
 their next model request. Switching it off also discards every scratchpad,
 background work included. With a paired computer selected, the page switches
@@ -83,8 +83,13 @@ Results include the worker generation and execution ID, captured stdout/stderr,
 final value or traceback, omitted-byte counts, and state-loss notices. The first
 call of each interpreter identifies the exact interpreter and working directory.
 Raw/native and subprocess output is labelled unattributed; late Python output
-retains its original execution ID and is consumed by a later call. Large outputs
-should be written to files. Output limits do not impose a Python memory sandbox.
+retains its original execution ID and is consumed by a later call. Threads carry
+the execution ID of the cell that starts them, so their output and tracebacks
+belong to that cell, whose status line counts the uncaught exceptions they raise
+while it runs and names the first. A pool thread keeps that ID, so a later cell's
+work on it shows as the earlier cell's late output; `asyncio.to_thread` work
+stays with its caller. Large outputs should be written to files. Output limits do
+not impose a Python memory sandbox.
 
 ## Permissions
 
@@ -143,6 +148,22 @@ the worker smoke from inside the bundle.
 Linux bundles stage it into `usr/share/maple-agent/python` when the AppDir is
 built. The Nix package points at the locked nixpkgs `python314` (the same
 version as the pin), built with pip so the install recipe above works there too.
+
+Windows packages carry the runtime inside `maple-agent.exe`. A Windows
+generation holds exactly four files, and the launcher of every existing
+installation refuses one with anything else, so the runtime cannot sit beside
+the executable ([updates](updates.md#installation)). `scripts/build-release.sh`
+prepares it from the same hash pin, packs it
+(`prepare-python.py --archive`) and compiles the archive in, where the
+executable's Authenticode signature covers it; packaging refuses an executable
+without one. It adds about 18.5 MB to the executable. The first `python` call
+unpacks it, about 2,000 files and 56 MB, into
+`%LOCALAPPDATA%\<data namespace>\python-runtime\<archive digest>\`, a folder
+only the user can write to, beside `store-v1` and outside its backups. Later
+calls and restarts reuse that copy; a copy that was interrupted or has lost a
+file is unpacked again, and an update with a different runtime replaces it. The
+unpacked `python.exe` and its DLLs carry Python Build Standalone's files as
+they are, without Maple's signature. The uninstaller removes the folder.
 
 Every runtime leaves out Tcl/Tk, tkinter, IDLE and turtledemo: the worker has no
 use for Tk GUIs, and Python Build Standalone's Linux Tcl/Tk libraries carry an

@@ -1393,6 +1393,12 @@ chat-thinking-low = Low
 chat-thinking-medium = Medium
 chat-thinking-high = High
 chat-thinking-xhigh = Extra high
+chat-effort = Effort
+chat-effort-reset = Reset to recommended
+chat-effort-faster = Faster
+chat-effort-deeper = Deeper
+# $model is the model's name; $effort is its effort level, such as High.
+chat-model-effort-chip = { $model }, { $effort } effort
 chat-feedback-placeholder = What would you like us to know?
 chat-feedback-send = Send feedback
 chat-feedback-sending = Sending your feedback…
@@ -1446,7 +1452,9 @@ chat-attach = Attach files or images
 chat-stop-recording = Stop recording
 chat-dictate = Dictate
 chat-projects = Projects
-chat-new-project = New project…
+chat-choose-folder-menu = Use existing folder…
+chat-recent-projects = Recent projects
+chat-scratch-switched-computers = Message not sent: you switched computers. Send again to continue.
 chat-no-integrations = No integrations available for this task.
 chat-setup-integrations = Set up in Settings → Integrations
 chat-manage-integrations = Manage integrations…
@@ -1465,6 +1473,14 @@ chat-stop-run = Stop the run
 chat-queue-next-turn = Queue for next turn
 chat-send = Send
 chat-model = Model
+# The model panel's sections and the badge on a popular model.
+chat-model-group-capable = Most capable
+chat-model-group-uncensored = Uncensored
+chat-model-group-fast = Fast & cheap
+chat-model-group-more = More models
+chat-model-popular = Popular
+# $model is the model's name. The model row's accessible name when it carries the Popular badge.
+chat-model-popular-row = { $model }, Popular
 # $count is the number of integrations.
 chat-integration-count = { $count ->
     [one] 1 integration
@@ -2008,6 +2024,9 @@ runtime-error-folder-encode = Could not encode folder page
 runtime-error-folder-large = This folder entry is too large to display
 runtime-error-folder-many = This folder has too many entries to browse. Enter a child folder's full path.
 runtime-error-folder-name = Enter one folder name without path separators
+runtime-error-folder-documents = This computer's documents folder is unavailable
+runtime-error-folder-scratch-worker = Project creation worker did not complete
+runtime-error-folder-unique = Could not create a unique project folder. Try again.
 runtime-error-attachment-open = The staged attachment could not be opened
 runtime-error-attachment-inspect = Could not inspect the attachment
 runtime-error-attachment-regular = Attachments must be regular files of at most 30 MiB

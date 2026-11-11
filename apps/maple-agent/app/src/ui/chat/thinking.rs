@@ -6,8 +6,8 @@ use crate::ui::i18n::tr;
 /// A model's available levels can be reused, but its selected level belongs to
 /// a particular task (or to the new-task default). Screens themselves belong
 /// to one account and one computer, so no cache is shared across either boundary.
-#[derive(Clone, PartialEq, Eq)]
-struct ThinkingKey {
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(super) struct ThinkingKey {
     session: Option<String>,
     model: String,
 }
@@ -76,9 +76,9 @@ impl ThinkingCache {
         Some(entry.state.clone())
     }
 
-    /// A task pick also changes the account default. Other tasks keep their
-    /// own levels, while default previews must be revalidated for each model.
-    fn invalidate_defaults(&mut self) {
+    /// New Task remembers one model and level, so a pick there, or of a
+    /// model there, changes what a new task starts at on every model.
+    pub(super) fn invalidate_defaults(&mut self) {
         self.entries.retain(|entry| entry.key.session.is_some());
     }
 
@@ -88,7 +88,7 @@ impl ThinkingCache {
     }
 }
 
-fn thinking_label(level: ThinkingLevel) -> SharedString {
+pub(super) fn thinking_label(level: ThinkingLevel) -> SharedString {
     tr(match level {
         ThinkingLevel::Off => "chat-thinking-off",
         ThinkingLevel::Minimal => "chat-thinking-minimal",
@@ -101,47 +101,11 @@ fn thinking_label(level: ThinkingLevel) -> SharedString {
 }
 
 impl ChatScreen {
-    pub(super) fn thinking_menu(&self) -> Menu<Self> {
-        let mut menu = Menu::new("thinking-menu", px(220.))
-            .label(tr("chat-thinking-title"))
-            .application_vim(self.application_vim_enabled);
-        if let Some(state) = &self.thinking {
-            if state.levels == [ThinkingLevel::Off] {
-                return menu.header(tr("chat-thinking-unsupported"));
-            }
-            menu = menu.items(state.levels.iter().copied().map(|level| {
-                MenuItem::new(
-                    SharedString::from(format!("thinking-{}", level.as_str())),
-                    thinking_label(level),
-                    move |this: &mut Self, _: &mut Window, cx: &mut Context<Self>| {
-                        this.pick_thinking(level, cx);
-                    },
-                )
-                .current(state.current == level)
-                .enabled(!self.thinking_saving)
-            }));
-        } else {
-            menu = menu.header(if self.thinking_loading {
-                tr("chat-thinking-loading")
-            } else if self.thinking_saving {
-                tr("chat-thinking-saving")
-            } else if self.selected_model.is_some() {
-                tr("chat-thinking-unavailable")
-            } else {
-                tr("chat-thinking-choose-model")
-            });
-            if self.selected_model.is_some() && !self.thinking_loading && !self.thinking_saving {
-                menu = menu.item(MenuItem::new(
-                    "retry-thinking",
-                    tr("chat-thinking-retry"),
-                    |this: &mut Self, _, cx| {
-                        this.refresh_thinking(cx);
-                        cx.notify();
-                    },
-                ));
-            }
-        }
-        menu
+    /// The level a pick is still waiting to send for the selected task and
+    /// model, while an earlier pick saves.
+    pub(super) fn queued_thinking(&self) -> Option<ThinkingLevel> {
+        let (key, level) = self.thinking_queued.as_ref()?;
+        (Some(key) == self.thinking_key().as_ref()).then_some(*level)
     }
 
     fn thinking_key(&self) -> Option<ThinkingKey> {
@@ -194,13 +158,9 @@ impl ChatScreen {
         );
     }
 
-    pub(super) fn apply_thinking_changed(
-        &mut self,
-        session: &str,
-        state: AgentThinkingState,
-        cx: &mut Context<Self>,
-    ) {
-        self.thinking_cache.invalidate_defaults();
+    /// A task's level changed, here or on another surface. It is the
+    /// task's own: New Task's previews stand.
+    pub(super) fn apply_thinking_changed(&mut self, session: &str, state: AgentThinkingState) {
         self.thinking_cache.invalidate_session(session);
         if self.selected_session.as_deref() == Some(session) {
             self.thinking_generation += 1;
@@ -209,30 +169,59 @@ impl ChatScreen {
                 self.thinking_cache.insert(key, state.clone());
             }
             self.thinking = Some(state);
-        } else if self.selected_session.is_none() {
-            self.refresh_thinking(cx);
         }
     }
 
-    fn pick_thinking(&mut self, level: ThinkingLevel, cx: &mut Context<Self>) {
-        self.popup.close(cx);
-        if self.thinking_saving
-            || !self
-                .thinking
-                .as_ref()
-                .is_some_and(|state| state.levels.contains(&level))
+    /// Save `level` for the selected task, or for New Task, which
+    /// remembers it with its model.
+    pub(super) fn pick_thinking(&mut self, level: ThinkingLevel, cx: &mut Context<Self>) {
+        if !self
+            .thinking
+            .as_ref()
+            .is_some_and(|state| state.levels.contains(&level))
         {
             return;
         }
-        let Some(key) = self.thinking_key() else {
+        if let Some(key) = self.thinking_key() {
+            self.save_thinking(key, level, cx);
+        }
+    }
+
+    /// Save `level` for `key`. A pick made while another saves waits for
+    /// it, and only the latest waiting pick (one for all tasks and models)
+    /// goes out, so a slider swept across its stops saves once more at
+    /// most. It goes out for the task and model it was made on, even when
+    /// those are no longer selected.
+    fn save_thinking(&mut self, key: ThinkingKey, level: ThinkingLevel, cx: &mut Context<Self>) {
+        if self.thinking_saving {
+            self.thinking_queued = Some((key, level));
+            cx.notify();
             return;
+        }
+        self.thinking_queued = None;
+        let selected = self.thinking_key().as_ref() == Some(&key);
+        let state = if selected {
+            self.thinking.clone()
+        } else {
+            self.thinking_cache.get(&key)
         };
+        if state
+            .as_ref()
+            .is_some_and(|state| state.current == level || !state.levels.contains(&level))
+        {
+            return;
+        }
         self.thinking_generation += 1;
         self.thinking_loading = false;
         self.thinking_saving = true;
-        if let Some(state) = self.thinking.take() {
+        // A pushed update may have dropped the levels a waiting pick was
+        // made against; it still goes out, without a preview, and the
+        // runtime clamps it.
+        if let Some(state) = state {
             self.thinking_cache.begin_pick(key.clone(), state, level);
-            self.thinking = self.thinking_cache.get(&key);
+            if selected {
+                self.thinking = self.thinking_cache.get(&key);
+            }
         }
         let backend = self.backend.clone();
         let user_id = self.user_id.clone();
@@ -244,35 +233,47 @@ impl ChatScreen {
                     .await
             },
             cx,
-            move |this, result, cx| {
-                this.thinking_saving = false;
-                match result {
-                    Ok(state) => {
-                        let applied = this.thinking_cache.finish_pick(&key, Some(state));
-                        this.thinking_cache.invalidate_defaults();
-                        if let Some(state) = applied {
-                            this.thinking_cache.insert(key.clone(), state.clone());
-                            // The runtime persisted this clamped level as the
-                            // new-task default. Other models fetch their own
-                            // clamp, never borrowing these capabilities.
-                            this.thinking_cache.insert(
-                                ThinkingKey {
-                                    session: None,
-                                    model: key.model,
-                                },
-                                state,
-                            );
-                        }
-                    }
-                    Err(error) => {
-                        this.thinking_cache.finish_pick(&key, None);
-                        this.notice = Some(error.context("chat-thinking-save-failed"));
-                    }
-                }
-                this.refresh_thinking(cx);
-                cx.notify();
-            },
+            move |this, result, cx| this.thinking_saved(key, result, cx),
         );
+        cx.notify();
+    }
+
+    /// A save for `key` finished: keep what the runtime applied, or roll
+    /// back, then send the pick that waited for it.
+    fn thinking_saved(
+        &mut self,
+        key: ThinkingKey,
+        result: Result<AgentThinkingState, crate::ui::task::Failure>,
+        cx: &mut Context<Self>,
+    ) {
+        self.thinking_saving = false;
+        match result {
+            Ok(state) => {
+                let applied = self.thinking_cache.finish_pick(&key, Some(state));
+                if key.session.is_none() {
+                    self.thinking_cache.invalidate_defaults();
+                }
+                if let Some(state) = applied {
+                    self.thinking_cache.insert(key, state);
+                }
+            }
+            Err(error) => {
+                self.thinking_cache.finish_pick(&key, None);
+                // A pick waiting to replace this one for the same task and
+                // model is the one to report on.
+                if self
+                    .thinking_queued
+                    .as_ref()
+                    .is_none_or(|(queued, _)| queued != &key)
+                {
+                    self.notice = Some(error.context("chat-thinking-save-failed"));
+                }
+            }
+        }
+        self.refresh_thinking(cx);
+        if let Some((key, level)) = self.thinking_queued.take() {
+            self.save_thinking(key, level, cx);
+        }
         cx.notify();
     }
 }
@@ -292,6 +293,7 @@ mod tests {
         AgentThinkingState {
             levels: vec![ThinkingLevel::Off, ThinkingLevel::Low, ThinkingLevel::High],
             current,
+            recommended: Some(ThinkingLevel::Low),
         }
     }
 
@@ -360,6 +362,7 @@ mod tests {
         let confirmed = AgentThinkingState {
             levels: vec![ThinkingLevel::Off, ThinkingLevel::Low],
             current: ThinkingLevel::Low,
+            recommended: Some(ThinkingLevel::Low),
         };
         assert_eq!(
             cache.finish_pick(&key, Some(confirmed.clone())),
@@ -408,6 +411,96 @@ mod tests {
             this.selected_model = Some("model-a".into());
             this.refresh_thinking(cx);
             assert_eq!(this.thinking, Some(state(ThinkingLevel::Low)));
+        });
+    }
+
+    /// A pick that waited behind a save still goes out for the model it
+    /// was made on after another model is selected, even when a pushed
+    /// update dropped that model's levels meanwhile, and the save it
+    /// replaces fails without a notice.
+    #[gpui::test]
+    fn a_waiting_pick_saves_for_its_own_model_after_a_switch(cx: &mut gpui::TestAppContext) {
+        let _guard = crate::settings::SETTINGS_IO_LOCK.lock();
+        cx.executor().allow_parking();
+        for evicted in [false, true] {
+            let backend = Arc::new(
+                crate::backend::AgentBackend::for_test("http://127.0.0.1:9".into(), String::new())
+                    .expect("backend"),
+            );
+            let chat = cx.new(|cx| ChatScreen::new_inner_for_test(backend, "user".into(), cx));
+            chat.update(cx, |this, cx| {
+                let model_a = key(None, "model-a");
+                this.selected_session = None;
+                this.selected_model = Some("model-a".into());
+                // High saving for model A, as `save_thinking` leaves it.
+                this.thinking_cache.begin_pick(
+                    model_a.clone(),
+                    state(ThinkingLevel::Low),
+                    ThinkingLevel::High,
+                );
+                this.thinking = this.thinking_cache.get(&model_a);
+                this.thinking_saving = true;
+                this.pick_thinking(ThinkingLevel::Off, cx);
+                assert_eq!(this.queued_thinking(), Some(ThinkingLevel::Off));
+                this.selected_model = Some("model-b".into());
+                if evicted {
+                    // Another pick on New Task landed meanwhile.
+                    this.thinking_cache.invalidate_defaults();
+                }
+                this.refresh_thinking(cx);
+                this.thinking_saved(model_a.clone(), Err("offline".to_string().into()), cx);
+                assert!(this.notice.is_none(), "the waiting pick replaces it");
+                assert!(
+                    this.thinking_saving,
+                    "the waiting pick goes out ({evicted})"
+                );
+                assert_eq!(
+                    this.thinking_cache.get(&model_a).map(|state| state.current),
+                    (!evicted).then_some(ThinkingLevel::Off),
+                    "it previews where the levels are known"
+                );
+                assert!(this.thinking.is_none(), "model B keeps its own levels");
+            });
+        }
+    }
+
+    /// A pick on New Task replaces the one model and level it remembers,
+    /// so every model's New Task preview is read again; a task's pick is
+    /// its own and leaves them.
+    #[gpui::test]
+    fn only_a_new_task_pick_drops_the_new_task_previews(cx: &mut gpui::TestAppContext) {
+        let _guard = crate::settings::SETTINGS_IO_LOCK.lock();
+        cx.executor().allow_parking();
+        let backend = Arc::new(
+            crate::backend::AgentBackend::for_test("http://127.0.0.1:9".into(), String::new())
+                .expect("backend"),
+        );
+        let chat = cx.new(|cx| ChatScreen::new_inner_for_test(backend, "user".into(), cx));
+        chat.update(cx, |this, cx| {
+            let preview = key(None, "model-b");
+            for (picked, kept) in [
+                (key(Some("task"), "model-a"), true),
+                (key(None, "model-a"), false),
+            ] {
+                this.thinking_cache
+                    .insert(preview.clone(), state(ThinkingLevel::High));
+                this.thinking_cache.begin_pick(
+                    picked.clone(),
+                    state(ThinkingLevel::Low),
+                    ThinkingLevel::High,
+                );
+                this.thinking_saving = true;
+                this.thinking_saved(picked.clone(), Ok(state(ThinkingLevel::High)), cx);
+                assert_eq!(
+                    this.thinking_cache.get(&preview).is_some(),
+                    kept,
+                    "{picked:?}"
+                );
+                assert_eq!(
+                    this.thinking_cache.get(&picked),
+                    Some(state(ThinkingLevel::High))
+                );
+            }
         });
     }
 }

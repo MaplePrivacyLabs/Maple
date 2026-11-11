@@ -119,8 +119,8 @@ export function PasswordResetConfirmForm({ email, secret }: PasswordResetConfirm
                 value={code}
                 onChange={(e) => setCode(e.target.value)}
                 required
-                pattern="[A-Z0-9]{8}"
-                title="8-character alphanumeric code"
+                pattern="[A-Z0-9]{8}|[A-Z0-9]{32}"
+                title="8- or 32-character alphanumeric code"
               />
             </div>
             <div className="grid gap-2">

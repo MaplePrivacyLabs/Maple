@@ -113,6 +113,9 @@ AGENT_PACKAGING = tuple("apps/maple-agent/" + glob for glob in (
 AGENT_WINDOWS_PACKAGING = tuple("apps/maple-agent/" + glob for glob in (
     "scripts/windows-*", "scripts/build-release.sh", "scripts/release-info.py", "release-profiles.json",
     "release_profile.rs",
+    # The python tool's CPython, which build-release.sh embeds in the executable.
+    "scripts/prepare-python.py", "scripts/python-runtime.json", "scripts/python-licenses/**",
+    "crates/maple-code-mode/build.rs", "crates/maple-code-mode/src/embedded.rs",
 )) + WINDOWS_TOOLCHAIN
 APPLE_TOOLCHAIN = ("scripts/ci/apple-toolchain.json", "scripts/ci/select-xcode.py")
 # The composite actions that carry Xcode's Metal Toolchain from GitHub's xcode-27 image
@@ -214,7 +217,8 @@ PLATFORM = dict(events=PR_SIDE, gate=False)
 DESKTOP = tuple(TAURI + glob for glob in ("tauri.conf.json", "build.rs", "scripts/onnxruntime-pins.sh",
                                           "scripts/run-with-desktop-onnxruntime.sh")) + tuple(
     "scripts/ci/" + name for name in ("desktop-pr.sh", "desktop-release.sh", "_common.sh", "tauri_bundle_type.py",
-                                      "elf_glibc_floor.py", "verify-release-artifacts.sh", "attestation-manifest.sh"))
+                                      "elf_glibc_floor.py", "appimage_gio_runtime.py", "verify-release-artifacts.sh",
+                                      "attestation-manifest.sh"))
 # The Windows PR lane is the only one that runs the scripts it shares with DESKTOP in Git Bash.
 WINDOWS_DESKTOP = (TAURI + "tauri.windows.conf.json", TAURI + "resources/windows/**", TAURI + "scripts/*windows*",
                    TAURI + "scripts/onnxruntime-pins.sh", "scripts/ci/desktop-windows-*.sh", "scripts/ci/canonical-windows-*.py", "scripts/ci/_common.sh",

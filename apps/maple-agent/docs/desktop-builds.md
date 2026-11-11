@@ -40,7 +40,8 @@ to a signing job:
   `desktop-signing` job signs, notarizes and staples the app and the DMG.
 - **Linux:** builds with `cargo zigbuild` against glibc 2.31 and packages a tar
   bundle in the same job. No signing.
-- **Windows:** compiles with a static CRT. The `windows-signing` job
+- **Windows:** compiles with a static CRT and the `python` tool's CPython
+  [inside the executable](python-code-mode.md#implementation-and-delivery). The `windows-signing` job
   Authenticode-signs the executable, the NSIS installer and its generated
   uninstaller through Azure Artifact Signing, then writes the updater archive.
 

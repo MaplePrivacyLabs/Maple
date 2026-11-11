@@ -39,6 +39,7 @@ pub(crate) mod computers;
 use computers::{Computer, Destination, Navigate, NavigationChanged};
 mod attachments;
 mod dialogs;
+mod effort;
 mod feedback;
 mod navigation;
 mod paging;
@@ -63,7 +64,7 @@ use self::composer::{SideQuestionPanel, SlashEntry, slash_entries_for};
 use self::navigation::ApplicationVimState;
 #[cfg(test)]
 use self::sidebar::SessionActivity;
-use self::sidebar::{Sidebar, SidebarEvent, TaskActivity, root_display_name, session_summary_eq};
+use self::sidebar::{Sidebar, SidebarEvent, TaskActivity, session_summary_eq};
 use self::transcript::{
     ActiveSubagent, PlanEntry, PlanStatus, plan_entries, plan_finished, render_question_card,
     render_waiting_indicator,
@@ -158,8 +159,6 @@ fn header_toolbar_left(sidebar_expansion: f32) -> gpui::Pixels {
 /// Reading width shared by the transcript and the composer; they must
 /// stay in one column.
 const CONTENT_WIDTH: gpui::Pixels = px(900.);
-/// Header title when no task is selected.
-const DEFAULT_TASK_TITLE: &str = "chat-new-task-title";
 
 fn notification_body(
     details_enabled: bool,
@@ -256,10 +255,11 @@ pub(super) struct QuestionSelection {
 /// The chat's popup menus. One is open at a time.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub(super) enum ChatPopup {
-    /// The header chip's project menu.
+    /// A new task's project menu, from the chip above the composer.
     Project,
+    /// The model chip's panel: the models a task can use, and under them
+    /// the selected model's effort slider. `/model` opens it too.
     Model,
-    Thinking,
     Integrations,
     /// The composer chip's permission modes.
     Mode,
@@ -556,6 +556,26 @@ pub struct ChatScreen {
     thinking_loading: bool,
     thinking_generation: u64,
     thinking_saving: bool,
+    /// A level picked while another pick was saving; it goes out next.
+    thinking_queued: Option<(thinking::ThinkingKey, ThinkingLevel)>,
+    /// The level under the effort slider's thumb while it is dragged.
+    effort_preview: Option<ThinkingLevel>,
+    /// The effort slider's motion, kept while its panel is closed so a
+    /// model with other levels glides into place when it reopens.
+    effort_slider: std::rc::Rc<std::cell::RefCell<crate::ui::effort_slider::EffortSliderState>>,
+    /// Resets so far, naming each spin of the reset icon, and when the
+    /// latest one began.
+    effort_reset_spins: usize,
+    effort_reset_at: Option<std::time::Instant>,
+    /// Pointer picks and resets so far, naming each brain pulse, and when
+    /// the latest began: a reopened panel must not replay it.
+    effort_pulses: usize,
+    effort_pulse_at: Option<std::time::Instant>,
+    /// The level last moved by a key step: its name swaps at once.
+    effort_keyed: bool,
+    /// What the effort footer showed last, so the slider or the status
+    /// line fades in when one replaces the other.
+    effort_body: std::cell::Cell<effort::EffortBody>,
     /// Desktop notifications enabled (settings).
     notify_enabled: bool,
     /// Local-store policy, independent of the selected execution computer.
@@ -596,7 +616,15 @@ pub struct ChatScreen {
     /// Project context shown by the UI and used explicitly for new tasks.
     /// Existing tasks always execute in their own persisted project root.
     project_root: Option<String>,
+    /// Explicit intent; a missing root alone must never create a folder.
+    scratch_project: bool,
+    /// Navigation that owns the outstanding folder creation.
+    scratch_creation: Option<u64>,
     recent_roots: Vec<RecentProjectRoot>,
+    picker_projects: Vec<(Option<String>, RecentProjectRoot)>,
+    picker_projects_generation: u64,
+    #[cfg(test)]
+    picker_projects_fixture: Option<Vec<(Option<String>, RecentProjectRoot)>>,
     /// Which of the chat's popup menus is open: the header's project menu,
     /// a composer chip's menu, or the transcript's right-click menu.
     popup: Popup<ChatScreen, ChatPopup>,
@@ -648,6 +676,8 @@ pub struct ChatScreen {
     model_catalog: HashMap<String, CatalogEntry>,
     /// Friendly labels from the advanced catalog; selection always uses IDs.
     model_labels: HashMap<String, String>,
+    /// The model panel's sections and badges, as the catalog serves them.
+    model_sections: composer::ModelSections,
     /// The first model load is in flight. Until it lands with no model
     /// chosen, the composer controls are laid out but not shown, so the
     /// row appears once in its final shape instead of shifting.
@@ -710,8 +740,6 @@ pub struct ChatScreen {
     /// Item id to `(index in timeline, revision)`; the revision counts
     /// applied updates so caches can tell a changed item from a stable one.
     timeline_index: HashMap<String, (usize, u64)>,
-    /// Title of the selected task, shown in the header.
-    selected_title: SharedString,
     /// Guards against a slow session load overwriting a newer selection.
     selection_generation: u64,
     /// Same guard for mid-run history reloads. Separate from the selection
@@ -1040,7 +1068,6 @@ impl ChatScreen {
             sidebar.set_activity(activity, cx);
             sidebar.set_recent_roots(roots, cx);
         });
-        self.refresh_selected_title();
         cx.emit(NavigationChanged);
     }
 
@@ -1088,7 +1115,6 @@ impl ChatScreen {
         let selected = self.sidebar_selection();
         self.sidebar
             .update(cx, |sidebar, cx| sidebar.set_selected(selected, cx));
-        self.refresh_selected_title();
     }
 
     pub(super) fn set_sidebar_collapsed(&mut self, collapsed: bool, cx: &mut Context<Self>) {
@@ -1468,6 +1494,15 @@ impl ChatScreen {
             thinking_loading: false,
             thinking_generation: 0,
             thinking_saving: false,
+            thinking_queued: None,
+            effort_preview: None,
+            effort_slider: Default::default(),
+            effort_reset_spins: 0,
+            effort_reset_at: None,
+            effort_pulses: 0,
+            effort_pulse_at: None,
+            effort_keyed: false,
+            effort_body: Default::default(),
             notify_enabled: settings.desktop_notifications,
             notify_details: settings.notification_details_enabled(),
             window_active: true,
@@ -1488,7 +1523,13 @@ impl ChatScreen {
             painted_rows: std::rc::Rc::default(),
             tool_details: settings.tool_details,
             project_root: None,
+            scratch_project: false,
+            scratch_creation: None,
             recent_roots: Vec::new(),
+            picker_projects: Vec::new(),
+            picker_projects_generation: 0,
+            #[cfg(test)]
+            picker_projects_fixture: None,
             popup: Popup::new(|this| &mut this.popup, cx),
             dialog_focus: None,
             dialog_focus_pending: false,
@@ -1507,6 +1548,7 @@ impl ChatScreen {
             attachment_picking: false,
             model_catalog: HashMap::new(),
             model_labels: HashMap::new(),
+            model_sections: composer::ModelSections::default(),
             models_loading: false,
             controls_held: false,
             controls_revealed: None,
@@ -1520,7 +1562,6 @@ impl ChatScreen {
             derived: DerivedCache::default(),
             markdown_warmup: None,
             timeline_index: HashMap::new(),
-            selected_title: tr(DEFAULT_TASK_TITLE),
             project_folder_dialog: None,
             root_picker_open: false,
             root_selecting: false,
@@ -1708,7 +1749,7 @@ impl ChatScreen {
             sidebar.reconcile_default_project(workspace, cx)
         });
         self.handle_service_events(boot.questions, cx);
-        if !self.set_project_context(boot.project_root, cx) {
+        if !self.scratch_project && !self.set_project_context(boot.project_root, cx) {
             self.project_root_changed(cx);
             self.check_project_trust(cx);
         }
@@ -1934,7 +1975,10 @@ impl ChatScreen {
                 match result {
                     Ok(registration) => {
                         this.restore_selected_project(registration.project, cx);
-                        this.refresh_roots(cx);
+                        if this.project_root.as_deref() != Some(registration.project_root.as_str())
+                        {
+                            this.refresh_roots(cx);
+                        }
                         this.land_project_selection(
                             registration.project_root,
                             selection_generation,
@@ -1984,17 +2028,21 @@ impl ChatScreen {
 
     /// Persist `root` as the default for new tasks and the next launch
     /// without changing what is on screen. Used when a task under another
-    /// project is opened and when a project is archived.
-    fn persist_project_root(&mut self, root: String, cx: &mut Context<Self>) {
+    /// project is opened and when a project is archived. Only a changed
+    /// listing needs `refresh_roots`: recording use of the root that is
+    /// already selected keeps the sidebar's prepared rows.
+    fn persist_project_root(&mut self, root: String, refresh_roots: bool, cx: &mut Context<Self>) {
         let backend = self.backend.clone();
         let user_id = self.user_id.clone();
         self.call(
             async move { backend.select_project_root(&user_id, root).await },
             cx,
-            |this, result, cx| match result {
+            move |this, result, cx| match result {
                 Ok(registration) => {
                     this.restore_selected_project(registration.project, cx);
-                    this.refresh_roots(cx);
+                    if refresh_roots {
+                        this.refresh_roots(cx);
+                    }
                     cx.notify();
                 }
                 Err(error) => log::warn!("Cannot persist project root: {error}"),
@@ -2017,7 +2065,9 @@ impl ChatScreen {
         project_root: Option<String>,
         cx: &mut Context<Self>,
     ) -> bool {
-        if self.project_root == project_root {
+        let was_scratch = self.scratch_project;
+        self.scratch_project = false;
+        if self.project_root == project_root && !was_scratch {
             return false;
         }
         self.project_root = project_root;
@@ -2312,21 +2362,39 @@ impl ChatScreen {
         );
     }
 
-    /// Open or close the project menu from the header chip.
+    /// Open or close a new task's project menu from its chip.
     pub fn toggle_root_menu(&mut self, cx: &mut Context<Self>) {
-        self.popup.toggle(ChatPopup::Project, cx);
+        // A saved task's folder is fixed and its top bar has no picker:
+        // choosing a project starts a new task, where the picker sits.
+        if self.selected_session.is_some() {
+            self.new_session(cx);
+            if self.selected_session.is_some() {
+                return;
+            }
+        }
+        if self.popup.toggle(ChatPopup::Project, cx) {
+            self.refresh_picker_projects(cx);
+        }
     }
 
     /// Open or close one of the composer chips' menus. Opening the
-    /// integrations menu refreshes the task's servers.
+    /// integrations menu refreshes the task's servers; opening the model
+    /// panel starts its slider from the saved level.
     pub(super) fn toggle_popup(&mut self, popup: ChatPopup, cx: &mut Context<Self>) {
-        if self.popup.toggle(popup, cx) && popup == ChatPopup::Integrations {
-            self.refresh_session_mcp(cx);
+        if self.popup.toggle(popup, cx) {
+            match popup {
+                ChatPopup::Integrations => self.refresh_session_mcp(cx),
+                ChatPopup::Model => self.reset_effort_input(),
+                _ => {}
+            }
         }
     }
 
     /// Text for the header project chip.
     pub fn project_label(&self, cx: &gpui::App) -> String {
+        if self.scratch_project {
+            return tr("chat-new-project-button").to_string();
+        }
         self.project_root
             .as_deref()
             .map(|root| self.sidebar.read(cx).root_name(root))
@@ -2353,6 +2421,7 @@ impl ChatScreen {
                 if let Ok((mut models, saved, catalog)) = result {
                     if let Some(catalog) = &catalog {
                         this.model_labels = maple_agent::agent::catalog_model_labels(catalog);
+                        this.model_sections = composer::ModelSections::from_catalog(catalog);
                         // An older execution computer lists every API model,
                         // or every catalog model; offer only what the catalog
                         // describes and does not keep out of Maple Work.
@@ -2474,7 +2543,99 @@ impl ChatScreen {
         // The draft starts from this project's defaults.
         self.permission_mode = self.new_task_permission_mode;
         self.refresh_draft_mcp(cx);
-        self.refresh_selected_title();
+        cx.notify();
+    }
+
+    /// Choose a fresh project without touching the filesystem or saving a task.
+    fn select_scratch_project(&mut self, cx: &mut Context<Self>) {
+        if self.session_setup_pending || self.root_selecting {
+            return;
+        }
+        if !self.draft {
+            self.new_session(cx);
+        } else {
+            self.begin_navigation();
+        }
+        self.popup.close(cx);
+        self.set_project_context(None, cx);
+        self.scratch_project = true;
+        self.refresh_project_caption(cx);
+        self.notice = None;
+        self.screen_focus_pending = true;
+        cx.notify();
+    }
+
+    fn create_scratch_for_first_send(&mut self, action: FirstSend, cx: &mut Context<Self>) {
+        if self.session_setup_pending {
+            return;
+        }
+        let generation = self.selection_generation;
+        let epoch = self.host_recovery.epoch;
+        let user_id = self.user_id.clone();
+        let owner = user_id.clone();
+        let backend = self.backend.clone();
+        self.scratch_creation = Some(generation);
+        self.session_setup_pending = true;
+        self.pending_first_send = Some(action);
+        self.notice = None;
+        cx.notify();
+        self.call_semantic(
+            async move {
+                backend
+                    .call_presented::<crate::backend::SelectedProject>(
+                        "create_scratch_project",
+                        (&user_id,),
+                    )
+                    .await
+                    .map_err(UiFailure::from)
+            },
+            cx,
+            move |this, result, cx| {
+                this.finish_scratch_project(generation, epoch, &owner, result, cx);
+            },
+        );
+    }
+
+    fn finish_scratch_project(
+        &mut self,
+        generation: u64,
+        epoch: u64,
+        user_id: &str,
+        result: Result<crate::backend::SelectedProject, UiFailure>,
+        cx: &mut Context<Self>,
+    ) {
+        if self.scratch_creation != Some(generation) {
+            return;
+        }
+        self.scratch_creation = None;
+        self.session_setup_pending = false;
+        let action = self.pending_first_send.take();
+        // A different task, computer, account, or recovered host wins. Never
+        // send the old draft from a late folder result into its new context.
+        if self.selection_generation != generation
+            || self.host_recovery.epoch != epoch
+            || self.user_id != user_id
+            || !self.scratch_project
+            || !self.draft
+        {
+            cx.notify();
+            return;
+        }
+        match result {
+            Ok(registration) => {
+                self.restore_selected_project(registration.project, cx);
+                self.set_project_context(Some(registration.project_root), cx);
+                self.refresh_roots(cx);
+                if let Some(action) = action {
+                    self.create_for_first_send(action, cx);
+                }
+            }
+            Err(message) => {
+                self.notice = Some(message.into());
+                // The composer and attachments never left the draft. Retrying
+                // explicitly repeats the failed host operation.
+            }
+        }
         cx.notify();
     }
 
@@ -2490,6 +2651,10 @@ impl ChatScreen {
         if self.root_selecting {
             self.notice = Some(UiText::key("chat-wait-project"));
             cx.notify();
+            return;
+        }
+        if self.scratch_project {
+            self.create_scratch_for_first_send(action, cx);
             return;
         }
         let Some(request) = self.new_session_request() else {
@@ -2944,6 +3109,9 @@ impl ChatScreen {
     /// Build an explicit request so new-task placement never depends on the
     /// runtime's startup fallback.
     fn new_session_request(&self) -> Option<AgentCreateSessionRequest> {
+        if self.scratch_project {
+            return None;
+        }
         Some(AgentCreateSessionRequest {
             project_root: Some(self.project_root.clone()?),
             title: None,
@@ -3103,8 +3271,19 @@ impl ChatScreen {
                 let live_has_more = detail.live_has_more;
                 match mode {
                     LoadMode::Select => {
+                        let root = detail.session.project_root.clone();
+                        let needs_recent_touch = this
+                            .project_root
+                            .as_ref()
+                            .is_none_or(|current| current == &root);
                         this.upsert_session(detail.session.clone(), cx);
                         this.set_active_session(detail.session, detail.timeline, summaries, cx);
+                        // A different existing root is persisted by set_active_session;
+                        // explicit opens in the same root also count as recent use.
+                        // Recency alone changes no listing, so no root reload.
+                        if needs_recent_touch {
+                            this.persist_project_root(root, false, cx);
+                        }
                         this.set_queue(detail.queue.items);
                     }
                     LoadMode::Reload => {
@@ -3134,7 +3313,6 @@ impl ChatScreen {
     fn finish_loading(&mut self, session_id: &str) {
         if self.loading_session.as_deref() == Some(session_id) {
             self.loading_session = None;
-            self.refresh_selected_title();
         }
     }
 
@@ -3172,7 +3350,6 @@ impl ChatScreen {
             .find_map(plan_entries)
             .unwrap_or_default();
         self.set_plan(plan);
-        self.refresh_selected_title();
     }
 
     /// Apply settings changes when returning from the settings screen:
@@ -3447,6 +3624,7 @@ impl ChatScreen {
         self.selected_session = None;
         // Leaving a draft ends it; "New Task" starts the next one itself.
         self.draft = false;
+        self.scratch_project = false;
         self.draft_mcp_defaults = None;
         self.draft_mcp_changes.clear();
         // The empty screen uses the default, not the last task's model.
@@ -3520,9 +3698,8 @@ impl ChatScreen {
             // Working in another project makes it the default for new
             // tasks and the next launch, as the project selector does. An
             // archived task under a removed project restores that project.
-            self.persist_project_root(project_root, cx);
+            self.persist_project_root(project_root, true, cx);
         }
-        self.refresh_selected_title();
         self.set_queue(Vec::new());
         self.permission_mode = session.permission_mode;
         self.apply_session_model(&session, cx);
@@ -3908,7 +4085,7 @@ impl ChatScreen {
                             "chat-project-integration-save-failed",
                             [
                                 ("name", name.into()),
-                                ("project", root_display_name(&root).into()),
+                                ("project", this.sidebar.read(cx).root_name(&root).into()),
                             ],
                             "error",
                             message.into(),
@@ -4886,7 +5063,7 @@ impl ChatScreen {
             }
             "model" => {
                 if args.is_empty() {
-                    self.popup.open(ChatPopup::Model, cx);
+                    self.open_model_panel(cx);
                 } else {
                     let query = args.to_string();
                     match self
@@ -5763,23 +5940,30 @@ impl ChatScreen {
         );
     }
 
-    /// Pick the model of the next message, in a task or a new one. It also
-    /// becomes the account default for new tasks.
+    /// Pick the model of the next message, in a task or a new one. A pick
+    /// on New Task is remembered for new tasks, starting at the model's own
+    /// level unless it is the model already remembered; a task's pick is
+    /// the task's alone.
     fn pick_model(&mut self, model: String, cx: &mut Context<Self>) {
         self.selected_model = Some(model.clone());
-        self.default_model = Some(model.clone());
+        if self.selected_session.is_none() {
+            if self.default_model.as_deref() != Some(model.as_str()) {
+                self.thinking_cache.invalidate_defaults();
+            }
+            self.default_model = Some(model.clone());
+            // Remember the choice across launches via the agent config.
+            let backend = self.backend.clone();
+            let user_id = self.user_id.clone();
+            self.call(
+                async move { backend.save_default_model(&user_id, model).await },
+                cx,
+                |_this, _result, _cx| {},
+            );
+        }
         self.refresh_thinking(cx);
         self.popup.close(cx);
         cx.notify();
         self.refresh_model_catalog(cx);
-        // Remember the choice across launches via the agent config.
-        let backend = self.backend.clone();
-        let user_id = self.user_id.clone();
-        self.call(
-            async move { backend.save_default_model(&user_id, model).await },
-            cx,
-            |_this, _result, _cx| {},
-        );
         self.refresh_context_usage(cx);
     }
 
@@ -5953,10 +6137,6 @@ impl ChatScreen {
                 self.timeline_index.insert(item.id.clone(), (index, 0));
                 self.timeline.push(item);
                 self.list_state.splice(index..index, 1);
-                if index == 0 {
-                    // The pane leaves the empty state; the header follows.
-                    self.refresh_selected_title();
-                }
                 index
             }
         };
@@ -6512,7 +6692,7 @@ impl ChatScreen {
                 self.sync_sidebar_activity(cx);
             }
             AgentServiceEvent::ThinkingChanged { session_id, state } => {
-                self.apply_thinking_changed(&session_id, state, cx);
+                self.apply_thinking_changed(&session_id, state);
             }
             AgentServiceEvent::RemoteAccessEnded(_)
             | AgentServiceEvent::HostDisconnected
@@ -6936,7 +7116,6 @@ impl ChatScreen {
             return;
         }
         self.locale = locale;
-        self.refresh_selected_title();
         self.refresh_project_caption(cx);
         self.derived.clear();
         if let Some(composer) = &self.composer {
@@ -7822,26 +8001,6 @@ impl ChatScreen {
     fn set_session_mcp(&mut self, servers: Vec<AgentSessionMcpServer>) {
         self.mcp_enabled_count = servers.iter().filter(|server| server.enabled).count();
         self.session_mcp = servers;
-    }
-
-    /// Cache the header title for the selected task. The header names what
-    /// the pane shows: with no transcript on screen it is a new task,
-    /// whatever the list has selected.
-    fn refresh_selected_title(&mut self) {
-        if self.timeline.is_empty() && self.loading_session.is_none() {
-            self.selected_title = tr(DEFAULT_TASK_TITLE);
-            return;
-        }
-        self.selected_title = self
-            .selected_session
-            .as_deref()
-            .and_then(|selected| {
-                self.sessions
-                    .iter()
-                    .position(|session| session.id == selected)
-            })
-            .map(|index| SharedString::from(self.sessions[index].title.clone()))
-            .unwrap_or_else(|| tr(DEFAULT_TASK_TITLE));
     }
 
     /// Raise a desktop notification when enabled and the window is not
