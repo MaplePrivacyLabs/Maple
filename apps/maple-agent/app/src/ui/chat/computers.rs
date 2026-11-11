@@ -804,6 +804,7 @@ mod tests {
             web_enabled: false,
             permission_mode: None,
             model: None,
+            thinking_level: None,
             message_count,
             created_ms: 1,
             updated_ms,

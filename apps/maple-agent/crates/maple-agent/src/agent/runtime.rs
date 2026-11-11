@@ -643,10 +643,27 @@ impl AgentRuntime {
             .0
     }
 
+    /// The catalog a thinking control is read from: the account's cached
+    /// one, which the composer's model list also shows and which refreshes
+    /// itself in the background. A model's levels rarely change, and every
+    /// selected task and model asks for them, so none of those reads waits
+    /// on the network. `None` when there is no cache and the fetch fails.
+    async fn thinking_catalog(&self) -> Option<maple_sdk::ModelCatalogResponse> {
+        super::catalog::cached_catalog(&self.host.paths, &self.user_id, &self.api).await
+    }
+
     /// `model_id`'s levels as [`Self::pi_model`] resolves them, and the
     /// level the catalog recommends for it.
     pub(super) async fn thinking_model(&self, model_id: &str) -> (Model, ThinkingLevel) {
-        let (model, entry) = self.pi_model_entry(model_id, None, None).await;
+        let Some(catalog) = self.thinking_catalog().await else {
+            // No catalog at all: a model a task already runs on keeps its
+            // levels, as in [`Self::pi_model_entry`].
+            let (model, entry) = self.pi_model_entry(model_id, None, None).await;
+            let recommended = recommended_thinking_level(&model, Some(&entry));
+            return (model, recommended);
+        };
+        let entry = catalog_entry(&catalog, model_id).unwrap_or_default();
+        let model = maple_model(model_id, Some(&entry), context_limit_override());
         let recommended = recommended_thinking_level(&model, Some(&entry));
         (model, recommended)
     }
@@ -654,13 +671,10 @@ impl AgentRuntime {
     /// The level the catalog recommends for `model`
     /// ([`recommended_thinking_level`]).
     pub(super) async fn recommended_level(&self, model: &Model) -> ThinkingLevel {
-        let entry = match self.api.model_catalog().await {
-            Ok(catalog) => catalog_entry(&catalog, &model.id),
-            Err(error) => {
-                log::warn!("Failed to fetch the model catalog for a thinking level: {error}");
-                None
-            }
-        };
+        let entry = self
+            .thinking_catalog()
+            .await
+            .and_then(|catalog| catalog_entry(&catalog, &model.id));
         recommended_thinking_level(model, entry.as_ref())
     }
 

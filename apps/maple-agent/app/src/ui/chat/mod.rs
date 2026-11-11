@@ -598,6 +598,18 @@ pub struct ChatScreen {
     thinking: Option<AgentThinkingState>,
     /// Cached per task and model inside this account/computer's screen.
     thinking_cache: thinking::ThinkingCache,
+    /// The catalog the model list came from. A model's levels and its
+    /// recommended level are in it, so a task or model just selected shows
+    /// its level without waiting for the runtime's read.
+    thinking_catalog: Option<maple_sdk::ModelCatalogResponse>,
+    /// The level New Task remembers with the default model is known: read,
+    /// saved, or dropped by a pick of another model.
+    new_task_level_known: bool,
+    /// The task and model `thinking` belongs to, and a count of them: the
+    /// chip's level swaps in for another task or model, and morphs only
+    /// when the one on screen changes its level.
+    thinking_shown_for: Option<thinking::ThinkingKey>,
+    thinking_epoch: usize,
     thinking_loading: bool,
     thinking_generation: u64,
     thinking_saving: bool,
@@ -1547,6 +1559,10 @@ impl ChatScreen {
             default_model: None,
             thinking: None,
             thinking_cache: thinking::ThinkingCache::default(),
+            thinking_catalog: None,
+            new_task_level_known: false,
+            thinking_shown_for: None,
+            thinking_epoch: 0,
             thinking_loading: false,
             thinking_generation: 0,
             thinking_saving: false,
@@ -2507,8 +2523,12 @@ impl ChatScreen {
                         this.selected_model = this.default_model.clone();
                     }
                     this.models = models;
+                    if catalog.is_some() {
+                        this.thinking_catalog = catalog;
+                    }
                     this.refresh_model_catalog(cx);
                     this.refresh_thinking(cx);
+                    this.read_new_task_thinking(cx);
                 }
                 cx.notify();
             },
@@ -6016,6 +6036,9 @@ impl ChatScreen {
         if self.selected_session.is_none() {
             if self.default_model.as_deref() != Some(model.as_str()) {
                 self.thinking_cache.invalidate_defaults();
+                // The level remembered with the previous model goes with
+                // it: this one starts at its recommendation.
+                self.new_task_level_known = true;
             }
             self.default_model = Some(model.clone());
             // Remember the choice across launches via the agent config.

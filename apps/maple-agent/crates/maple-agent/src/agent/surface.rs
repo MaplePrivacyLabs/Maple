@@ -357,6 +357,10 @@ impl AgentRuntimeHandle {
                     ),
                     state,
                     acp: summary.kind == "acp",
+                    thinking_level: summary
+                        .thinking_level
+                        .as_deref()
+                        .and_then(super::ThinkingLevel::parse),
                 },
                 timeline,
                 mcp_errors: Vec::new(),

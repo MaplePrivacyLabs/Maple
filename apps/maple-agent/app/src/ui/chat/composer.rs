@@ -375,7 +375,9 @@ impl ChatScreen {
                     "model-picker",
                     None,
                     label,
-                    level.clone().map(|level| (level, detail_color)),
+                    level
+                        .clone()
+                        .map(|level| (level, detail_color, self.thinking_epoch)),
                     true,
                     self.popup.is_open(&ChatPopup::Model),
                 );
@@ -1759,7 +1761,7 @@ fn chip(
     id: &'static str,
     leading: Option<&'static str>,
     label: impl Into<SharedString>,
-    detail: Option<(SharedString, gpui::Hsla)>,
+    detail: Option<(SharedString, gpui::Hsla, usize)>,
     chevron: bool,
     active: bool,
 ) -> gpui::Stateful<Div> {
@@ -1773,12 +1775,13 @@ fn chip(
                 .when(shrinks, |label| label.min_w_0().truncate())
                 .child(label),
         )
-        // The detail morphs from one value to the next (High to Maximum).
-        .children(detail.map(|(detail, color)| {
+        // The detail morphs from one value to the next (High to Maximum)
+        // while `subject` stays the same; another subject's value swaps in.
+        .children(detail.map(|(detail, color, subject)| {
             div()
                 .flex_none()
                 .whitespace_nowrap()
-                .child(crate::ui::morph_text::morph_text((id, 1usize), detail).color(color))
+                .child(crate::ui::morph_text::morph_text((id, subject), detail).color(color))
         }))
         .when(chevron, |el| {
             el.child(icon("chevron-down", px(14.), chip_color(active)).flex_none())

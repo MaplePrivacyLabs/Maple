@@ -55,7 +55,7 @@ fn is_fresh(fetched_at_ms: u64) -> bool {
 /// The account's catalog: from a fresh cache, from a stale one while a
 /// refresh runs in the background, or fetched when there is no cache.
 /// `None` only when there is no cache and the fetch fails.
-async fn cached_catalog(
+pub(super) async fn cached_catalog(
     paths: &AgentPathLayout,
     user_id: &str,
     api: &Arc<MapleApiSession>,

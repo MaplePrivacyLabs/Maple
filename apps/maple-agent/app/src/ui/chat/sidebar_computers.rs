@@ -477,6 +477,7 @@ fn snapshot_page(computer: &Computer, query: &str, archived_expanded: bool) -> C
             web_enabled: session.web_enabled,
             permission_mode: Some(session.permission_mode.as_str().to_string()),
             model: session.model.clone(),
+            thinking_level: session.thinking_level.map(|level| level.as_str().into()),
             message_count: u64::try_from(session.message_count).unwrap_or(u64::MAX),
             created_ms: session.created_ms,
             updated_ms: session.updated_ms,
@@ -667,6 +668,7 @@ impl Sidebar {
                 .iter()
                 .find(|project| project.path == session.project_root);
             let task = TaskSummary {
+                thinking_level: session.thinking_level.map(|level| level.as_str().into()),
                 uuid: session.id.clone(),
                 title: session.title.clone(),
                 project_root: session.project_root.clone(),
@@ -2688,6 +2690,7 @@ mod paging_tests {
             web_enabled: false,
             permission_mode: None,
             model: None,
+            thinking_level: None,
             message_count: 1,
             created_ms: 1,
             updated_ms: 2,
@@ -3423,6 +3426,7 @@ mod merged_prefix_tests {
             web_enabled: false,
             permission_mode: None,
             model: None,
+            thinking_level: None,
             message_count: 1,
             created_ms: updated,
             updated_ms: updated,

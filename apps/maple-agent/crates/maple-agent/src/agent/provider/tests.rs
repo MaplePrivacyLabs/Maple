@@ -1218,6 +1218,49 @@ fn aliases_keep_their_reasoning_overrides_and_the_target_restrictions() {
     }
 }
 
+/// A surface that holds the catalog shows a model's levels, and a level it
+/// knows clamped to them, as the runtime derives them.
+#[test]
+fn the_catalog_alone_gives_a_models_thinking_state() {
+    use crate::agent::AgentThinkingState;
+    use ThinkingLevel::{High, Low, Max, Medium, Off};
+    let catalog = serde_json::from_value(json!({
+        "object":"list", "data":[
+            {"id":"glm-5-3", "reasoning":{"mandatory":true,"supported_efforts":["max","high","low"],"default_effort":"max"}},
+            {"id":"plain"}
+        ], "aliases":[{"id":"auto:glm","target_model":"glm-5-3"}]
+    }))
+    .unwrap();
+    let state = |model, level| catalog_thinking_state(&catalog, model, level);
+    assert_eq!(
+        state("glm-5-3", None),
+        Some(AgentThinkingState {
+            levels: vec![Low, High, Max],
+            current: Max,
+            recommended: Some(Max),
+        })
+    );
+    assert_eq!(state("glm-5-3", Some(Low)).unwrap().current, Low);
+    assert_eq!(
+        state("glm-5-3", Some(Medium)).unwrap().current,
+        High,
+        "a level the model lacks is clamped as the runtime clamps it"
+    );
+    assert_eq!(
+        state("auto:glm", None).unwrap().levels,
+        vec![Low, High, Max]
+    );
+    assert_eq!(
+        state("plain", Some(High)),
+        Some(AgentThinkingState {
+            levels: vec![Off],
+            current: Off,
+            recommended: Some(Off),
+        })
+    );
+    assert_eq!(state("unlisted", None), None);
+}
+
 #[tokio::test]
 async fn thinking_choices_reach_the_wire_and_side_calls_omit_them() {
     let entry = CatalogEntry {

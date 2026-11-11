@@ -125,6 +125,10 @@ pub(super) fn session_from_summary(
         updated_ms: summary.updated_ms,
         message_count: usize::try_from(summary.message_count).unwrap_or(usize::MAX),
         model: summary.model.clone(),
+        thinking_level: summary
+            .thinking_level
+            .as_deref()
+            .and_then(maple_agent::agent::ThinkingLevel::parse),
         web_enabled: summary.web_enabled,
         permission_mode: maple_agent::agent::AgentPermissionMode::from_saved(
             summary.permission_mode.as_deref(),
@@ -4723,6 +4727,7 @@ pub(super) fn session_summary_eq(a: &AgentSessionSummary, b: &AgentSessionSummar
         && a.web_enabled == b.web_enabled
         && a.permission_mode == b.permission_mode
         && a.state == b.state
+        && a.thinking_level == b.thinking_level
 }
 
 pub(super) fn root_display_name(root: &str) -> String {
@@ -4789,6 +4794,7 @@ mod tests {
                     updated_ms: 0,
                     message_count: 1,
                     model: None,
+                    thinking_level: None,
                     web_enabled: true,
                     permission_mode: Default::default(),
                     state: AgentTaskState::Active,
@@ -4891,6 +4897,7 @@ mod tests {
                     updated_ms: 0,
                     message_count: 1,
                     model: None,
+                    thinking_level: None,
                     web_enabled: true,
                     permission_mode: Default::default(),
                     state: if ix == 101 {

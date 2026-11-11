@@ -34,6 +34,7 @@ mod state_tests {
             updated_ms: 0,
             message_count: 1,
             model: None,
+            thinking_level: None,
         }
     }
 
@@ -710,6 +711,7 @@ mod state_tests {
                 web_enabled: false,
                 permission_mode: None,
                 model: None,
+                thinking_level: None,
                 message_count: 1,
                 created_ms: 0,
                 updated_ms: 1,
@@ -799,6 +801,7 @@ mod state_tests {
                 web_enabled: false,
                 permission_mode: None,
                 model: None,
+                thinking_level: None,
                 message_count: 1,
                 created_ms: 0,
                 updated_ms: 1,

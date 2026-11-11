@@ -367,6 +367,30 @@ pub(crate) fn recommended_thinking_level(
         .unwrap_or_else(|| model.clamp_thinking_level(DEFAULT_THINKING_LEVEL))
 }
 
+/// What the catalog alone settles about `model_id`'s thinking control: the
+/// levels it accepts and the one it recommends, as the runtime derives
+/// them. `level` is a level known to be picked or recorded for the model,
+/// clamped to it; without one the model runs at the recommendation. `None`
+/// for a model the catalog does not list.
+///
+/// A surface that holds the catalog shows this at once for a task or model
+/// it has just selected, while [`super::AgentRuntimeHandle::thinking_state`]
+/// reads the task's own level.
+pub fn catalog_thinking_state(
+    catalog: &maple_sdk::ModelCatalogResponse,
+    model_id: &str,
+    level: Option<ThinkingLevel>,
+) -> Option<super::AgentThinkingState> {
+    let entry = catalog_entry(catalog, model_id)?;
+    let model = maple_model(model_id, Some(&entry), None);
+    let recommended = recommended_thinking_level(&model, Some(&entry));
+    Some(super::AgentThinkingState {
+        levels: model.thinking_levels(),
+        current: level.map_or(recommended, |level| model.clamp_thinking_level(level)),
+        recommended: Some(recommended),
+    })
+}
+
 /// A task-bound provider view. Pi selects effective context before this
 /// boundary; Maple then applies its screenshot limit before reading any files.
 /// The shared provider registry remains live, including scripted test providers.

@@ -1,4 +1,10 @@
 //! The composer previews and changes the runtime's persisted thinking level.
+//!
+//! A level is on screen as soon as its task or model is: a model's levels
+//! and recommended level come from the catalog the model list was built
+//! from, a task's own level from its summary, and a new task's from New
+//! Task. The runtime's read then confirms it, and is the only source when
+//! those cannot say.
 
 use super::*;
 use crate::ui::i18n::tr;
@@ -43,7 +49,17 @@ impl ThinkingCache {
             previous: None,
         });
         if self.entries.len() > Self::CAPACITY {
-            self.entries.pop_front();
+            // New Task's entries stay: there is one per model, and one may
+            // hold the remembered level, which nothing else here records. A
+            // task's level comes back with its summary.
+            match self
+                .entries
+                .iter()
+                .position(|entry| entry.key.session.is_some())
+            {
+                Some(oldest) => self.entries.remove(oldest),
+                None => self.entries.pop_front(),
+            };
         }
     }
 
@@ -115,23 +131,99 @@ impl ChatScreen {
         })
     }
 
-    /// Drop responses for a task or model that is no longer selected, or
-    /// for a read that started before the latest pick.
+    /// New Task's level for `model`: the one read or picked there, else
+    /// the model's recommendation, once the level New Task remembers is
+    /// known not to be this model's.
+    fn expected_new_task_thinking(&self, model: &str) -> Option<AgentThinkingState> {
+        let key = ThinkingKey {
+            session: None,
+            model: model.to_string(),
+        };
+        self.thinking_cache.get(&key).or_else(|| {
+            let remembered = self.default_model.as_deref() == Some(model);
+            if remembered && !self.new_task_level_known {
+                return None;
+            }
+            maple_agent::agent::catalog_thinking_state(self.thinking_catalog.as_ref()?, model, None)
+        })
+    }
+
+    /// What the runtime will answer for `key`, as far as this screen
+    /// already holds it, following `AgentRuntimeHandle::thinking_state`:
+    /// - a task on its own model is at the level its summary records;
+    /// - a task that has not run yet starts where New Task is;
+    /// - a task looking at another model gets that model's recommendation,
+    ///   as its switch will.
+    ///
+    /// `None` leaves the level out until the read returns: no catalog, a
+    /// model it does not list, or a started task whose host sent no level.
+    fn expected_thinking(&self, key: &ThinkingKey) -> Option<AgentThinkingState> {
+        let Some(session) = &key.session else {
+            return self.expected_new_task_thinking(&key.model);
+        };
+        let task = self.sessions.iter().find(|task| &task.id == session)?;
+        let catalog = self.thinking_catalog.as_ref()?;
+        if task
+            .model
+            .as_deref()
+            .is_some_and(|model| model != key.model)
+        {
+            return maple_agent::agent::catalog_thinking_state(catalog, &key.model, None);
+        }
+        match task.thinking_level {
+            Some(level) => {
+                maple_agent::agent::catalog_thinking_state(catalog, &key.model, Some(level))
+            }
+            None if task.message_count == 0 => self.expected_new_task_thinking(&key.model),
+            None => None,
+        }
+    }
+
+    /// Show the selected task and model's level, from what this screen
+    /// holds, and have the runtime confirm it. Responses for a task or
+    /// model that is no longer selected, or for a read that started before
+    /// the latest pick, are dropped.
     pub(super) fn refresh_thinking(&mut self, cx: &mut Context<Self>) {
         self.thinking_generation += 1;
         self.thinking_loading = false;
         let generation = self.thinking_generation;
         let key = self.thinking_key();
-        self.thinking = key.as_ref().and_then(|key| self.thinking_cache.get(key));
-        let Some(key) = key else {
+        if key != self.thinking_shown_for {
+            self.thinking_epoch = self.thinking_epoch.wrapping_add(1);
+            self.thinking_shown_for = key.clone();
+        }
+        self.thinking = key.as_ref().and_then(|key| {
+            self.thinking_cache
+                .get(key)
+                .or_else(|| self.expected_thinking(key))
+        });
+        if key.is_none() {
             return;
-        };
+        }
         // Do not let a read race an optimistic pick. Completion revalidates
         // whichever task is then selected, including navigation during a save.
         if self.thinking_saving {
             return;
         }
         self.thinking_loading = true;
+        // Opening a task selects New Task's model and then the task's in
+        // one update. Reading after the update asks once, for the last.
+        let this = cx.entity().downgrade();
+        cx.defer(move |cx| {
+            this.update(cx, |this, cx| this.read_thinking(generation, cx))
+                .ok();
+        });
+    }
+
+    /// The runtime's read for the selection `generation` was shown for,
+    /// unless another selection or a pick has replaced it.
+    fn read_thinking(&mut self, generation: u64, cx: &mut Context<Self>) {
+        if self.thinking_generation != generation {
+            return;
+        }
+        let Some(key) = self.thinking_key() else {
+            return;
+        };
         let backend = self.backend.clone();
         let user_id = self.user_id.clone();
         let request = key.clone();
@@ -147,12 +239,61 @@ impl ChatScreen {
                     this.thinking_loading = false;
                     match result {
                         Ok(state) => {
+                            this.note_new_task_level(&key);
                             this.thinking_cache.insert(key, state.clone());
                             this.thinking = Some(state);
                         }
                         Err(error) => log::warn!("Failed to load thinking controls: {error}"),
                     }
                     cx.notify();
+                }
+            },
+        );
+    }
+
+    /// `key`'s level came from the runtime. For New Task on the default
+    /// model, that is the level New Task remembers.
+    fn note_new_task_level(&mut self, key: &ThinkingKey) {
+        if key.session.is_none() && self.default_model.as_deref() == Some(key.model.as_str()) {
+            self.new_task_level_known = true;
+        }
+    }
+
+    /// Read New Task's level for the default model before New Task is
+    /// opened, so it is there the first time, as a task's is. The models
+    /// arrive while a task may already be on screen.
+    pub(super) fn read_new_task_thinking(&mut self, cx: &mut Context<Self>) {
+        let Some(model) = self.default_model.clone() else {
+            return;
+        };
+        let key = ThinkingKey {
+            session: None,
+            model,
+        };
+        // The selected key has its own read.
+        if self.new_task_level_known || self.thinking_key().as_ref() == Some(&key) {
+            return;
+        }
+        let backend = self.backend.clone();
+        let user_id = self.user_id.clone();
+        let request = key.clone();
+        self.call(
+            async move { backend.thinking_state(&user_id, None, &request.model).await },
+            cx,
+            move |this, result, _cx| {
+                // A pick or a read made meanwhile is newer than this answer.
+                let current = this.default_model.as_deref() == Some(key.model.as_str());
+                if !current || this.new_task_level_known {
+                    return;
+                }
+                match result {
+                    Ok(state) => {
+                        this.new_task_level_known = true;
+                        if this.thinking_cache.get(&key).is_none() {
+                            this.thinking_cache.insert(key, state);
+                        }
+                    }
+                    Err(error) => log::warn!("Failed to load New Task's thinking level: {error}"),
                 }
             },
         );
@@ -252,6 +393,9 @@ impl ChatScreen {
                 let applied = self.thinking_cache.finish_pick(&key, Some(state));
                 if key.session.is_none() {
                     self.thinking_cache.invalidate_defaults();
+                    // New Task now remembers this model and level, and
+                    // every other model starts at its recommendation.
+                    self.new_task_level_known = true;
                 }
                 if let Some(state) = applied {
                     self.thinking_cache.insert(key, state);
@@ -412,6 +556,242 @@ mod tests {
             this.refresh_thinking(cx);
             assert_eq!(this.thinking, Some(state(ThinkingLevel::Low)));
         });
+    }
+
+    fn catalog() -> maple_sdk::ModelCatalogResponse {
+        serde_json::from_value(serde_json::json!({"object":"list","data":[
+            {"id":"model-a","reasoning":{"mandatory":true,"supported_efforts":["max","high","low"],"default_effort":"max"}},
+            {"id":"model-b","reasoning":{"supported_efforts":["high","low"],"default_effort":"low"}}
+        ],"aliases":[]}))
+        .unwrap()
+    }
+
+    fn task(
+        id: &str,
+        model: &str,
+        level: Option<ThinkingLevel>,
+        messages: usize,
+    ) -> AgentSessionSummary {
+        AgentSessionSummary {
+            id: id.into(),
+            title: id.into(),
+            project_root: "/tmp/project".into(),
+            created_ms: 0,
+            updated_ms: 0,
+            message_count: messages,
+            model: Some(model.into()),
+            thinking_level: level,
+            web_enabled: true,
+            permission_mode: Default::default(),
+            state: AgentTaskState::Active,
+            acp: false,
+        }
+    }
+
+    /// No runtime answers in these tests (the backend is unreachable), so
+    /// whatever `thinking` holds is what the screen shows before a read.
+    fn screen(cx: &mut gpui::TestAppContext) -> gpui::Entity<ChatScreen> {
+        let backend = Arc::new(
+            crate::backend::AgentBackend::for_test("http://127.0.0.1:9".into(), String::new())
+                .expect("backend"),
+        );
+        let chat = cx.new(|cx| ChatScreen::new_inner_for_test(backend, "user".into(), cx));
+        chat.update(cx, |this, _| {
+            this.thinking_catalog = Some(catalog());
+            this.default_model = Some("model-a".into());
+            this.sessions = vec![
+                task("started", "model-a", Some(ThinkingLevel::Low), 2),
+                task("created", "model-a", None, 0),
+                task("older-host", "model-a", None, 2),
+            ];
+        });
+        chat
+    }
+
+    fn select(
+        this: &mut ChatScreen,
+        session: Option<&str>,
+        model: &str,
+        cx: &mut Context<ChatScreen>,
+    ) {
+        this.selected_session = session.map(str::to_string);
+        this.selected_model = Some(model.into());
+        this.refresh_thinking(cx);
+    }
+
+    /// A task that ran shows the level its summary records, with its
+    /// model's levels from the catalog, the moment it is selected, and
+    /// another model it looks at shows the level a switch gives it.
+    #[gpui::test]
+    fn a_selected_task_shows_its_level_before_the_runtime_answers(cx: &mut gpui::TestAppContext) {
+        use ThinkingLevel::{High, Low, Max};
+        let _guard = crate::settings::SETTINGS_IO_LOCK.lock();
+        cx.executor().allow_parking();
+        let chat = screen(cx);
+        chat.update(cx, |this, cx| {
+            select(this, Some("started"), "model-a", cx);
+            assert_eq!(
+                this.thinking,
+                Some(AgentThinkingState {
+                    levels: vec![Low, High, Max],
+                    current: Low,
+                    recommended: Some(Max),
+                })
+            );
+            assert_eq!(this.effort_chosen(), Some(Low), "the chip names it");
+            select(this, Some("started"), "model-b", cx);
+            assert_eq!(
+                this.thinking.as_ref().map(|state| state.current),
+                Some(Low),
+                "model B's recommendation, not the task's level on model A"
+            );
+            assert_eq!(
+                this.thinking.as_ref().map(|state| state.levels.clone()),
+                Some(vec![ThinkingLevel::Off, Low, High])
+            );
+            // A started task whose host sent no level waits for the read,
+            // rather than showing New Task's.
+            select(this, Some("older-host"), "model-a", cx);
+            assert!(this.thinking.is_none());
+            // A model the catalog does not list waits too.
+            select(this, Some("started"), "unlisted", cx);
+            assert!(this.thinking.is_none());
+        });
+    }
+
+    /// New Task shows the remembered level once it is known and never a
+    /// guess before, another model there starts at its recommendation, and
+    /// the task a first message creates keeps what New Task showed.
+    #[gpui::test]
+    fn new_task_and_the_task_it_creates_show_one_level(cx: &mut gpui::TestAppContext) {
+        use ThinkingLevel::{High, Low, Max};
+        let _guard = crate::settings::SETTINGS_IO_LOCK.lock();
+        cx.executor().allow_parking();
+        let chat = screen(cx);
+        chat.update(cx, |this, cx| {
+            select(this, None, "model-a", cx);
+            assert!(
+                this.thinking.is_none(),
+                "the level remembered with the default model is not known yet"
+            );
+            select(this, None, "model-b", cx);
+            assert_eq!(
+                this.thinking.as_ref().map(|state| state.current),
+                Some(Low),
+                "only the default model can have a remembered level"
+            );
+
+            // The runtime's read: High was picked with the default model.
+            let remembered = AgentThinkingState {
+                levels: vec![Low, High, Max],
+                current: High,
+                recommended: Some(Max),
+            };
+            this.thinking_cache
+                .insert(key(None, "model-a"), remembered.clone());
+            this.new_task_level_known = true;
+            select(this, None, "model-a", cx);
+            assert_eq!(this.thinking, Some(remembered.clone()));
+
+            // The first message creates the task.
+            select(this, Some("created"), "model-a", cx);
+            assert_eq!(this.thinking, Some(remembered));
+
+            // Picking another model on New Task forgets the remembered
+            // level, so both models then start at their recommendations.
+            this.selected_session = None;
+            this.pick_model("model-b".into(), cx);
+            assert_eq!(this.thinking.as_ref().map(|state| state.current), Some(Low));
+            this.pick_model("model-a".into(), cx);
+            assert_eq!(this.thinking.as_ref().map(|state| state.current), Some(Max));
+        });
+    }
+
+    /// The navigation itself: opening a task, going back to New Task, and
+    /// a first message turning New Task into a task each leave the chip
+    /// its level in the same update, with no read answered.
+    #[gpui::test]
+    fn navigation_never_leaves_the_chip_without_its_level(cx: &mut gpui::TestAppContext) {
+        use ThinkingLevel::{High, Low, Max};
+        let _guard = crate::settings::SETTINGS_IO_LOCK.lock();
+        cx.executor().allow_parking();
+        let chat = screen(cx);
+        chat.update(cx, |this, cx| {
+            this.project_root = Some("/tmp/project".into());
+            this.models = vec!["model-a".into(), "model-b".into()];
+            // High was picked on New Task with the default model, whose
+            // recommendation is Max.
+            this.thinking_cache.insert(
+                key(None, "model-a"),
+                AgentThinkingState {
+                    levels: vec![Low, High, Max],
+                    current: High,
+                    recommended: Some(Max),
+                },
+            );
+            this.new_task_level_known = true;
+            this.new_session(cx);
+            assert_eq!(this.effort_chosen(), Some(High));
+
+            // A task that ran on model B at High, whose recommendation is Low.
+            let opened = task("opened", "model-b", Some(High), 2);
+            this.upsert_session(opened.clone(), cx);
+            this.set_active_session(opened, Vec::new(), HashMap::new(), cx);
+            assert_eq!(this.selected_model.as_deref(), Some("model-b"));
+            assert_eq!(this.effort_chosen(), Some(High));
+
+            this.new_session(cx);
+            assert_eq!(this.selected_model.as_deref(), Some("model-a"));
+            assert_eq!(this.effort_chosen(), Some(High));
+
+            let generation = this.selection_generation;
+            this.finish_new_session(task("first", "model-a", None, 0), generation, cx);
+            assert_eq!(this.selected_session.as_deref(), Some("first"));
+            assert_eq!(this.effort_chosen(), Some(High));
+        });
+    }
+
+    /// The chip's level morphs when the task and model on screen change
+    /// their level, and swaps in when another task or model is selected.
+    #[gpui::test]
+    fn the_level_belongs_to_one_task_and_model_at_a_time(cx: &mut gpui::TestAppContext) {
+        let _guard = crate::settings::SETTINGS_IO_LOCK.lock();
+        cx.executor().allow_parking();
+        let chat = screen(cx);
+        chat.update(cx, |this, cx| {
+            select(this, Some("started"), "model-a", cx);
+            let shown = this.thinking_epoch;
+            this.refresh_thinking(cx);
+            let mut state = this.thinking.clone().unwrap();
+            state.current = ThinkingLevel::High;
+            this.apply_thinking_changed("started", state);
+            assert_eq!(this.thinking_epoch, shown, "the same task and model");
+            select(this, Some("started"), "model-b", cx);
+            assert_ne!(this.thinking_epoch, shown);
+            let shown = this.thinking_epoch;
+            select(this, Some("created"), "model-b", cx);
+            assert_ne!(this.thinking_epoch, shown);
+        });
+    }
+
+    /// New Task's levels outlast a long walk through tasks: the remembered
+    /// level is recorded nowhere else on the screen.
+    #[test]
+    fn thinking_cache_evicts_tasks_before_new_task() {
+        let mut cache = ThinkingCache::default();
+        cache.insert(key(None, "model-a"), state(ThinkingLevel::High));
+        for index in 0..=ThinkingCache::CAPACITY {
+            cache.insert(
+                key(Some(&index.to_string()), "model-a"),
+                state(ThinkingLevel::Low),
+            );
+        }
+        assert_eq!(cache.entries.len(), ThinkingCache::CAPACITY);
+        assert_eq!(
+            cache.get(&key(None, "model-a")),
+            Some(state(ThinkingLevel::High))
+        );
+        assert!(cache.get(&key(Some("0"), "model-a")).is_none());
     }
 
     /// A pick that waited behind a save still goes out for the model it

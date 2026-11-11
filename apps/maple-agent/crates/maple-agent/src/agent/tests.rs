@@ -3680,6 +3680,69 @@ async fn thinking_picks_persist_in_pi_and_only_new_task_picks_start_new_tasks() 
     );
 }
 
+/// A task's summary carries the level it recorded, beside its model, so a
+/// surface opening the task shows both at once. A level is read from the
+/// account's cached catalog: selecting a task or a model asks the server
+/// for nothing.
+#[tokio::test]
+async fn a_tasks_summary_carries_its_level_and_reads_use_the_cached_catalog() {
+    use ThinkingLevel::{High, Low, Max};
+    let harness = Harness::new().await;
+    let catalog = |default: &str| {
+        json!({"object":"list","data":[{
+            "id":"glm-5-3",
+            "reasoning":{"mandatory":true,"supported_efforts":["max","high","low"],"default_effort":default}
+        }],"aliases":[]})
+    };
+    harness.serve_catalog(catalog("max")).await;
+    let task = harness.create_task().await;
+    let listed = async || {
+        let sessions = harness.handle.list_sessions(None).await.unwrap();
+        sessions.into_iter().find(|session| session.id == task)
+    };
+    let paged = async || harness.handle.task_summary(task.clone()).await.unwrap();
+    harness
+        .handle
+        .set_thinking_level(Some(&task), "glm-5-3", Low)
+        .await
+        .unwrap();
+    // Pi writes a task's settings with its first message.
+    assert_eq!(listed().await.unwrap().thinking_level, None);
+    assert_eq!(paged().await.thinking_level, None);
+
+    harness.faux.push_text("Done.");
+    let mut run = harness.send(&task, "Hello").await;
+    assert_eq!(finished(&mut run).await, AgentRunTerminal::Completed);
+    let summary = listed().await.unwrap();
+    assert_eq!(summary.model.as_deref(), Some("glm-5-3"));
+    assert_eq!(summary.thinking_level, Some(Low));
+    assert_eq!(paged().await.thinking_level.as_deref(), Some("low"));
+
+    harness
+        .handle
+        .set_thinking_level(Some(&task), "glm-5-3", High)
+        .await
+        .unwrap();
+    assert_eq!(listed().await.unwrap().thinking_level, Some(High));
+    assert_eq!(paged().await.thinking_level.as_deref(), Some("high"));
+
+    // The server now recommends another level. The cached catalog still
+    // answers, for New Task and for the task.
+    harness.serve_catalog(catalog("high")).await;
+    for session in [None, Some(task.as_str())] {
+        assert_eq!(
+            harness
+                .handle
+                .thinking_state(session, "glm-5-3")
+                .await
+                .unwrap()
+                .recommended,
+            Some(Max),
+            "{session:?}"
+        );
+    }
+}
+
 /// New Task remembers one model and level, as the user picked them there.
 /// Another model starts at its own default, not at the remembered level; a
 /// model picked there forgets the level picked with the previous one; and

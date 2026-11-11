@@ -137,6 +137,10 @@ pub fn summary_to_session(summary: TaskSummary) -> AgentSessionSummary {
             _ => AgentTaskState::Active,
         },
         acp: summary.kind == "acp",
+        thinking_level: summary
+            .thinking_level
+            .as_deref()
+            .and_then(maple_agent::agent::ThinkingLevel::parse),
     }
 }
 

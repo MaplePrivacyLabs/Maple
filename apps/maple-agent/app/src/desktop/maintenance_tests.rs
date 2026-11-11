@@ -67,6 +67,7 @@ fn selected_task() -> AgentSessionSummary {
         updated_ms: 1,
         message_count: 0,
         model: None,
+        thinking_level: None,
         web_enabled: true,
         permission_mode: Default::default(),
         state: AgentTaskState::Active,

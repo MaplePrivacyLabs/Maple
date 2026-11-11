@@ -20,7 +20,7 @@ const MAX_TEXT_BYTES: usize = 16 * 1024;
 const TASK_COLUMNS: &str = "id,uuid,project_id,substr(title,1,4096),state,kind,pinned_ms,web_enabled,\
     substr(model,1,1024),message_count,created_ms,updated_ms,\
     (length(title)>4096 OR coalesce(length(model)>1024,0)),\
-    substr(json_extract(settings,'$.permissionMode'),1,32)";
+    substr(json_extract(settings,'$.permissionMode'),1,32),substr(thinking_level,1,32)";
 const PROJECT_COLUMNS: &str = "id,root,substr(display_name,1,4096),position,last_used_ms,\
     coalesce(length(display_name)>4096,0),name_revision";
 
@@ -40,6 +40,10 @@ pub struct TaskSummary {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub permission_mode: Option<String>,
     pub model: Option<String>,
+    /// The level the task last recorded, which goes with `model`; none
+    /// before its first message.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub thinking_level: Option<String>,
     pub message_count: u64,
     pub created_ms: i64,
     pub updated_ms: i64,
@@ -928,6 +932,7 @@ fn read_summary(row: &Row<'_>) -> rusqlite::Result<SummaryRow> {
             web_enabled: row.get(7)?,
             permission_mode: row.get(13)?,
             model: row.get(8)?,
+            thinking_level: row.get(14)?,
             message_count,
             created_ms: row.get(10)?,
             updated_ms: row.get(11)?,

@@ -970,6 +970,7 @@ mod tests {
             updated_ms,
             message_count: 1,
             model: None,
+            thinking_level: None,
             web_enabled: true,
             permission_mode: Default::default(),
             state: AgentTaskState::Active,
