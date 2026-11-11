@@ -942,6 +942,40 @@ mod tests {
             );
         });
     }
+    #[gpui::test]
+    fn a_team_member_is_pointed_to_their_own_extra_credits(cx: &mut TestAppContext) {
+        let (settings, cx) = usage_window(cx);
+        let start = chrono::Utc::now() - chrono::Duration::days(3);
+        let status = |used: i64, credits: Option<i64>| BillingStatus {
+            is_subscribed: true,
+            product_name: Some("Team".into()),
+            total_tokens: Some(7_000),
+            used_tokens: Some(used),
+            api_credit_balance: credits,
+            usage_period_start: Some(start.to_rfc3339()),
+            usage_reset_date: Some((start + chrono::Duration::days(30)).to_rfc3339()),
+            ..BillingStatus::default()
+        };
+        settings.update(cx, |this, _| {
+            this.usage.enabled = Some(true);
+            this.usage.flag_failed = false;
+            let mut pace = |used, credits| {
+                this.billing.status = Some(status(used, credits));
+                this.rebuild_usage_data();
+                let data = this.usage.data.clone().expect("usage data");
+                this.pace_text(&data.plan).expect("pace").to_string()
+            };
+            // The pool running out stops nobody who has credits of their own.
+            let empty = pace(7_000, None);
+            assert!(empty.contains("Add Extra credits to your own account"));
+            let covered = pace(7_000, Some(500));
+            assert!(covered.contains("Your own Extra credits cover your usage"));
+            let ahead = pace(6_000, Some(0));
+            assert!(ahead.contains("you need your own Extra credits"));
+            let ahead_covered = pace(6_000, Some(500));
+            assert!(ahead_covered.contains("your own Extra credits cover your usage"));
+        });
+    }
     /// The flag and the billing status arrive in either order on a visit;
     /// together they fetch the history once, and a status load that failed
     /// does not fetch it again.

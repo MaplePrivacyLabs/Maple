@@ -118,7 +118,9 @@ impl SettingsScreen {
             .unwrap_or(0);
         Some(if progress.exhausted {
             self.messages.get(
-                if team {
+                if team && balance > 0 {
+                    "settings-usage-pace-team-exhausted-extra"
+                } else if team {
                     "settings-usage-pace-team-exhausted"
                 } else if balance > 0 {
                     "settings-usage-pace-exhausted-extra"
@@ -129,7 +131,9 @@ impl SettingsScreen {
             )
         } else if let Some(run_out) = progress.run_out {
             self.messages.get(
-                if team {
+                if team && balance > 0 {
+                    "settings-usage-pace-team-runs-out-extra"
+                } else if team {
                     "settings-usage-pace-team-runs-out"
                 } else if balance > 0 {
                     "settings-usage-pace-runs-out-extra"
