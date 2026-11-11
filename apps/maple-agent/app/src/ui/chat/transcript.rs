@@ -1780,60 +1780,79 @@ pub(super) fn permission_reason_key(reason: AgentPermissionReason) -> &'static s
     }
 }
 
+/// The card for a question or a permission request. Every kind keeps the
+/// same three parts at every width: the line that names it and folds the
+/// card, the body, and a footer of actions. Nothing moves beside anything
+/// else as the window narrows; text only wraps inside its own part.
+#[allow(clippy::too_many_arguments)]
 pub(super) fn render_question_card(
     question: &crate::backend::PendingQuestion,
     step: usize,
     collapsed: bool,
     input: Option<Entity<TextInput>>,
     selected: &HashMap<usize, QuestionSelection>,
+    key_labels: &[SharedString],
     messages: &MessageCache,
     cx: &mut Context<ChatScreen>,
 ) -> Div {
+    const LINE: gpui::Pixels = px(20.);
+    // A row's leading slot: a circle on a single choice, a box on a
+    // multi-select. The chevron and the free-form row's pencil share it.
+    let lead = || div().flex_none().h(LINE).flex().items_center();
     let mut card = div()
         .debug_selector(|| "question-card".to_string())
         // Like the composer, the card keeps its own wheel; the space
         // beside it scrolls the transcript.
         .on_scroll_wheel(|_, _, cx| cx.stop_propagation())
         .my_3()
-        .mx_auto()
         .w_full()
-        .max_w(CONTENT_WIDTH - px(48.))
-        .px_4()
-        .py_3()
         .rounded(theme::RADIUS_MD)
         .bg(gpui::rgb(theme::bg_elevated()))
         .border_1()
-        .border_color(gpui::rgb(theme::status_running()))
+        .border_color(gpui::rgb(theme::border()))
         .flex()
-        .flex_col()
-        .gap_2();
+        .flex_col();
     let step = step.min(question.questions.len().saturating_sub(1));
-    let card_label = if question
-        .questions
-        .get(step)
-        .is_some_and(|entry| entry.permission.is_some())
-    {
+    let entry = question.questions.get(step);
+    let permission = entry.and_then(|entry| entry.permission.as_ref());
+    let card_label = if permission.is_some() {
         tr("chat-permission-label")
     } else {
         tr("chat-question-label")
     };
-    // Folding works like the Plan card: the header stays, naming the
+    // The line names the question itself, so the card needs no title row
+    // above it. A permission request keeps its fixed wording.
+    let title = match entry {
+        Some(entry) if permission.is_none() => {
+            if entry.question.trim().is_empty() {
+                SharedString::from(entry.header.clone())
+            } else {
+                SharedString::from(entry.question.clone())
+            }
+        }
+        _ => card_label.clone(),
+    };
+    // Folding works like the Plan card: the line stays, naming the
     // question, so the transcript above can be read before answering.
     let header = div()
         .id("question-card-header")
         .debug_selector(|| "question-card-header".to_string())
         .role(gpui::Role::DisclosureTriangle)
-        .aria_label(card_label.clone())
+        .aria_label(card_label)
         .aria_expanded(!collapsed)
         .flex()
-        .items_center()
+        .items_start()
         .gap_2()
         .min_w_0()
+        .px_1p5()
+        .py_1()
+        .rounded(theme::RADIUS_SM)
         .cursor_pointer()
+        .hover(|style| style.bg(theme::overlay_hover()))
         .on_click(cx.listener(|this, _event, _window, cx| {
             this.toggle_question_collapsed(cx);
         }))
-        .child(icon(
+        .child(lead().child(icon(
             if collapsed {
                 "chevron-right"
             } else {
@@ -1841,54 +1860,40 @@ pub(super) fn render_question_card(
             },
             px(14.),
             theme::text_secondary(),
-        ))
+        )))
         .child(
             div()
-                .flex_none()
+                .min_w_0()
+                .text_sm()
+                .line_height(LINE)
                 .font_weight(gpui::FontWeight::SEMIBOLD)
-                .text_color(gpui::rgb(theme::text_primary()))
-                .child(card_label),
+                .text_color(gpui::rgb(theme::text_heading()))
+                .map(|title| match (collapsed, permission.is_some()) {
+                    // Folded, a permission line gives its room to the call.
+                    (true, true) => title.flex_none(),
+                    (true, false) => title.flex_1().truncate(),
+                    (false, _) => title.flex_1(),
+                })
+                .child(gpui::text!(title)),
         )
-        .when_some(
-            collapsed
-                .then(|| question.questions.get(step))
-                .flatten()
-                .map(|entry| {
-                    if let Some(prompt) = &entry.permission {
-                        prompt.action.clone()
-                    } else if entry.header.trim().is_empty() {
-                        entry.question.clone()
-                    } else {
-                        entry.header.clone()
-                    }
-                }),
-            |header, summary| {
-                header.child(
-                    div()
-                        .flex_1()
-                        .min_w_0()
-                        .truncate()
-                        .text_sm()
-                        .text_color(gpui::rgb(theme::text_muted()))
-                        .child(summary),
-                )
-            },
-        );
-    card = card.child(header);
-    if collapsed {
-        return card;
-    }
-    let has_more = step + 1 < question.questions.len();
-    for (question_index, entry) in question
-        .questions
-        .iter()
-        .enumerate()
-        .filter(|(i, _)| *i == step)
-    {
-        let mut block = div().flex().flex_col().gap_1();
-        if question.questions.len() > 1 {
-            block = block.child(
+        .when_some(permission.filter(|_| collapsed), |header, prompt| {
+            header.child(
                 div()
+                    .flex_1()
+                    .min_w_0()
+                    .truncate()
+                    .line_height(LINE)
+                    .font_family(crate::assets::FONT_MONO)
+                    .text_xs()
+                    .text_color(gpui::rgb(theme::text_muted()))
+                    .child(prompt.action.clone()),
+            )
+        })
+        .when(question.questions.len() > 1, |header| {
+            header.child(
+                div()
+                    .flex_none()
+                    .line_height(LINE)
                     .text_xs()
                     .text_color(gpui::rgb(theme::text_muted()))
                     .child(messages.get(
@@ -1898,177 +1903,275 @@ pub(super) fn render_question_card(
                             ("count", question.questions.len().into()),
                         ],
                     )),
-            );
-        }
-        if let Some(prompt) = &entry.permission {
-            block = block.child(
-                div()
-                    .text_sm()
-                    .text_color(gpui::rgb(theme::text_secondary()))
-                    .child(gpui::text!(tr(permission_reason_key(prompt.reason)))),
-            );
-            block = block.child(
-                div()
-                    .id("permission-action")
-                    .debug_selector(|| "permission-action".to_string())
-                    .max_h(px(160.))
-                    .overflow_y_scroll()
-                    .px_2()
-                    .py_1p5()
-                    .rounded(theme::RADIUS_SM)
-                    .bg(gpui::rgb(theme::bg_sidebar_pill()))
-                    .font_family(crate::assets::FONT_MONO)
-                    .text_xs()
-                    .text_color(gpui::rgb(theme::text_primary()))
-                    .child(gpui::text!(prompt.action.clone())),
-            );
-        } else {
-            block = block.child(
-                div()
-                    .text_xs()
-                    .font_weight(gpui::FontWeight::MEDIUM)
-                    .text_color(gpui::rgb(theme::text_secondary()))
-                    .child(entry.header.clone()),
-            );
-            block = block.child(
-                div()
-                    .text_sm()
-                    .text_color(gpui::rgb(theme::text_secondary()))
-                    .child(entry.question.clone()),
-            );
-        }
-        if entry.multi_select {
-            block = block.child(
-                div()
-                    .text_xs()
-                    .text_color(gpui::rgb(theme::text_muted()))
-                    .child(if has_more {
-                        tr("chat-question-next-hint")
-                    } else {
-                        tr("chat-question-answer-hint")
-                    }),
-            );
-        }
+            )
+        });
+    card = card.child(
+        div()
+            .p_1p5()
+            .when(!collapsed, |top| top.pb_0p5())
+            .child(header),
+    );
+    let Some(entry) = entry.filter(|_| !collapsed) else {
+        return card;
+    };
+    let question_index = step;
+    let has_more = step + 1 < question.questions.len();
+    let selection = selected.get(&question_index);
+    let mut body = div().px_1p5().pb_1p5().flex().flex_col().gap_px();
+    if let Some(prompt) = permission {
+        body = body.child(
+            div()
+                .px_1p5()
+                .pb_1()
+                .flex()
+                .flex_col()
+                .gap_1p5()
+                .child(
+                    div()
+                        .text_sm()
+                        .line_height(LINE)
+                        .text_color(gpui::rgb(theme::text_secondary()))
+                        .child(gpui::text!(tr(permission_reason_key(prompt.reason)))),
+                )
+                .child(
+                    div()
+                        .id("permission-action")
+                        .debug_selector(|| "permission-action".to_string())
+                        .max_h(px(160.))
+                        .overflow_y_scroll()
+                        .px_2()
+                        .py_1p5()
+                        .rounded(theme::RADIUS_SM)
+                        .bg(gpui::rgb(theme::bg_sidebar_pill()))
+                        .font_family(crate::assets::FONT_MONO)
+                        .text_xs()
+                        .text_color(gpui::rgb(theme::text_primary()))
+                        .child(gpui::text!(prompt.action.clone())),
+                ),
+        );
+    } else {
         for (option_index, option) in entry.options.iter().enumerate() {
-            let selection = selected.get(&question_index);
             let is_picked = selection.is_some_and(|s| s.picked.contains(&option_index));
-            let marker = div()
-                .size_3()
-                .when(entry.multi_select, |marker| marker.rounded_sm())
-                .when(!entry.multi_select, |marker| marker.rounded_full())
-                .border_1()
-                .border_color(gpui::rgb(if is_picked {
-                    theme::accent()
-                } else {
-                    theme::border()
-                }))
-                .when(is_picked, |dot| dot.bg(gpui::rgb(theme::accent())));
+            let is_cursor = selection.is_some_and(|s| s.cursor == Some(option_index));
+            let key = key_labels
+                .get(option_index)
+                .filter(|label| !label.is_empty())
+                .cloned();
             let label = question_option_label(entry, option_index);
             // flex_1 is load-bearing: without it the row squeezes this
             // block to a character wide and the label wraps vertically.
-            let label_element = if option.description.is_empty() {
-                div()
-                    .flex_1()
-                    .min_w_0()
-                    .text_sm()
-                    .text_color(gpui::rgb(theme::text_primary()))
-                    .child(gpui::text!(label))
-            } else {
-                div()
-                    .flex_1()
-                    .min_w_0()
-                    .flex()
-                    .flex_col()
-                    .child(
-                        div()
-                            .text_sm()
-                            .text_color(gpui::rgb(theme::text_primary()))
-                            .child(gpui::text!(label)),
-                    )
-                    .child(
+            let label_element = div()
+                .flex_1()
+                .min_w_0()
+                .flex()
+                .flex_col()
+                .child(
+                    div()
+                        .text_sm()
+                        .line_height(LINE)
+                        .text_color(gpui::rgb(theme::text_primary()))
+                        .child(gpui::text!(label)),
+                )
+                .when(!option.description.is_empty(), |text| {
+                    text.child(
                         div()
                             .text_xs()
                             .text_color(gpui::rgb(theme::text_muted()))
                             .child(option.description.clone()),
                     )
-            };
-            block = block.child(
-                div()
-                    .id(gpui::SharedString::from(format!(
-                        "question-option-{question_index}-{option_index}"
-                    )))
-                    .flex()
-                    .items_center()
-                    .gap_2()
-                    .px_2()
-                    .py_1p5()
-                    .rounded(theme::RADIUS_SM)
-                    .when(
-                        entry.multi_select
-                            && selection.is_some_and(|s| s.cursor == Some(option_index)),
-                        |row| row.bg(gpui::rgb(theme::bg_sidebar_row_hover())),
-                    )
-                    .hover(|style| {
-                        style
-                            .bg(gpui::rgb(theme::bg_sidebar_row_hover()))
-                            .cursor_pointer()
+                });
+            let row = div()
+                .id(gpui::SharedString::from(format!(
+                    "question-option-{question_index}-{option_index}"
+                )))
+                // A row is pressed like a button, so it is one to
+                // accessibility too; its label names it.
+                .role(gpui::Role::Button)
+                .flex()
+                .items_start()
+                .gap_2()
+                .px_1p5()
+                .py_1()
+                .rounded(theme::RADIUS_SM)
+                // A single choice answers on the click, so the only row it
+                // marks is the one the keyboard is on.
+                .when(
+                    if entry.multi_select {
+                        is_cursor
+                    } else {
+                        is_picked
+                    },
+                    |row| row.bg(gpui::rgb(theme::bg_sidebar_row_hover())),
+                )
+                .hover(|style| {
+                    style
+                        .bg(gpui::rgb(theme::bg_sidebar_row_hover()))
+                        .cursor_pointer()
+                })
+                .on_click({
+                    cx.listener(move |this, _event, _window, cx| {
+                        this.toggle_question_option(question_index, option_index, cx);
                     })
-                    .on_click({
-                        cx.listener(move |this, _event, _window, cx| {
-                            this.toggle_question_option(question_index, option_index, cx);
-                        })
-                    })
-                    .child(marker)
-                    .child(label_element),
+                });
+            // Both kinds read the same way: the mark, the option, its key.
+            // The mark's shape says which kind it is, as on any form.
+            let mark = div()
+                .size(px(14.))
+                .border_1()
+                .border_color(gpui::rgb(if is_picked {
+                    theme::accent()
+                } else {
+                    theme::text_faint()
+                }))
+                .map(|mark| {
+                    if entry.multi_select {
+                        mark.rounded(px(4.))
+                            .when(is_picked, |mark| mark.bg(gpui::rgb(theme::accent())))
+                    } else {
+                        mark.rounded_full()
+                            .flex()
+                            .items_center()
+                            .justify_center()
+                            .when(is_picked, |mark| {
+                                mark.child(
+                                    div()
+                                        .size(px(6.))
+                                        .rounded_full()
+                                        .bg(gpui::rgb(theme::accent())),
+                                )
+                            })
+                    }
+                });
+            body = body.child(
+                row.child(lead().child(mark))
+                    .child(label_element)
+                    .when_some(key, |row, key| {
+                        row.child(lead().child(widgets::keycap(key)))
+                    }),
             );
         }
-        card = card.child(block);
     }
-    // "Other (type your own)": one shared free-form answer per card; it
-    // stands in for a question without a picked option and rides along
-    // as a note when an option is picked too.
+    // The free-form answer is the card's last row: it stands in for a
+    // question without a picked option, rides along as a note when an
+    // option is picked too, and says why on a denied permission.
     if let Some(input) = input {
-        card = card.child(
+        body = body.child(
             div()
                 .flex()
                 .items_center()
                 .gap_2()
-                .child(widgets::input_frame().flex_1().child(input))
-                .child(
-                    widgets::primary_button("question-submit")
-                        .py_2()
-                        .on_click(cx.listener(|this, _event, _window, cx| {
-                            this.submit_question(cx);
-                        }))
-                        .child(gpui::text!(if has_more {
-                            tr("chat-next")
-                        } else {
-                            tr("chat-answer")
-                        })),
-                ),
+                .px_1p5()
+                .py_1()
+                .rounded(theme::RADIUS_SM)
+                .child(lead().w(px(14.)).justify_center().child(icon(
+                    "pencil",
+                    px(13.),
+                    theme::text_muted(),
+                )))
+                .child(div().flex_1().min_w_0().child(input))
+                .when(!entry.multi_select, |row| {
+                    // Enter in the field sends what is typed; the key is
+                    // also the way to do it by pointer.
+                    row.child(
+                        div()
+                            .id("question-submit")
+                            .role(gpui::Role::Button)
+                            .aria_label(if has_more {
+                                tr("chat-next")
+                            } else {
+                                tr("chat-answer")
+                            })
+                            .flex_none()
+                            .cursor_pointer()
+                            .on_click(cx.listener(|this, _event, _window, cx| {
+                                this.submit_question(cx);
+                            }))
+                            .child(widgets::keycap("↵")),
+                    )
+                }),
         );
     }
-    card.child(
-        div()
-            .id("question-skip")
-            .flex()
-            .items_center()
-            .gap_1p5()
-            .px_2()
-            .py_1()
-            .rounded(theme::RADIUS_SM)
-            .text_xs()
-            .text_color(gpui::rgb(theme::text_muted()))
-            .hover(|style| {
-                style
-                    .text_color(gpui::rgb(theme::text_secondary()))
-                    .cursor_pointer()
-            })
-            .on_click(cx.listener(|this, _event, _window, cx| {
-                this.skip_question(cx);
-            }))
-            .child(tr("chat-skip")),
-    )
+    card = card.child(body);
+    let mut footer = div()
+        .flex()
+        .items_center()
+        .gap_2()
+        .px_3()
+        .py_1p5()
+        .border_t_1()
+        .border_color(gpui::rgb(theme::border_subtle()))
+        .child(
+            div()
+                .flex_1()
+                .min_w_0()
+                .truncate()
+                .text_xs()
+                .text_color(gpui::rgb(theme::text_muted()))
+                .when(entry.multi_select, |hint| {
+                    hint.child(if has_more {
+                        tr("chat-question-next-hint")
+                    } else {
+                        tr("chat-question-answer-hint")
+                    })
+                }),
+        )
+        .child(
+            div()
+                .id("question-skip")
+                .role(gpui::Role::Button)
+                .flex_none()
+                .flex()
+                .items_center()
+                .gap_1p5()
+                .px_1p5()
+                .py_0p5()
+                .rounded(theme::RADIUS_SM)
+                .text_xs()
+                .text_color(gpui::rgb(theme::text_muted()))
+                .hover(|style| {
+                    style
+                        .text_color(gpui::rgb(theme::text_secondary()))
+                        .bg(theme::overlay_hover())
+                        .cursor_pointer()
+                })
+                .on_click(cx.listener(|this, _event, _window, cx| {
+                    this.skip_question(cx);
+                }))
+                .child(gpui::text!(tr("chat-skip")))
+                .child(widgets::keycap("esc")),
+        );
+    let footer_button = |button: gpui::Stateful<Div>| button.flex_none().px_3().py_1().text_xs();
+    if permission.is_some() {
+        // Deny and Allow once sit here at every width, never beside the call.
+        for (option_index, button) in [
+            (1, widgets::secondary_button("question-option-deny")),
+            (0, widgets::default_button("question-option-allow")),
+        ] {
+            footer = footer.child(
+                footer_button(button)
+                    .debug_selector(move || {
+                        format!("question-option-{question_index}-{option_index}")
+                    })
+                    .on_click(cx.listener(move |this, _event, _window, cx| {
+                        this.toggle_question_option(question_index, option_index, cx);
+                    }))
+                    .child(gpui::text!(question_option_label(entry, option_index))),
+            );
+        }
+    } else if entry.multi_select {
+        footer = footer.child(
+            footer_button(widgets::default_button("question-submit"))
+                .on_click(cx.listener(|this, _event, _window, cx| {
+                    this.submit_question(cx);
+                }))
+                .child(gpui::text!(if has_more {
+                    tr("chat-next")
+                } else {
+                    tr("chat-answer")
+                })),
+        );
+    }
+    card.child(footer)
 }
 
 /// Pulsing dots shown between send and the first streamed content. They

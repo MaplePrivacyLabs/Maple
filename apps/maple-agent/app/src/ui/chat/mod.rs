@@ -246,6 +246,23 @@ pub(crate) struct SpeechState {
     pub playing: bool,
 }
 
+/// The key that picks option `index` of a question as the keymap has it
+/// now, or nothing when the user unbound it.
+fn question_key_label(index: usize, window: &Window) -> SharedString {
+    window
+        .highest_precedence_binding_for_action(&PickQuestionOption { index })
+        .map(|binding| {
+            binding
+                .keystrokes()
+                .iter()
+                .map(ToString::to_string)
+                .collect::<Vec<_>>()
+                .join(" ")
+        })
+        .unwrap_or_default()
+        .into()
+}
+
 #[derive(Default)]
 pub(super) struct QuestionSelection {
     cursor: Option<usize>,
@@ -5839,14 +5856,30 @@ impl ChatScreen {
         }
     }
 
-    /// Click handler for an option row: clicking the picked option again
-    /// clears it so a typed answer can stand alone.
+    /// Click handler for an option. On a single choice or a permission card
+    /// the click is the whole decision, so it answers; moving the keyboard
+    /// selection never is, and Enter still confirms that. On a multi-select
+    /// it checks the option, or clears it when it was checked.
     fn toggle_question_option(
         &mut self,
         question_index: usize,
         option_index: usize,
         cx: &mut Context<Self>,
     ) {
+        let Some(entry) = self
+            .current_question()
+            .and_then(|question| question.questions.get(question_index))
+        else {
+            return;
+        };
+        if option_index >= entry.options.len() {
+            return;
+        }
+        if !entry.multi_select {
+            self.select_question_option(question_index, option_index, cx);
+            self.submit_question(cx);
+            return;
+        }
         if let Some(selection) = self.question_selected.get_mut(&question_index)
             && selection.picked.remove(&option_index)
         {
@@ -5858,15 +5891,6 @@ impl ChatScreen {
             cx.notify();
         } else {
             self.select_question_option(question_index, option_index, cx);
-            // A click is the whole decision on a permission card. Moving
-            // the keyboard selection never is: Enter still confirms it.
-            let permission = self
-                .current_question()
-                .and_then(|question| question.questions.get(question_index))
-                .is_some_and(|question| question.permission.is_some());
-            if permission {
-                self.submit_question(cx);
-            }
         }
     }
 
@@ -7259,14 +7283,30 @@ impl Render for ChatScreen {
                 .when_some(self.current_question(), |container, question| {
                     let input = self.pending_question_input.clone();
                     let step = self.question_step;
-                    container.child(render_question_card(
-                        question,
-                        step,
-                        self.question_collapsed,
-                        input,
-                        &self.question_selected,
-                        &self.messages,
-                        cx,
+                    // Each option shows the key bound to it right now. One
+                    // keymap lookup per option on show; a card has a handful.
+                    let key_labels = question
+                        .questions
+                        .get(step.min(question.questions.len().saturating_sub(1)))
+                        .filter(|entry| entry.permission.is_none())
+                        .map(|entry| {
+                            (0..entry.options.len().min(9))
+                                .map(|index| question_key_label(index, window))
+                                .collect::<Vec<_>>()
+                        })
+                        .unwrap_or_default();
+                    // Same column and gutter as the composer under it.
+                    container.child(div().w_full().max_w(CONTENT_WIDTH).mx_auto().px_6().child(
+                        render_question_card(
+                            question,
+                            step,
+                            self.question_collapsed,
+                            input,
+                            &self.question_selected,
+                            &key_labels,
+                            &self.messages,
+                            cx,
+                        ),
                     ))
                 })
                 .child(

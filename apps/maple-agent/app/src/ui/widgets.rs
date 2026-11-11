@@ -140,6 +140,29 @@ pub fn secondary_button(id: impl Into<ElementId>) -> Stateful<Div> {
         .active(|style| press_depth(style.bg(gpui::rgb(theme::border()))))
 }
 
+/// A key named beside the control it works: one fixed height, so a row of
+/// them shares a baseline with its labels whatever each one holds.
+pub fn keycap(label: impl Into<gpui::SharedString>) -> Div {
+    div()
+        .flex_none()
+        .h(px(18.))
+        .min_w(px(18.))
+        .px(px(5.))
+        .flex()
+        .items_center()
+        .justify_center()
+        .rounded(px(5.))
+        .border_1()
+        .border_color(gpui::rgb(theme::border()))
+        .bg(gpui::rgb(theme::bg_input()))
+        .font_family(crate::assets::FONT_MONO)
+        .font_weight(gpui::FontWeight::MEDIUM)
+        .text_size(px(10.5))
+        .line_height(px(16.))
+        .text_color(gpui::rgb(theme::text_muted()))
+        .child(label.into())
+}
+
 /// Text-only button for low-emphasis actions: no fill, no border, and
 /// the label brightens on hover.
 pub fn ghost_button(id: impl Into<ElementId>) -> Stateful<Div> {

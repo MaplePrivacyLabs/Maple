@@ -1556,7 +1556,7 @@ chat-show-sidebar = Seitenleiste anzeigen
 chat-empty-title = Arbeite an allem, was du möchtest…
 chat-empty-private = Bei jedem Schritt verschlüsselt und privat
 chat-transcript = Gesprächsverlauf
-chat-answer-placeholder = Gib deine Antwort ein…
+chat-answer-placeholder = Etwas anderes…
 # $name is a project folder name.
 chat-trust-title = { $name } vertrauen?
 # $name is a project folder name.
@@ -1677,7 +1677,7 @@ chat-question-next-hint = Wähle alles Zutreffende aus und dann „Weiter“.
 chat-question-answer-hint = Wähle alles Zutreffende aus und dann „Antworten“.
 chat-next = Weiter
 chat-answer = Antworten
-chat-skip = Überspringen (Esc)
+chat-skip = Überspringen
 chat-you = Du
 # $count is a completed/total ratio, for example 2/5.
 chat-plan-done = Plan, { $count } erledigt
