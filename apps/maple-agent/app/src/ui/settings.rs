@@ -1986,7 +1986,12 @@ impl Render for SettingsScreen {
                             .flex_1()
                             .min_h_0()
                             .bg(gpui::rgb(theme::bg_app()))
-                            .child(self.render_pane(window, cx))
+                            .child(crate::ui::motion::swap_in(
+                                self.render_pane(window, cx),
+                                "settings-pane-swap",
+                                self.section.id(),
+                                gpui::rgb(theme::bg_app()),
+                            ))
                             .child(crate::ui::scrollbar::scrollbar(
                                 "settings-scrollbar",
                                 self.pane_scroll.clone(),
@@ -2002,7 +2007,11 @@ impl Render for SettingsScreen {
 }
 
 impl SettingsScreen {
-    fn render_nav_item(&self, section: Section, cx: &mut Context<Self>) -> gpui::Stateful<Div> {
+    fn render_nav_item(
+        &self,
+        section: Section,
+        cx: &mut Context<Self>,
+    ) -> crate::ui::motion::HoverBackground {
         let selected = self.section == section;
         let application_selected = self.application_vim_selects_section(section);
         let icon_color = if selected {
@@ -2045,7 +2054,7 @@ impl SettingsScreen {
             .when(application_selected, |row| {
                 row.border_l_2().border_color(gpui::rgb(theme::accent()))
             })
-            .hover(|style| style.bg(gpui::rgb(theme::bg_elevated())).cursor_pointer())
+            .hover(|style| style.cursor_pointer())
             .on_click(cx.listener(move |this, _event, _window, cx| {
                 this.select_section(section, cx);
             }))
@@ -2074,7 +2083,12 @@ impl SettingsScreen {
                     )
                 });
         }
-        row
+        let rest = gpui::rgb(if selected {
+            theme::bg_elevated()
+        } else {
+            theme::bg_sidebar()
+        });
+        crate::ui::motion::hover_background(row, rest, gpui::rgb(theme::bg_elevated()))
     }
 
     /// The task sidebar's column, from the window's top edge. Back sits
@@ -2133,7 +2147,7 @@ impl SettingsScreen {
 
     /// Back to the task screen: an arrow like the task screen's toolbar
     /// buttons, named by its tooltip.
-    fn render_back(&self, cx: &mut Context<Self>) -> gpui::Stateful<Div> {
+    fn render_back(&self, cx: &mut Context<Self>) -> crate::ui::motion::HoverBackground {
         widgets::icon_button(
             "settings-back",
             "arrow-left",
@@ -3365,8 +3379,10 @@ impl SettingsScreen {
                 })
         };
         let transport_segment = |id: &'static str, label: gpui::SharedString, active: bool| {
+            let selected: gpui::Hsla = gpui::rgb(theme::bg_sidebar_row_hover()).into();
             div()
                 .id(id)
+                .relative()
                 .px_3()
                 .py_1()
                 .rounded(theme::RADIUS_SM)
@@ -3376,12 +3392,34 @@ impl SettingsScreen {
                 } else {
                     theme::text_secondary()
                 }))
-                .when(active, |el| el.bg(gpui::rgb(theme::bg_sidebar_row_hover())))
-                .hover(|style| {
-                    style
-                        .bg(gpui::rgb(theme::bg_sidebar_row_hover()))
-                        .cursor_pointer()
+                .map(|element| {
+                    crate::ui::motion::hover_background(
+                        element,
+                        gpui::transparent_black(),
+                        selected,
+                    )
                 })
+                .hover(|style| style.cursor_pointer())
+                // The selected fill, over the hover plate, eases between
+                // segments.
+                .child(crate::ui::motion::animated(
+                    "selected",
+                    if active { 1. } else { 0. },
+                    crate::ui::motion::TOGGLE,
+                    crate::ui::motion::ease_out_cubic,
+                    move |active| {
+                        div()
+                            .absolute()
+                            .inset_0()
+                            .rounded(theme::RADIUS_SM)
+                            .bg(crate::ui::motion::mix(
+                                gpui::transparent_black(),
+                                selected,
+                                active,
+                            ))
+                            .into_any_element()
+                    },
+                ))
                 .child(label)
         };
         div()
@@ -3894,34 +3932,58 @@ fn is_cua_driver(id: &str) -> bool {
     id == "cua-driver"
 }
 
-/// Small on/off pill used in list rows.
+/// Small on/off pill used in list rows. Its fill and label color ease
+/// between on and off.
 fn pill_button(
     id: String,
     label: gpui::SharedString,
     on: bool,
     handler: impl Fn(&gpui::ClickEvent, &mut Window, &mut App) + 'static,
 ) -> gpui::Stateful<Div> {
+    use crate::ui::motion;
+    let target = if on { 1. } else { 0. };
+    let off_fill: gpui::Hsla = gpui::rgb(theme::bg_sidebar_card()).into();
+    let on_fill: gpui::Hsla = gpui::rgb(theme::bg_default_button()).into();
+    let off_text: gpui::Hsla = gpui::rgb(theme::text_secondary()).into();
+    let on_text: gpui::Hsla = gpui::rgb(theme::text_on_default_button()).into();
     div()
         .id(gpui::SharedString::from(id))
+        .relative()
         .px_2p5()
         .py_1()
         .rounded_full()
         .text_xs()
         .font_weight(gpui::FontWeight::MEDIUM)
-        .bg(gpui::rgb(if on {
-            theme::bg_default_button()
-        } else {
-            theme::bg_sidebar_card()
-        }))
-        .text_color(gpui::rgb(if on {
-            theme::text_on_default_button()
-        } else {
-            theme::text_secondary()
-        }))
         .hover(|style| style.opacity(0.85).cursor_pointer())
         .active(|style| style.opacity(0.7))
         .on_click(handler)
-        .child(label)
+        .child(motion::animated(
+            "pill-fill",
+            target,
+            motion::TOGGLE,
+            motion::ease_out_cubic,
+            move |on| {
+                div()
+                    .absolute()
+                    .inset_0()
+                    .rounded_full()
+                    .bg(motion::mix(off_fill, on_fill, on))
+                    .into_any_element()
+            },
+        ))
+        .child(motion::animated(
+            "pill-label",
+            target,
+            motion::TOGGLE,
+            motion::ease_out_cubic,
+            move |on| {
+                div()
+                    .relative()
+                    .text_color(motion::mix(off_text, on_text, on))
+                    .child(label.clone())
+                    .into_any_element()
+            },
+        ))
 }
 
 /// Whether a key press presses the focused control, as a click does.

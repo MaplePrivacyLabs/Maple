@@ -118,6 +118,19 @@ popup before a nested one). The popup handles the rest:
 A text field inside a menu that goes away calls `Popup::refocus`, so the
 menu keeps the keyboard. Menu keys live in the keymap's `Menu` context.
 
+## Motion
+
+Animate through `ui/motion.rs` only; [motion](docs/motion.md) holds the
+tokens and rules. Motion never delays input, retargets from the value on
+screen, closes menus and dialogs at once, and settles immediately under
+reduced motion. Streaming text, typing, and keyboard navigation do not
+animate. Rows inside `gpui::list` time their entrance from view state, not
+element state, so they never replay when scrolled back into view. Never put
+opacity on an ancestor of a cached view: its replayed paint keeps the
+opacity of its first frame. Paint a cover over it instead, as `swap_in`
+does, unless its bounds or content mask change on every frame of the fade
+and again at rest, as in the sidebar collapse.
+
 ## Accessibility
 
 GPUI only reports elements with both an id and a role, and it builds the tree
