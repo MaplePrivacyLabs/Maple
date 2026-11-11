@@ -3136,11 +3136,15 @@ impl Sidebar {
                         .items_center()
                         .justify_center()
                         .rounded(theme::RADIUS_SM)
-                        .hover(|style| {
-                            style
-                                .bg(gpui::rgb(theme::bg_sidebar_row_selected()))
-                                .cursor_pointer()
+                        .map(|element| {
+                            let rest: gpui::Hsla = gpui::transparent_black();
+                            crate::ui::motion::hover_background(
+                                element,
+                                rest,
+                                gpui::rgb(theme::bg_sidebar_row_selected()),
+                            )
                         })
+                        .hover(|style| style.cursor_pointer())
                         .tooltip(widgets::tooltip_for_action(
                             tr("chat-clear-search"),
                             &super::ChatEscape,
@@ -3231,9 +3235,8 @@ impl Sidebar {
                             .font_weight(gpui::FontWeight::SEMIBOLD)
                     })
                     .hover(|style| {
-                        style
-                            .bg(gpui::rgb(theme::bg_sidebar_row_hover()))
-                            .cursor_pointer()
+                        // Pointer feedback stays immediate while the background eases.
+                        style.cursor_pointer()
                     })
                     .active(|style| style.bg(gpui::rgb(theme::bg_sidebar_row_selected())))
                     .tooltip(widgets::tooltip_for_action(label.clone(), action))
@@ -3246,6 +3249,13 @@ impl Sidebar {
                     })
                     .child(icon(name, px(16.), color))
                     .child(label)
+                    .map(|element| {
+                        crate::ui::motion::hover_background(
+                            element,
+                            gpui::transparent_black(),
+                            gpui::rgb(theme::bg_sidebar_row_hover()),
+                        )
+                    })
                     .into_any_element()
             }
             Some(SidebarEntry::ProjectsHeader) => self.render_projects_header(window, cx),
@@ -3288,11 +3298,15 @@ impl Sidebar {
                     .px_2()
                     .py_1()
                     .rounded(ROW_RADIUS)
-                    .hover(|style| {
-                        style
-                            .bg(gpui::rgb(theme::bg_sidebar_row_hover()))
-                            .cursor_pointer()
+                    .map(|element| {
+                        let rest: gpui::Hsla = gpui::transparent_black();
+                        crate::ui::motion::hover_background(
+                            element,
+                            rest,
+                            gpui::rgb(theme::bg_sidebar_row_hover()),
+                        )
                     })
+                    .hover(|style| style.cursor_pointer())
                     .on_click(cx.listener(move |this, _event, _window, cx| {
                         this.toggle_section_expanded(section, cx);
                         this.hover_heading(SidebarEntry::SectionLabel(section), cx);
@@ -3373,11 +3387,15 @@ impl Sidebar {
                     .px_2()
                     .h(px(34.))
                     .rounded(ROW_RADIUS)
-                    .hover(|style| {
-                        style
-                            .bg(gpui::rgb(theme::bg_sidebar_row_hover()))
-                            .cursor_pointer()
+                    .map(|element| {
+                        let rest: gpui::Hsla = gpui::transparent_black();
+                        crate::ui::motion::hover_background(
+                            element,
+                            rest,
+                            gpui::rgb(theme::bg_sidebar_row_hover()),
+                        )
                     })
+                    .hover(|style| style.cursor_pointer())
                     .on_click(cx.listener(|this, _event, _window, cx| {
                         this.toggle_archived_visibility(cx);
                         this.hover_heading(SidebarEntry::ArchivedHeader, cx);
@@ -3549,12 +3567,18 @@ impl Sidebar {
 
     fn set_hovered_entry(&mut self, entry: Option<usize>, cx: &mut Context<Self>) {
         self.hover_scroll_top = self.list.logical_scroll_top();
+        let header_was_hovered = self.projects_header_hovered();
         self.hovered_entry = entry;
         let section = entry.and_then(|entry| self.entry_sections.get(entry).copied().flatten());
-        if self.hovered_section != section {
+        if self.hovered_section != section || header_was_hovered != self.projects_header_hovered() {
             self.hovered_section = section;
             cx.notify();
         }
+    }
+
+    fn projects_header_hovered(&self) -> bool {
+        self.hovered_entry.and_then(|ix| self.entries.get(ix))
+            == Some(&SidebarEntry::ProjectsHeader)
     }
 
     #[cfg(test)]
@@ -3576,27 +3600,33 @@ impl Sidebar {
         id: &'static str,
         section: SidebarHoverSection,
     ) -> AnyElement {
+        let visible = !expanded || self.section_hovered(section);
         let chevron = div()
             .id((id, 0_u64))
             .flex_none()
             .size(px(14.))
             .flex()
             .items_center()
-            .opacity(if !expanded || self.section_hovered(section) {
-                1.
-            } else {
-                0.
-            })
-            .child(icon(
-                if expanded {
-                    "chevron-down"
-                } else {
-                    "chevron-right"
-                },
+            .child(motion::chevron(
+                "chevron",
+                expanded,
                 px(14.),
                 theme::text_secondary(),
             ));
-        chevron.into_any_element()
+        if section == SidebarHoverSection::Projects {
+            crate::ui::motion::hover_background(
+                chevron,
+                gpui::transparent_black(),
+                gpui::transparent_black(),
+            )
+            .highlighted(false)
+            .revealed(visible)
+            .into_any_element()
+        } else {
+            chevron
+                .opacity(if visible { 1. } else { 0. })
+                .into_any_element()
+        }
     }
 
     /// The Projects header: its label folds the list under it, and its
@@ -3700,16 +3730,15 @@ impl Sidebar {
             .into_any_element()
     }
 
-    fn view_button(&self, open: bool) -> gpui::Stateful<Div> {
+    fn view_button(&self, open: bool) -> crate::ui::motion::HoverBackground {
         header_button("view-options", "list-filter", tr("chat-view-options"), open)
+            .revealed(open)
             .debug_selector(|| "view-options".into())
             .tab_index(5)
             .focus_visible(|style| widgets::focus_ring(style.opacity(1.)))
             .on_key_down(ChatScreen::sidebar_button_key_down)
             .when(!open, |button| {
-                button
-                    .opacity(0.)
-                    .group_hover("projects-header-actions", |style| style.opacity(1.))
+                button.revealed(self.projects_header_hovered())
             })
     }
 
@@ -3804,7 +3833,7 @@ impl Sidebar {
     }
 
     /// Add project stays visible until there is a project to browse.
-    fn new_project_button(&self, open: bool) -> gpui::Stateful<Div> {
+    fn new_project_button(&self, open: bool) -> crate::ui::motion::HoverBackground {
         header_button(
             "new-project",
             "folder-plus",
@@ -3812,11 +3841,7 @@ impl Sidebar {
             open,
         )
         .debug_selector(|| "new-project".to_owned())
-        .when(!open && !self.project_roots.is_empty(), |button| {
-            button
-                .opacity(0.)
-                .group_hover("projects-header-actions", |style| style.opacity(1.))
-        })
+        .revealed(open || self.project_roots.is_empty() || self.projects_header_hovered())
     }
 
     fn new_project_computer_menu(&self) -> Menu<Self> {
@@ -3930,14 +3955,18 @@ impl Sidebar {
             .when(menu_open, |row| {
                 row.bg(gpui::rgb(theme::bg_sidebar_row_hover()))
             })
-            .when(hover, |row| {
-                row.hover(|style| {
-                    if self.dragging {
-                        style
-                    } else {
-                        style.bg(gpui::rgb(theme::bg_sidebar_row_hover()))
-                    }
-                })
+            .map(|row| {
+                let rest = if menu_open {
+                    gpui::rgb(theme::bg_sidebar_row_hover()).into()
+                } else {
+                    gpui::transparent_black()
+                };
+                crate::ui::motion::hover_background(
+                    row,
+                    rest,
+                    gpui::rgb(theme::bg_sidebar_row_hover()),
+                )
+                .when(!hover || self.dragging, |row| row.highlighted(false))
             })
             .on_click(cx.listener(move |this, _event, _window, cx| {
                 if !this.collapsed_projects.remove(&toggle_target) {
@@ -3960,8 +3989,10 @@ impl Sidebar {
                     }),
                 )
             })
-            .child(icon(
-                if expanded { "folder-open" } else { "folder" },
+            .child(motion::icon_swap(
+                "folder-icon",
+                expanded,
+                ["folder", "folder-open"],
                 FOLDER_ICON_SIZE,
                 theme::text_secondary(),
             ))
@@ -4238,7 +4269,7 @@ impl Sidebar {
         application_selected: bool,
         window: &mut Window,
         cx: &mut Context<Self>,
-    ) -> gpui::Stateful<Div> {
+    ) -> crate::ui::motion::HoverBackground {
         let SidebarTaskEntry {
             session: index,
             pinned: is_pinned,
@@ -4295,8 +4326,17 @@ impl Sidebar {
             .text_color(gpui::rgb(theme::text_sidebar()))
             // A row being renamed is a text field: no hover highlight and
             // no hover actions over it, so the edit is plain to see.
-            .when(!renaming && !self.dragging, |el| {
-                el.hover(|style| style.bg(gpui::rgb(hover_bg)).cursor_pointer())
+            .map(|row| {
+                let rest = if is_selected {
+                    gpui::rgb(theme::bg_sidebar_row_selected()).into()
+                } else {
+                    gpui::transparent_black()
+                };
+                crate::ui::motion::hover_background(row, rest, gpui::rgb(hover_bg))
+                    .when(renaming || self.dragging, |row| row.highlighted(false))
+                    .when(!renaming && !self.dragging, |row| {
+                        row.hover(|style| style.cursor_pointer())
+                    })
             })
             .on_click(cx.listener(move |_this, _event, _window, cx| {
                 cx.emit(SidebarEvent::Select(session_id.to_string()));
@@ -4340,11 +4380,15 @@ impl Sidebar {
                         .items_center()
                         .justify_center()
                         .rounded(theme::RADIUS_SM)
-                        .hover(|style| {
-                            style
-                                .bg(gpui::rgb(theme::bg_sidebar_row_selected()))
-                                .cursor_pointer()
+                        .map(|element| {
+                            let rest: gpui::Hsla = gpui::transparent_black();
+                            crate::ui::motion::hover_background(
+                                element,
+                                rest,
+                                gpui::rgb(theme::bg_sidebar_row_selected()),
+                            )
                         })
+                        .hover(|style| style.cursor_pointer())
                         .tooltip(widgets::tooltip(tr("chat-unpin"), None))
                         .on_click(cx.listener(move |this, _event, _window, cx| {
                             cx.stop_propagation();
@@ -4540,29 +4584,57 @@ const RUNNING_BREATH: Duration = Duration::from_millis(1600);
 /// any number of running rows cost one repaint per interval; `spinner_id`
 /// is prebuilt so render allocates nothing. Every state sits centered in
 /// one box the size of the largest, so the center stays put as states
-/// change.
+/// change, and one state cross-fades into the next over
+/// [`motion::TOGGLE`]. The box is keyed by `spinner_id`, which names the
+/// task, so an indicator that first appears (a list that loads, a row that
+/// scrolls in) shows its state at once.
 fn activity_indicator(spinner_id: &SharedString, activity: SessionActivity) -> AnyElement {
-    let dot = |color: u32| {
-        div()
-            .size(px(8.))
-            .rounded_full()
-            .bg(gpui::rgb(color))
-            .into_any_element()
+    let layer = |name: &'static str, state: SessionActivity| {
+        let spinner_id = spinner_id.clone();
+        motion::animated(
+            name,
+            if activity == state { 1. } else { 0. },
+            motion::TOGGLE,
+            motion::ease_out_cubic,
+            move |shown| {
+                if shown <= 0. {
+                    return div().into_any_element();
+                }
+                let dot = |color: u32| {
+                    div()
+                        .size(px(8.))
+                        .rounded_full()
+                        .bg(gpui::rgb(color))
+                        .into_any_element()
+                };
+                div()
+                    .absolute()
+                    .inset_0()
+                    .flex()
+                    .items_center()
+                    .justify_center()
+                    .opacity(shown)
+                    .child(match state {
+                        SessionActivity::NeedsYou => dot(theme::accent()),
+                        SessionActivity::Running => running_ring(spinner_id.clone()),
+                        SessionActivity::Failed => {
+                            icon("circle-alert", px(13.), theme::status_error()).into_any_element()
+                        }
+                        SessionActivity::CompletedUnread => dot(theme::status_success()),
+                    })
+                    .into_any_element()
+            },
+        )
     };
     div()
+        .id(spinner_id.clone())
+        .relative()
         .size(px(13.))
         .flex_none()
-        .flex()
-        .items_center()
-        .justify_center()
-        .child(match activity {
-            SessionActivity::NeedsYou => dot(theme::accent()),
-            SessionActivity::Running => running_ring(spinner_id.clone()),
-            SessionActivity::Failed => {
-                icon("circle-alert", px(13.), theme::status_error()).into_any_element()
-            }
-            SessionActivity::CompletedUnread => dot(theme::status_success()),
-        })
+        .child(layer("needs-you", SessionActivity::NeedsYou))
+        .child(layer("running", SessionActivity::Running))
+        .child(layer("failed", SessionActivity::Failed))
+        .child(layer("completed", SessionActivity::CompletedUnread))
         .into_any_element()
 }
 
@@ -4612,7 +4684,7 @@ pub(super) fn row_action(
     icon_name: &'static str,
     label: impl Into<SharedString>,
     on_click: impl Fn(&gpui::ClickEvent, &mut Window, &mut gpui::App) + 'static,
-) -> gpui::Stateful<Div> {
+) -> crate::ui::motion::HoverBackground {
     let label = label.into();
     row_button(id, group, icon_name, label.clone())
         .tooltip(widgets::tooltip(label, None))
@@ -4626,7 +4698,7 @@ fn row_menu_button(
     group: &SharedString,
     label: impl Into<SharedString>,
     open: bool,
-) -> gpui::Stateful<Div> {
+) -> crate::ui::motion::HoverBackground {
     let label = label.into();
     row_button(id, group, "ellipsis", label).when(open, |button| {
         button
@@ -4642,7 +4714,7 @@ fn header_button(
     icon_name: &'static str,
     label: impl Into<SharedString>,
     open: bool,
-) -> gpui::Stateful<Div> {
+) -> crate::ui::motion::HoverBackground {
     let label = label.into();
     div()
         .id(id)
@@ -4654,11 +4726,15 @@ fn header_button(
         .items_center()
         .justify_center()
         .rounded(theme::RADIUS_SM)
-        .hover(|style| {
-            style
-                .bg(gpui::rgb(theme::bg_sidebar_row_hover()))
-                .cursor_pointer()
+        .map(|element| {
+            let rest: gpui::Hsla = gpui::transparent_black();
+            crate::ui::motion::hover_background(
+                element,
+                rest,
+                gpui::rgb(theme::bg_sidebar_row_hover()),
+            )
         })
+        .hover(|style| style.cursor_pointer())
         .when(open, |button| {
             button.bg(gpui::rgb(theme::bg_sidebar_row_selected()))
         })
@@ -4674,7 +4750,7 @@ fn row_button(
     group: &SharedString,
     icon_name: &'static str,
     label: impl Into<SharedString>,
-) -> gpui::Stateful<Div> {
+) -> crate::ui::motion::HoverBackground {
     let label = label.into();
     div()
         .debug_selector(|| id.to_string())
@@ -4689,11 +4765,15 @@ fn row_button(
         .rounded(theme::RADIUS_SM)
         .opacity(0.)
         .group_hover(group.clone(), |style| style.opacity(1.))
-        .hover(|style| {
-            style
-                .bg(gpui::rgb(theme::bg_sidebar_row_selected()))
-                .cursor_pointer()
+        .map(|element| {
+            let rest: gpui::Hsla = gpui::transparent_black();
+            crate::ui::motion::hover_background(
+                element,
+                rest,
+                gpui::rgb(theme::bg_sidebar_row_selected()),
+            )
         })
+        .hover(|style| style.cursor_pointer())
         .active(|style| style.bg(gpui::rgb(theme::border())))
         .child(icon(icon_name, px(14.), theme::text_secondary()))
 }
@@ -4757,6 +4837,197 @@ pub(super) fn remote_root_display_name(root: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::remote_root_display_name;
+
+    #[gpui::test]
+    fn projects_header_reveal_tracks_its_buttons_and_keeps_view_menu_open(
+        cx: &mut gpui::TestAppContext,
+    ) {
+        use super::*;
+        let _settings = crate::settings::SETTINGS_IO_LOCK.lock();
+        cx.executor().allow_parking();
+        cx.update(|cx| cx.set_reduce_motion(true));
+        let backend =
+            Arc::new(AgentBackend::for_test("http://127.0.0.1:9".into(), String::new()).unwrap());
+        let chat = cx.new(|cx| ChatScreen::new_without_start(backend, "user".into(), cx));
+        let sidebar = chat.update(cx, |chat, _| chat.sidebar.clone());
+        sidebar.update(cx, |sidebar, cx| {
+            sidebar.reset_persisted_for_test();
+            sidebar.view.group = SidebarGroup::List;
+            sidebar.set_sessions(
+                (1..=100)
+                    .map(|ix| AgentSessionSummary {
+                        id: format!("s{ix}"),
+                        title: format!("Task {ix}"),
+                        project_root: "/tmp/proj".into(),
+                        created_ms: 0,
+                        updated_ms: 100 - ix,
+                        message_count: 1,
+                        model: None,
+                        web_enabled: true,
+                        permission_mode: Default::default(),
+                        state: AgentTaskState::Active,
+                        acp: false,
+                    })
+                    .collect(),
+                cx,
+            );
+        });
+        struct Host(Entity<Sidebar>);
+        impl Render for Host {
+            fn render(&mut self, _: &mut Window, _: &mut Context<Self>) -> impl IntoElement {
+                div()
+                    .w(px(300.))
+                    .h(px(400.))
+                    .flex()
+                    .flex_col()
+                    .child(self.0.clone())
+            }
+        }
+        let (_host, cx) = cx.add_window_view(|_, _| Host(sidebar.clone()));
+        cx.simulate_resize(gpui::size(px(600.), px(400.)));
+        cx.run_until_parked();
+        let outside = gpui::point(px(500.), px(350.));
+        cx.simulate_mouse_move(outside, None, gpui::Modifiers::default());
+        let header = cx.debug_bounds("projects-header").unwrap();
+        let view = cx.debug_bounds("view-options").unwrap();
+        let add = cx.debug_bounds("new-project").unwrap();
+        assert!(!sidebar.update(cx, |sidebar, _| sidebar.projects_header_hovered()));
+
+        for position in [header.center(), view.center(), add.center()] {
+            cx.simulate_mouse_move(position, None, gpui::Modifiers::default());
+            assert!(sidebar.update(cx, |sidebar, _| sidebar.projects_header_hovered()));
+            assert_eq!(cx.debug_bounds("projects-header"), Some(header));
+            assert_eq!(cx.debug_bounds("view-options"), Some(view));
+            assert_eq!(cx.debug_bounds("new-project"), Some(add));
+        }
+        let task = cx.debug_bounds("session-s1").unwrap();
+        cx.simulate_mouse_move(task.center(), None, gpui::Modifiers::default());
+        assert!(sidebar.update(cx, |sidebar, _| {
+            sidebar.section_hovered(SidebarHoverSection::Projects)
+        }));
+        assert!(
+            !sidebar.update(cx, |sidebar, _| sidebar.projects_header_hovered()),
+            "hovering a task in the Projects section must not reveal header actions"
+        );
+        cx.simulate_mouse_move(outside, None, gpui::Modifiers::default());
+        assert!(!sidebar.update(cx, |sidebar, _| sidebar.projects_header_hovered()));
+        assert_eq!(cx.debug_bounds("view-options"), Some(view));
+        assert_eq!(cx.debug_bounds("new-project"), Some(add));
+
+        cx.simulate_mouse_move(header.center(), None, gpui::Modifiers::default());
+        assert!(sidebar.update(cx, |sidebar, _| sidebar.projects_header_hovered()));
+        cx.simulate_event(gpui::ScrollWheelEvent {
+            position: header.center(),
+            delta: gpui::ScrollDelta::Pixels(gpui::point(px(0.), px(-1600.))),
+            ..Default::default()
+        });
+        cx.run_until_parked();
+        assert!(cx.debug_bounds("projects-header").is_none());
+        assert!(!sidebar.update(cx, |sidebar, _| sidebar.projects_header_hovered()));
+        cx.simulate_mouse_move(outside, None, gpui::Modifiers::default());
+        sidebar.update(cx, |sidebar, cx| {
+            sidebar.list.scroll_to(gpui::ListOffset::default());
+            cx.notify();
+        });
+        cx.run_until_parked();
+        assert_eq!(cx.debug_bounds("projects-header"), Some(header));
+        assert_eq!(cx.debug_bounds("view-options"), Some(view));
+        assert_eq!(cx.debug_bounds("new-project"), Some(add));
+        assert!(!sidebar.update(cx, |sidebar, _| sidebar.projects_header_hovered()));
+
+        cx.simulate_mouse_move(header.center(), None, gpui::Modifiers::default());
+        cx.simulate_mouse_move(view.center(), None, gpui::Modifiers::default());
+        cx.simulate_click(view.center(), gpui::Modifiers::default());
+        assert!(sidebar.update(cx, |sidebar, _| sidebar.popup.is_open(&SidebarPopup::View)));
+        assert!(cx.debug_bounds("sidebar-group").is_some());
+        cx.simulate_mouse_move(outside, None, gpui::Modifiers::default());
+        assert!(!sidebar.update(cx, |sidebar, _| sidebar.projects_header_hovered()));
+        assert!(sidebar.update(cx, |sidebar, _| sidebar.popup.is_open(&SidebarPopup::View)));
+        assert!(cx.debug_bounds("sidebar-group").is_some());
+        assert_eq!(cx.debug_bounds("view-options"), Some(view));
+    }
+
+    /// A task's status cross-fades inside the cached sidebar: the change
+    /// asks for frames until it settles, then the sidebar goes idle. A
+    /// status already there when the list first draws does not animate.
+    #[gpui::test]
+    fn task_status_cross_fades_in_the_cached_sidebar_and_settles(cx: &mut gpui::TestAppContext) {
+        use super::*;
+        let _settings = crate::settings::SETTINGS_IO_LOCK.lock();
+        cx.executor().allow_parking();
+        let start = std::time::Instant::now();
+        motion::set_test_now(Some(start));
+        cx.update(|cx| cx.set_reduce_motion(false));
+        let backend =
+            Arc::new(AgentBackend::for_test("http://127.0.0.1:9".into(), String::new()).unwrap());
+        let chat = cx.new(|cx| ChatScreen::new_without_start(backend, "user".into(), cx));
+        let sidebar = chat.update(cx, |chat, _| chat.sidebar.clone());
+        let activity = |waiting: bool| {
+            let ids = HashSet::from(["s1".to_string()]);
+            if waiting {
+                TaskActivity {
+                    waiting: ids,
+                    ..TaskActivity::default()
+                }
+            } else {
+                TaskActivity {
+                    unread: ids,
+                    ..TaskActivity::default()
+                }
+            }
+        };
+        sidebar.update(cx, |sidebar, cx| {
+            sidebar.reset_persisted_for_test();
+            sidebar.view.group = SidebarGroup::List;
+            sidebar.set_sessions(
+                (1..=3)
+                    .map(|ix| AgentSessionSummary {
+                        id: format!("s{ix}"),
+                        title: format!("Task {ix}"),
+                        project_root: "/tmp/proj".into(),
+                        created_ms: 0,
+                        updated_ms: 100 - ix,
+                        message_count: 1,
+                        model: None,
+                        web_enabled: true,
+                        permission_mode: Default::default(),
+                        state: AgentTaskState::Active,
+                        acp: false,
+                    })
+                    .collect(),
+                cx,
+            );
+            sidebar.set_activity(activity(true), cx);
+        });
+        struct Host(Entity<Sidebar>);
+        impl Render for Host {
+            fn render(&mut self, _: &mut Window, _: &mut Context<Self>) -> impl IntoElement {
+                div().size_full().child(
+                    self.0
+                        .clone()
+                        .cached(gpui::StyleRefinement::default().w(px(300.)).h(px(400.))),
+                )
+            }
+        }
+        let (_host, cx) = cx.add_window_view(|_, _| Host(sidebar.clone()));
+        cx.simulate_resize(gpui::size(px(600.), px(400.)));
+        cx.run_until_parked();
+        let frames = |cx: &mut gpui::VisualTestContext| {
+            cx.update(|window, cx| window.simulate_next_frame(cx))
+        };
+        assert!(cx.debug_bounds("session-s1").is_some());
+        assert_eq!(frames(cx), 0, "a status at first draw does not animate");
+
+        sidebar.update(cx, |sidebar, cx| sidebar.set_activity(activity(false), cx));
+        cx.run_until_parked();
+        assert!(frames(cx) > 0, "the new status fades in");
+        cx.run_until_parked();
+        motion::set_test_now(Some(start + motion::TOGGLE));
+        frames(cx);
+        cx.run_until_parked();
+        assert_eq!(frames(cx), 0, "settled, the cached sidebar goes idle");
+        motion::set_test_now(None);
+    }
 
     #[gpui::test]
     fn collapsed_and_empty_projects_keep_the_expanded_task_gap(cx: &mut gpui::TestAppContext) {

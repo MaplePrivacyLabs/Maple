@@ -119,25 +119,7 @@ struct QueueEdit {
 pub(crate) const SIDEBAR_WIDTH: gpui::Pixels = px(300.);
 /// Width of the rail that stands in for the sidebar while it is collapsed.
 const SIDEBAR_RAIL_WIDTH: gpui::Pixels = px(48.);
-const SIDEBAR_TRANSITION_DURATION: std::time::Duration = std::time::Duration::from_millis(200);
 
-/// One reversible transition. Sampling the current position when retargeting
-/// avoids jumping back to an endpoint on a second press.
-struct SidebarTransition {
-    from: f32,
-    to: f32,
-    started: std::time::Instant,
-    duration: std::time::Duration,
-}
-
-impl SidebarTransition {
-    fn value(&self, now: std::time::Instant) -> f32 {
-        let elapsed = now.saturating_duration_since(self.started).as_secs_f32();
-        let t = (elapsed / self.duration.as_secs_f32()).clamp(0., 1.);
-        let eased = 1. - (1. - t).powi(3);
-        self.from + (self.to - self.from) * eased
-    }
-}
 /// Where the header's toolbar starts, from the window's left edge, as the
 /// sidebar goes from collapsed (0) to expanded (1). Beside traffic lights
 /// it stays put at `titlebar::TRAFFIC_LIGHT_TOOLBAR_LEFT`, which Settings'
@@ -240,6 +222,9 @@ struct TranscriptCtx<'a> {
     /// One-based position of the row and the row count, for
     /// assistive technology ("message 4 of 17").
     position: (usize, usize),
+    /// How far the row's just-opened details are through fading in; 1 at
+    /// rest.
+    reveal: f32,
 }
 
 /// Text-to-speech progress for one message.
@@ -726,7 +711,8 @@ pub struct ChatScreen {
     watched_git_dir: Option<std::path::PathBuf>,
     /// Sidebar hidden; a toggle in the main pane brings it back.
     sidebar_collapsed: bool,
-    sidebar_transition: Option<SidebarTransition>,
+    /// Collapse (0) or expand (1) under way; `None` at rest.
+    sidebar_transition: Option<crate::ui::motion::Tween>,
     /// Files staged for the next message.
     draft_attachments: Vec<DraftAttachment>,
     unresolved_sends: HashMap<String, UnresolvedSend>,
@@ -762,6 +748,21 @@ pub struct ChatScreen {
     mcp_enabled_count: usize,
     /// Composer fills the pane (fullscreen editing).
     composer_expanded: bool,
+    /// How far the composer is from the height of its text (0) toward
+    /// expanded (1) while it eases between them; `None` at rest.
+    composer_resize: Option<motion::Tween>,
+    /// Heights that transition eases between, measured last frame.
+    composer_frame: std::rc::Rc<std::cell::Cell<self::composer::ComposerFrame>>,
+    /// Whether the last frame drew the empty state; `None` before the
+    /// first frame, which never glides.
+    composer_was_empty: Option<bool>,
+    /// The window y the composer region glides from, and since when, after
+    /// the empty state gives way to a conversation or back.
+    composer_glide: Option<(gpui::Pixels, std::time::Instant)>,
+    /// Send (0) or Stop (1) on the composer's main control.
+    send_stop: motion::Tween,
+    /// The send fill, disabled (0) or ready (1).
+    send_ready: motion::Tween,
     /// Latest todo list from the selected task, pinned above the composer
     /// while any entry is unfinished. A finished list stays in the
     /// transcript.
@@ -834,6 +835,12 @@ pub struct ChatScreen {
     /// True from send until the first agent item of the run arrives; shows
     /// the waiting indicator under the transcript.
     awaiting_first_token: bool,
+    /// Live row entrances and reveals in the transcript, kept here so a
+    /// row scrolled away and back never replays them.
+    row_motion: transcript::RowMotion,
+    /// When the task in `loading_session` started opening, for the header
+    /// spinner's delay.
+    loading_since: Option<std::time::Instant>,
     /// Item ids whose tool card or thinking row was clicked; membership
     /// inverts the `tool_details` default for that item.
     toggled_tools: HashSet<String>,
@@ -941,6 +948,9 @@ struct HostRecovery {
 
 /// How often a stale snapshot is fetched again before it is applied.
 const LOAD_RETRIES: u8 = 2;
+/// How long a task may take to open before the header shows a spinner;
+/// a faster open never flashes one.
+const LOADING_SPINNER_DELAY: std::time::Duration = std::time::Duration::from_millis(300);
 
 /// Finished run ids remembered for a late send acknowledgement.
 const FINISHED_RUNS_KEPT: usize = 64;
@@ -1189,7 +1199,7 @@ impl ChatScreen {
         if self.sidebar_collapsed == collapsed {
             return;
         }
-        let now = std::time::Instant::now();
+        let now = crate::ui::motion::now();
         let from = self
             .sidebar_transition
             .as_ref()
@@ -1198,13 +1208,17 @@ impl ChatScreen {
         let to = if collapsed { 0. } else { 1. };
         self.sidebar_collapsed = collapsed;
         let distance = (to - from).abs();
-        self.sidebar_transition =
-            (!cx.reduce_motion() && distance > f32::EPSILON).then(|| SidebarTransition {
-                from,
+        self.sidebar_transition = (!cx.reduce_motion() && distance > f32::EPSILON).then(|| {
+            let mut transition = crate::ui::motion::Tween::new(from);
+            transition.set(
                 to,
-                started: now,
-                duration: SIDEBAR_TRANSITION_DURATION.mul_f32(distance),
-            });
+                crate::ui::motion::PANEL.mul_f32(distance),
+                crate::ui::motion::ease_out_cubic,
+                now,
+                false,
+            );
+            transition
+        });
         if self.popup.is_open(&ChatPopup::Settings) {
             self.popup.close(cx);
         }
@@ -1220,9 +1234,9 @@ impl ChatScreen {
         if cx.reduce_motion() {
             self.sidebar_transition = None;
         }
-        let now = std::time::Instant::now();
+        let now = crate::ui::motion::now();
         if let Some(transition) = &self.sidebar_transition {
-            if now.saturating_duration_since(transition.started) < transition.duration {
+            if transition.is_moving(now) {
                 window.request_animation_frame();
                 return transition.value(now);
             }
@@ -1630,6 +1644,12 @@ impl ChatScreen {
             session_mcp: Vec::new(),
             mcp_enabled_count: 0,
             composer_expanded: false,
+            composer_resize: None,
+            composer_frame: std::rc::Rc::default(),
+            composer_was_empty: None,
+            composer_glide: None,
+            send_stop: motion::Tween::new(0.),
+            send_ready: motion::Tween::new(0.),
             permission_mode: settings.new_task_permission_mode.unwrap_or_default(),
             new_task_permission_mode: settings.new_task_permission_mode.unwrap_or_default(),
             markdown_cache: MarkdownCache::default(),
@@ -1658,6 +1678,8 @@ impl ChatScreen {
             selection: None,
             transcript_focus: None,
             awaiting_first_token: false,
+            row_motion: transcript::RowMotion::default(),
+            loading_since: None,
             toggled_tools: HashSet::new(),
             question_selected: HashMap::new(),
             question_step: 0,
@@ -3254,6 +3276,8 @@ impl ChatScreen {
         if matches!(mode, LoadMode::Select) && !self.is_selected(session_id) {
             if self.loading_session.as_deref() != Some(session_id) {
                 self.loading_timeline.clear();
+                self.loading_since = Some(motion::now());
+                self.schedule_loading_spinner(cx);
             }
             self.loading_session = Some(session_id.to_string());
             self.loading_generation = self.selection_generation;
@@ -3351,6 +3375,10 @@ impl ChatScreen {
                 let live_has_more = detail.live_has_more;
                 match mode {
                     LoadMode::Select => {
+                        // Another task's transcript fades in when it lands;
+                        // the task restored at launch (`apply_bootstrap`)
+                        // does not.
+                        let switching = !this.is_selected(&detail.session.id);
                         let root = detail.session.project_root.clone();
                         let needs_recent_touch = this
                             .project_root
@@ -3358,6 +3386,9 @@ impl ChatScreen {
                             .is_none_or(|current| current == &root);
                         this.upsert_session(detail.session.clone(), cx);
                         this.set_active_session(detail.session, detail.timeline, summaries, cx);
+                        if switching {
+                            this.row_motion.switch_task(motion::now());
+                        }
                         // A different existing root is persisted by set_active_session;
                         // explicit opens in the same root also count as recent use.
                         // Recency alone changes no listing, so no root reload.
@@ -3396,6 +3427,31 @@ impl ChatScreen {
         }
     }
 
+    /// Repaint once an open has taken `LOADING_SPINNER_DELAY`, so a slow
+    /// open shows the header spinner.
+    fn schedule_loading_spinner(&self, cx: &mut Context<Self>) {
+        cx.spawn(async move |entity, cx| {
+            cx.background_executor().timer(LOADING_SPINNER_DELAY).await;
+            entity
+                .update(cx, |this, cx| {
+                    if this.loading_session.is_some() {
+                        cx.notify();
+                    }
+                })
+                .ok();
+        })
+        .detach();
+    }
+
+    /// Whether the header shows the spinner of a task being opened: only
+    /// once the open has taken `LOADING_SPINNER_DELAY`.
+    pub(super) fn loading_spinner_due(&self) -> bool {
+        self.loading_session.is_some()
+            && self.loading_since.is_none_or(|since| {
+                motion::now().saturating_duration_since(since) >= LOADING_SPINNER_DELAY
+            })
+    }
+
     /// Install a new timeline and reset every per-item structure that is
     /// keyed by its contents.
     fn replace_timeline(&mut self, timeline: Vec<AgentTimelineItem>) {
@@ -3406,6 +3462,7 @@ impl ChatScreen {
             .application_vim_enabled
             .then(|| self.navigable_timeline_ids());
         self.local_error_text.clear();
+        self.row_motion.clear_rows();
         self.timeline = timeline.into_iter().map(paging::normalize).collect();
         self.pages.weights.clear();
         self.bound_transcript_window(true);
@@ -4251,10 +4308,36 @@ impl ChatScreen {
     }
 
     fn toggle_composer_expanded(&mut self, cx: &mut Context<Self>) {
+        let now = motion::now();
+        let from = self
+            .composer_resize
+            .map(|transition| transition.value(now))
+            .unwrap_or(if self.composer_expanded { 1. } else { 0. });
         self.composer_expanded = !self.composer_expanded;
         let expanded = self.composer_expanded;
+        let to = if expanded { 1. } else { 0. };
+        let distance = (to - from).abs();
+        // Eases between heights measured on screen, so it needs a frame
+        // drawn first; reduced motion switches at once.
+        let frame = self.composer_frame.get();
+        let measured = frame.region.is_some() && frame.room.is_some();
+        self.composer_resize =
+            (!cx.reduce_motion() && measured && distance > f32::EPSILON).then(|| {
+                let mut transition = motion::Tween::new(from);
+                transition.set(
+                    to,
+                    motion::PANEL.mul_f32(distance),
+                    motion::ease_out_cubic,
+                    now,
+                    false,
+                );
+                transition
+            });
+        // The field fills the box while it moves, so typed text stays put
+        // and the box's text height can be read off the field.
+        let fill = self.composer_fills();
         if let Some(composer) = self.composer.clone() {
-            composer.update(cx, |input, cx| input.set_fill_height(expanded, cx));
+            composer.update(cx, |input, cx| input.set_fill_height(fill, cx));
         }
         cx.notify();
     }
@@ -4448,16 +4531,27 @@ impl ChatScreen {
             !disconnected(notice)
         })?;
         self.schedule_notice_dismiss(notice.clone(), cx);
-        Some(div().child(motion::fade_in(
+        let text = notice.resolve();
+        // Keyed by what it says, so a different notice that replaces this
+        // one enters again.
+        let identity = {
+            use std::hash::{Hash, Hasher};
+            let mut hasher = std::collections::hash_map::DefaultHasher::new();
+            text.hash(&mut hasher);
+            hasher.finish()
+        };
+        Some(div().child(motion::slide_in(
             widgets::notice(
                 "notice-close",
-                notice.resolve(),
+                text,
                 cx.listener(|this, _event, _window, cx| {
                     this.notice = None;
                     cx.notify();
                 }),
             ),
-            "notice-reveal",
+            ("notice-reveal", identity),
+            motion::ENTER,
+            gpui::point(px(0.), motion::RISE),
         )))
     }
 
@@ -4854,6 +4948,8 @@ impl ChatScreen {
         } else {
             self.toggled_tools.insert(item_id.to_string());
         }
+        let open = self.tool_details != self.toggled_tools.contains(item_id);
+        self.row_motion.disclose(item_id, open, motion::now());
         // Resolve the row now: an index baked into the card at render
         // time goes stale once history reloads or items are inserted.
         if let Some(&(index, _)) = self.timeline_index.get(item_id) {
@@ -5609,6 +5705,14 @@ impl ChatScreen {
         if let Some(session) = self.selected_session.clone() {
             let id = item.id.clone();
             if self.apply_timeline_item(&session, item).is_some() {
+                // A failed send's message and status leave the slot under
+                // the transcript as its error arrives: the error opens from
+                // all of that space, so nothing above it jumps.
+                if self.row_motion.slot_on_screen && !self.waiting_slot_shown() {
+                    self.row_motion.slot_on_screen = false;
+                    let space = self.row_motion.slot_height();
+                    self.row_motion.open_from_more(&id, space);
+                }
                 self.local_error_text.insert(id, presentation);
             }
         }
@@ -6136,6 +6240,7 @@ impl ChatScreen {
             self.timeline[index].id = item.id.clone();
             self.timeline_index.insert(item.id.clone(), (index, 0));
             self.rekey_summary(&old, &item.id);
+            self.row_motion.rekey(&old, &item.id);
         }
         if let Some((index, _)) = self.timeline_index.get(&item.id)
             && let (Some(old), Some(new)) = (&self.timeline[*index].persisted, &item.persisted)
@@ -6225,6 +6330,11 @@ impl ChatScreen {
             None => {
                 let index = self.timeline.len();
                 self.timeline_index.insert(item.id.clone(), (index, 0));
+                self.row_motion.arrive(
+                    &item.id,
+                    motion::now(),
+                    self.list_state.is_following_tail(),
+                );
                 self.timeline.push(item);
                 self.list_state.splice(index..index, 1);
                 index
@@ -6281,6 +6391,12 @@ impl ChatScreen {
         true
     }
 
+    /// Whether the slot under the transcript shows something: the message
+    /// being sent or the waiting dots.
+    fn waiting_slot_shown(&self) -> bool {
+        self.has_send_feedback() || (self.awaiting_first_token && self.is_run_active())
+    }
+
     /// One timeline item arrived for the selected session.
     fn apply_incoming_item(
         &mut self,
@@ -6295,11 +6411,21 @@ impl ChatScreen {
         // work; the summary checks read the stored item after the merge.
         let completed = item.status.as_deref() == Some("completed");
         let is_tool = matches!(item.item_type.as_str(), "tool" | "toolCall");
+        let new_row = !self.timeline_index.contains_key(&item.id);
         self.load_attachment_images_for(&item, cx);
         let plan = plan_entries(&item);
         let Some(index) = self.apply_timeline_item(session_id, item) else {
             return;
         };
+        // The waiting row (or the sent message's status) leaves the slot
+        // under the transcript as this row arrives: the row opens from that
+        // height, so nothing above it jumps.
+        if new_row && self.row_motion.slot_on_screen && !self.waiting_slot_shown() {
+            self.row_motion.slot_on_screen = false;
+            let id = self.timeline[index].id.clone();
+            self.row_motion
+                .open_from_more(&id, transcript::WAITING_ROW_HEIGHT);
+        }
         if self
             .sidebar_plan
             .as_ref()
@@ -6339,6 +6465,15 @@ impl ChatScreen {
             self.refresh_context_usage(cx);
         }
     }
+
+    /// Pushes that crossed a reconnect rebuild the transcript; they do not
+    /// enter like live rows.
+    fn replay_after_reconnect(&mut self, events: Vec<AgentServiceEvent>, cx: &mut Context<Self>) {
+        self.row_motion.set_quiet(true);
+        self.handle_service_events(events, cx);
+        self.row_motion.set_quiet(false);
+    }
+
     pub fn handle_service_events(
         &mut self,
         events: Vec<AgentServiceEvent>,
@@ -6536,7 +6671,7 @@ impl ChatScreen {
                             }
                         }
                         this.refresh_sessions(cx);
-                        this.handle_service_events(events, cx);
+                        this.replay_after_reconnect(events, cx);
                         this.host_recovery.unavailable = false;
                         this.runtime_error_reason = None;
                         this.runtime_error = None;
@@ -7035,8 +7170,9 @@ impl ChatScreen {
             }
             AgentRunEvent::Error(item) => {
                 if self.is_selected(session_id) {
-                    self.load_attachment_images_for(&item, cx);
-                    self.apply_timeline_item(session_id, item);
+                    // Like any reply, an error ends the wait: the waiting
+                    // row leaves and the error opens from its space.
+                    self.apply_incoming_item(session_id, item, cx);
                 } else {
                     self.bump_timeline_revision(session_id);
                     return false;
@@ -7298,9 +7434,15 @@ impl Render for ChatScreen {
             .clone()
             .map(|status| self.render_trust_prompt(&status, cx));
         let empty = self.shows_empty_state();
+        let composer_glide = self.composer_glide_frame(empty, window, cx);
         let sidebar_expansion = self.sidebar_expansion(window, cx);
+        let rise = gpui::point(px(0.), motion::RISE);
+        let composer_resize = self.composer_resize_frame(window, cx);
         let main = if empty {
-            self.render_empty_state(window, cx)
+            // No slot under a transcript here; rows opening from it start at
+            // 0, and the next slot to appear comes with a send.
+            self.row_motion.show_empty_state();
+            self.render_empty_state(composer_resize, composer_glide, window, cx)
         } else {
             div()
                 .flex()
@@ -7312,24 +7454,13 @@ impl Render for ChatScreen {
                 // takes scrolls the transcript.
                 .on_scroll_wheel(cx.listener(Self::scroll_transcript_from_pane))
                 .child(self.render_transcript(window, cx))
-                .children(self.render_send_preview())
-                .when(
-                    self.awaiting_first_token && self.is_run_active() && !self.has_send_feedback(),
-                    |main| {
-                        // Same gutter as transcript text so the dots line up
-                        main.child(
-                            div()
-                                .w_full()
-                                .max_w(CONTENT_WIDTH)
-                                .mx_auto()
-                                .px_6()
-                                .child(render_waiting_indicator()),
-                        )
-                    },
-                )
+                .children(self.render_under_transcript(window, cx))
                 .when_some(self.current_question(), |container, question| {
                     let input = self.pending_question_input.clone();
                     let step = self.question_step;
+                    let enter = gpui::ElementId::Name(
+                        format!("question-card-enter-{}", question.request_id).into(),
+                    );
                     // Each option shows the key bound to it right now. One
                     // keymap lookup per option on show; a card has a handful.
                     let key_labels = question
@@ -7342,21 +7473,28 @@ impl Render for ChatScreen {
                                 .collect::<Vec<_>>()
                         })
                         .unwrap_or_default();
-                    // Same column and gutter as the composer under it.
-                    container.child(div().w_full().max_w(CONTENT_WIDTH).mx_auto().px_6().child(
-                        render_question_card(
-                            question,
-                            step,
-                            self.question_collapsed,
-                            input,
-                            &self.question_selected,
-                            &key_labels,
-                            &self.messages,
-                            cx,
+                    // Same column and gutter as the composer under it. Like
+                    // the cards above the composer, a new question rises in
+                    // and leaves at once.
+                    container.child(motion::slide_in(
+                        div().w_full().max_w(CONTENT_WIDTH).mx_auto().px_6().child(
+                            render_question_card(
+                                question,
+                                step,
+                                self.question_collapsed,
+                                input,
+                                &self.question_selected,
+                                &key_labels,
+                                &self.messages,
+                                cx,
+                            ),
                         ),
+                        enter,
+                        motion::ENTER,
+                        rise,
                     ))
                 })
-                .child(
+                .child(composer::glide(
                     div()
                         .relative()
                         .w_full()
@@ -7364,24 +7502,53 @@ impl Render for ChatScreen {
                         .mx_auto()
                         .px_6()
                         .pb_4()
-                        .when(self.composer_expanded, |wrap| {
-                            wrap.flex_none()
+                        .map(|wrap| match composer_resize {
+                            // Easing between its text's height and expanded.
+                            Some((_, height)) => {
+                                wrap.flex_none().h(height).min_h_0().flex().flex_col()
+                            }
+                            None if self.composer_expanded => wrap
+                                .flex_none()
                                 .h(gpui::relative(0.7))
                                 .min_h_0()
                                 .flex()
-                                .flex_col()
+                                .flex_col(),
+                            None => wrap,
                         })
                         // The composer, its cards and the palette keep their
                         // own wheel; the space beside them scrolls the
                         // transcript.
                         .on_scroll_wheel(|_, _, cx| cx.stop_propagation())
-                        .children(self.render_btw_card(cx))
-                        .children(self.render_subagents_card(cx))
-                        .children(self.render_plan_card(cx))
+                        // Cards above the composer rise in when they appear
+                        // and leave at once.
+                        .children(self.render_btw_card(cx).map(|card| {
+                            motion::slide_in(card, "btw-card-enter", motion::ENTER, rise)
+                        }))
+                        .children(self.render_subagents_card(cx).map(|card| {
+                            motion::slide_in(card, "subagents-card-enter", motion::ENTER, rise)
+                        }))
+                        .children(self.render_plan_card(cx).map(|card| {
+                            motion::slide_in(card, "plan-card-enter", motion::ENTER, rise)
+                        }))
                         .child(self.render_composer(window, cx))
                         .children(self.render_slash_palette(cx))
-                        .children(self.render_persistence_failure(cx)),
-                )
+                        .children(self.render_persistence_failure(cx))
+                        .child(composer::measure(
+                            &self.composer_frame,
+                            |frame, bounds, _| {
+                                frame.region = Some(bounds.size.height);
+                                frame.top = Some(bounds.origin.y);
+                            },
+                        )),
+                    composer_glide,
+                ))
+                // Expanded, the composer region takes 70% of this column.
+                .child(composer::measure(
+                    &self.composer_frame,
+                    |frame, bounds, _| {
+                        frame.room = Some(bounds.size.height * 0.7);
+                    },
+                ))
         };
         div()
             .key_context(self.application_vim_context())
@@ -7651,13 +7818,21 @@ impl ChatScreen {
                         )
                     })
                     .child(div().flex_1())
-                    .child(
-                        icon("chevron-down", px(12.), theme::text_muted()).when(!open, |icon| {
-                            icon.with_transformation(gpui::Transformation::rotate(gpui::radians(
-                                std::f32::consts::PI,
-                            )))
-                        }),
-                    )
+                    .child(motion::animated(
+                        "settings-menu-chevron",
+                        if open { 1. } else { 0. },
+                        motion::TOGGLE,
+                        motion::ease_out_cubic,
+                        |open| {
+                            // Points up at the menu above while closed, and
+                            // turns down once it is open.
+                            icon("chevron-down", px(12.), theme::text_muted())
+                                .with_transformation(gpui::Transformation::rotate(gpui::radians(
+                                    std::f32::consts::PI * (1. - open),
+                                )))
+                                .into_any_element()
+                        },
+                    ))
             });
         let button = self
             .popup
@@ -7974,11 +8149,15 @@ impl ChatScreen {
                 .pl(mark_padding)
                 .rounded(theme::RADIUS_SM)
                 .focus_visible(widgets::focus_ring)
-                .hover(|style| {
-                    style
-                        .bg(gpui::rgb(theme::bg_sidebar_row_hover()))
-                        .cursor_pointer()
+                .map(|element| {
+                    let rest: gpui::Hsla = gpui::transparent_black();
+                    crate::ui::motion::hover_background(
+                        element,
+                        rest,
+                        gpui::rgb(theme::bg_sidebar_row_hover()),
+                    )
                 })
+                .hover(|style| style.cursor_pointer())
                 .active(|style| style.bg(gpui::rgb(theme::bg_sidebar_row_selected())))
                 // Inside a drag region: a press here is a click, not a drag.
                 .on_mouse_down(gpui::MouseButton::Left, |_event, _window, cx| {
@@ -8018,8 +8197,93 @@ impl ChatScreen {
 
     /// Hero layout for a task with no messages: display heading, composer,
     /// and privacy note centered in the pane (mirrors EmptyAgentState).
-    fn render_empty_state(&mut self, window: &mut Window, cx: &mut Context<Self>) -> Div {
+    /// Expanded, the composer fills the pane; while it eases there and
+    /// back (`composer_resize`), the heading and the note fold away and
+    /// fade with it so the column never jumps. `composer_glide` carries
+    /// the composer up from the foot of a conversation.
+    fn render_empty_state(
+        &mut self,
+        composer_resize: Option<(f32, gpui::Pixels)>,
+        composer_glide: Option<(gpui::Pixels, f32)>,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> Div {
         let expanded = self.composer_expanded;
+        let fills = self.composer_fills();
+        let hero = match composer_resize {
+            Some((progress, _)) => 1. - progress,
+            None if expanded => 0.,
+            None => 1.,
+        };
+        let measured = self.composer_frame.get();
+        // At rest a block records its height. On the way it is drawn at
+        // `hero` of that height while its content keeps its full size, held
+        // against the composer (the heading at the block's foot, the note at
+        // its head) and fading, never clipped: text rides with the composer
+        // instead of being cut by the folding box. The content keeps
+        // recording its height, so a block first drawn mid-fold folds from
+        // the next frame. Each block carries the spacing beside it as its
+        // content's margin (padding would not fold), so nothing is left
+        // behind.
+        let fold =
+            |content: Div, rest: Option<gpui::Pixels>, foot: bool, record: composer::Record| {
+                let content = content
+                    .relative()
+                    .child(composer::measure(&self.composer_frame, record));
+                if composer_resize.is_some() {
+                    // Squared, so text nearing the pane's edge, where the
+                    // pane clips it, is already faint.
+                    let content = content.absolute().left_0().right_0().opacity(hero * hero);
+                    div()
+                        .relative()
+                        .w_full()
+                        .flex_none()
+                        .h(rest.unwrap_or_default() * hero)
+                        .child(if foot {
+                            content.bottom_0()
+                        } else {
+                            content.top_0()
+                        })
+                } else {
+                    content
+                }
+            };
+        let title = (hero > 0.).then(|| {
+            fold(
+                div().w_full().flex().flex_col().items_center().child(
+                    div()
+                        .debug_selector(|| "empty-title".to_string())
+                        // Its own space and the gap to the composer.
+                        .mb_12()
+                        .font_family(crate::assets::FONT_DISPLAY)
+                        .text_size(px(36.))
+                        .line_height(px(48.))
+                        .text_color(gpui::rgb(theme::display_text()))
+                        .child(tr("chat-empty-title")),
+                ),
+                measured.title,
+                true,
+                |frame, bounds, _| frame.title = Some(bounds.size.height),
+            )
+        });
+        let privacy = (hero > 0.).then(|| {
+            fold(
+                div().w_full().flex().justify_center().child(
+                    div()
+                        .mt_6()
+                        .flex()
+                        .items_center()
+                        .gap_1()
+                        .text_xs()
+                        .text_color(gpui::rgb(theme::text_muted()))
+                        .child(icon("lock", px(12.), theme::text_muted()))
+                        .child(tr("chat-empty-private")),
+                ),
+                measured.privacy,
+                false,
+                |frame, bounds, _| frame.privacy = Some(bounds.size.height),
+            )
+        });
         let body = div()
             .flex()
             .flex_col()
@@ -8029,7 +8293,18 @@ impl ChatScreen {
             .items_center()
             .justify_center()
             .px_6()
-            .when(expanded, |pane| pane.py_6())
+            .when(fills, |pane| pane.py_6())
+            // The folding heading rides above its shrinking box; in a short
+            // pane it would reach past the pane's top edge and draw faintly
+            // over the title bar, so the pane clips while the composer moves.
+            .when(composer_resize.is_some(), |pane| pane.overflow_hidden())
+            // Expanded, the composer region takes the pane less its padding.
+            .child(composer::measure(
+                &self.composer_frame,
+                |frame, bounds, window| {
+                    frame.room = Some(bounds.size.height - window.rem_size() * 3.);
+                },
+            ))
             .child(
                 div()
                     .w_full()
@@ -8038,48 +8313,45 @@ impl ChatScreen {
                     .flex()
                     .flex_col()
                     .items_center()
-                    .gap_6()
-                    .when(expanded, |column| column.h_full().min_h_0())
-                    .when(!expanded, |column| {
-                        column.child(
-                            div()
-                                .mb_6()
-                                .font_family(crate::assets::FONT_DISPLAY)
-                                .text_size(px(36.))
-                                .line_height(px(48.))
-                                .text_color(gpui::rgb(theme::display_text()))
-                                .child(tr("chat-empty-title")),
-                        )
-                    })
-                    .child(
+                    .when(fills, |column| column.h_full().min_h_0().justify_center())
+                    .children(title)
+                    .child(composer::glide(
                         div()
                             .relative()
                             .w_full()
-                            .when(expanded, |wrap| wrap.flex_1().min_h_0().flex().flex_col())
+                            .map(|wrap| match composer_resize {
+                                // Grows into the free space up to this
+                                // frame's height.
+                                Some((_, height)) => {
+                                    wrap.flex_1().min_h_0().max_h(height).flex().flex_col()
+                                }
+                                None if expanded => wrap.flex_1().min_h_0().flex().flex_col(),
+                                None => wrap,
+                            })
                             .child(self.render_composer(window, cx))
-                            .children(self.render_slash_palette(cx)),
-                    )
+                            .children(self.render_slash_palette(cx))
+                            .child(composer::measure(
+                                &self.composer_frame,
+                                |frame, bounds, _| {
+                                    frame.region = Some(bounds.size.height);
+                                    frame.top = Some(bounds.origin.y);
+                                },
+                            )),
+                        composer_glide,
+                    ))
                     .when(
                         self.awaiting_first_token && self.is_run_active(),
-                        |column| column.child(render_waiting_indicator()),
+                        |column| column.child(div().mt_6().child(render_waiting_indicator())),
                     )
-                    .when(!expanded, |column| {
-                        column.child(
-                            div()
-                                .flex()
-                                .items_center()
-                                .gap_1()
-                                .text_xs()
-                                .text_color(gpui::rgb(theme::text_muted()))
-                                .child(icon("lock", px(12.), theme::text_muted()))
-                                .child(tr("chat-empty-private")),
-                        )
-                    })
+                    .children(privacy)
                     .when_some(self.runtime_error.clone(), |column, error| {
-                        column.child(widgets::banner(widgets::Tone::Error, error))
+                        column.child(widgets::banner(widgets::Tone::Error, error).mt_6())
                     })
-                    .children(self.render_persistence_failure(cx))
-                    .children(self.render_notice(cx)),
+                    .children(
+                        self.render_persistence_failure(cx)
+                            .map(|failure| failure.mt_6()),
+                    )
+                    .children(self.render_notice(cx).map(|notice| notice.mt_6())),
             );
         div()
             .flex()

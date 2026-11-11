@@ -73,6 +73,8 @@ gpui::actions!(
 
 /// Space kept between a trigger and the menu it opens.
 const GAP: Pixels = px(4.);
+/// How far a menu travels as it opens, settling away from its trigger.
+const SLIDE: Pixels = px(4.);
 /// Closest a menu comes to the window edge.
 const WINDOW_MARGIN: Pixels = px(8.);
 
@@ -178,6 +180,11 @@ pub(crate) struct Popup<V: 'static, K: 'static> {
     /// menu is open (a status that loads late) do not move it to another
     /// item.
     highlighted: Option<ElementId>,
+    /// The keyboard moved the highlight last, so it moves at once; the
+    /// pointer's highlight eases like any hover.
+    keyboard: bool,
+    /// Counts openings, so each opening replays the entrance.
+    opened: u64,
     focus: FocusHandle,
     /// Focus moves in on the next render, once the panel is in the tree.
     focus_pending: bool,
@@ -205,6 +212,8 @@ impl<V: 'static, K: Clone + PartialEq + 'static> Popup<V, K> {
             get,
             open: None,
             highlighted: None,
+            keyboard: false,
+            opened: 0,
             focus: cx.focus_handle(),
             focus_pending: false,
             focus_out: None,
@@ -262,6 +271,7 @@ impl<V: 'static, K: Clone + PartialEq + 'static> Popup<V, K> {
         *self.hover_opener.get_mut() = None;
         if self.open.as_ref() != Some(&key) {
             self.scroll.set_offset(point(px(0.), px(0.)));
+            self.opened += 1;
         }
         self.open = Some(key);
         self.reveal.set(if item.is_some() {
@@ -269,6 +279,7 @@ impl<V: 'static, K: Clone + PartialEq + 'static> Popup<V, K> {
         } else {
             Reveal::Done
         });
+        self.keyboard = item.is_some();
         self.highlighted = item;
         self.focus_pending = true;
         cx.notify();
@@ -429,13 +440,13 @@ impl<V: 'static, K: Clone + PartialEq + 'static> Popup<V, K> {
     /// closed trigger stays an ordinary button: it shows its pressed state,
     /// and any other open popup still sees the press and closes. Commands
     /// and keys that open a menu call [`Self::open`] instead.
-    pub(crate) fn trigger(
+    pub(crate) fn trigger<E: StatefulInteractiveElement + FluentBuilder>(
         &self,
         key: K,
-        button: Stateful<Div>,
+        button: E,
         cx: &mut Context<V>,
         toggle: impl Fn(&mut V, &mut Window, &mut Context<V>) + 'static,
-    ) -> Stateful<Div> {
+    ) -> E {
         let open = self.is_open(&key);
         let get = self.get;
         button
@@ -581,7 +592,7 @@ impl<V: 'static, K: Clone + PartialEq + 'static> Popup<V, K> {
                         initial: initial(&item.label),
                         child: children.len(),
                     });
-                    children.push(item_row(item, highlighted, get, cx));
+                    children.push(item_row(item, highlighted, self.keyboard, get, cx));
                 }
                 Entry::Header(text) => children.push(
                     div()
@@ -762,7 +773,11 @@ impl<V: 'static, K: Clone + PartialEq + 'static> Popup<V, K> {
             .size_full(),
         );
         Float {
-            panel: Some(motion::fade_in(panel, "popup-reveal").into_any_element()),
+            id: ElementId::NamedChild(
+                std::sync::Arc::new(id),
+                SharedString::from(format!("opened-{}", self.opened)),
+            ),
+            panel: Some(panel),
             placement,
             priority,
         }
@@ -815,16 +830,18 @@ pub(crate) enum Placement {
 
 impl Placement {
     /// The top-left corner of a panel of `size` in a window of `window`
-    /// size. The panel goes on its preferred side of the trigger (or of the
-    /// point) when it fits there, on the other side when only that one has
-    /// room, and otherwise on the roomier side, pushed inside the window.
+    /// size, and the offset from there it opens from: [`SLIDE`] toward the
+    /// trigger, so it settles away from it. The panel goes on its preferred
+    /// side of the trigger (or of the point) when it fits there, on the
+    /// other side when only that one has room, and otherwise on the roomier
+    /// side, pushed inside the window.
     fn origin(
         self,
         trigger: Bounds<Pixels>,
         size: Size<Pixels>,
         window: Size<Pixels>,
         margin: Pixels,
-    ) -> Point<Pixels> {
+    ) -> (Point<Pixels>, Point<Pixels>) {
         let (anchor, prefer_below, prefer_start, gap) = match self {
             Placement::BelowStart => (trigger, true, true, GAP),
             Placement::BelowEnd => (trigger, true, false, GAP),
@@ -855,7 +872,8 @@ impl Placement {
         let y = y.min(window.height - margin - size.height).max(margin);
         // Whole pixels, rounding away from the trigger to keep the gap.
         let y = if below { y.ceil() } else { y.floor() };
-        point(x.round(), y)
+        let from = point(px(0.), if below { -SLIDE } else { SLIDE });
+        (point(x.round(), y), from)
     }
 }
 
@@ -864,10 +882,11 @@ fn beside(
     size: Size<Pixels>,
     window: Size<Pixels>,
     margin: Pixels,
-) -> Point<Pixels> {
+) -> (Point<Pixels>, Point<Pixels>) {
     let room_right = window.width - margin - trigger.right() - GAP;
     let room_left = trigger.left() - GAP - margin;
-    let x = if first_side(true, size.width, room_right, room_left) {
+    let right = first_side(true, size.width, room_right, room_left);
+    let x = if right {
         trigger.right() + GAP
     } else {
         trigger.left() - GAP - size.width
@@ -877,7 +896,8 @@ fn beside(
         .top()
         .min(window.height - margin - size.height)
         .max(margin);
-    point(x.round(), y.round())
+    let from = point(if right { -SLIDE } else { SLIDE }, px(0.));
+    (point(x.round(), y.round()), from)
 }
 
 /// Whether a panel `length` long goes on the first of two sides, which
@@ -897,12 +917,22 @@ fn first_side(prefer_first: bool, length: Pixels, first: Pixels, second: Pixels)
 /// Draws a menu panel above everything, where [`Placement::origin`] puts
 /// it. Beside a trigger, this element covers the `relative` box around the
 /// trigger and takes that box's bounds. The panel is measured before it is
-/// placed, so it lands on the right side in its first frame.
+/// placed, so it lands on the right side in its first frame, and it opens
+/// from that side: it fades in while settling [`SLIDE`] away from the
+/// trigger. `id` is new for each opening, so the entrance replays when one
+/// menu replaces another. A menu opened from the keyboard (the window's
+/// last input was a key) appears at once; a pointer opening, including one
+/// that starts on the current choice, plays the entrance.
 struct Float {
-    panel: Option<AnyElement>,
+    id: ElementId,
+    panel: Option<Div>,
     placement: Placement,
     priority: usize,
 }
+
+/// When the panel under a [`Float`] id first drew, and whether the
+/// keyboard opened it, which skips the entrance.
+struct Opened(std::time::Instant, bool);
 
 impl IntoElement for Float {
     type Element = Self;
@@ -917,7 +947,7 @@ impl Element for Float {
     type PrepaintState = ();
 
     fn id(&self) -> Option<ElementId> {
-        None
+        Some(self.id.clone())
     }
 
     fn source_location(&self) -> Option<&'static std::panic::Location<'static>> {
@@ -943,22 +973,47 @@ impl Element for Float {
 
     fn prepaint(
         &mut self,
-        _: Option<&GlobalElementId>,
+        id: Option<&GlobalElementId>,
         _: Option<&InspectorElementId>,
         bounds: Bounds<Pixels>,
         _: &mut (),
         window: &mut Window,
         cx: &mut App,
     ) {
-        let Some(mut panel) = self.panel.take() else {
+        let Some(panel) = self.panel.take() else {
             return;
+        };
+        // Opacity does not reach into a deferred draw, so the entrance is
+        // drawn here, on the panel itself.
+        let now = motion::now();
+        let keyboard = window.last_input_was_keyboard();
+        let (started, instant) = window.with_element_state(
+            id.expect("a float has an id"),
+            |state: Option<Opened>, _| {
+                let opened = state.unwrap_or(Opened(now, keyboard));
+                ((opened.0, opened.1), opened)
+            },
+        );
+        let shown = motion::ease_out_quint(motion::progress(
+            started,
+            motion::REVEAL,
+            now,
+            cx.reduce_motion() || instant,
+        ));
+        let mut panel = if shown < 1. {
+            window.request_animation_frame();
+            panel.opacity(shown).into_any_element()
+        } else {
+            panel.into_any_element()
         };
         let size = panel.layout_as_root(AvailableSpace::min_size(), window, cx);
         let margin = window_margin(window);
-        let origin = self
+        let (origin, from) = self
             .placement
             .origin(bounds, size, window.viewport_size(), margin);
-        window.defer_draw(panel, origin, self.priority, None);
+        let rest = 1. - shown;
+        let offset = point((from.x * rest).round(), (from.y * rest).round());
+        window.defer_draw(panel, origin + offset, self.priority, None);
     }
 
     fn paint(
@@ -1261,6 +1316,7 @@ fn initial(text: &str) -> Option<char> {
 fn item_row<V: 'static, K: Clone + PartialEq + 'static>(
     item: MenuItem<V>,
     highlighted: bool,
+    keyboard: bool,
     get: fn(&mut V) -> &mut Popup<V, K>,
     cx: &mut Context<V>,
 ) -> AnyElement {
@@ -1309,10 +1365,7 @@ fn item_row<V: 'static, K: Clone + PartialEq + 'static>(
             };
             row.aria_toggled(if on { Toggled::True } else { Toggled::False })
         })
-        .when(highlighted, |row| {
-            row.aria_active_descendant()
-                .bg(gpui::rgb(theme::bg_sidebar_row_hover()))
-        })
+        .when(highlighted, |row| row.aria_active_descendant())
         .flex()
         .items_center()
         .gap_2()
@@ -1331,6 +1384,7 @@ fn item_row<V: 'static, K: Clone + PartialEq + 'static>(
                 close(view, window, cx);
             }
             let popup = get(view);
+            popup.keyboard = false;
             if *hovered {
                 popup.hover = None;
                 popup.highlight(enabled.then(|| hovered_id.clone()), cx);
@@ -1447,10 +1501,18 @@ fn item_row<V: 'static, K: Clone + PartialEq + 'static>(
             .children(submenu.panel)
         })
         .relative();
-    match style {
-        Some(style) => style(row_element).into_any_element(),
-        None => row_element.into_any_element(),
-    }
+    let row_element = match style {
+        Some(style) => style(row_element),
+        None => row_element,
+    };
+    crate::ui::motion::hover_background(
+        row_element,
+        gpui::transparent_black(),
+        gpui::rgb(theme::bg_sidebar_row_hover()),
+    )
+    .highlighted(highlighted)
+    .instant(keyboard)
+    .into_any_element()
 }
 
 #[derive(Clone, Copy)]
@@ -1486,6 +1548,7 @@ fn step<V: 'static, K: Clone + PartialEq + 'static>(
         let candidate = &picks[at as usize];
         if candidate.enabled {
             popup.scroll.scroll_to_item(candidate.child);
+            popup.keyboard = true;
             popup.highlight(Some(candidate.id.clone()), cx);
             return;
         }
@@ -1544,6 +1607,7 @@ fn type_ahead<V: 'static, K: Clone + PartialEq + 'static>(
         .find(|&row| picks[row].enabled && typed.is_some() && picks[row].initial == typed);
     if let Some(row) = found {
         popup.scroll.scroll_to_item(picks[row].child);
+        popup.keyboard = true;
         popup.highlight(Some(picks[row].id.clone()), cx);
     }
 }
@@ -2156,6 +2220,138 @@ mod tests {
         assert_eq!(open(&host, cx), None);
     }
 
+    /// A menu opens from its trigger: below one it settles down, above
+    /// one it settles up, and once there it asks for no more frames. A
+    /// menu that replaces another opens the same way, and reduced motion
+    /// draws it in place.
+    #[gpui::test]
+    fn a_menu_slides_in_away_from_its_trigger(cx: &mut TestAppContext) {
+        let start = std::time::Instant::now();
+        motion::set_test_now(Some(start));
+        let (_host, cx) = setup(cx);
+        cx.update(|_, cx| cx.set_reduce_motion(false));
+        let frames =
+            |cx: &mut VisualTestContext| cx.update(|window, cx| window.simulate_next_frame(cx));
+        let frame_at = |at: std::time::Instant, cx: &mut VisualTestContext| {
+            motion::set_test_now(Some(at));
+            cx.update(|window, cx| {
+                window.simulate_next_frame(cx);
+            });
+            cx.run_until_parked();
+        };
+        let top = |menu: &'static str, cx: &mut VisualTestContext| {
+            cx.debug_bounds(menu).expect("menu").top()
+        };
+
+        click(cx, "b-trigger");
+        let arriving = top("menu-b", cx);
+        frame_at(start + motion::REVEAL, cx);
+        assert_eq!(
+            top("menu-b", cx) - arriving,
+            SLIDE,
+            "below, it settles down"
+        );
+        assert_eq!(frames(cx), 0, "an open menu at rest asks for no frames");
+
+        click(cx, "a-trigger");
+        let arriving = top("menu-a", cx);
+        frame_at(start + motion::REVEAL * 2, cx);
+        let rest = top("menu-a", cx);
+        assert_eq!(rest - arriving, SLIDE, "the next menu opens the same way");
+
+        click(cx, "low-trigger");
+        let arriving = top("menu-low", cx);
+        frame_at(start + motion::REVEAL * 3, cx);
+        assert_eq!(
+            arriving - top("menu-low", cx),
+            SLIDE,
+            "above, it settles up"
+        );
+        assert_eq!(frames(cx), 0);
+
+        click(cx, "low-trigger");
+        cx.update(|_, cx| cx.set_reduce_motion(true));
+        click(cx, "a-trigger");
+        assert_eq!(top("menu-a", cx), rest, "reduced motion opens at rest");
+        assert_eq!(frames(cx), 0);
+        motion::set_test_now(None);
+    }
+
+    /// Arrow keys move the highlight on the frame they arrive; the
+    /// pointer's highlight eases in like any hover.
+    #[gpui::test]
+    fn the_keyboard_moves_the_highlight_at_once(cx: &mut TestAppContext) {
+        let start = std::time::Instant::now();
+        motion::set_test_now(Some(start));
+        let (host, cx) = setup(cx);
+        cx.update(|_, cx| cx.set_reduce_motion(false));
+        let frames =
+            |cx: &mut VisualTestContext| cx.update(|window, cx| window.simulate_next_frame(cx));
+        host.update(cx, |host, cx| host.popup.open(Which::A, cx));
+        cx.run_until_parked();
+        motion::set_test_now(Some(start + motion::REVEAL));
+        frames(cx);
+        cx.run_until_parked();
+        assert_eq!(frames(cx), 0, "the menu has arrived");
+
+        cx.simulate_keystrokes("down");
+        assert_eq!(highlighted(&host, cx), Some("a-one".into()));
+        assert_eq!(
+            frames(cx),
+            0,
+            "a highlight the keyboard moved does not ease"
+        );
+        cx.simulate_keystrokes("down");
+        assert_eq!(frames(cx), 0);
+        let row = cx.debug_bounds("a-three").expect("row");
+        cx.simulate_mouse_move(row.center(), None, Modifiers::default());
+        assert_eq!(highlighted(&host, cx), Some("a-three".into()));
+        assert!(frames(cx) > 0, "the pointer's highlight eases");
+        motion::set_test_now(None);
+    }
+
+    /// The input that opened a menu decides its entrance. With the pointer
+    /// it slides in, even when its owner starts it on the current choice
+    /// the way Settings dropdowns do (`open_highlighted`); from the
+    /// keyboard it is drawn at rest on its first frame.
+    #[gpui::test]
+    fn only_pointer_openings_play_the_menu_entrance(cx: &mut TestAppContext) {
+        let start = std::time::Instant::now();
+        motion::set_test_now(Some(start));
+        let (host, cx) = setup(cx);
+        cx.update(|_, cx| cx.set_reduce_motion(false));
+        let top = |cx: &mut VisualTestContext| cx.debug_bounds("menu-a").expect("menu").top();
+        click(cx, "a-trigger");
+        motion::set_test_now(Some(start + motion::REVEAL));
+        cx.update(|window, cx| {
+            window.simulate_next_frame(cx);
+        });
+        cx.run_until_parked();
+        let rest = top(cx);
+        click(cx, "a-trigger");
+
+        // The pointer was last; a click handler opens on the current row.
+        let away = cx.debug_bounds("b-trigger").expect("trigger").center();
+        cx.simulate_mouse_move(away, None, Modifiers::default());
+        host.update(cx, |host, cx| {
+            host.popup.open_highlighted(Which::A, "a-one", cx)
+        });
+        cx.run_until_parked();
+        assert_eq!(rest - top(cx), SLIDE, "a pointer opening slides in");
+        host.update(cx, |host, cx| {
+            host.popup.close(cx);
+        });
+        cx.run_until_parked();
+
+        cx.simulate_keystrokes("escape");
+        host.update(cx, |host, cx| {
+            host.popup.open_highlighted(Which::A, "a-one", cx)
+        });
+        cx.run_until_parked();
+        assert_eq!(top(cx), rest, "a keyboard opening is drawn at rest");
+        motion::set_test_now(None);
+    }
+
     #[gpui::test]
     fn a_menu_opened_on_a_row_shows_that_row(cx: &mut TestAppContext) {
         let (host, cx) = setup(cx);
@@ -2180,6 +2376,7 @@ mod tests {
     #[gpui::test]
     fn a_menu_larger_than_the_window_fits_inside_it(cx: &mut TestAppContext) {
         let (host, cx) = setup(cx);
+        cx.update(|_, cx| cx.set_reduce_motion(true));
         // Narrower and shorter than menu A.
         let window = size(px(140.), px(100.));
         cx.simulate_resize(window);
@@ -2213,8 +2410,9 @@ mod tests {
         let window = size(px(800.), px(600.));
         let panel = size(px(200.), px(300.));
         let trigger = |x: f32, y: f32| Bounds::new(point(px(x), px(y)), size(px(80.), px(20.)));
-        let origin =
-            |placement: Placement, trigger| placement.origin(trigger, panel, window, WINDOW_MARGIN);
+        let origin = |placement: Placement, trigger| {
+            placement.origin(trigger, panel, window, WINDOW_MARGIN).0
+        };
         // Room below: below, 4 px down, left edges shared.
         assert_eq!(
             origin(Placement::BelowStart, trigger(100., 100.)),
@@ -2237,12 +2435,14 @@ mod tests {
         );
         // Room on neither side: the roomier side, inside the window.
         assert_eq!(
-            Placement::BelowStart.origin(
-                trigger(100., 250.),
-                size(px(200.), px(560.)),
-                window,
-                WINDOW_MARGIN
-            ),
+            Placement::BelowStart
+                .origin(
+                    trigger(100., 250.),
+                    size(px(200.), px(560.)),
+                    window,
+                    WINDOW_MARGIN
+                )
+                .0,
             point(px(100.), px(32.))
         );
         // A right-click near the bottom right corner opens up and left.

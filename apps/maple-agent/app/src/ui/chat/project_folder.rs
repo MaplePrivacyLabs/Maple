@@ -591,7 +591,15 @@ impl ProjectFolderDialog {
             .when(self.highlighted == Some(index), |row| {
                 row.bg(gpui::rgb(theme::bg_sidebar_row_selected()))
             })
-            .hover(|row| row.bg(theme::overlay_hover()).cursor_pointer())
+            .map(|element| {
+                let rest: gpui::Hsla = if self.highlighted == Some(index) {
+                    gpui::rgb(theme::bg_sidebar_row_selected()).into()
+                } else {
+                    gpui::transparent_black()
+                };
+                crate::ui::motion::hover_background(element, rest, theme::overlay_hover())
+            })
+            .hover(|row| row.cursor_pointer())
             .on_click(cx.listener(move |this, _, window, cx| {
                 window.focus(&this.focus(Control::List, cx), cx);
                 this.enter_folder(index, cx);
@@ -636,11 +644,11 @@ impl Render for ProjectFolderDialog {
             .inset_0()
             .size_full()
             .occlude()
-            .bg(theme::scrim())
             .flex()
             .items_center()
             .justify_center()
-            .child(
+            .child(widgets::dialog_scrim())
+            .child(widgets::dialog_card(
                 div()
                     .id("project-folder-dialog")
                     .debug_selector(|| "project-folder-dialog".into())
@@ -951,7 +959,7 @@ impl Render for ProjectFolderDialog {
                                     ),
                             ),
                     ),
-            )
+            ))
     }
 }
 
