@@ -50,9 +50,6 @@ maple-agent = { path = "../crates/maple-agent", default-features = false }
 maple-billing = { path = "../crates/maple-billing" }
 maple-agent-updater = { path = "../crates/maple-agent-updater" }
 # gpui is pinned to one Zed commit; crates.io 0.2.2 is older than it.
-# gpui-libghostty (the embedded terminal Ben is preparing) binds to the
-# application's gpui but is tested against cc053a4a, so build its bindings
-# against this revision before the terminal lands.
 # `stacker` keeps gpui growing the stack under deep element trees, which it
 # did unconditionally before this revision.
 gpui = { version = "0.2.2", git = "https://github.com/zed-industries/zed", rev = "c7bea343838f42b4c14151393e41f0bbe033c95e", features = ["stacker"], optional = true }
