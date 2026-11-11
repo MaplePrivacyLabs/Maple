@@ -2928,6 +2928,16 @@ fn main_window_failure(error: &impl std::fmt::Display) -> String {
 
 /// A separate window also works when Quit comes from a tray with no open window.
 fn show_quit_prompt(kind: QuitPromptKind, cx: &mut App) {
+    // Only one confirmation belongs on screen. A fresh Quit can race the
+    // debug loop's reopen timer, and a failed drain supersedes a Confirm,
+    // so close any prompt already open the AccessKit-safe way first.
+    for handle in cx.windows() {
+        let _ = handle.update(cx, |_, window, cx| {
+            if let Some(prompt) = window.root::<QuitPrompt>().flatten() {
+                prompt.update(cx, |prompt, cx| prompt.close(cx));
+            }
+        });
+    }
     let height = match &kind {
         QuitPromptKind::Failed(_) => 340.,
         _ => 300.,
