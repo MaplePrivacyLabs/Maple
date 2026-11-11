@@ -878,7 +878,9 @@ settings-usage-pace-exhausted = Das Tarifguthaben ist aufgebraucht. Kaufe zusät
 # $reset is a short date such as Dec 1.
 settings-usage-pace-exhausted-extra = Das Tarifguthaben ist aufgebraucht. Zusätzliches Guthaben deckt die Nutzung, solange es reicht. Das Tarifguthaben wird am { $reset } zurückgesetzt.
 # $reset is a short date such as Dec 1.
-settings-usage-pace-team-exhausted = Das gemeinsame Teamguthaben ist aufgebraucht. Die Teamnutzung pausiert bis zur Zurücksetzung am { $reset }.
+settings-usage-pace-team-exhausted = Das gemeinsame Teamguthaben ist aufgebraucht. Kaufe zusätzliches Guthaben für dein eigenes Konto, um vor der Zurücksetzung am { $reset } weiterzuarbeiten.
+# $reset is a short date such as Dec 1.
+settings-usage-pace-team-exhausted-extra = Das gemeinsame Teamguthaben ist aufgebraucht. Dein eigenes zusätzliches Guthaben deckt deine Nutzung, solange es reicht. Das Teamguthaben wird am { $reset } zurückgesetzt.
 # $pace is a formatted number of credits and $count the same number for plurals; $allowance is a formatted number such as 20,000; $date is a short date.
 settings-usage-pace-runs-out = Bei etwa { $pace } { $count ->
     [one] Guthabenpunkt
@@ -893,7 +895,12 @@ settings-usage-pace-runs-out-extra = Bei etwa { $pace } { $count ->
 settings-usage-pace-team-runs-out = Bei etwa { $pace } { $count ->
     [one] Guthabenpunkt
    *[other] Guthabenpunkten
-} pro Tag erreicht ihr { $allowance } ungefähr am { $date }. Danach pausiert die Teamnutzung bis zur Zurücksetzung.
+} pro Tag erreicht ihr { $allowance } ungefähr am { $date }. Danach benötigst du bis zur Zurücksetzung eigenes zusätzliches Guthaben.
+# $pace is a formatted number of credits and $count the same number for plurals; $allowance is a formatted number such as 20,000; $date is a short date.
+settings-usage-pace-team-runs-out-extra = Bei etwa { $pace } { $count ->
+    [one] Guthabenpunkt
+   *[other] Guthabenpunkten
+} pro Tag erreicht ihr { $allowance } ungefähr am { $date }. Danach deckt dein eigenes zusätzliches Guthaben deine Nutzung.
 # $pace is a formatted number of credits and $count the same number for plurals; $projected and $allowance are formatted numbers such as 18,000; $reset is a short date.
 settings-usage-pace-on-track = Bei etwa { $pace } { $count ->
     [one] Guthabenpunkt
@@ -998,7 +1005,7 @@ settings-usage-about-credits-plan = Guthabenpunkte messen die Nutzung zu unseren
 # $allowance is a formatted number.
 settings-usage-about-credits-unnamed = Guthabenpunkte messen die Nutzung zu unseren API-Listenpreisen: 1.000 Punkte entsprechen 1 $ Nutzung. Dein Tarif enthält { $allowance } Guthabenpunkte pro Abrechnungszeitraum. Zusätzliches Guthaben wird erst nach Verbrauch des Tarifguthabens verwendet und verfällt nicht.
 # $allowance is a formatted number.
-settings-usage-about-credits-team = Guthabenpunkte messen die Nutzung zu unseren API-Listenpreisen: 1.000 Punkte entsprechen 1 $ Nutzung. Dein Team teilt sich { $allowance } Guthabenpunkte pro Abrechnungszeitraum.
+settings-usage-about-credits-team = Guthabenpunkte messen die Nutzung zu unseren API-Listenpreisen: 1.000 Punkte entsprechen 1 $ Nutzung. Dein Team teilt sich { $allowance } Guthabenpunkte pro Abrechnungszeitraum. Zusätzliches Guthaben auf deinem eigenen Konto wird erst nach Verbrauch des Teamguthabens verwendet und verfällt nicht.
 settings-usage-about-background-title = Hintergrundanfragen
 settings-usage-about-background = Maple stellt auch Anfragen für dich, etwa um Chats zu benennen, Werkzeugergebnisse zusammenzufassen, ein Modell für Auto auszuwählen oder lange Gespräche zu kürzen. Sie laufen auf dem Modell, das Maple für die jeweilige Aufgabe verwendet; dieses kann sich ändern. Sie zählen zu deiner Nutzung und werden unter diesem Modell aufgeführt.
 settings-usage-about-auto-title = Auto, Quick und Powerful

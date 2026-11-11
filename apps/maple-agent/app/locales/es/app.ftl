@@ -821,7 +821,8 @@ settings-usage-team-rest = Resto del equipo { $credits }
 settings-usage-team-footer = Todo lo de abajo es tu propio uso. La bolsa de arriba incluye a todo el equipo.
 settings-usage-pace-exhausted = Se agotaron los créditos del plan. Agrega créditos adicionales para seguir antes de que se restablezcan el { $reset }.
 settings-usage-pace-exhausted-extra = Se agotaron los créditos del plan. Los créditos adicionales cubren el uso mientras dure tu saldo. Los créditos del plan se restablecen el { $reset }.
-settings-usage-pace-team-exhausted = La bolsa del equipo se agotó. El uso del equipo se detiene hasta que se restablezca el { $reset }.
+settings-usage-pace-team-exhausted = La bolsa del equipo se agotó. Agrega créditos adicionales a tu propia cuenta para seguir antes de que se restablezca el { $reset }.
+settings-usage-pace-team-exhausted-extra = La bolsa del equipo se agotó. Tus propios créditos adicionales cubren tu uso mientras dure tu saldo. La bolsa se restablece el { $reset }.
 settings-usage-pace-runs-out = { $count ->
     [one] Un crédito al día alcanza
    *[other] Unos { $pace } créditos al día alcanzan
@@ -833,7 +834,11 @@ settings-usage-pace-runs-out-extra = { $count ->
 settings-usage-pace-team-runs-out = { $count ->
     [one] Un crédito al día alcanza
    *[other] Unos { $pace } créditos al día alcanzan
-} { $allowance } hacia el { $date }. Después, el uso del equipo se detiene hasta que se restablezca.
+} { $allowance } hacia el { $date }. Después, necesitarás tus propios créditos adicionales hasta que se restablezca.
+settings-usage-pace-team-runs-out-extra = { $count ->
+    [one] Un crédito al día alcanza
+   *[other] Unos { $pace } créditos al día alcanzan
+} { $allowance } hacia el { $date }. Después, tus propios créditos adicionales cubren tu uso.
 settings-usage-pace-on-track = { $count ->
     [one] Un crédito al día suma
    *[other] Unos { $pace } créditos al día suman
@@ -926,7 +931,7 @@ settings-usage-about-apps = Cada solicitud cuenta para la app que la envió, aun
 settings-usage-about-credits-title = Créditos
 settings-usage-about-credits-plan = Los créditos miden el uso según nuestros precios de lista de la API: 1,000 créditos equivalen a $1 de uso. Tu plan { $plan } incluye { $allowance } créditos en cada periodo de facturación. Los créditos adicionales solo se usan cuando se agotan los del plan y no vencen.
 settings-usage-about-credits-unnamed = Los créditos miden el uso según nuestros precios de lista de la API: 1,000 créditos equivalen a $1 de uso. Tu plan incluye { $allowance } créditos en cada periodo de facturación. Los créditos adicionales solo se usan cuando se agotan los del plan y no vencen.
-settings-usage-about-credits-team = Los créditos miden el uso según nuestros precios de lista de la API: 1,000 créditos equivalen a $1 de uso. Tu equipo comparte { $allowance } créditos en cada periodo de facturación.
+settings-usage-about-credits-team = Los créditos miden el uso según nuestros precios de lista de la API: 1,000 créditos equivalen a $1 de uso. Tu equipo comparte { $allowance } créditos en cada periodo de facturación. Los créditos adicionales de tu propia cuenta solo se usan cuando se agotan los del equipo y no vencen.
 settings-usage-about-background-title = Solicitudes en segundo plano
 settings-usage-about-background = Maple también envía solicitudes por ti, por ejemplo para poner nombre a los chats, resumir los resultados de herramientas, elegir un modelo para Auto o acortar conversaciones largas. Se ejecutan en el modelo que Maple use para esa tarea, que puede cambiar, y cuentan para tu uso. Aparecen bajo ese modelo.
 settings-usage-about-auto-title = Auto, Rápido y Potente

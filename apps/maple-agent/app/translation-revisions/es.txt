@@ -1906,7 +1906,7 @@ settings-usage-about-auto-title 87cd465aede241a7
 settings-usage-about-background aa322c0d7030a36a
 settings-usage-about-background-title d0a4fd0939cb27f7
 settings-usage-about-credits-plan c08bc793cd8cab50
-settings-usage-about-credits-team 51a738e4281dcd63
+settings-usage-about-credits-team d97f2dd03b97ab08
 settings-usage-about-credits-title eda99ca4dd9d049f
 settings-usage-about-credits-unnamed 02da107a6adf0d10
 settings-usage-about-free 16300349397b5dc1
@@ -1978,8 +1978,10 @@ settings-usage-pace-exhausted-extra 92763981e17d2c8f
 settings-usage-pace-on-track 504f0171fdfcd7c2
 settings-usage-pace-runs-out cca9bfb270c35eed
 settings-usage-pace-runs-out-extra a46cb9314a39bc9b
-settings-usage-pace-team-exhausted 1e0845040e55a4bd
-settings-usage-pace-team-runs-out 3dbb585fd4a2eb93
+settings-usage-pace-team-exhausted faf5f821025784e7
+settings-usage-pace-team-exhausted-extra 7f4c8d752f9740d1
+settings-usage-pace-team-runs-out 7e50032e4cc7e7ba
+settings-usage-pace-team-runs-out-extra 5b32cb9e95b5ea6d
 settings-usage-paid-extra 513755a8f6904241
 settings-usage-percent b1b0eb69f5dafec4
 settings-usage-plan-amount 132afc5508e18260

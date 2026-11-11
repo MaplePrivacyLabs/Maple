@@ -878,7 +878,9 @@ settings-usage-pace-exhausted = Plan credits ran out. Add Extra credits to keep 
 # $reset is a short date such as Dec 1.
 settings-usage-pace-exhausted-extra = Plan credits ran out. Extra credits cover usage while your balance lasts. Plan credits reset on { $reset }.
 # $reset is a short date such as Dec 1.
-settings-usage-pace-team-exhausted = The team pool ran out. Team usage pauses until the reset on { $reset }.
+settings-usage-pace-team-exhausted = The team pool ran out. Add Extra credits to your own account to keep going before the reset on { $reset }.
+# $reset is a short date such as Dec 1.
+settings-usage-pace-team-exhausted-extra = The team pool ran out. Your own Extra credits cover your usage while your balance lasts. The pool resets on { $reset }.
 # $pace is a formatted number of credits and $count the same number for plurals; $allowance is a formatted number such as 20,000; $date is a short date.
 settings-usage-pace-runs-out = About { $pace } { $count ->
     [one] credit
@@ -893,7 +895,12 @@ settings-usage-pace-runs-out-extra = About { $pace } { $count ->
 settings-usage-pace-team-runs-out = About { $pace } { $count ->
     [one] credit
    *[other] credits
-} a day reaches { $allowance } around { $date }. After that, team usage pauses until the reset.
+} a day reaches { $allowance } around { $date }. After that, you need your own Extra credits until the reset.
+# $pace is a formatted number of credits and $count the same number for plurals; $allowance is a formatted number such as 20,000; $date is a short date.
+settings-usage-pace-team-runs-out-extra = About { $pace } { $count ->
+    [one] credit
+   *[other] credits
+} a day reaches { $allowance } around { $date }. After that, your own Extra credits cover your usage.
 # $pace is a formatted number of credits and $count the same number for plurals; $projected and $allowance are formatted numbers such as 18,000; $reset is a short date.
 settings-usage-pace-on-track = About { $pace } { $count ->
     [one] credit
@@ -998,7 +1005,7 @@ settings-usage-about-credits-plan = Credits measure usage at our API list prices
 # $allowance is a formatted number.
 settings-usage-about-credits-unnamed = Credits measure usage at our API list prices: 1,000 credits is $1 of usage. Your plan includes { $allowance } credits each billing period. Extra credits are used only after plan credits run out, and they don't expire.
 # $allowance is a formatted number.
-settings-usage-about-credits-team = Credits measure usage at our API list prices: 1,000 credits is $1 of usage. Your team shares { $allowance } credits each billing period.
+settings-usage-about-credits-team = Credits measure usage at our API list prices: 1,000 credits is $1 of usage. Your team shares { $allowance } credits each billing period. Extra credits on your own account are used only after the team's credits run out, and they don't expire.
 settings-usage-about-background-title = Background requests
 settings-usage-about-background = Maple also sends requests for you, for example to name chats, summarize tool results, choose a model for Auto, or shorten long conversations. They run on whichever model Maple uses for that job, which can change, and they count toward your usage. They are listed under that model.
 settings-usage-about-auto-title = Auto, Quick and Powerful
