@@ -51,8 +51,10 @@ maple-billing = { path = "../crates/maple-billing" }
 maple-agent-updater = { path = "../crates/maple-agent-updater" }
 # gpui is pinned to one Zed commit; crates.io 0.2.2 is older than it.
 # `stacker` keeps gpui growing the stack under deep element trees, which it
-# did unconditionally before this revision.
-gpui = { version = "0.2.2", git = "https://github.com/zed-industries/zed", rev = "c7bea343838f42b4c14151393e41f0bbe033c95e", features = ["stacker"], optional = true }
+# did unconditionally before this revision. `profiler` keeps gpui's frame
+# timings, which `MAPLE_FRAME_STATS` draws over the window; Zed ships with
+# both on.
+gpui = { version = "0.2.2", git = "https://github.com/zed-industries/zed", rev = "c7bea343838f42b4c14151393e41f0bbe033c95e", features = ["stacker", "profiler"], optional = true }
 # The application factory for that gpui revision; it lives one crate over.
 # `font-kit` selects the native text system on macOS; without it this gpui
 # revision draws no text at all.
