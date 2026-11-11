@@ -6084,6 +6084,37 @@ mod tests {
         );
     }
 
+    #[gpui::test]
+    fn a_second_quit_prompt_replaces_the_first_instead_of_stacking(
+        cx: &mut gpui::TestAppContext,
+    ) {
+        assert!(cx.windows().is_empty());
+        cx.update(|cx| show_quit_warning("A first drain failed.".into(), cx));
+        cx.update(|cx| show_quit_warning("A second drain failed.".into(), cx));
+        assert_eq!(
+            cx.windows().len(),
+            2,
+            "the replaced window empties a frame before it goes"
+        );
+        let mut replaced = gpui::VisualTestContext::from_window(cx.windows()[0], cx);
+        replaced.run_until_parked();
+        replaced.update(|window, cx| window.simulate_next_frame(cx));
+        replaced.run_until_parked();
+        assert_eq!(
+            cx.windows().len(),
+            1,
+            "showing a new prompt replaces the open one instead of stacking"
+        );
+        let mut survivor = gpui::VisualTestContext::from_window(cx.windows()[0], cx);
+        assert!(
+            survivor.update(|window, cx| matches!(
+                &window.root::<QuitPrompt>().flatten().unwrap().read(cx).kind,
+                QuitPromptKind::Failed(UiText::Raw(message)) if message == "A second drain failed."
+            )),
+            "the newest prompt is the one that stays"
+        );
+    }
+
     #[test]
     fn quit_prompt_body_lists_live_work_in_one_sentence() {
         let _localization = ui::i18n::TestLocalizationGuard::enable();
