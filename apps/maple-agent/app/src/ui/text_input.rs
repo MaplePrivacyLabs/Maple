@@ -476,19 +476,16 @@ impl TextInput {
             {
                 let now = motion::now();
                 let distance = px(target - growth.height.value(now));
-                let (height, _) = growth.height.step(
-                    target,
-                    motion::resize_duration(distance),
-                    motion::ease_out_cubic,
-                    now,
-                    reduced,
-                );
+                let (height, _) =
+                    growth
+                        .height
+                        .step(target, motion::resize(distance), now, reduced);
                 growth.drawn = height;
                 px(height)
             }
             _ => {
                 self.growth = Some(Growth {
-                    height: motion::Tween::new(target),
+                    height: motion::Tween::pixels(target),
                     drawn: target,
                     width,
                     font: font.clone(),
@@ -3876,7 +3873,7 @@ mod tests {
             row,
             "new rows ease in from the height on screen"
         );
-        let duration = motion::resize_duration(row * 2.);
+        let duration = motion::resize(row * 2.).settle;
         assert!(
             frame_at(start + duration / 3, cx) > 0,
             "moving asks for frames"
@@ -3907,7 +3904,7 @@ mod tests {
         let row = line_height(&input, cx);
 
         set_text_drawn(&input, "1\n2\n3\n4\n5", cx);
-        let half = motion::resize_duration(row * 4.) / 2;
+        let half = motion::resize(row * 4.).settle / 2;
         frame_at(start + half, cx);
         let partway = drawn_height(&input, cx);
         assert!(partway > row && partway < row * 5., "partway: {partway:?}");
@@ -3919,9 +3916,9 @@ mod tests {
         let back = drawn_height(&input, cx);
         assert!(back < partway && back > row, "heading back: {back:?}");
 
-        frame_at(start + motion::PANEL * 4, cx);
+        frame_at(start + motion::PANEL.settle * 4, cx);
         assert_eq!(drawn_height(&input, cx), row);
-        assert_eq!(frame_at(start + motion::PANEL * 5, cx), 0);
+        assert_eq!(frame_at(start + motion::PANEL.settle * 5, cx), 0);
         motion::set_test_now(None);
     }
 

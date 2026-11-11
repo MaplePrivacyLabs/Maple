@@ -27,32 +27,112 @@ use std::time::{Duration, Instant};
 use gpui::{
     AnimationElement, AnimationExt, AnyElement, App, Bounds, Element, ElementId, EntityId,
     GlobalElementId, InspectorElementId, IntoElement, LayoutId, ParentElement, Pixels, Point,
-    Styled, Window, px,
+    SpringConfig, SpringState, Styled, Window, px,
 };
 
 /// Frames per second a looping effect asks for. Twelve to fifteen steps a
 /// second still read as motion at a fraction of the display rate.
 pub const LOOP_FPS: u32 = 15;
 
-/// Pointer hover: background and opacity only, the same both ways.
-pub const HOVER: Duration = Duration::from_millis(120);
+/// One kind of motion. Everything of that kind takes its timing from the
+/// token, so editing a token here retunes every animation that uses it.
+///
+/// A token carries two timings because the app moves in two ways. A
+/// one-shot entrance (a row arriving, a menu opening) runs `duration` on
+/// `easing` and nothing interrupts it. A reversible value (a hover plate, a
+/// switch, the composer's height) is a spring that takes `settle` to come
+/// to rest from a standstill; it keeps its speed when its target changes, so
+/// turning back mid-way has no corner in it.
+#[derive(Clone, Copy, Debug)]
+pub struct Token {
+    /// How long a one-shot entrance of this kind takes.
+    pub duration: Duration,
+    /// The curve a one-shot entrance of this kind follows.
+    pub easing: fn(f32) -> f32,
+    /// How long a reversible value of this kind takes to settle from rest.
+    pub settle: Duration,
+}
+
+/// Pointer hover: background and opacity only.
+pub const HOVER: Token = Token {
+    duration: Duration::from_millis(120),
+    easing: smoothstep,
+    settle: Duration::from_millis(180),
+};
 /// Menus, popovers, tooltips, notices, and content that replaces other
 /// content (a Settings section, another task).
-pub const REVEAL: Duration = Duration::from_millis(140);
+pub const REVEAL: Token = Token {
+    duration: Duration::from_millis(140),
+    easing: ease_out_quint,
+    settle: Duration::from_millis(210),
+};
 /// A control changing state in place: switches, chevrons, icon swaps.
-pub const TOGGLE: Duration = Duration::from_millis(150);
+pub const TOGGLE: Token = Token {
+    duration: Duration::from_millis(150),
+    easing: ease_out_cubic,
+    settle: Duration::from_millis(230),
+};
 /// Content arriving: live transcript rows, cards, dialogs.
-pub const ENTER: Duration = Duration::from_millis(180);
+pub const ENTER: Token = Token {
+    duration: Duration::from_millis(180),
+    easing: ease_out_quint,
+    settle: Duration::from_millis(270),
+};
 /// Panels changing size: the sidebar and the expanded composer.
-pub const PANEL: Duration = Duration::from_millis(200);
+pub const PANEL: Token = Token {
+    duration: Duration::from_millis(200),
+    easing: ease_out_cubic,
+    settle: Duration::from_millis(320),
+};
+
+/// How every spring is damped. At 1 a spring is the fastest that does not
+/// overshoot from rest; below 1 it overshoots and comes back, above 1 it
+/// settles more slowly.
+pub const DAMPING_RATIO: f32 = 1.;
+
 /// How far arriving content travels before it settles.
 pub const RISE: Pixels = px(6.);
 
+/// How close a value in `[0, 1]` comes to its target before it counts as
+/// arrived, and the travel a token's `settle` is measured over.
+const TOLERANCE: f32 = 0.001;
+
+impl Token {
+    /// The same kind of motion, slower or faster by `factor`.
+    pub fn scaled(self, factor: f32) -> Self {
+        Self {
+            duration: self.duration.mul_f32(factor),
+            easing: self.easing,
+            settle: self.settle.mul_f32(factor),
+        }
+    }
+
+    /// A one-shot gpui animation of this kind.
+    pub fn animation(self) -> gpui::Animation {
+        gpui::Animation::new(self.duration).with_easing(self.easing)
+    }
+
+    /// The spring that settles from rest in `settle`.
+    fn spring(self) -> SpringConfig {
+        // A spring's settling time scales with one over its natural
+        // frequency, so the time a unit-frequency spring takes gives the
+        // frequency that lands on `settle`.
+        static UNIT_SETTLE: OnceLock<f32> = OnceLock::new();
+        let unit = *UNIT_SETTLE.get_or_init(|| {
+            SpringConfig::new(1., 2. * DAMPING_RATIO, 1.)
+                .settle_time(SpringState::default(), 1., TOLERANCE)
+                .as_secs_f32()
+        });
+        let frequency = unit / self.settle.as_secs_f32().max(f32::EPSILON);
+        SpringConfig::new(frequency * frequency, 2. * DAMPING_RATIO * frequency, 1.)
+    }
+}
+
 /// Time for a box to grow or shrink by `distance`: about 500 px a second,
-/// so one line of text takes the shortest time and a large jump [`PANEL`].
-pub fn resize_duration(distance: Pixels) -> Duration {
-    let millis = (distance.as_f32().abs() * 2.).clamp(120., PANEL.as_millis() as f32);
-    Duration::from_millis(millis as u64)
+/// so one line of text takes the shortest time and a large jump [`PANEL`]'s.
+pub fn resize(distance: Pixels) -> Token {
+    let millis = (distance.as_f32().abs() * 2.).clamp(120., PANEL.duration.as_millis() as f32);
+    PANEL.scaled(millis / PANEL.duration.as_millis() as f32)
 }
 
 /// Entrances and fades: a fast start and a long settle.
@@ -69,6 +149,39 @@ pub fn ease_out_cubic(t: f32) -> f32 {
 /// Hover, which reverses often: the same curve both ways.
 pub fn smoothstep(t: f32) -> f32 {
     t * t * (3. - 2. * t)
+}
+
+/// How reversible values move. Springs are what ships; `MAPLE_MOTION=eased`
+/// runs each token's `duration` and `easing` instead, restarting the curve
+/// from the value on screen, to compare the two in one build.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Style {
+    Spring,
+    Eased,
+}
+
+#[cfg(test)]
+thread_local! {
+    static TEST_STYLE: std::cell::Cell<Option<Style>> = const { std::cell::Cell::new(None) };
+}
+
+/// The style reversible values move in.
+pub fn style() -> Style {
+    #[cfg(test)]
+    if let Some(style) = TEST_STYLE.with(std::cell::Cell::get) {
+        return style;
+    }
+    static STYLE: OnceLock<Style> = OnceLock::new();
+    *STYLE.get_or_init(|| match std::env::var("MAPLE_MOTION").as_deref() {
+        Ok("eased") => Style::Eased,
+        _ => Style::Spring,
+    })
+}
+
+/// Pin [`style`] on this thread; `None` returns it to the default.
+#[cfg(test)]
+pub fn set_test_style(style: Option<Style>) {
+    TEST_STYLE.with(|cell| cell.set(style));
 }
 
 #[cfg(test)]
@@ -92,26 +205,52 @@ pub fn set_test_now(now: Option<Instant>) {
     TEST_NOW.with(|cell| cell.set(now));
 }
 
-/// One reversible value. Retargeting starts from the value on screen, so
-/// a second click never jumps back to an endpoint or restarts.
+/// One reversible value. Retargeting starts from the value on screen, and
+/// a spring keeps the speed it had, so a second click never jumps back to
+/// an endpoint, restarts, or turns a corner.
 #[derive(Clone, Copy, Debug)]
 pub struct Tween {
-    from: f32,
     to: f32,
-    started: Instant,
-    duration: Duration,
-    easing: fn(f32) -> f32,
+    tolerance: f32,
+    course: Course,
+}
+
+/// How a [`Tween`] is getting to its target.
+#[derive(Clone, Copy, Debug)]
+enum Course {
+    /// There already.
+    Rest,
+    /// On a spring released at `since` from `origin`.
+    Spring {
+        origin: SpringState,
+        since: Instant,
+        config: SpringConfig,
+    },
+    /// On a curve that left `from` at `started`.
+    Eased {
+        from: f32,
+        started: Instant,
+        duration: Duration,
+        easing: fn(f32) -> f32,
+    },
 }
 
 impl Tween {
-    /// At rest at `value`.
+    /// At rest at `value`, for a value in `[0, 1]`.
     pub fn new(value: f32) -> Self {
         Self {
-            from: value,
             to: value,
-            started: epoch(),
-            duration: Duration::ZERO,
-            easing: ease_out_cubic,
+            tolerance: TOLERANCE,
+            course: Course::Rest,
+        }
+    }
+
+    /// At rest at `value`, for a length in pixels: it has arrived once it
+    /// is within a quarter pixel, which no eye can tell from there.
+    pub fn pixels(value: f32) -> Self {
+        Self {
+            tolerance: 0.25,
+            ..Self::new(value)
         }
     }
 
@@ -120,67 +259,122 @@ impl Tween {
         self.to
     }
 
+    /// Where a spring is at `now`, and whether it has come to rest.
+    fn sprung(
+        &self,
+        origin: SpringState,
+        since: Instant,
+        config: SpringConfig,
+        now: Instant,
+    ) -> (SpringState, bool) {
+        let elapsed = now.saturating_duration_since(since).as_secs_f32();
+        let state = config.step(origin, self.to, elapsed);
+        (state, config.is_settled(state, self.to, self.tolerance))
+    }
+
     /// The value to draw at `now`.
     pub fn value(&self, now: Instant) -> f32 {
-        let elapsed = now.saturating_duration_since(self.started);
-        if elapsed >= self.duration {
-            return self.to;
+        match self.course {
+            Course::Rest => self.to,
+            Course::Spring {
+                origin,
+                since,
+                config,
+            } => match self.sprung(origin, since, config, now) {
+                (_, true) => self.to,
+                (state, false) => state.position,
+            },
+            Course::Eased {
+                from,
+                started,
+                duration,
+                easing,
+            } => {
+                let elapsed = now.saturating_duration_since(started);
+                if elapsed >= duration {
+                    return self.to;
+                }
+                let t = elapsed.as_secs_f32() / duration.as_secs_f32();
+                from + (self.to - from) * easing(t)
+            }
         }
-        let t = elapsed.as_secs_f32() / self.duration.as_secs_f32();
-        self.from + (self.to - self.from) * (self.easing)(t)
     }
 
     /// Whether the value still changes after `now`.
     pub fn is_moving(&self, now: Instant) -> bool {
-        now.saturating_duration_since(self.started) < self.duration
+        match self.course {
+            Course::Rest => false,
+            Course::Spring {
+                origin,
+                since,
+                config,
+            } => !self.sprung(origin, since, config, now).1,
+            Course::Eased {
+                started, duration, ..
+            } => now.saturating_duration_since(started) < duration,
+        }
     }
 
-    /// Head for `to` over `duration` from wherever the value is now.
+    /// Head for `to` as `token` moves, from wherever the value is now.
     /// Reduced motion settles at once.
-    pub fn set(
-        &mut self,
-        to: f32,
-        duration: Duration,
-        easing: fn(f32) -> f32,
-        now: Instant,
-        reduced: bool,
-    ) {
-        if reduced || duration.is_zero() {
-            *self = Self::new(to);
+    pub fn set(&mut self, to: f32, token: Token, now: Instant, reduced: bool) {
+        if reduced {
+            self.to = to;
+            self.course = Course::Rest;
         } else if to != self.to {
-            *self = Self {
-                from: self.value(now),
-                to,
-                started: now,
-                duration,
-                easing,
+            self.course = match style() {
+                Style::Spring => {
+                    // Carry on from the position and speed on screen.
+                    let origin = match self.course {
+                        Course::Spring {
+                            origin,
+                            since,
+                            config,
+                        } => self.sprung(origin, since, config, now).0,
+                        _ => SpringState {
+                            position: self.value(now),
+                            velocity: 0.,
+                        },
+                    };
+                    Course::Spring {
+                        origin,
+                        since: now,
+                        config: token.spring(),
+                    }
+                }
+                Style::Eased => Course::Eased {
+                    from: self.value(now),
+                    started: now,
+                    duration: token.duration,
+                    easing: token.easing,
+                },
             };
+            self.to = to;
         }
     }
 
     /// [`Tween::set`], then the value to draw now and whether another
     /// frame is needed. Reduced motion also settles a transition already
     /// under way.
-    pub fn step(
-        &mut self,
-        to: f32,
-        duration: Duration,
-        easing: fn(f32) -> f32,
-        now: Instant,
-        reduced: bool,
-    ) -> (f32, bool) {
-        self.set(to, duration, easing, now, reduced);
+    pub fn step(&mut self, to: f32, token: Token, now: Instant, reduced: bool) -> (f32, bool) {
+        self.set(to, token, now, reduced);
         if reduced {
-            *self = Self::new(self.to);
+            self.course = Course::Rest;
         }
-        (self.value(now), self.is_moving(now))
+        let moving = self.is_moving(now);
+        if !moving {
+            // Arrived: drop the course so a later sample is a plain read.
+            self.course = Course::Rest;
+        }
+        (self.value(now), moving)
     }
 }
 
-/// How far an entrance that began at `started` is through `duration`, in
+/// How far an entrance that began at `started` is through `token`'s duration, in
 /// `[0, 1]`. For entrances timed by view state rather than element state,
 /// such as transcript rows that can scroll away and back.
-pub fn progress(started: Instant, duration: Duration, now: Instant, reduced: bool) -> f32 {
+pub fn progress(started: Instant, token: Token, now: Instant, reduced: bool) -> f32 {
+    let duration = token.duration;
     if reduced || duration.is_zero() {
         return 1.;
     }
@@ -335,11 +529,9 @@ pub fn fade_in<E>(element: E, id: impl Into<ElementId>) -> AnimationElement<E>
 where
     E: IntoElement + Styled + 'static,
 {
-    element.with_animation(
-        id,
-        gpui::Animation::new(REVEAL).with_easing(ease_out_quint),
-        |element, delta| element.opacity(delta),
-    )
+    element.with_animation(id, REVEAL.animation(), |element, delta| {
+        element.opacity(delta)
+    })
 }
 
 /// Fade in and settle up from [`RISE`] below, for panels that open above
@@ -351,28 +543,24 @@ where
     slide_in(element, id, REVEAL, gpui::point(px(0.), RISE))
 }
 
-/// Fade in over `duration` while moving from `from`, an offset from the
+/// Fade in over `token`'s duration while moving from `from`, an offset from the
 /// resting position, to rest. Layout uses the resting position throughout;
 /// the hitbox moves with the paint (see [`shifted`]).
 pub fn slide_in<E>(
     element: E,
     id: impl Into<ElementId>,
-    duration: Duration,
+    token: Token,
     from: Point<Pixels>,
 ) -> AnimationElement<Shifted<E>>
 where
     E: IntoElement + Styled + 'static,
 {
-    shifted(element).with_animation(
-        id,
-        gpui::Animation::new(duration).with_easing(ease_out_quint),
-        move |element, delta| {
-            let remaining = 1. - delta;
-            element
-                .opacity(delta)
-                .offset(gpui::point(from.x * remaining, from.y * remaining))
-        },
-    )
+    shifted(element).with_animation(id, token.animation(), move |element, delta| {
+        let remaining = 1. - delta;
+        element
+            .opacity(delta)
+            .offset(gpui::point(from.x * remaining, from.y * remaining))
+    })
 }
 
 /// Draw content `progress` of the way through its entrance (see
@@ -571,15 +759,13 @@ impl Element for GlideFrom {
 pub fn animated(
     id: impl Into<ElementId>,
     target: f32,
-    duration: Duration,
-    easing: fn(f32) -> f32,
+    token: Token,
     build: impl Fn(f32) -> AnyElement + 'static,
 ) -> Animated {
     Animated {
         id: id.into(),
         target,
-        duration,
-        easing,
+        token,
         build: Box::new(build),
     }
 }
@@ -587,8 +773,7 @@ pub fn animated(
 pub struct Animated {
     id: ElementId,
     target: f32,
-    duration: Duration,
-    easing: fn(f32) -> f32,
+    token: Token,
     build: Box<dyn Fn(f32) -> AnyElement>,
 }
 
@@ -628,9 +813,7 @@ impl Element for Animated {
             id.expect("animated elements have an id"),
             |state: Option<AnimatedValue>, _| {
                 let mut state = state.unwrap_or_else(|| AnimatedValue(Tween::new(self.target)));
-                let frame = state
-                    .0
-                    .step(self.target, self.duration, self.easing, now, reduced);
+                let frame = state.0.step(self.target, self.token, now, reduced);
                 (frame, state)
             },
         );
@@ -690,7 +873,6 @@ pub fn icon_swap(
                 ),
                 if shown { 1. } else { 0. },
                 TOGGLE,
-                ease_out_cubic,
                 move |shown| {
                     let scale = 0.6 + 0.4 * shown;
                     gpui::div()
@@ -718,19 +900,13 @@ pub fn icon_swap(
 /// A disclosure chevron that points right when closed and turns down when
 /// `open`, over [`TOGGLE`].
 pub fn chevron(id: impl Into<ElementId>, open: bool, size: Pixels, color: u32) -> Animated {
-    animated(
-        id,
-        if open { 1. } else { 0. },
-        TOGGLE,
-        ease_out_cubic,
-        move |turn| {
-            super::icons::icon("chevron-right", size, color)
-                .with_transformation(gpui::Transformation::rotate(gpui::radians(
-                    turn * std::f32::consts::FRAC_PI_2,
-                )))
-                .into_any_element()
-        },
-    )
+    animated(id, if open { 1. } else { 0. }, TOGGLE, move |turn| {
+        super::icons::icon("chevron-right", size, color)
+            .with_transformation(gpui::Transformation::rotate(gpui::radians(
+                turn * std::f32::consts::FRAC_PI_2,
+            )))
+            .into_any_element()
+    })
 }
 
 /// Content that opens in place under what sits above it, such as the field
@@ -797,7 +973,7 @@ impl Element for Unfold {
                     open: Tween::new(target),
                     natural: Default::default(),
                 });
-                let (shown, moving) = state.open.step(target, PANEL, ease_out_cubic, now, reduced);
+                let (shown, moving) = state.open.step(target, PANEL, now, reduced);
                 ((shown, moving, state.natural.clone()), state)
             },
         );
@@ -1061,13 +1237,9 @@ impl Element for HoverBackground {
             id.expect("hover controls have an id"),
             |state: Option<HoverPlate>, _| {
                 let mut state = state.unwrap_or_else(|| HoverPlate(Tween::new(0.)));
-                let frame = state.0.step(
-                    if hovered { 1. } else { 0. },
-                    HOVER,
-                    smoothstep,
-                    now,
-                    reduced,
-                );
+                let frame = state
+                    .0
+                    .step(if hovered { 1. } else { 0. }, HOVER, now, reduced);
                 (frame, state)
             },
         );
@@ -1079,7 +1251,7 @@ impl Element for HoverBackground {
                 |state: Option<Reveal>, _| {
                     // An initially visible control should not fade in on mount.
                     let mut state = state.unwrap_or_else(|| Reveal(Tween::new(target)));
-                    let frame = state.0.step(target, HOVER, smoothstep, now, reduced);
+                    let frame = state.0.step(target, HOVER, now, reduced);
                     (frame, state)
                 },
             );
@@ -1134,24 +1306,15 @@ impl Element for HoverBackground {
 /// fades in over [`REVEAL`]. Its first appearance does not fade, so a
 /// first paint is never held back. `id` must be stable across frames.
 ///
-/// The content itself always paints at full opacity; a `cover` in the
-/// color behind it, painted over its bounds, fades out instead. gpui
-/// replays a cached view's last paint, opacity included, so fading an
-/// ancestor of one (the sidebar) would leave it stuck at its first, nearly
-/// transparent frame.
-pub fn swap_in<E>(
-    element: E,
-    id: impl Into<ElementId>,
-    key: impl Into<ElementId>,
-    cover: impl Into<gpui::Hsla>,
-) -> Swap<E>
+/// The fade sets the content's own opacity, so pass the container that
+/// holds it, not an element that already has an opacity of its own.
+pub fn swap_in<E>(element: E, id: impl Into<ElementId>, key: impl Into<ElementId>) -> Swap<E>
 where
-    E: IntoElement + 'static,
+    E: IntoElement + Styled + 'static,
 {
     Swap {
         id: id.into(),
         key: key.into(),
-        cover: cover.into(),
         element: Some(element),
     }
 }
@@ -1159,7 +1322,6 @@ where
 pub struct Swap<E> {
     id: ElementId,
     key: ElementId,
-    cover: gpui::Hsla,
     element: Option<E>,
 }
 
@@ -1169,7 +1331,7 @@ struct Swapped {
     started: Option<Instant>,
 }
 
-impl<E: IntoElement + 'static> IntoElement for Swap<E> {
+impl<E: IntoElement + Styled + 'static> IntoElement for Swap<E> {
     type Element = Self;
 
     fn into_element(self) -> Self {
@@ -1177,9 +1339,8 @@ impl<E: IntoElement + 'static> IntoElement for Swap<E> {
     }
 }
 
-impl<E: IntoElement + 'static> Element for Swap<E> {
-    // The content, and how much of it shows through the cover.
-    type RequestLayoutState = (AnyElement, f32);
+impl<E: IntoElement + Styled + 'static> Element for Swap<E> {
+    type RequestLayoutState = AnyElement;
     type PrepaintState = ();
 
     fn id(&self) -> Option<ElementId> {
@@ -1196,7 +1357,7 @@ impl<E: IntoElement + 'static> Element for Swap<E> {
         _inspector_id: Option<&InspectorElementId>,
         window: &mut Window,
         cx: &mut App,
-    ) -> (LayoutId, (AnyElement, f32)) {
+    ) -> (LayoutId, AnyElement) {
         let now = now();
         let reduced = cx.reduce_motion();
         let key = &self.key;
@@ -1220,15 +1381,14 @@ impl<E: IntoElement + 'static> Element for Swap<E> {
                 (shown, state)
             },
         );
-        if shown < 1. {
+        let element = self.element.take().expect("a swap is laid out once");
+        let mut element = if shown < 1. {
             window.request_animation_frame();
-        }
-        let mut element = self
-            .element
-            .take()
-            .expect("a swap is laid out once")
-            .into_any_element();
-        (element.request_layout(window, cx), (element, shown))
+            element.opacity(shown).into_any_element()
+        } else {
+            element.into_any_element()
+        };
+        (element.request_layout(window, cx), element)
     }
 
     fn prepaint(
@@ -1236,7 +1396,7 @@ impl<E: IntoElement + 'static> Element for Swap<E> {
         _id: Option<&GlobalElementId>,
         _inspector_id: Option<&InspectorElementId>,
         _bounds: Bounds<Pixels>,
-        (element, _): &mut (AnyElement, f32),
+        element: &mut AnyElement,
         window: &mut Window,
         cx: &mut App,
     ) {
@@ -1247,18 +1407,13 @@ impl<E: IntoElement + 'static> Element for Swap<E> {
         &mut self,
         _id: Option<&GlobalElementId>,
         _inspector_id: Option<&InspectorElementId>,
-        bounds: Bounds<Pixels>,
-        (element, shown): &mut (AnyElement, f32),
+        _bounds: Bounds<Pixels>,
+        element: &mut AnyElement,
         _: &mut (),
         window: &mut Window,
         cx: &mut App,
     ) {
         element.paint(window, cx);
-        if *shown < 1. {
-            let mut cover = self.cover;
-            cover.a *= 1. - *shown;
-            window.paint_quad(gpui::fill(bounds, cover));
-        }
     }
 }
 
@@ -1266,55 +1421,70 @@ impl<E: IntoElement + 'static> Element for Swap<E> {
 mod hover_tests {
     use super::*;
     fn hover(tween: &mut Tween, hovered: bool, now: Instant, reduced: bool) -> (f32, bool) {
-        tween.step(
-            if hovered { 1. } else { 0. },
-            HOVER,
-            smoothstep,
-            now,
-            reduced,
-        )
+        tween.step(if hovered { 1. } else { 0. }, HOVER, now, reduced)
+    }
+
+    /// Runs a test in the eased style and puts the default back after.
+    struct EasedStyle;
+    impl EasedStyle {
+        fn pin() -> Self {
+            set_test_style(Some(Style::Eased));
+            Self
+        }
+    }
+    impl Drop for EasedStyle {
+        fn drop(&mut self) {
+            set_test_style(None);
+        }
     }
 
     #[test]
-    fn hover_reverses_from_the_displayed_value_and_settles() {
+    fn an_eased_hover_reverses_from_the_displayed_value_and_settles() {
+        let _style = EasedStyle::pin();
         let now = Instant::now();
         let mut transition = Tween::new(0.);
         assert_eq!(hover(&mut transition, false, now, false), (0., false));
         assert_eq!(hover(&mut transition, true, now, false), (0., true));
-        let halfway = now + HOVER / 2;
+        let halfway = now + HOVER.duration / 2;
         assert_eq!(hover(&mut transition, true, halfway, false), (0.5, true));
         assert_eq!(hover(&mut transition, false, halfway, false), (0.5, true));
         assert_eq!(
-            hover(&mut transition, false, halfway + HOVER, false),
+            hover(&mut transition, false, halfway + HOVER.duration, false),
             (0., false)
         );
         assert_eq!(
-            hover(&mut transition, false, halfway + HOVER * 2, false),
-            (0., false)
-        );
-    }
-    #[test]
-    fn reduced_motion_settles_an_interrupted_hover_immediately() {
-        let now = Instant::now();
-        let mut transition = Tween::new(0.);
-        hover(&mut transition, true, now, false);
-        assert_eq!(
-            hover(&mut transition, true, now + HOVER / 4, true),
-            (1., false)
-        );
-        assert_eq!(
-            hover(&mut transition, false, now + HOVER / 2, true),
+            hover(&mut transition, false, halfway + HOVER.duration * 2, false),
             (0., false)
         );
     }
 
     #[test]
-    fn hover_eases_symmetrically_without_darkening_transparent_colors() {
+    fn reduced_motion_settles_an_interrupted_hover_immediately() {
+        for style in [Style::Spring, Style::Eased] {
+            set_test_style(Some(style));
+            let now = Instant::now();
+            let mut transition = Tween::new(0.);
+            hover(&mut transition, true, now, false);
+            assert_eq!(
+                hover(&mut transition, true, now + HOVER.settle / 4, true),
+                (1., false)
+            );
+            assert_eq!(
+                hover(&mut transition, false, now + HOVER.settle / 2, true),
+                (0., false)
+            );
+        }
+        set_test_style(None);
+    }
+
+    #[test]
+    fn an_eased_hover_is_symmetric_and_mixing_does_not_darken_transparent_colors() {
+        let _style = EasedStyle::pin();
         let now = Instant::now();
         let mut transition = Tween::new(0.);
         hover(&mut transition, true, now, false);
-        let early = transition.value(now + HOVER / 4);
-        let late = transition.value(now + HOVER * 3 / 4);
+        let early = transition.value(now + HOVER.duration / 4);
+        let late = transition.value(now + HOVER.duration * 3 / 4);
         assert!(early < 0.25 && late > 0.75);
         assert!((early + late - 1.).abs() <= 2. * f32::EPSILON);
         let white = gpui::hsla(0., 0., 1., 1.);
@@ -1323,6 +1493,98 @@ mod hover_tests {
         assert_eq!(middle.g, 1.);
         assert_eq!(middle.b, 1.);
         assert_eq!(middle.a, 0.5);
+    }
+
+    /// Every token's spring leaves from a standstill, only ever closes on
+    /// its target, never passes it, and has arrived by the token's settle
+    /// time, after which it asks for no more frames.
+    #[test]
+    fn a_spring_starts_at_rest_never_overshoots_and_settles_in_its_token() {
+        for token in [HOVER, REVEAL, TOGGLE, ENTER, PANEL] {
+            let start = Instant::now();
+            let mut value = Tween::new(0.);
+            assert_eq!(value.step(1., token, start, false), (0., true));
+            let first = value.value(start + token.settle / 100);
+            assert!(
+                first < 0.01,
+                "a spring does not jump off the line: {first} for {token:?}"
+            );
+            let mut last = 0.;
+            for percent in 1..100u32 {
+                let now = value.value(start + token.settle * percent / 100);
+                assert!(now >= last && now <= 1., "{percent}%: {now} after {last}");
+                last = now;
+            }
+            assert!(
+                value.is_moving(start + token.settle / 2),
+                "half-way through its settle time it still moves"
+            );
+            assert_eq!(
+                value.step(1., token, start + token.settle, false),
+                (1., false)
+            );
+            assert_eq!(
+                value.step(1., token, start + token.settle * 2, false),
+                (1., false)
+            );
+        }
+    }
+
+    /// Turned back mid-way, a spring carries on from the position and the
+    /// speed it had: it coasts a little further the old way before it
+    /// heads back, where an eased value reverses on the spot. It never goes
+    /// past the end it turned back to.
+    #[test]
+    fn a_spring_turns_back_from_its_position_and_speed() {
+        let start = Instant::now();
+        let turn = start + PANEL.settle / 8;
+        let tick = Duration::from_millis(2);
+
+        let mut spring = Tween::new(0.);
+        spring.set(1., PANEL, start, false);
+        let before = spring.value(turn);
+        assert!(before > 0. && before < 1.);
+        spring.set(0., PANEL, turn, false);
+        assert_eq!(spring.value(turn), before, "no jump where it turns");
+        assert!(
+            spring.value(turn + tick) > before,
+            "it keeps its speed through the turn"
+        );
+        let mut lowest = before;
+        for percent in 1..=100u32 {
+            lowest = lowest.min(spring.value(turn + PANEL.settle * 2 * percent / 100));
+        }
+        assert!(lowest >= 0., "it does not pass the end it returns to");
+        assert!(!spring.is_moving(turn + PANEL.settle * 2));
+        assert_eq!(spring.value(turn + PANEL.settle * 2), 0.);
+
+        let _style = EasedStyle::pin();
+        let mut eased = Tween::new(0.);
+        eased.set(1., PANEL, start, false);
+        let before = eased.value(turn);
+        eased.set(0., PANEL, turn, false);
+        assert!(
+            eased.value(turn + tick) < before,
+            "an eased value reverses at once"
+        );
+    }
+
+    /// A length counts as arrived within a quarter pixel, so it stops asking
+    /// for frames well before a value measured to a thousandth would.
+    #[test]
+    fn a_length_stops_within_a_quarter_pixel() {
+        let start = Instant::now();
+        let mut height = Tween::pixels(0.);
+        let mut fine = Tween::new(0.);
+        height.set(100., PANEL, start, false);
+        fine.set(100., PANEL, start, false);
+        let stopped = (1..=400u32)
+            .map(|step| start + PANEL.settle * step / 100)
+            .find(|at| !height.is_moving(*at))
+            .expect("a length settles");
+        assert!((height.value(stopped) - 100.).abs() <= 0.25);
+        assert_eq!(height.step(100., PANEL, stopped, false), (100., false));
+        assert!(fine.is_moving(stopped), "a finer tolerance is still moving");
     }
 
     #[gpui::test]
@@ -1383,21 +1645,21 @@ mod hover_tests {
         };
         set_visible(false, cx);
         assert!(observed.get() > 0., "hide must not snap off");
-        frame_after(HOVER / 4, cx);
+        frame_after(HOVER.settle / 4, cx);
         assert!(observed.get() > 0. && observed.get() < 1.);
         set_visible(true, cx);
         assert!(
             observed.get() > 0. && observed.get() < 1.,
             "reverse in place"
         );
-        frame_after(HOVER, cx);
+        frame_after(HOVER.settle, cx);
         assert_eq!(observed.get(), 1.);
         set_visible(false, cx);
-        frame_after(HOVER, cx);
+        frame_after(HOVER.settle, cx);
         assert_eq!(observed.get(), 0.);
         set_visible(true, cx);
         assert!(observed.get() < 1., "show must not snap on");
-        frame_after(HOVER, cx);
+        frame_after(HOVER.settle, cx);
         assert_eq!(observed.get(), 1.);
         assert_eq!(cx.debug_bounds("reveal-test").unwrap(), bounds);
         assert_eq!(cx.update(|window, cx| window.simulate_next_frame(cx)), 0);
@@ -1531,7 +1793,7 @@ mod hover_tests {
         cx.run_until_parked();
         // The primitive uses real monotonic time; the test executor's clock
         // does not advance Instant. One bounded wait samples an in-flight fade.
-        std::thread::sleep(HOVER / 4);
+        std::thread::sleep(HOVER.settle / 4);
         cx.update(|window, cx| {
             window.simulate_next_frame(cx);
         });
@@ -1541,7 +1803,7 @@ mod hover_tests {
         assert_ne!(*observed.borrow(), rest, "leaving must not snap to rest");
         assert!(cx.update(|window, cx| window.simulate_next_frame(cx)) > 0);
         cx.run_until_parked();
-        std::thread::sleep(HOVER + Duration::from_millis(20));
+        std::thread::sleep(HOVER.settle + Duration::from_millis(20));
         cx.update(|window, cx| {
             window.simulate_next_frame(cx);
         });
@@ -1549,7 +1811,7 @@ mod hover_tests {
         assert_eq!(*observed.borrow(), rest);
         assert_eq!(cx.update(|window, cx| window.simulate_next_frame(cx)), 0);
         cx.simulate_mouse_move(bounds.center(), None, Modifiers::default());
-        std::thread::sleep(HOVER + Duration::from_millis(20));
+        std::thread::sleep(HOVER.settle + Duration::from_millis(20));
         cx.update(|window, cx| {
             window.simulate_next_frame(cx);
         });
@@ -1583,7 +1845,6 @@ mod primitive_tests {
                     "value",
                     if self.open { 1. } else { 0. },
                     PANEL,
-                    ease_out_cubic,
                     move |value| {
                         seen.set(value);
                         div().size(px(10.)).into_any_element()
@@ -1641,18 +1902,18 @@ mod primitive_tests {
         };
         draw(start, true, cx);
         assert_eq!(seen.get(), 0.);
-        draw(start + PANEL / 2, true, cx);
+        draw(start + PANEL.settle / 2, true, cx);
         let halfway = seen.get();
         assert!(halfway > 0.5 && halfway < 1., "eases out: {halfway}");
-        draw(start + PANEL / 2, false, cx);
+        draw(start + PANEL.settle / 2, false, cx);
         assert_eq!(
             seen.get(),
             halfway,
             "reversing starts from the value on screen"
         );
-        draw(start + PANEL / 2 + PANEL / 4, false, cx);
+        draw(start + PANEL.settle / 2 + PANEL.settle / 4, false, cx);
         assert!(seen.get() > 0. && seen.get() < halfway);
-        draw(start + PANEL * 2, false, cx);
+        draw(start + PANEL.settle * 2, false, cx);
         assert_eq!(seen.get(), 0.);
         // The frame requested while it moved still runs once.
         cx.update(|window, cx| {
@@ -1667,7 +1928,7 @@ mod primitive_tests {
         );
 
         cx.update(|_, cx| cx.set_reduce_motion(true));
-        draw(start + PANEL * 2, true, cx);
+        draw(start + PANEL.settle * 2, true, cx);
         assert_eq!(seen.get(), 1., "reduced motion settles at once");
         assert_eq!(cx.update(|window, cx| window.simulate_next_frame(cx)), 0);
         set_test_now(None);
@@ -1734,19 +1995,19 @@ mod primitive_tests {
         };
         draw(start, true, cx);
         assert_eq!(top(cx), rest, "it opens from nothing");
-        draw(start + PANEL / 2, true, cx);
+        draw(start + PANEL.settle / 2, true, cx);
         let halfway = top(cx) - rest;
         assert!(
             halfway > px(30.) && halfway < px(60.),
             "eases out: {halfway:?}"
         );
-        draw(start + PANEL / 2, false, cx);
+        draw(start + PANEL.settle / 2, false, cx);
         assert_eq!(
             top(cx) - rest,
             halfway,
             "folding starts from the height on screen"
         );
-        draw(start + PANEL * 2, false, cx);
+        draw(start + PANEL.settle * 2, false, cx);
         assert_eq!(top(cx), rest);
         assert!(cx.debug_bounds("unfolded").is_none());
         // The frame requested while it moved still runs once.
@@ -1761,7 +2022,7 @@ mod primitive_tests {
         );
 
         cx.update(|_, cx| cx.set_reduce_motion(true));
-        draw(start + PANEL * 2, true, cx);
+        draw(start + PANEL.settle * 2, true, cx);
         assert_eq!(top(cx) - rest, px(60.), "reduced motion opens at once");
         set_test_now(None);
     }

@@ -1990,7 +1990,6 @@ impl Render for SettingsScreen {
                                 self.render_pane(window, cx),
                                 "settings-pane-swap",
                                 self.section.id(),
-                                gpui::rgb(theme::bg_app()),
                             ))
                             .child(crate::ui::scrollbar::scrollbar(
                                 "settings-scrollbar",
@@ -3406,7 +3405,6 @@ impl SettingsScreen {
                     "selected",
                     if active { 1. } else { 0. },
                     crate::ui::motion::TOGGLE,
-                    crate::ui::motion::ease_out_cubic,
                     move |active| {
                         div()
                             .absolute()
@@ -3961,7 +3959,6 @@ fn pill_button(
             "pill-fill",
             target,
             motion::TOGGLE,
-            motion::ease_out_cubic,
             move |on| {
                 div()
                     .absolute()
@@ -3975,7 +3972,6 @@ fn pill_button(
             "pill-label",
             target,
             motion::TOGGLE,
-            motion::ease_out_cubic,
             move |on| {
                 div()
                     .relative()

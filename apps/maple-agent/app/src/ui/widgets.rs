@@ -322,7 +322,6 @@ pub fn checkbox(
             "checkbox-mark",
             if checked { 1. } else { 0. },
             motion::TOGGLE,
-            motion::ease_out_cubic,
             move |checked| {
                 let scale = 0.6 + 0.4 * checked;
                 div()
@@ -370,7 +369,6 @@ pub fn switch_track(on: bool) -> Div {
             "switch-knob",
             if on { 1. } else { 0. },
             motion::TOGGLE,
-            motion::ease_out_cubic,
             move |on| {
                 div()
                     .size_full()
@@ -603,11 +601,9 @@ pub fn dialog_scrim() -> impl IntoElement {
         .absolute()
         .inset_0()
         .bg(theme::scrim())
-        .with_animation(
-            "dialog-scrim",
-            gpui::Animation::new(motion::ENTER).with_easing(motion::ease_out_quint),
-            |scrim, shown| scrim.opacity(shown),
-        )
+        .with_animation("dialog-scrim", motion::ENTER.animation(), |scrim, shown| {
+            scrim.opacity(shown)
+        })
 }
 
 /// A modal card arriving: it fades in and rises from 8 px below over
@@ -1084,7 +1080,7 @@ mod tests {
 
         turn(true, cx);
         assert_eq!(knob(cx), off, "the knob sets out from where it is");
-        frame_at(start + motion::TOGGLE / 3, cx);
+        frame_at(start + motion::TOGGLE.settle / 3, cx);
         let partway = knob(cx);
         assert!(
             off < partway && partway < off + KNOB_TRAVEL,
@@ -1093,13 +1089,16 @@ mod tests {
 
         turn(false, cx);
         assert_eq!(knob(cx), partway, "turning back starts from the knob");
-        frame_at(start + motion::TOGGLE / 3 + motion::TOGGLE / 4, cx);
+        frame_at(
+            start + motion::TOGGLE.settle / 3 + motion::TOGGLE.settle / 4,
+            cx,
+        );
         let returning = knob(cx);
         assert!(
             off < returning && returning < partway,
             "the knob {returning:?} heads back from {partway:?}"
         );
-        frame_at(start + motion::TOGGLE * 2, cx);
+        frame_at(start + motion::TOGGLE.settle * 2, cx);
         assert_eq!(knob(cx), off);
         assert_eq!(frames(cx), 0, "a settled switch asks for no frames");
 
