@@ -8118,7 +8118,7 @@ mod state_tests {
                         assert_eq!(project.left(), composer.left());
                         assert!(project.bottom() <= composer.top());
                         assert!(composer.top() - project.bottom() <= px(12.));
-                        assert!(project.size.width <= px(260.));
+                        assert!(project.right() <= composer.right());
                         assert!(branch.right() <= composer.right());
                         assert!((branch.center().y - project.center().y).abs() <= px(0.5));
                         assert!(composer.size.height > px(0.));
@@ -8155,6 +8155,77 @@ mod state_tests {
         for absent in ["root-picker", "project-branch", "header-title"] {
             assert!(cx.debug_bounds(absent).is_none(), "{absent}");
         }
+    }
+
+    /// On a paired computer the chip names the computer and the folder, whole
+    /// while the row above the composer has room. When it does not, a long
+    /// computer name gives way first, down to its first letters, then the
+    /// folder. A short computer name is never the part that gives way.
+    #[gpui::test]
+    fn project_chip_shortens_the_computer_before_the_folder(cx: &mut TestAppContext) {
+        const LONG_COMPUTER: &str = "A very long name for the paired computer in the studio";
+        cx.update(|cx| cx.set_reduce_motion(true));
+        let (chat, cx) = chat_window(cx, |this, _| {
+            this.selected_session = None;
+            this.project_label = "maple-dev-env".into();
+        });
+        let set = |cx: &mut gpui::VisualTestContext, computer: Option<&str>, folder: String| {
+            chat.update(cx, |this, cx| {
+                this.project_computer =
+                    computer.map(|name| ProjectComputer::new(name.to_string().into(), &folder));
+                this.project_label = folder.into();
+                cx.notify();
+            });
+            cx.run_until_parked();
+        };
+        let bounds = |cx: &mut gpui::VisualTestContext, selector: &'static str| {
+            cx.debug_bounds(selector).expect(selector)
+        };
+        cx.run_until_parked();
+        let folder_alone = bounds(cx, "project-name").size.width;
+        assert!(cx.debug_bounds("project-computer").is_none());
+
+        // Room for both: neither is cut, however long the computer's name.
+        set(cx, Some(LONG_COMPUTER), "maple-dev-env".into());
+        let computer_whole = bounds(cx, "project-computer");
+        let folder = bounds(cx, "project-name");
+        assert!(computer_whole.size.width > px(200.), "{computer_whole:?}");
+        assert!(
+            (folder.size.width - folder_alone).abs() <= px(0.5),
+            "{folder:?}"
+        );
+        assert!(computer_whole.right() < folder.left());
+
+        // More text than the row holds: the chip stays inside the composer's
+        // width, the computer keeps its first letters and the folder is cut.
+        let long_folder = "a-very-long-project-folder-name-".repeat(8);
+        set(cx, Some(LONG_COMPUTER), long_folder.clone());
+        let chip = bounds(cx, "root-picker");
+        let composer = bounds(cx, "composer-box");
+        let computer = bounds(cx, "project-computer");
+        let folder = bounds(cx, "project-name");
+        assert!(chip.right() <= composer.right(), "{chip:?} in {composer:?}");
+        assert!(
+            (computer.size.width - px(64.)).abs() <= px(0.5),
+            "{computer:?}"
+        );
+        assert!(folder.size.width > computer.size.width);
+        assert!(folder.right() < chip.right());
+
+        // A short computer name stays whole even then.
+        set(cx, Some("Studio"), "maple-dev-env".into());
+        let whole = bounds(cx, "project-computer").size.width;
+        set(cx, Some("Studio"), long_folder);
+        let chip = bounds(cx, "root-picker");
+        let computer = bounds(cx, "project-computer");
+        assert!(
+            chip.right() <= bounds(cx, "composer-box").right(),
+            "{chip:?}"
+        );
+        assert!(
+            (computer.size.width - whole).abs() <= px(0.5),
+            "{computer:?}"
+        );
     }
 
     #[gpui::test]

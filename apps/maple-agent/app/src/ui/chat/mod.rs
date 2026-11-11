@@ -252,6 +252,30 @@ pub(super) struct QuestionSelection {
     picked: BTreeSet<usize>,
 }
 
+/// The paired computer a new task would run on, as the project chip shows it.
+#[derive(Clone, Debug, PartialEq)]
+pub(super) struct ProjectComputer {
+    name: SharedString,
+    /// The chip's accessible name: "computer · folder".
+    caption: SharedString,
+    /// Whether the name may shorten to make room for the folder. A short
+    /// name never does; a long one keeps its first several letters.
+    shortens: bool,
+}
+
+impl ProjectComputer {
+    /// Names up to this long are shown whole.
+    const WHOLE_NAME_CHARS: usize = 10;
+
+    pub(super) fn new(name: SharedString, project: &str) -> Self {
+        Self {
+            caption: format!("{name} · {project}").into(),
+            shortens: name.chars().count() > Self::WHOLE_NAME_CHARS,
+            name,
+        }
+    }
+}
+
 /// The chat's popup menus. One is open at a time.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub(super) enum ChatPopup {
@@ -625,7 +649,7 @@ pub struct ChatScreen {
     picker_projects_generation: u64,
     #[cfg(test)]
     picker_projects_fixture: Option<Vec<(Option<String>, RecentProjectRoot)>>,
-    /// Which of the chat's popup menus is open: the header's project menu,
+    /// Which of the chat's popup menus is open: a new task's project menu,
     /// a composer chip's menu, or the transcript's right-click menu.
     popup: Popup<ChatScreen, ChatPopup>,
     /// Focus for whichever modal dialog is open, so Enter and Escape
@@ -643,13 +667,16 @@ pub struct ChatScreen {
     project_folder_dialog: Option<Entity<project_folder::ProjectFolderDialog>>,
     root_picker_open: bool,
     root_selecting: bool,
-    /// Header label for the project root; set when the root changes so
-    /// render does not format it.
+    /// The project chip's folder name; set when the root changes so render
+    /// does not format it.
     project_label: SharedString,
+    /// On a paired computer, what the project chip says about it. `None` on
+    /// this computer.
+    project_computer: Option<ProjectComputer>,
     /// Git branch of the project root, read off the UI thread. `None`
     /// when the root is not a git checkout.
     project_branch: Option<String>,
-    /// `project_branch` in parentheses, ready for the header.
+    /// `project_branch` in parentheses, ready for the project chip's row.
     branch_label: Option<SharedString>,
     /// Watches the git dir of the current root so a checkout by the agent
     /// or from a terminal updates the branch. Replaced when the git dir
@@ -1566,6 +1593,7 @@ impl ChatScreen {
             root_picker_open: false,
             root_selecting: false,
             project_label: tr("chat-choose-folder"),
+            project_computer: None,
             project_branch: None,
             branch_label: None,
             branch_watcher: None,
@@ -2247,7 +2275,7 @@ impl ChatScreen {
         cx.notify();
     }
 
-    /// The root changed: update the header label, then read its branch
+    /// The root changed: update the project chip, then read its branch
     /// and watch its git dir.
     fn project_root_changed(&mut self, cx: &mut Context<Self>) {
         self.refresh_project_caption(cx);
@@ -2390,7 +2418,7 @@ impl ChatScreen {
         }
     }
 
-    /// Text for the header project chip.
+    /// The project chip's folder name.
     pub fn project_label(&self, cx: &gpui::App) -> String {
         if self.scratch_project {
             return tr("chat-new-project-button").to_string();
