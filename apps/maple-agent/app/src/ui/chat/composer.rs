@@ -12,6 +12,7 @@ use maple_agent::agent::{AgentPermissionMode, AgentSlashCommand, SideQuestionTur
 use super::cache::MarkdownKind;
 use super::commands::ChatCommand;
 use super::computers::{Destination, Navigate};
+use super::thinking::thinking_label;
 use super::transcript::{render_plan_row, render_subagent_row};
 use super::{
     COMPOSER_PLACEHOLDER, ChatPopup, ChatScreen, DraftAttachment, OpenSettingsSection,
@@ -33,7 +34,6 @@ use crate::ui::widgets;
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(super) enum ComposerControl {
     Model,
-    Thinking,
     Integrations,
     Mode,
     Attachments,
@@ -41,9 +41,8 @@ pub(super) enum ComposerControl {
 }
 
 impl ComposerControl {
-    const ALL: [Self; 6] = [
+    const ALL: [Self; 5] = [
         Self::Model,
-        Self::Thinking,
         Self::Integrations,
         Self::Mode,
         Self::Attachments,
@@ -244,6 +243,7 @@ impl ChatScreen {
                             "folder-open"
                         }),
                         self.project_label.clone(),
+                        None,
                         true,
                         self.popup.is_open(&ChatPopup::Project),
                     )
@@ -325,21 +325,7 @@ impl ChatScreen {
         cx: &mut Context<Self>,
     ) {
         match control {
-            ComposerControl::Model => match self.selected_model.clone() {
-                Some(model) => {
-                    self.popup
-                        .open_highlighted(ChatPopup::Model, format!("model-{model}"), cx)
-                }
-                None => self.popup.open(ChatPopup::Model, cx),
-            },
-            ComposerControl::Thinking => match self.thinking.as_ref().map(|state| state.current) {
-                Some(level) => self.popup.open_highlighted(
-                    ChatPopup::Thinking,
-                    format!("thinking-{}", level.as_str()),
-                    cx,
-                ),
-                None => self.popup.open(ChatPopup::Thinking, cx),
-            },
+            ComposerControl::Model => self.open_model_panel(cx),
             ComposerControl::Integrations => {
                 self.popup.open(ChatPopup::Integrations, cx);
                 self.refresh_session_mcp(cx);
@@ -370,41 +356,50 @@ impl ChatScreen {
                     .map(|model| self.model_label(model))
                     .map(str::to_string)
                     .unwrap_or_else(|| tr("chat-model").to_string());
+                let chip_name = label.clone();
+                // The level rides on the chip once the model's levels are
+                // known, for a model that thinks: a pick waiting to save,
+                // else the saved level, as the panel shows it.
+                let chosen = self.effort_chosen();
+                let level = chosen.map(thinking_label);
+                // At a model's top level the effort word stays warm, as the
+                // panel's slider does.
+                let detail_color: gpui::Hsla = match (self.thinking.as_ref(), chosen) {
+                    (Some(state), Some(chosen))
+                        if state.levels.len() > 1 && state.levels.last() == Some(&chosen) =>
+                    {
+                        crate::ui::effort_slider::heat_color(super::effort::level_heat(chosen))
+                    }
+                    _ => gpui::rgb(theme::text_muted()).into(),
+                };
+                let mut button = chip(
+                    "model-picker",
+                    None,
+                    label,
+                    level.clone().map(|level| (level, detail_color)),
+                    true,
+                    self.popup.is_open(&ChatPopup::Model),
+                );
+                if let Some(level) = level {
+                    button = button.aria_label(self.messages.get(
+                        "chat-model-effort-chip",
+                        [
+                            ("model", chip_name.into()),
+                            ("effort", level.to_string().into()),
+                        ],
+                    ));
+                }
                 self.with_menu(
                     ChatPopup::Model,
-                    chip(
-                        "model-picker",
-                        None,
-                        label,
-                        true,
-                        self.popup.is_open(&ChatPopup::Model),
-                    ),
+                    button,
                     Placement::AboveStart,
                     window,
                     cx,
-                    |this, _| this.model_menu(),
+                    |this, cx| this.model_menu(cx),
                 )
+                // The model's name truncates before the row squeezes Send.
+                .min_w_0()
             }
-            ComposerControl::Thinking => self.with_menu(
-                ChatPopup::Thinking,
-                widgets::icon_button(
-                    "thinking-picker",
-                    "brain",
-                    tr("chat-thinking-title"),
-                    px(16.),
-                    theme::text_secondary(),
-                )
-                .size_8()
-                .rounded(theme::RADIUS_LG)
-                .debug_selector(|| "thinking-picker".to_string())
-                .when(self.popup.is_open(&ChatPopup::Thinking), |button| {
-                    button.bg(gpui::rgb(theme::bg_sidebar_pill()))
-                }),
-                Placement::AboveStart,
-                window,
-                cx,
-                |this, _| this.thinking_menu(),
-            ),
             ComposerControl::Integrations => self.with_menu(
                 ChatPopup::Integrations,
                 chip(
@@ -418,6 +413,7 @@ impl ChatScreen {
                             [("count", self.mcp_enabled_count.into())],
                         )
                     },
+                    None,
                     false,
                     self.popup.is_open(&ChatPopup::Integrations),
                 ),
@@ -432,6 +428,7 @@ impl ChatScreen {
                     "permission-mode-menu",
                     Some(mode_icon(self.permission_mode)),
                     tr(mode_label(self.permission_mode)).to_string(),
+                    None,
                     true,
                     self.popup.is_open(&ChatPopup::Mode),
                 )
@@ -598,24 +595,44 @@ impl ChatScreen {
         .current(current)
     }
 
-    fn model_menu(&self) -> Menu<Self> {
+    /// The models, the selected one checked, with its
+    /// effort slider docked under them. A pick applies from the task's next
+    /// message and closes the panel; Left and Right step the effort.
+    fn model_menu(&self, cx: &mut Context<Self>) -> Menu<Self> {
         let selected = self.selected_model.as_deref();
-        // A task offers every model; a pick applies from its next message.
-        Menu::new("model-menu", px(320.))
+        let mut menu = Menu::new("model-menu", px(320.))
             .label(tr("chat-model"))
-            .max_height(px(320.))
+            .max_height(px(480.))
             .application_vim(self.application_vim_enabled)
-            .items(self.models.iter().map(|model| {
-                let pick = model.clone();
+            .on_adjust(|this: &mut Self, step, _, cx| this.step_effort(step, cx));
+        menu = menu.items(self.models.iter().map(|model| {
+            let pick = model.clone();
+            MenuItem::new(
+                SharedString::from(format!("model-{model}")),
+                self.model_label(model).to_string(),
+                move |this: &mut Self, _: &mut Window, cx: &mut Context<Self>| {
+                    this.pick_model(pick.clone(), cx);
+                },
+            )
+            .current(selected == Some(model.as_str()))
+        }));
+        // Levels that failed to load: Retry is a row, so the keyboard
+        // reaches it, and the panel stays open while they load again.
+        if self.effort_failed() {
+            menu = menu.separator().item(
                 MenuItem::new(
-                    SharedString::from(format!("model-{model}")),
-                    self.model_label(model).to_string(),
-                    move |this: &mut Self, _: &mut Window, cx: &mut Context<Self>| {
-                        this.pick_model(pick.clone(), cx);
+                    "retry-thinking",
+                    tr("chat-thinking-retry"),
+                    |this: &mut Self, _: &mut Window, cx: &mut Context<Self>| {
+                        this.refresh_thinking(cx);
+                        cx.notify();
                     },
                 )
-                .current(selected == Some(model.as_str()))
-            }))
+                .icon("rotate-ccw")
+                .keep_open(),
+            );
+        }
+        menu.footer(self.effort_footer(cx))
     }
 
     /// What the task may do without asking.
@@ -1149,7 +1166,18 @@ impl ChatScreen {
         &mut self,
         controls: Vec<gpui::AnyElement>,
     ) -> (gpui::AnyElement, bool) {
-        let row = div().flex().items_center().gap_1().children(controls);
+        // The row takes the room left beside Send and wraps onto a second
+        // line when the chips do not fit, rather than letting a chip shrink
+        // under its neighbours. Only a chip alone on its line still gives
+        // way, the model chip's name first.
+        let row = div()
+            .flex()
+            .flex_wrap()
+            .items_center()
+            .gap_1()
+            .flex_auto()
+            .min_w_0()
+            .children(controls);
         if self.selected_model.is_none() && (self.booting || self.models_loading) {
             self.controls_held = true;
             return (row.invisible().into_any_element(), true);
@@ -1465,6 +1493,7 @@ impl ChatScreen {
                     .child(
                         div()
                             .id("context-indicator")
+                            .flex_none()
                             .flex()
                             .items_center()
                             .mr_1()
@@ -1490,6 +1519,7 @@ impl ChatScreen {
                             .debug_selector(move || button_id.to_string())
                             .role(gpui::Role::Button)
                             .aria_label(button_label.clone())
+                            .flex_none()
                             .size_8()
                             .flex()
                             .items_center()
@@ -1598,12 +1628,15 @@ pub(super) fn slash_entries_for(token: &str, skills: &[AgentSlashCommand]) -> Ve
     .collect()
 }
 
-/// One control in the composer chip row. `active` means its menu is
-/// open.
+/// One control in the composer chip row. `detail` is a second, quieter
+/// value after the label (the model's effort); with one, the label gives
+/// way first when the row runs out of room, so the detail stays readable.
+/// `active` means its menu is open.
 fn chip(
     id: &'static str,
     leading: Option<&'static str>,
     label: impl Into<SharedString>,
+    detail: Option<(SharedString, gpui::Hsla)>,
     chevron: bool,
     active: bool,
 ) -> gpui::Stateful<Div> {
@@ -1613,6 +1646,7 @@ fn chip(
         theme::text_secondary()
     };
     let label = label.into();
+    let shrinks = detail.is_some();
     div()
         .id(id)
         .debug_selector(|| id.to_string())
@@ -1623,6 +1657,7 @@ fn chip(
         .items_center()
         .gap_1()
         .px_2()
+        .when(shrinks, |el| el.min_w_0())
         // Concentric with the composer box: 24px radius minus the 8px inset.
         .rounded(theme::RADIUS_LG)
         .text_xs()
@@ -1640,8 +1675,19 @@ fn chip(
         .child(
             div()
                 .whitespace_nowrap()
-                .when(id == "root-picker", |label| label.min_w_0().truncate())
+                .when(shrinks || id == "root-picker", |label| {
+                    label.min_w_0().truncate()
+                })
                 .child(label),
         )
-        .when(chevron, |el| el.child(icon("chevron-down", px(14.), color)))
+        // The detail morphs from one value to the next (High to Maximum).
+        .children(detail.map(|(detail, color)| {
+            div()
+                .flex_none()
+                .whitespace_nowrap()
+                .child(crate::ui::morph_text::morph_text((id, 1usize), detail).color(color))
+        }))
+        .when(chevron, |el| {
+            el.child(icon("chevron-down", px(14.), color).flex_none())
+        })
 }

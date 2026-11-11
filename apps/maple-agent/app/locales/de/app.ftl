@@ -1393,6 +1393,12 @@ chat-thinking-low = Niedrig
 chat-thinking-medium = Mittel
 chat-thinking-high = Hoch
 chat-thinking-xhigh = Sehr hoch
+chat-effort = Aufwand
+chat-effort-reset = Auf empfohlene Stufe zurücksetzen
+chat-effort-faster = Schneller
+chat-effort-deeper = Gründlicher
+# $model is the model's name; $effort is its effort level, such as High.
+chat-model-effort-chip = { $model }, Aufwand { $effort }
 chat-feedback-placeholder = Was möchtest du uns mitteilen?
 chat-feedback-send = Feedback senden
 chat-feedback-sending = Dein Feedback wird gesendet…

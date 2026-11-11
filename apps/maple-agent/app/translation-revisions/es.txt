@@ -52,6 +52,10 @@ chat-delete-description da3b63413276b86e
 chat-delete-task c34f60d6df892bcc
 chat-delete-title 6050693f1a848384
 chat-dictate 2178ffdb2c070d39
+chat-effort e1d2b8e59dd08a77
+chat-effort-deeper ef4f0e96b38fc7b4
+chat-effort-faster 24e0efa5f4fa8a8c
+chat-effort-reset c9668fd3e101afca
 chat-empty-private e70b48b25f2756b6
 chat-empty-title d2c40e03ea3a1c8d
 chat-enable-composer-vim 2cd611f2434af345
@@ -144,6 +148,7 @@ chat-mode-read-only 0ed310bdfd6dd082
 chat-mode-read-only-chip b62b6d26048a5057
 chat-mode-read-only-note dcae1dab04125c66
 chat-model b4a11238c0c9b1e5
+chat-model-effort-chip 135d28e0079ffd0d
 chat-month-1 0d679143b30162c2
 chat-month-10 cc8977badd170cd3
 chat-month-11 2902ca4e3ccd8885

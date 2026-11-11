@@ -22,6 +22,8 @@ pub struct AgentConfig {
     pub default_project_root: Option<String>,
     #[serde(default = "default_agent_model")]
     pub default_model: String,
+    /// The level picked on New Task with the model picked there (the
+    /// account's model choice); a pick of another model there clears it.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub default_thinking_level: Option<ThinkingLevel>,
     #[serde(default)]
@@ -1180,4 +1182,9 @@ mod speech_body_tests {
 pub struct AgentThinkingState {
     pub levels: Vec<ThinkingLevel>,
     pub current: ThinkingLevel,
+    /// The level the model runs at when nobody picked one, which reset
+    /// returns to: the catalog's `default_effort`, else Medium clamped to
+    /// the model. `None` from a host that predates it.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub recommended: Option<ThinkingLevel>,
 }

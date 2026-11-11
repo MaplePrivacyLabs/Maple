@@ -1237,13 +1237,9 @@ mod state_tests {
                 _cx: &mut Context<Self>,
             ) -> impl IntoElement {
                 // A column, so the screen fills the window and the sidebar
-                // list has room for its rows.
-                div()
-                    .w(px(1200.))
-                    .h(px(800.))
-                    .flex()
-                    .flex_col()
-                    .child(self.chat.clone())
+                // list has room for its rows. It follows the window, so a
+                // test can narrow it.
+                div().size_full().flex().flex_col().child(self.chat.clone())
             }
         }
         cx.executor().allow_parking();
@@ -3508,7 +3504,8 @@ mod state_tests {
 
     /// Opening a task points the selector at the model it last used without
     /// changing the account default. Its menu offers every model, and a pick
-    /// becomes the account default, as on New Task.
+    /// there is the task's alone; only a pick on New Task becomes the
+    /// account default.
     #[gpui::test]
     fn test_existing_task_opens_on_its_model_and_offers_every_model(cx: &mut TestAppContext) {
         cx.executor().allow_parking();
@@ -3540,9 +3537,14 @@ mod state_tests {
             assert!(this.notice.is_none());
 
             // Reopened before a message, the task is still on its own model.
-            this.set_active_session(glm, Vec::new(), HashMap::new(), cx);
+            this.set_active_session(glm.clone(), Vec::new(), HashMap::new(), cx);
             this.set_active_session(kimi, Vec::new(), HashMap::new(), cx);
             assert_eq!(this.selected_model.as_deref(), Some("kimi-k3"));
+
+            this.set_active_session(glm, Vec::new(), HashMap::new(), cx);
+            this.pick_model("kimi-k3".into(), cx);
+            assert_eq!(this.selected_model.as_deref(), Some("kimi-k3"));
+            assert_eq!(this.default_model.as_deref(), Some("glm-5-3"));
 
             this.new_session(cx);
             assert_eq!(this.selected_model.as_deref(), Some("glm-5-3"));
@@ -3607,7 +3609,7 @@ mod state_tests {
             elsewhere.model = Some("glm-5-3".into());
             this.upsert_session(elsewhere, cx);
             assert_eq!(this.selected_model.as_deref(), Some("glm-5-3"));
-            assert_eq!(this.default_model.as_deref(), Some("kimi-k3"));
+            assert_eq!(this.default_model.as_deref(), Some("glm-5-3"));
         });
     }
 
@@ -12125,21 +12127,16 @@ mod state_tests {
         );
 
         // A counted `l` walks right, and `h` back.
-        cx.simulate_keystrokes("4 l");
+        cx.simulate_keystrokes("3 l");
         assert_eq!(row(cx).1, Some(ComposerControl::Attachments));
         cx.simulate_keystrokes("h");
         assert_eq!(row(cx).1, Some(ComposerControl::Mode));
 
-        // Enter opens a menu on the current choice; closing it returns to
-        // the row on the same control.
+        // Enter opens the model chip's panel; closing it returns to the row
+        // on the same control.
         cx.simulate_keystrokes("g g enter");
         cx.update(|_window, app| {
-            let chat = chat.read(app);
-            assert_eq!(chat.popup.open_key(), Some(&ChatPopup::Model));
-            assert_eq!(
-                chat.popup.highlighted(),
-                Some(&gpui::ElementId::Name("model-model-b".into()))
-            );
+            assert_eq!(chat.read(app).popup.open_key(), Some(&ChatPopup::Model));
         });
         cx.simulate_keystrokes("escape");
         assert_eq!(
@@ -12521,7 +12518,15 @@ mod state_tests {
                 _window: &mut Window,
                 _cx: &mut Context<Self>,
             ) -> impl IntoElement {
-                div().w(px(1200.)).h(px(800.)).child(self.chat.clone())
+                // A column, as in the app, so the chat fills the window and
+                // the composer sits at its foot with room above for the
+                // model panel.
+                div()
+                    .w(px(1200.))
+                    .h(px(800.))
+                    .flex()
+                    .flex_col()
+                    .child(self.chat.clone())
             }
         }
 
@@ -13994,23 +13999,34 @@ mod state_tests {
             assert_eq!(cx.debug_bounds("send-message"), Some(composer));
         }
 
+        /// The level rides on the model chip once it is known; the chip
+        /// keeps its place and height while levels load or the model
+        /// changes.
         #[gpui::test]
-        fn thinking_icon_frame_is_stable_across_loading_and_model_change(cx: &mut TestAppContext) {
+        fn model_chip_names_the_thinking_level_without_moving(cx: &mut TestAppContext) {
             let (chat, cx) = chat_window(cx, |this, _| {
+                this.selected_model = Some("model-a".into());
                 this.thinking = None;
                 this.thinking_loading = true;
             });
-            let initial = cx.debug_bounds("thinking-picker").expect("loading icon");
+            let initial = cx.debug_bounds("model-picker").expect("chip while loading");
             chat.update(cx, |this, cx| {
                 this.thinking_loading = false;
                 this.thinking = Some(AgentThinkingState {
                     levels: vec![ThinkingLevel::Low, ThinkingLevel::High],
                     current: ThinkingLevel::High,
+                    recommended: None,
                 });
                 cx.notify();
             });
             cx.run_until_parked();
-            assert_eq!(cx.debug_bounds("thinking-picker"), Some(initial));
+            let named = cx.debug_bounds("model-picker").expect("chip with a level");
+            assert_eq!(named.origin, initial.origin);
+            assert_eq!(named.size.height, initial.size.height);
+            assert!(
+                named.size.width > initial.size.width,
+                "the chip names the level"
+            );
             chat.update(cx, |this, cx| {
                 this.selected_model = Some("different-model".into());
                 this.thinking = None;
@@ -14019,10 +14035,260 @@ mod state_tests {
             });
             cx.run_until_parked();
             let changed = cx
-                .debug_bounds("thinking-picker")
-                .expect("icon after model change");
-            assert_eq!(changed.size, initial.size);
+                .debug_bounds("model-picker")
+                .expect("chip after model change");
+            assert_eq!(changed.size.height, initial.size.height);
             assert_eq!(changed.origin.y, initial.origin.y);
+        }
+
+        /// In a narrow window the chips wrap onto a second line. Neither the
+        /// model chip nor the row squeezes below its contents, which drew
+        /// the effort word over Integrations and the last chips under Send.
+        #[gpui::test]
+        fn narrow_windows_wrap_the_chips_instead_of_overlapping_them(cx: &mut TestAppContext) {
+            let (_chat, cx) = chat_window(cx, |this, _| {
+                this.models = vec!["model-a".to_string()];
+                this.model_labels
+                    .insert("model-a".to_string(), "DeepSeek V4.1 Flash".to_string());
+                this.selected_model = Some("model-a".into());
+                this.thinking = Some(AgentThinkingState {
+                    levels: vec![ThinkingLevel::Low, ThinkingLevel::High, ThinkingLevel::Max],
+                    current: ThinkingLevel::Max,
+                    recommended: None,
+                });
+            });
+            let chips = [
+                "model-picker",
+                "mcp-menu",
+                "permission-mode-menu",
+                "web-toggle",
+            ];
+            let wide = cx.debug_bounds("model-picker").expect("model chip");
+            cx.simulate_resize(gpui::size(px(760.), px(800.)));
+            cx.run_until_parked();
+            let narrow = cx.debug_bounds("model-picker").expect("model chip");
+            assert_eq!(
+                narrow.size, wide.size,
+                "the model chip keeps its name and effort"
+            );
+            let send = cx.debug_bounds("send-message").expect("Send");
+            let bounds: Vec<_> = chips
+                .iter()
+                .filter_map(|id| cx.debug_bounds(id).map(|bounds| (*id, bounds)))
+                .collect();
+            assert!(bounds.len() >= 3, "the chips render: {bounds:?}");
+            for (i, (id, chip)) in bounds.iter().enumerate() {
+                assert!(chip.right() <= send.left(), "{id} reaches under Send");
+                for (other_id, other) in &bounds[i + 1..] {
+                    assert!(!chip.intersects(other), "{id} overlaps {other_id}");
+                }
+            }
+        }
+
+        /// A chat whose model offers `levels`, at `current`, with a save in
+        /// flight: picks then wait in the queue, where tests can read them
+        /// without the backend answering.
+        fn effort_window(
+            cx: &mut TestAppContext,
+            levels: Vec<ThinkingLevel>,
+            current: ThinkingLevel,
+        ) -> (Entity<ChatScreen>, &mut gpui::VisualTestContext) {
+            chat_window(cx, move |this, _| {
+                this.models = vec!["model-a".to_string(), "model-b".to_string()];
+                this.selected_model = Some("model-a".to_string());
+                this.thinking = Some(AgentThinkingState {
+                    levels,
+                    current,
+                    recommended: None,
+                });
+                this.thinking_saving = true;
+            })
+        }
+
+        fn queued(
+            chat: &Entity<ChatScreen>,
+            cx: &mut gpui::VisualTestContext,
+        ) -> Option<ThinkingLevel> {
+            chat.update(cx, |this, _| this.queued_thinking())
+        }
+
+        /// Left and Right step through the selected model's own levels,
+        /// stopping at either end, while Up, Down and Enter pick a model.
+        #[gpui::test]
+        fn arrow_keys_step_the_effort_and_pick_a_model(cx: &mut TestAppContext) {
+            use ThinkingLevel::{High, Low, Max};
+            let (chat, cx) = effort_window(cx, vec![Low, High, Max], High);
+            press(cx, "model-picker");
+            assert_eq!(open_menu(&chat, cx), "Model");
+            cx.simulate_keystrokes("right");
+            assert_eq!(queued(&chat, cx), Some(Max));
+            cx.simulate_keystrokes("right");
+            assert_eq!(queued(&chat, cx), Some(Max), "Max is the last stop");
+            cx.simulate_keystrokes("left left");
+            assert_eq!(queued(&chat, cx), Some(Low), "Medium is not a stop");
+            cx.simulate_keystrokes("left");
+            assert_eq!(queued(&chat, cx), Some(Low));
+            assert_eq!(open_menu(&chat, cx), "Model", "steps keep it open");
+            cx.simulate_keystrokes("down down enter");
+            assert_eq!(open_menu(&chat, cx), "", "a pick closes it");
+            assert_eq!(
+                chat.update(cx, |this, _| this.selected_model.clone())
+                    .as_deref(),
+                Some("model-b")
+            );
+        }
+
+        /// The same place on the track is a different level on models with
+        /// different levels; a drag previews the level under the thumb and
+        /// a release picks it.
+        #[gpui::test]
+        fn the_slider_spreads_each_models_levels_across_the_track(cx: &mut TestAppContext) {
+            use ThinkingLevel::{High, Low, Max, Off, Xhigh};
+            let (chat, cx) = effort_window(cx, vec![Low, High, Max], High);
+            for (levels, at_a_third) in [
+                (vec![Low, High, Max], High),
+                (vec![Off, Low, High, Xhigh, Max], Low),
+            ] {
+                chat.update(cx, |this, cx| {
+                    this.popup.close(cx);
+                    this.thinking_queued = None;
+                    this.thinking = Some(AgentThinkingState {
+                        levels: levels.clone(),
+                        current: High,
+                        recommended: None,
+                    });
+                });
+                press(cx, "model-picker");
+                let track = cx.debug_bounds("effort-slider").expect("slider");
+                // The thumb's centre travels between the rounded ends.
+                let end = crate::ui::effort_slider::TRACK_HEIGHT / 2.;
+                let at = |fraction: f32| {
+                    gpui::point(
+                        track.left() + end + (track.size.width - end * 2.) * fraction,
+                        track.center().y,
+                    )
+                };
+                cx.simulate_mouse_down(at(0.3), gpui::MouseButton::Left, Default::default());
+                let preview = chat.update(cx, |this, _| this.effort_preview);
+                assert_eq!(preview, Some(at_a_third), "{levels:?}");
+                cx.simulate_mouse_move(at(1.2), gpui::MouseButton::Left, Default::default());
+                let preview = chat.update(cx, |this, _| this.effort_preview);
+                assert_eq!(preview, Some(Max), "past the end is the last stop");
+                cx.simulate_mouse_up(at(1.2), gpui::MouseButton::Left, Default::default());
+                cx.run_until_parked();
+                assert_eq!(chat.update(cx, |this, _| this.effort_preview), None);
+                assert_eq!(queued(&chat, cx), Some(Max), "{levels:?}");
+            }
+        }
+
+        /// Reset goes back to the level the host recommends for the model,
+        /// its catalog default (Max, as on Kimi K3.1 Pro), and rests while
+        /// that is the level. A host that names none offers no reset.
+        #[gpui::test]
+        fn reset_returns_to_the_recommended_level(cx: &mut TestAppContext) {
+            use ThinkingLevel::{High, Low, Max};
+            let (chat, cx) = effort_window(cx, vec![Low, High, Max], Max);
+            press(cx, "model-picker");
+            press(cx, "effort-reset");
+            assert_eq!(queued(&chat, cx), None, "no recommendation");
+            chat.update(cx, |this, cx| {
+                if let Some(state) = &mut this.thinking {
+                    state.recommended = Some(Max);
+                }
+                cx.notify();
+            });
+            press(cx, "effort-reset");
+            assert_eq!(queued(&chat, cx), None, "already recommended");
+            cx.simulate_keystrokes("left");
+            assert_eq!(queued(&chat, cx), Some(High));
+            press(cx, "effort-reset");
+            assert_eq!(queued(&chat, cx), Some(Max), "the default, not Medium");
+        }
+
+        /// The chip opens the models with the selected one's slider under
+        /// them, no taller than a model row so the list keeps the eye; a
+        /// pick closes the panel, and `/model` opens the same one.
+        #[gpui::test]
+        fn the_panel_puts_the_models_above_the_slider(cx: &mut TestAppContext) {
+            let (chat, cx) = effort_window(
+                cx,
+                vec![ThinkingLevel::Low, ThinkingLevel::High],
+                ThinkingLevel::High,
+            );
+            press(cx, "model-picker");
+            let row = cx.debug_bounds("model-model-b").expect("model row");
+            let slider = cx.debug_bounds("effort-slider").expect("slider");
+            assert!(row.bottom() <= slider.top(), "models first, effort below");
+            assert!(
+                slider.size.height <= row.size.height,
+                "the slider ({slider:?}) stays within a row's height ({row:?})"
+            );
+            press(cx, "model-model-b");
+            assert_eq!(open_menu(&chat, cx), "");
+            assert_eq!(
+                chat.update(cx, |this, _| this.selected_model.clone())
+                    .as_deref(),
+                Some("model-b")
+            );
+            // The runtime's answer for the new model's levels, then `/model`.
+            chat.update(cx, |this, cx| {
+                this.thinking = Some(AgentThinkingState {
+                    levels: vec![ThinkingLevel::Low, ThinkingLevel::High],
+                    current: ThinkingLevel::High,
+                    recommended: None,
+                });
+                assert!(this.try_command(None, "/model", cx));
+            });
+            cx.run_until_parked();
+            assert_eq!(open_menu(&chat, cx), "Model");
+            assert!(cx.debug_bounds("effort-slider").is_some());
+        }
+
+        /// A model that does not think says so where the slider would be.
+        #[gpui::test]
+        fn a_model_without_thinking_shows_no_slider(cx: &mut TestAppContext) {
+            let (_chat, cx) = effort_window(cx, vec![ThinkingLevel::Off], ThinkingLevel::Off);
+            press(cx, "model-picker");
+            assert!(cx.debug_bounds("effort-status").is_some());
+            assert!(cx.debug_bounds("effort-slider").is_none());
+        }
+
+        /// Levels that failed to load offer Retry as a row the keyboard
+        /// reaches, and it keeps the panel open while they load again.
+        #[gpui::test]
+        fn retry_for_failed_levels_is_a_row_the_keyboard_reaches(cx: &mut TestAppContext) {
+            let (chat, cx) = chat_window(cx, |this, _| {
+                this.models = vec!["model-a".to_string()];
+                this.selected_model = Some("model-a".into());
+            });
+            // The levels' read failed.
+            chat.update(cx, |this, cx| {
+                this.thinking = None;
+                this.thinking_loading = false;
+                this.thinking_saving = false;
+                cx.notify();
+            });
+            cx.run_until_parked();
+            press(cx, "model-picker");
+            assert!(cx.debug_bounds("effort-status").is_some());
+            assert!(cx.debug_bounds("retry-thinking").is_some());
+            let highlighted = |cx: &mut gpui::VisualTestContext| {
+                cx.update(|_window, app| chat.read(app).popup.highlighted().cloned())
+            };
+            let retry = Some(gpui::ElementId::from("retry-thinking"));
+            for _ in 0..2 {
+                if highlighted(cx) != retry {
+                    cx.simulate_keystrokes("down");
+                }
+            }
+            assert_eq!(highlighted(cx), retry, "Down reaches Retry");
+            let before = chat.update(cx, |this, _| this.thinking_generation);
+            cx.simulate_keystrokes("enter");
+            assert_eq!(open_menu(&chat, cx), "Model", "Retry keeps the panel open");
+            assert!(
+                chat.update(cx, |this, _| this.thinking_generation) > before,
+                "the levels load again"
+            );
         }
 
         #[gpui::test]

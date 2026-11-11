@@ -39,6 +39,7 @@ pub(crate) mod computers;
 use computers::{Computer, Destination, Navigate, NavigationChanged};
 mod attachments;
 mod dialogs;
+mod effort;
 mod feedback;
 mod navigation;
 mod paging;
@@ -256,8 +257,9 @@ pub(super) struct QuestionSelection {
 pub(super) enum ChatPopup {
     /// A new task's project menu, from the chip above the composer.
     Project,
+    /// The model chip's panel: the models a task can use, and under them
+    /// the selected model's effort slider. `/model` opens it too.
     Model,
-    Thinking,
     Integrations,
     /// The composer chip's permission modes.
     Mode,
@@ -554,6 +556,26 @@ pub struct ChatScreen {
     thinking_loading: bool,
     thinking_generation: u64,
     thinking_saving: bool,
+    /// A level picked while another pick was saving; it goes out next.
+    thinking_queued: Option<(thinking::ThinkingKey, ThinkingLevel)>,
+    /// The level under the effort slider's thumb while it is dragged.
+    effort_preview: Option<ThinkingLevel>,
+    /// The effort slider's motion, kept while its panel is closed so a
+    /// model with other levels glides into place when it reopens.
+    effort_slider: std::rc::Rc<std::cell::RefCell<crate::ui::effort_slider::EffortSliderState>>,
+    /// Resets so far, naming each spin of the reset icon, and when the
+    /// latest one began.
+    effort_reset_spins: usize,
+    effort_reset_at: Option<std::time::Instant>,
+    /// Pointer picks and resets so far, naming each brain pulse, and when
+    /// the latest began: a reopened panel must not replay it.
+    effort_pulses: usize,
+    effort_pulse_at: Option<std::time::Instant>,
+    /// The level last moved by a key step: its name swaps at once.
+    effort_keyed: bool,
+    /// What the effort footer showed last, so the slider or the status
+    /// line fades in when one replaces the other.
+    effort_body: std::cell::Cell<effort::EffortBody>,
     /// Desktop notifications enabled (settings).
     notify_enabled: bool,
     /// Local-store policy, independent of the selected execution computer.
@@ -1470,6 +1492,15 @@ impl ChatScreen {
             thinking_loading: false,
             thinking_generation: 0,
             thinking_saving: false,
+            thinking_queued: None,
+            effort_preview: None,
+            effort_slider: Default::default(),
+            effort_reset_spins: 0,
+            effort_reset_at: None,
+            effort_pulses: 0,
+            effort_pulse_at: None,
+            effort_keyed: false,
+            effort_body: Default::default(),
             notify_enabled: settings.desktop_notifications,
             notify_details: settings.notification_details_enabled(),
             window_active: true,
@@ -2344,10 +2375,15 @@ impl ChatScreen {
     }
 
     /// Open or close one of the composer chips' menus. Opening the
-    /// integrations menu refreshes the task's servers.
+    /// integrations menu refreshes the task's servers; opening the model
+    /// panel starts its slider from the saved level.
     pub(super) fn toggle_popup(&mut self, popup: ChatPopup, cx: &mut Context<Self>) {
-        if self.popup.toggle(popup, cx) && popup == ChatPopup::Integrations {
-            self.refresh_session_mcp(cx);
+        if self.popup.toggle(popup, cx) {
+            match popup {
+                ChatPopup::Integrations => self.refresh_session_mcp(cx),
+                ChatPopup::Model => self.reset_effort_input(),
+                _ => {}
+            }
         }
     }
 
@@ -5023,7 +5059,7 @@ impl ChatScreen {
             }
             "model" => {
                 if args.is_empty() {
-                    self.popup.open(ChatPopup::Model, cx);
+                    self.open_model_panel(cx);
                 } else {
                     let query = args.to_string();
                     match self
@@ -5900,23 +5936,30 @@ impl ChatScreen {
         );
     }
 
-    /// Pick the model of the next message, in a task or a new one. It also
-    /// becomes the account default for new tasks.
+    /// Pick the model of the next message, in a task or a new one. A pick
+    /// on New Task is remembered for new tasks, starting at the model's own
+    /// level unless it is the model already remembered; a task's pick is
+    /// the task's alone.
     fn pick_model(&mut self, model: String, cx: &mut Context<Self>) {
         self.selected_model = Some(model.clone());
-        self.default_model = Some(model.clone());
+        if self.selected_session.is_none() {
+            if self.default_model.as_deref() != Some(model.as_str()) {
+                self.thinking_cache.invalidate_defaults();
+            }
+            self.default_model = Some(model.clone());
+            // Remember the choice across launches via the agent config.
+            let backend = self.backend.clone();
+            let user_id = self.user_id.clone();
+            self.call(
+                async move { backend.save_default_model(&user_id, model).await },
+                cx,
+                |_this, _result, _cx| {},
+            );
+        }
         self.refresh_thinking(cx);
         self.popup.close(cx);
         cx.notify();
         self.refresh_model_catalog(cx);
-        // Remember the choice across launches via the agent config.
-        let backend = self.backend.clone();
-        let user_id = self.user_id.clone();
-        self.call(
-            async move { backend.save_default_model(&user_id, model).await },
-            cx,
-            |_this, _result, _cx| {},
-        );
         self.refresh_context_usage(cx);
     }
 
@@ -6645,7 +6688,7 @@ impl ChatScreen {
                 self.sync_sidebar_activity(cx);
             }
             AgentServiceEvent::ThinkingChanged { session_id, state } => {
-                self.apply_thinking_changed(&session_id, state, cx);
+                self.apply_thinking_changed(&session_id, state);
             }
             AgentServiceEvent::RemoteAccessEnded(_)
             | AgentServiceEvent::HostDisconnected
