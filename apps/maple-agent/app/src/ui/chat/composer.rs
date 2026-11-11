@@ -89,6 +89,18 @@ fn mode_note(mode: AgentPermissionMode) -> &'static str {
     }
 }
 
+/// The share of the chat column the composer region takes when expanded.
+/// The layout and the expand transition both read it, so the transition
+/// always lands on the height the layout then holds.
+pub(super) const EXPANDED_SHARE: f32 = 0.7;
+/// The expand button's side, in rems. The composer's text row is never
+/// shorter than this button beside it, which the expand transition allows
+/// for when it works out the box's height at rest.
+pub(super) const EXPAND_BUTTON_REMS: f32 = 1.5;
+/// The empty state's vertical padding while the composer fills its pane, in
+/// rems, on each side.
+pub(super) const EMPTY_PANE_PADDING_REMS: f32 = 1.5;
+
 /// Heights the composer expand/shrink transition eases between, recorded
 /// as each frame is laid out so the next one can start from the screen.
 #[derive(Clone, Copy, Default)]
@@ -1297,9 +1309,9 @@ impl ChatScreen {
                 // The field fills the box throughout, so the box at the
                 // height of its text is the region less the field's spare
                 // height. Its row is never shorter than the expand button
-                // beside it (`size_6`).
+                // beside it (`EXPAND_BUTTON_REMS`).
                 let (drawn, text) = self.composer.as_ref()?.read(cx).drawn_and_text_height()?;
-                let row = text.max(window.rem_size() * 1.5);
+                let row = text.max(window.rem_size() * EXPAND_BUTTON_REMS);
                 let natural = frame.region? - (drawn - row).max(gpui::px(0.));
                 let room = frame.room?;
                 Some((progress, natural + (room - natural) * progress))
@@ -1715,7 +1727,7 @@ impl ChatScreen {
                             .id("composer-expand")
                             .role(gpui::Role::Button)
                             .aria_label(label.clone())
-                            .size_6()
+                            .size(gpui::rems(EXPAND_BUTTON_REMS))
                             .flex()
                             .items_center()
                             .justify_center()

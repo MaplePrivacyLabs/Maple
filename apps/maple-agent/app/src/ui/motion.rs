@@ -1133,8 +1133,6 @@ fn hover_background(
         observed: None,
         #[cfg(test)]
         observed_opacity: None,
-        #[cfg(test)]
-        test_now: None,
     }
 }
 
@@ -1149,8 +1147,6 @@ pub struct HoverBackground {
     observed: Option<std::rc::Rc<RefCell<gpui::Fill>>>,
     #[cfg(test)]
     observed_opacity: Option<std::rc::Rc<std::cell::Cell<f32>>>,
-    #[cfg(test)]
-    test_now: Option<Instant>,
 }
 
 impl HoverBackground {
@@ -1266,8 +1262,6 @@ impl Element for HoverBackground {
                 && !cx.has_active_drag()
         });
         let now = now();
-        #[cfg(test)]
-        let now = self.test_now.unwrap_or(now);
         let reduced = cx.reduce_motion() || self.instant;
         let (amount, animating) = window.with_element_state(
             id.expect("hover controls have an id"),
@@ -1643,7 +1637,7 @@ mod hover_tests {
                     .revealed(self.visible)
                     .child("Action");
                 button.observed_opacity = Some(self.observed.clone());
-                button.test_now = Some(self.now);
+                set_test_now(Some(self.now));
                 div().size_full().p(px(20.)).child(button)
             }
         }
@@ -1712,6 +1706,7 @@ mod hover_tests {
         cx.run_until_parked();
         assert_eq!(observed.get(), 1., "keyboard focus reveals immediately");
         assert_eq!(cx.update(|window, cx| window.simulate_next_frame(cx)), 0);
+        set_test_now(None);
     }
 
     #[gpui::test]
@@ -1777,6 +1772,8 @@ mod hover_tests {
     fn cached_child_hover_animates_reverses_and_goes_idle(cx: &mut gpui::TestAppContext) {
         use gpui::{Modifiers, div, prelude::*};
         use std::{cell::Cell, rc::Rc};
+        let start = Instant::now();
+        set_test_now(Some(start));
         struct Control {
             observed: Rc<RefCell<gpui::Fill>>,
             renders: Rc<Cell<usize>>,
@@ -1827,9 +1824,9 @@ mod hover_tests {
         cx.simulate_mouse_move(bounds.center(), None, Modifiers::default());
         assert!(cx.update(|window, cx| window.simulate_next_frame(cx)) > 0);
         cx.run_until_parked();
-        // The primitive uses real monotonic time; the test executor's clock
-        // does not advance Instant. One bounded wait samples an in-flight fade.
-        std::thread::sleep(HOVER.settle / 4);
+        // A quarter of the way in, the fade is in flight.
+        let mut at = start + HOVER.settle / 4;
+        set_test_now(Some(at));
         cx.update(|window, cx| {
             window.simulate_next_frame(cx);
         });
@@ -1839,7 +1836,8 @@ mod hover_tests {
         assert_ne!(*observed.borrow(), rest, "leaving must not snap to rest");
         assert!(cx.update(|window, cx| window.simulate_next_frame(cx)) > 0);
         cx.run_until_parked();
-        std::thread::sleep(HOVER.settle + Duration::from_millis(20));
+        at += HOVER.settle + Duration::from_millis(20);
+        set_test_now(Some(at));
         cx.update(|window, cx| {
             window.simulate_next_frame(cx);
         });
@@ -1847,7 +1845,8 @@ mod hover_tests {
         assert_eq!(*observed.borrow(), rest);
         assert_eq!(cx.update(|window, cx| window.simulate_next_frame(cx)), 0);
         cx.simulate_mouse_move(bounds.center(), None, Modifiers::default());
-        std::thread::sleep(HOVER.settle + Duration::from_millis(20));
+        at += HOVER.settle + Duration::from_millis(20);
+        set_test_now(Some(at));
         cx.update(|window, cx| {
             window.simulate_next_frame(cx);
         });
@@ -1855,6 +1854,7 @@ mod hover_tests {
         assert_eq!(*observed.borrow(), hover);
         assert_eq!(cx.update(|window, cx| window.simulate_next_frame(cx)), 0);
         assert!(child_renders.get() > child_count);
+        set_test_now(None);
     }
 }
 

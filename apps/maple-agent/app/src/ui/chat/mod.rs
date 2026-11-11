@@ -7494,7 +7494,7 @@ impl Render for ChatScreen {
                             }
                             None if self.composer_expanded => wrap
                                 .flex_none()
-                                .h(gpui::relative(0.7))
+                                .h(gpui::relative(composer::EXPANDED_SHARE))
                                 .min_h_0()
                                 .flex()
                                 .flex_col(),
@@ -7527,11 +7527,12 @@ impl Render for ChatScreen {
                         )),
                     composer_glide,
                 ))
-                // Expanded, the composer region takes 70% of this column.
+                // Expanded, the composer region takes `EXPANDED_SHARE` of this
+                // column.
                 .child(composer::measure(
                     &self.composer_frame,
                     |frame, bounds, _| {
-                        frame.room = Some(bounds.size.height * 0.7);
+                        frame.room = Some(bounds.size.height * composer::EXPANDED_SHARE);
                     },
                 ))
         };
@@ -8270,7 +8271,9 @@ impl ChatScreen {
             .items_center()
             .justify_center()
             .px_6()
-            .when(fills, |pane| pane.py_6())
+            .when(fills, |pane| {
+                pane.py(gpui::rems(composer::EMPTY_PANE_PADDING_REMS))
+            })
             // The folding heading rides above its shrinking box; in a short
             // pane it would reach past the pane's top edge and draw faintly
             // over the title bar, so the pane clips while the composer moves.
@@ -8279,7 +8282,10 @@ impl ChatScreen {
             .child(composer::measure(
                 &self.composer_frame,
                 |frame, bounds, window| {
-                    frame.room = Some(bounds.size.height - window.rem_size() * 3.);
+                    frame.room = Some(
+                        bounds.size.height
+                            - window.rem_size() * composer::EMPTY_PANE_PADDING_REMS * 2.,
+                    );
                 },
             ))
             .child(

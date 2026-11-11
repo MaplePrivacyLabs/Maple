@@ -121,7 +121,8 @@ menu keeps the keyboard. Menu keys live in the keymap's `Menu` context.
 ## Motion
 
 Animate through `ui/motion.rs` only; [motion](docs/motion.md) holds the
-tokens and rules. Motion never delays input, retargets from the value on
+tokens and rules. The effort slider is the one exception, with its own
+tunings beside it. Motion never delays input, retargets from the value on
 screen, closes menus and dialogs at once, and settles immediately under
 reduced motion. Streaming text, typing, and keyboard navigation do not
 animate. Rows inside `gpui::list` time their entrance from view state, not
