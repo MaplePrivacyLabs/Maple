@@ -415,7 +415,7 @@ impl<V: 'static, K: Clone + PartialEq + 'static> Popup<V, K> {
         if held {
             match target.and_then(|target| target.upgrade()) {
                 Some(target) => window.focus(&target, cx),
-                None => window.blur(),
+                None => window.blur(cx),
             }
         }
     }
@@ -1360,7 +1360,12 @@ fn item_row<V: 'static, K: Clone + PartialEq + 'static>(
                         .ok();
                     }));
                 }
-            } else if popup.highlighted.as_ref() == Some(&hovered_id) {
+            } else if popup.highlighted.as_ref() == Some(&hovered_id)
+                // gpui also reports a row as no longer hovered when a key is
+                // pressed over it. The pointer has not left, so the row
+                // keeps the highlight the keyboard now works from.
+                && !window.last_input_was_keyboard()
+            {
                 popup.hover = None;
                 if !expanded {
                     popup.highlight(None, cx);

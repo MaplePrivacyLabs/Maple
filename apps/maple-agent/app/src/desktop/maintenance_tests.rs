@@ -886,7 +886,10 @@ fn committed_restart_retry_quit_and_close_do_not_contact_the_retired_host(
         let mut restarted = cx.expect_restart();
         cx.update(|cx| restart_installed_update(path.clone(), cx));
         #[cfg(not(target_os = "windows"))]
-        assert_eq!(restarted.try_recv().unwrap(), Some(Some(path.clone())));
+        assert_eq!(
+            restarted.try_recv().unwrap(),
+            Some((Some(path.clone()), Vec::new()))
+        );
         #[cfg(target_os = "windows")]
         {
             // Windows uses the verified stable bootstrap, never GPUI restart.
