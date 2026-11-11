@@ -385,6 +385,7 @@ settings-remote-up-to-date = Up to date
 settings-remote-restart-needed = Restart needed
 settings-remote-unconfirmed = Unconfirmed
 settings-remote-waiting-for-it-to-acknowledge-nothing-has-started = Waiting for it to acknowledge. Nothing has started.
+settings-remote-it-restarts-when-done-this-updates-on-its-own = It restarts when done. This status updates on its own.
 settings-remote-it-restarts-when-done-check-again-once-it-s-back = It restarts when done. Check again once it’s back.
 settings-remote-eight-character-pairing-code = Eight-character pairing code
 settings-remote-this-computer-s-update-or-pairing-changed-refresh-its-status-befo = This computer’s update or pairing changed. Refresh its status before trying again.

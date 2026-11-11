@@ -161,7 +161,25 @@ struct ComputerUpdate {
     action: CardAction,
     install_available: bool,
     attempt: Option<InstallAttempt>,
+    follow: Follow,
 }
+
+/// An accepted install is followed without the user asking: the computer
+/// goes away to restart, and its card should settle by itself when it is back.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+enum Follow {
+    #[default]
+    Off,
+    Polling {
+        next: Instant,
+        until: Instant,
+    },
+    /// It took too long. The card asks for a manual check, which resumes it.
+    GaveUp,
+}
+
+const FOLLOW_INTERVAL: Duration = Duration::from_secs(5);
+const FOLLOW_LIMIT: Duration = Duration::from_secs(10 * 60);
 
 struct InstallConfirmation {
     peer: String,
@@ -246,15 +264,51 @@ fn version_label(version: &str) -> String {
 }
 
 impl ComputerUpdate {
+    fn following(&self) -> bool {
+        matches!(self.follow, Follow::Polling { .. })
+    }
+
+    /// Starts, keeps or ends the automatic follow after the attempt changed.
+    /// `checked` is a manual check the user asked for, which resumes one that
+    /// gave up.
+    fn sync_follow(&mut self, now: Instant, checked: bool) {
+        let accepted = self
+            .attempt
+            .as_ref()
+            .is_some_and(|attempt| attempt.phase == InstallPhase::Accepted);
+        self.follow = match self.follow {
+            _ if !accepted => Follow::Off,
+            Follow::Polling { until, .. } => Follow::Polling {
+                next: now + FOLLOW_INTERVAL,
+                until,
+            },
+            Follow::GaveUp if !checked => Follow::GaveUp,
+            Follow::Off | Follow::GaveUp => Follow::Polling {
+                next: now + FOLLOW_INTERVAL,
+                until: now + FOLLOW_LIMIT,
+            },
+        };
+    }
+
     fn refresh_presentation(&mut self) {
         self.install_available = false;
         self.badge = None;
         self.note = None;
         self.action = CardAction::None;
-        let loading = self.phase == PeerInfoPhase::Loading;
+        // A followed install keeps saying so between its automatic reads and
+        // while the computer is away restarting.
+        let phase = match self.phase {
+            PeerInfoPhase::Loading | PeerInfoPhase::Unreachable | PeerInfoPhase::Unchecked
+                if self.following() && self.info.is_some() =>
+            {
+                PeerInfoPhase::Loaded
+            }
+            phase => phase,
+        };
+        let loading = phase == PeerInfoPhase::Loading;
         let checking = self.query == PeerInfoQuery::Check;
         let Some(info) = &self.info else {
-            self.status_line = match self.phase {
+            self.status_line = match phase {
                 PeerInfoPhase::Loading if checking => tr("settings-remote-checking-for-updates"),
                 PeerInfoPhase::Loading => tr("settings-remote-checking-status"),
                 PeerInfoPhase::Unsupported | PeerInfoPhase::Unchecked => {
@@ -265,7 +319,7 @@ impl ComputerUpdate {
                 PeerInfoPhase::Loaded => tr("settings-remote-version-unknown"),
             }
             .into();
-            match self.phase {
+            match phase {
                 PeerInfoPhase::Unreachable => {
                     self.badge = Some(("settings-remote-not-reachable", Tone::Muted));
                     self.action = CardAction::CheckAgain;
@@ -302,7 +356,7 @@ impl ComputerUpdate {
         }
         // Cached observations stay as history only: they never look like a
         // current offer, policy decision or version comparison.
-        match self.phase {
+        match phase {
             PeerInfoPhase::Unreachable => {
                 self.status_line = tr_args(
                     "settings-remote-last-seen",
@@ -450,7 +504,12 @@ impl ComputerUpdate {
                     )
                     .to_string();
                     self.badge = Some(("settings-remote-updating", Tone::Accent));
-                    self.note = Some((attempt.label.to_string(), Tone::Muted));
+                    if self.follow == Follow::GaveUp {
+                        self.note = Some((tr(UNFOLLOWED_INSTALL).to_string(), Tone::Muted));
+                        self.action = CardAction::CheckAgain;
+                    } else {
+                        self.note = Some((attempt.label.to_string(), Tone::Muted));
+                    }
                 }
                 InstallPhase::Uncertain => {
                     self.badge = Some(("settings-remote-unconfirmed", Tone::Warning));
@@ -574,7 +633,9 @@ impl ComputerUpdate {
     }
 }
 
-const ACCEPTED_INSTALL: &str = "settings-remote-it-restarts-when-done-check-again-once-it-s-back";
+const ACCEPTED_INSTALL: &str = "settings-remote-it-restarts-when-done-this-updates-on-its-own";
+/// Shown once the automatic follow has given up.
+const UNFOLLOWED_INSTALL: &str = "settings-remote-it-restarts-when-done-check-again-once-it-s-back";
 
 pub struct RemoteScreen {
     locale: fluent_templates::LanguageIdentifier,
@@ -680,6 +741,7 @@ impl RemoteScreen {
                         if counting {
                             cx.notify();
                         }
+                        screen.follow_installs(Instant::now(), cx);
                     })
                     .is_err()
                 {
@@ -726,6 +788,31 @@ impl RemoteScreen {
             .map(|(key, _)| key.clone())
             .collect();
         for peer in peers {
+            self.refresh_peer_info(peer, cx);
+        }
+    }
+
+    /// Reads each updating computer's status again every few seconds, so its
+    /// card settles without a manual check. Only while Settings shows it.
+    fn follow_installs(&mut self, now: Instant, cx: &mut Context<Self>) {
+        let mut due = Vec::new();
+        for (peer, update) in &mut self.computer_updates {
+            let Follow::Polling { next, until } = update.follow else {
+                continue;
+            };
+            if now >= until {
+                update.follow = Follow::GaveUp;
+                update.refresh_presentation();
+                cx.notify();
+            } else if self.active && now >= next && update.phase != PeerInfoPhase::Loading {
+                update.follow = Follow::Polling {
+                    next: now + FOLLOW_INTERVAL,
+                    until,
+                };
+                due.push(peer.clone());
+            }
+        }
+        for peer in due {
             self.refresh_peer_info(peer, cx);
         }
     }
@@ -882,6 +969,10 @@ impl RemoteScreen {
                 };
             }
         }
+        update.sync_follow(
+            Instant::now(),
+            query == PeerInfoQuery::Check && update.phase == PeerInfoPhase::Loaded,
+        );
         update.refresh_presentation();
         self.invalidate_confirmation();
     }
@@ -1068,6 +1159,7 @@ impl RemoteScreen {
                 attempt.label = UiText::key(UNCONFIRMED_INSTALL);
             }
         }
+        update.sync_follow(Instant::now(), false);
         update.refresh_presentation();
     }
 

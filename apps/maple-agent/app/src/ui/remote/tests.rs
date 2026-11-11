@@ -1994,3 +1994,118 @@ fn an_open_confirmation_replaces_the_cards_update_button(cx: &mut TestAppContext
     assert!(cx.debug_bounds("update-remote-a").is_none());
     assert!(cx.debug_bounds("confirm-remote-update").is_some());
 }
+
+#[gpui::test]
+fn an_accepted_install_is_followed_until_the_computer_settles(cx: &mut TestAppContext) {
+    use crate::remote::update::InstallAccepted;
+    let screen = screen(cx);
+    screen.update(cx, |screen, cx| {
+        seed_update(screen, "a", [1; 16]);
+        screen.active = true;
+        let request = InstallRequest {
+            operation_id: uuid::Uuid::new_v4().to_string(),
+            target: target_release(),
+        };
+        screen.computer_updates.get_mut("a").unwrap().attempt = Some(InstallAttempt {
+            request: request.clone(),
+            phase: InstallPhase::Sending,
+            label: String::new().into(),
+            from_receipt: false,
+        });
+        let receipt = InstallAccepted {
+            operation_id: request.operation_id.clone(),
+            target: request.target.clone(),
+        };
+        screen.apply_install_reply(
+            "a",
+            [1; 16],
+            &request,
+            Ok(InstallReply::Accepted { receipt }),
+        );
+        let updating = |screen: &RemoteScreen| {
+            let update = &screen.computer_updates["a"];
+            assert_eq!(
+                update.badge.map(|(key, _)| key),
+                Some("settings-remote-updating")
+            );
+            assert_eq!(update.status_line, "v0.0.6 · updating to v0.0.7…");
+            assert_eq!(note(update), Some(tr(ACCEPTED_INSTALL).as_ref()));
+            assert_eq!(update.action, CardAction::None);
+        };
+        updating(screen);
+        let Follow::Polling { until, .. } = screen.computer_updates["a"].follow else {
+            panic!("an accepted install is followed");
+        };
+
+        // Nothing is read before the interval, or while Settings is elsewhere.
+        let now = Instant::now();
+        screen.follow_installs(now, cx);
+        screen.active = false;
+        screen.follow_installs(now + FOLLOW_INTERVAL, cx);
+        assert_eq!(screen.computer_updates["a"].phase, PeerInfoPhase::Loaded);
+        screen.active = true;
+        screen.follow_installs(now + FOLLOW_INTERVAL, cx);
+        assert_eq!(screen.computer_updates["a"].phase, PeerInfoPhase::Loading);
+        updating(screen);
+
+        // The computer is away restarting: the card keeps saying so.
+        let generation = screen.computer_updates["a"].generation;
+        screen.apply_peer_info("a", [1; 16], generation, Err("Disconnected".into()));
+        assert_eq!(
+            screen.computer_updates["a"].phase,
+            PeerInfoPhase::Unreachable
+        );
+        updating(screen);
+
+        // It is back on the new version with the matching receipt.
+        let mut done = historical_info(Some(OperationState::Succeeded));
+        done.update.operation.as_mut().unwrap().operation_id = request.operation_id.clone();
+        done.running.version = "0.0.7".into();
+        screen.apply_peer_info("a", [1; 16], generation, Ok(Some(done)));
+        let update = &screen.computer_updates["a"];
+        assert_eq!(update.follow, Follow::Off);
+        assert_eq!(update.status_line, "v0.0.7");
+        assert_eq!(
+            update.badge.map(|(key, _)| key),
+            Some("settings-remote-up-to-date")
+        );
+        screen.follow_installs(until, cx);
+        assert_eq!(screen.computer_updates["a"].phase, PeerInfoPhase::Loaded);
+    });
+}
+
+#[gpui::test]
+fn a_follow_that_takes_too_long_asks_for_a_manual_check(cx: &mut TestAppContext) {
+    let screen = screen(cx);
+    screen.update(cx, |screen, cx| {
+        seed_update(screen, "a", [1; 16]);
+        screen.active = true;
+        let mut info = ready_peer();
+        info.update.operation = Some(crate::remote::update::RemoteUpdateOperation {
+            operation_id: uuid::Uuid::new_v4().to_string(),
+            target: target_release(),
+            state: OperationState::Installing,
+            message: None,
+        });
+        // A reopened Settings view follows an install it finds in progress.
+        screen.apply_peer_info("a", [1; 16], 1, Ok(Some(info.clone())));
+        let Follow::Polling { until, .. } = screen.computer_updates["a"].follow else {
+            panic!("an install in progress is followed");
+        };
+        screen.follow_installs(until, cx);
+        let update = &screen.computer_updates["a"];
+        assert_eq!(update.follow, Follow::GaveUp);
+        assert_eq!(update.phase, PeerInfoPhase::Loaded, "nothing more is read");
+        assert_eq!(update.action, CardAction::CheckAgain);
+        assert_eq!(note(update), Some(tr(UNFOLLOWED_INSTALL).as_ref()));
+
+        // A background read does not resume it; the user's own check does.
+        screen.apply_peer_info("a", [1; 16], 1, Ok(Some(info.clone())));
+        assert_eq!(screen.computer_updates["a"].follow, Follow::GaveUp);
+        screen.apply_peer_info_result("a", [1; 16], 1, PeerInfoQuery::Check, Ok(Some(info)));
+        let update = &screen.computer_updates["a"];
+        assert!(update.following());
+        assert_eq!(update.action, CardAction::None);
+        assert_eq!(note(update), Some(tr(ACCEPTED_INSTALL).as_ref()));
+    });
+}
