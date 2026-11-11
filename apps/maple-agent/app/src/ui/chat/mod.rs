@@ -4262,6 +4262,12 @@ impl ChatScreen {
     pub fn set_update(&mut self, snapshot: crate::update::Snapshot, cx: &mut Context<Self>) {
         if self.update != snapshot {
             self.update = snapshot;
+            let card = self.update.show_banner.then(|| sidebar::UpdateCard {
+                state: self.update.state,
+                version: self.update.version.clone(),
+            });
+            self.sidebar
+                .update(cx, |sidebar, cx| sidebar.set_update_card(card, cx));
             cx.notify();
         }
     }
@@ -7184,28 +7190,6 @@ fn transcript_list_state() -> gpui::ListState {
     state
 }
 
-/// The update mark beside Settings and on its menu row: a download glyph
-/// on the accent, or a muted alert when the update failed.
-fn update_badge(size: gpui::Pixels, failed: bool) -> Div {
-    let badge = div()
-        .flex_none()
-        .size(size)
-        .rounded_full()
-        .flex()
-        .items_center()
-        .justify_center();
-    if failed {
-        badge
-            .border_1()
-            .border_color(gpui::rgb(theme::border()))
-            .child(icon("circle-alert", size * 0.67, theme::text_muted()))
-    } else {
-        badge
-            .bg(gpui::rgb(theme::accent()))
-            .child(icon("download", size * 0.6, theme::on_accent()))
-    }
-}
-
 impl ChatScreen {
     /// Refresh only presentation derived from locale; keep task, draft, search,
     /// scroll anchors and all backend generations untouched.
@@ -7625,7 +7609,8 @@ impl ChatScreen {
                     .relative()
                     .flex_none()
                     .child(icon("settings", px(16.), theme::text_secondary()))
-                    // Collapsed, a dot on the gear stands in for the badge.
+                    // Collapsed, the card is hidden, so a dot on the gear
+                    // says an update waits in the menu.
                     .when(!expanded && update.is_some(), |gear| {
                         gear.child(
                             div()
@@ -7644,12 +7629,6 @@ impl ChatScreen {
                     .justify_start()
                     .gap_2()
                     .child(tr("chat-settings"))
-                    .when_some(update.clone(), |button, (_, failed)| {
-                        button.child(
-                            update_badge(px(18.), failed)
-                                .debug_selector(|| "settings-update-badge".to_string()),
-                        )
-                    })
                     .child(div().flex_1())
                     .child(
                         icon("chevron-down", px(12.), theme::text_muted()).when(!open, |icon| {
@@ -7817,24 +7796,12 @@ impl ChatScreen {
                     .content(usage),
                 )
                 .separator()
-                .items(update.map(|(label, failed)| {
-                    MenuItem::new(
-                        "settings-menu-update",
-                        label.clone(),
-                        |this: &mut Self, _, cx| {
-                            this.open_update(cx);
-                        },
-                    )
-                    .content(
-                        div()
-                            .flex()
-                            .items_center()
-                            .gap_2()
-                            // The badge overhangs the icon column by 2 px a
-                            // side, so its label lines up with the rows below.
-                            .child(update_badge(px(18.), failed).mx(px(-2.)))
-                            .child(label),
-                    )
+                // Expanded, the update card above Settings carries this.
+                .items(update.filter(|_| !expanded).map(|(label, failed)| {
+                    MenuItem::new("settings-menu-update", label, |this: &mut Self, _, cx| {
+                        this.open_update(cx);
+                    })
+                    .icon(if failed { "circle-alert" } else { "download" })
                 }))
                 .item(
                     // Shows the label of the Settings section it opens.

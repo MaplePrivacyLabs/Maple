@@ -400,6 +400,17 @@ chat-unpin 4aee1206999bb9d1
 chat-unpin-task b4d9f9b7b531c64a
 chat-untrust-project ff48514cda33c012
 chat-update-available dbec8c4fab61ccd6
+chat-update-card-available 8236b11200cd54ff
+chat-update-card-available-detail 504b74d00e1c3aae
+chat-update-card-details 4c835c1c0a3c59ac
+chat-update-card-failed 003e49bb88619df4
+chat-update-card-failed-detail d337701a914a8977
+chat-update-card-installed a5d06fdc0a7c9ca7
+chat-update-card-installed-detail c80da114d42c220c
+chat-update-card-later 3220977a996d861c
+chat-update-card-ready d3442ce08f787a83
+chat-update-card-ready-detail 8070e0402de96e4f
+chat-update-card-restart 2edea9c3c1bfe25c
 chat-update-error 9c328658eceee405
 chat-update-restart 17d5de3c0dccd790
 chat-upload-cancelled-unsent a7150954912304b7
