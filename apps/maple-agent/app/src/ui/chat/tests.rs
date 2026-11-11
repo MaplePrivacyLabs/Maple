@@ -8770,6 +8770,7 @@ mod state_tests {
                 plan_label: "Pro".into(),
                 percent_used: 42,
                 resets_label: "tomorrow".into(),
+                credit_balance: None,
             }),
         ] {
             let available = plan.is_some();
@@ -12890,6 +12891,114 @@ mod state_tests {
             cx.notify();
         });
         assert!(!offered(cx));
+    }
+
+    #[gpui::test]
+    fn extra_credits_show_in_the_menu_and_dismiss_the_usage_offer(cx: &mut TestAppContext) {
+        use maple_agent::agent::USAGE_LIMIT_MESSAGE;
+
+        let (chat, cx) = chat_window(cx, |chat, _cx| {
+            chat.replace_timeline(vec![
+                user_item("user-1", "test"),
+                item("usage-1", "error", Some(USAGE_LIMIT_MESSAGE)),
+            ])
+        });
+        let plan = |percent_used, credit_balance| crate::billing::PlanUsage {
+            product_name: Some("Max".into()),
+            reset_at: None,
+            plan_label: "Max Plan".into(),
+            percent_used,
+            resets_label: "Monthly".into(),
+            credit_balance,
+        };
+        // (plan, Billing offered, credits row in the menu)
+        let cases = [
+            // Unknown usage: the stop stands as the runtime reported it.
+            (None, true, false),
+            // Allowance used up, no credits: still out of usage.
+            (Some(plan(100, Some(0))), true, false),
+            // Used up with credits (bought since the stop): they extend the
+            // plan, so the Billing offer goes away.
+            (Some(plan(100, Some(984_534))), false, true),
+            // Allowance left with credits waiting: the reading does not say
+            // credits are in use, so the stop keeps its offer; the menu
+            // still lists them.
+            (Some(plan(40, Some(984_534))), true, true),
+        ];
+        for (plan, billing, credits_row) in cases {
+            chat.update(cx, |chat, cx| {
+                chat.sidebar_plan = plan.clone();
+                cx.notify();
+            });
+            cx.update(|window, _| window.refresh());
+            cx.run_until_parked();
+            assert_eq!(
+                cx.debug_bounds("composer-open-billing").is_some(),
+                billing,
+                "{plan:?}"
+            );
+            press(cx, "open-settings");
+            assert_eq!(
+                cx.debug_bounds("settings-usage-credits").is_some(),
+                credits_row,
+                "{plan:?}"
+            );
+            press(cx, "settings-menu-usage");
+            assert!(cx.debug_bounds("settings-menu").is_none());
+        }
+
+        // The transcript keeps the earlier refusal.
+        assert!(cx.debug_bounds("timeline-row-usage-1").is_some());
+
+        // A refusal that arrives while the reading already says credits
+        // extend the plan means they did not pay: the offer comes back.
+        let refused: AgentTimelineItem = serde_json::from_value(serde_json::json!({
+            "id": "usage-2", "itemType": "error", "createdMs": 2, "merge": "replace",
+            "text": USAGE_LIMIT_MESSAGE, "label": {"kind": "error-usage"}
+        }))
+        .unwrap();
+        chat.update(cx, |chat, cx| {
+            chat.sidebar_plan = Some(plan(100, Some(984_534)));
+            chat.replace_timeline(vec![user_item("user-1", "test")]);
+            chat.apply_incoming_item("s1", refused, cx);
+            cx.notify();
+        });
+        cx.update(|window, _| window.refresh());
+        cx.run_until_parked();
+        assert!(cx.debug_bounds("composer-open-billing").is_some());
+    }
+
+    #[gpui::test]
+    fn returning_to_the_chat_rereads_the_plan_at_most_every_thirty_seconds(
+        cx: &mut TestAppContext,
+    ) {
+        let (chat, cx) = chat_window(cx, |_, _| {});
+        let requests =
+            |cx: &mut gpui::VisualTestContext| chat.update(cx, |chat, _| chat.plan_generation);
+        let come_back = |cx: &mut gpui::VisualTestContext| {
+            chat.update(cx, |chat, cx| {
+                chat.set_visible(false, cx);
+                chat.set_visible(true, cx);
+            });
+        };
+        // Before the first reading there is nothing to refresh.
+        come_back(cx);
+        assert_eq!(requests(cx), 0);
+        // A reading under thirty seconds old is kept.
+        chat.update(cx, |chat, _| {
+            chat.plan_requested_at = Some(std::time::Instant::now());
+        });
+        come_back(cx);
+        assert_eq!(requests(cx), 0);
+        // An older one is asked for again, once.
+        chat.update(cx, |chat, _| {
+            chat.plan_requested_at =
+                std::time::Instant::now().checked_sub(std::time::Duration::from_secs(31));
+        });
+        come_back(cx);
+        assert_eq!(requests(cx), 1);
+        come_back(cx);
+        assert_eq!(requests(cx), 1);
     }
 
     #[gpui::test]

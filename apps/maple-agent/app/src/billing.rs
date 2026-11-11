@@ -239,7 +239,8 @@ pub fn configured_billing_api_url() -> String {
 }
 
 /// Plan quota shown in the sidebar footer: plan name, percent of the
-/// quota used in the current period, and the date the period resets.
+/// quota used in the current period, the date the period resets, and the
+/// extra credits that take over once the quota runs out.
 #[derive(Debug, Clone, PartialEq, serde::Serialize, serde::Deserialize)]
 pub struct PlanUsage {
     /// Semantic presentation inputs; optional for older hosts.
@@ -250,6 +251,10 @@ pub struct PlanUsage {
     pub plan_label: String,
     pub percent_used: u8,
     pub resets_label: String,
+    /// Extra credit balance; `None` from older hosts and when the billing
+    /// API leaves it out.
+    #[serde(default)]
+    pub credit_balance: Option<i64>,
 }
 
 impl PlanUsage {
@@ -266,9 +271,27 @@ impl PlanUsage {
             product_name: status.product_name.clone(),
             reset_at: status.usage_reset_date.clone(),
             plan_label: plan_name_label(status.product_name.as_deref()),
-            percent_used: percent.round() as u8,
+            // 100% means used up: just short of it reads 99%, so the
+            // credits never look in use while allowance remains.
+            percent_used: if used >= total {
+                100
+            } else {
+                (percent.round() as u8).min(99)
+            },
             resets_label: reset_label(status.usage_reset_date.as_deref(), now),
+            credit_balance: status.api_credit_balance,
         })
+    }
+
+    /// Extra credits left to spend, when there are any.
+    pub fn extra_credits(&self) -> Option<i64> {
+        self.credit_balance.filter(|credits| *credits > 0)
+    }
+
+    /// The billing reading says the allowance is used up and extra credits
+    /// remain, which they extend.
+    pub fn on_extra_credits(&self) -> bool {
+        self.percent_used >= 100 && self.extra_credits().is_some()
     }
 }
 
@@ -521,6 +544,21 @@ mod tests {
     }
 
     #[test]
+    fn reads_one_hundred_percent_only_once_used_up() {
+        let percent = |used| {
+            PlanUsage::from_status(&status("Max", used, 1_000, "2026-09-06T00:00:00Z"), now())
+                .unwrap()
+                .percent_used
+        };
+        assert_eq!(percent(994), 99);
+        // Rounding alone would say 100 while allowance remains.
+        assert_eq!(percent(996), 99);
+        assert_eq!(percent(999), 99);
+        assert_eq!(percent(1_000), 100);
+        assert_eq!(percent(1_200), 100);
+    }
+
+    #[test]
     fn relative_reset_labels() {
         let label =
             |reset: chrono::DateTime<chrono::Local>| reset_label(Some(&reset.to_rfc3339()), now());
@@ -555,6 +593,7 @@ mod tests {
         assert_eq!(plan.percent_used, 25);
         assert!(plan.product_name.is_none());
         assert!(plan.reset_at.is_none());
+        assert!(plan.credit_balance.is_none());
         let status = BillingStatus {
             product_name: Some("Max".into()),
             total_tokens: Some(100),
@@ -565,5 +604,28 @@ mod tests {
         let plan = PlanUsage::from_status(&status, chrono::Local::now()).unwrap();
         assert_eq!(plan.product_name, status.product_name);
         assert_eq!(plan.reset_at, status.usage_reset_date);
+    }
+
+    #[test]
+    fn extra_credits_take_over_once_the_allowance_is_used_up() {
+        let reset = "2026-09-06T00:00:00Z";
+        let with = |used, credits| {
+            let mut status = status("Max", used, 100, reset);
+            status.api_credit_balance = credits;
+            PlanUsage::from_status(&status, now()).unwrap()
+        };
+        // Allowance left: credits wait their turn.
+        let fresh = with(40, Some(984_534));
+        assert_eq!(fresh.extra_credits(), Some(984_534));
+        assert!(!fresh.on_extra_credits());
+        // Used up with credits: tasks keep going on them.
+        let covered = with(100, Some(984_534));
+        assert!(covered.on_extra_credits());
+        // Used up with none, an empty balance, or none reported: no credits.
+        for credits in [None, Some(0), Some(-5)] {
+            let stopped = with(100, credits);
+            assert_eq!(stopped.extra_credits(), None);
+            assert!(!stopped.on_extra_credits());
+        }
     }
 }

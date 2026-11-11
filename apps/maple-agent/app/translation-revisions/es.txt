@@ -413,7 +413,12 @@ chat-upload-retained-unconfirmed 26a021fe9b1960d6
 chat-upload-wait-recovery 2e398cfc4b0af549
 chat-upload-wait-send ca9808ab6dc02c76
 chat-usage 95f9bea879d899fd
+chat-usage-credits-in-use 45599794226f5cf9
+chat-usage-credits-left 31e6e1ba16c2dbe6
+chat-usage-credits-next 35bb6e70ce17dad3
+chat-usage-extra-credits 09406a43c07038fc
 chat-usage-label f46ae8f15db08139
+chat-usage-label-credits 60771938b69c1c29
 chat-usage-limit-body 309715011813b996
 chat-usage-limit-title c5314ce324f79bfb
 chat-usage-percent 0471f820d8abbb53

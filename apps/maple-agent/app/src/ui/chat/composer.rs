@@ -1232,15 +1232,22 @@ impl ChatScreen {
     /// The selected task's latest turn ended out of usage and nothing has
     /// gone out since. A window that does not hold the tail (paged back
     /// into history, or with live rows past its budget) cannot tell.
+    /// The offer stands down while the billing reading says extra credits
+    /// cover the used-up plan (bought since the refusal, say), unless the
+    /// refusal itself came while they did: then the credits did not pay.
     fn usage_limit_reached(&self) -> bool {
         !self.pages.after
             && !self.pages.live_has_more
             && !self.is_run_active()
             && !self.has_send_feedback()
-            && self
-                .timeline
-                .last()
-                .is_some_and(super::transcript::is_usage_limit)
+            && self.timeline.last().is_some_and(|row| {
+                super::transcript::is_usage_limit(row)
+                    && (self.refused_on_credits.as_deref() == Some(row.id.as_str())
+                        || !self
+                            .sidebar_plan
+                            .as_ref()
+                            .is_some_and(crate::billing::PlanUsage::on_extra_credits))
+            })
     }
 
     /// The out-of-usage notice, docked on top of the composer where the

@@ -1757,6 +1757,16 @@ chat-usage-label = Nutzung, { $percent } Prozent genutzt. { $plan }, Zurücksetz
 chat-usage-percent = { $percent } % genutzt
 # $reset is a formatted date or a phrase such as "in 3 days".
 chat-usage-reset = Zurücksetzung: { $reset }
+# Screen reader label when the account has extra credits. $percent is a number from 0 to 100. $plan is the plan name. $reset is a formatted date or a phrase such as "in 3 days", "Tomorrow" or "Monthly". $credits is the extra credit balance with thousands separators, such as "984,534".
+chat-usage-label-credits = Nutzung, { $percent } Prozent genutzt. { $plan }, Zurücksetzung: { $reset }. Zusätzliches Guthaben: { $credits } übrig. Nutzungseinstellungen öffnen
+# Credits bought on top of the plan; they extend it once its allowance is used up.
+chat-usage-extra-credits = Zusätzliches Guthaben
+# $credits is the extra credit balance with thousands separators, such as "984,534".
+chat-usage-credits-left = { $credits } übrig
+# Under the balance while the plan's allowance is used up and extra credits extend it.
+chat-usage-credits-in-use = Wird verwendet, bis dein Tarif zurückgesetzt wird.
+# Under the balance while the plan still has allowance left.
+chat-usage-credits-next = Wird verwendet, sobald dein Tarif aufgebraucht ist.
 
 # Shared with native desktop computer presentation.
 

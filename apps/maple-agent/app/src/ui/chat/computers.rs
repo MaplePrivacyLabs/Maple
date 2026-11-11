@@ -339,6 +339,9 @@ impl ChatScreen {
         if !visible {
             self.project_folder_dialog = None;
         }
+        if changed && visible {
+            self.refresh_plan_on_return(cx);
+        }
         if changed && visible && !self.computers.is_empty() {
             // Only the mounted sidebar projects every computer. Background
             // views keep their own summaries and the shared catalog handle;

@@ -1754,6 +1754,16 @@ chat-usage-label = Usage, { $percent } percent used. { $plan }, resets { $reset 
 chat-usage-percent = { $percent }% used
 # $reset is a formatted date or a phrase such as "in 3 days".
 chat-usage-reset = Resets { $reset }
+# Screen reader label when the account has extra credits. $percent is a number from 0 to 100. $plan is the plan name. $reset is a formatted date or a phrase such as "in 3 days", "Tomorrow" or "Monthly". $credits is the extra credit balance with thousands separators, such as "984,534".
+chat-usage-label-credits = Usage, { $percent } percent used. { $plan }, resets { $reset }. Extra credits, { $credits } left. Open Usage settings
+# Credits bought on top of the plan; they extend it once its allowance is used up.
+chat-usage-extra-credits = Extra credits
+# $credits is the extra credit balance with thousands separators, such as "984,534".
+chat-usage-credits-left = { $credits } left
+# Under the balance while the plan's allowance is used up and extra credits extend it.
+chat-usage-credits-in-use = In use until your plan resets.
+# Under the balance while the plan still has allowance left.
+chat-usage-credits-next = Used once your plan runs out.
 
 # Shared with native desktop computer presentation.
 
