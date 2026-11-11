@@ -4262,10 +4262,16 @@ impl ChatScreen {
     pub fn set_update(&mut self, snapshot: crate::update::Snapshot, cx: &mut Context<Self>) {
         if self.update != snapshot {
             self.update = snapshot;
-            let card = self.update.show_banner.then(|| sidebar::UpdateCard {
-                state: self.update.state,
-                version: self.update.version.clone(),
-            });
+            // The updater names the version whenever it shows an update.
+            let card = self
+                .update
+                .version
+                .clone()
+                .filter(|_| self.update.show_banner)
+                .map(|version| sidebar::UpdateCard {
+                    state: self.update.state,
+                    version,
+                });
             self.sidebar
                 .update(cx, |sidebar, cx| sidebar.set_update_card(card, cx));
             cx.notify();

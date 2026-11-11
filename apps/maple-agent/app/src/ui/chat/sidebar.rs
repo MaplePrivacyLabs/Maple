@@ -192,7 +192,7 @@ pub(super) enum SidebarEvent {
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub(super) struct UpdateCard {
     pub(super) state: crate::update::State,
-    pub(super) version: Option<String>,
+    pub(super) version: String,
 }
 
 /// Activity a task row indicates beside its title.
@@ -4502,7 +4502,7 @@ impl Render for Sidebar {
             .children(
                 self.update_card
                     .as_ref()
-                    .map(|card| update_card(card, self.chat.clone())),
+                    .map(|card| update_card(card, &self.messages, self.chat.clone())),
             )
             // Settings stays opaque outside this cached, fading subtree.
             .child(div().h(px(54.)).flex_none())
@@ -4511,41 +4511,30 @@ impl Render for Sidebar {
 
 /// The update card: what's ready, what restarting means, and a way to act
 /// now or later. Neutral surface; only the glyph carries the accent.
-fn update_card(card: &UpdateCard, chat: WeakEntity<ChatScreen>) -> gpui::Stateful<Div> {
+fn update_card(
+    card: &UpdateCard,
+    messages: &MessageCache,
+    chat: WeakEntity<ChatScreen>,
+) -> gpui::Stateful<Div> {
     use crate::update::State;
-    let titled = |key: &'static str, fallback: &'static str| match &card.version {
-        Some(version) => tr_args(key, [("version", version.clone().into())]),
-        None => tr(fallback),
-    };
-    let (title, detail, act_now, deferrable) = match card.state {
+    let version = || [("version", card.version.clone().into())];
+    let (title, detail, act_now) = match card.state {
         State::Ready => (
-            titled("chat-update-card-ready", "chat-update-available"),
+            messages.get("chat-update-card-ready", version()),
             "chat-update-card-ready-detail",
             "chat-update-card-restart",
-            true,
-        ),
-        // Restart or quit is the only way forward; the updater ignores Later.
-        State::RestartRequired => (
-            titled("chat-update-card-installed", "chat-update-restart"),
-            "chat-update-card-installed-detail",
-            "chat-update-card-details",
-            false,
         ),
         State::Error => (
-            tr("chat-update-card-failed"),
+            tr("chat-update-error"),
             "chat-update-card-failed-detail",
             "chat-update-card-details",
-            true,
         ),
         _ => (
-            titled("chat-update-card-available", "chat-update-available"),
+            messages.get("chat-update-card-available", version()),
             "chat-update-card-available-detail",
             "chat-update-card-details",
-            true,
         ),
     };
-    let failed = card.state == State::Error;
-    let detail = tr(detail);
     let later = chat.clone();
     div()
         .id("sidebar-update-card")
@@ -4562,7 +4551,6 @@ fn update_card(card: &UpdateCard, chat: WeakEntity<ChatScreen>) -> gpui::Statefu
         .border_1()
         .border_color(gpui::rgb(theme::border()))
         .role(gpui::Role::Status)
-        .aria_label(SharedString::from(format!("{title}. {detail}")))
         .child(
             div()
                 .flex()
@@ -4571,18 +4559,18 @@ fn update_card(card: &UpdateCard, chat: WeakEntity<ChatScreen>) -> gpui::Statefu
                 .text_sm()
                 .font_weight(gpui::FontWeight::SEMIBOLD)
                 .text_color(gpui::rgb(theme::text_primary()))
-                .child(if failed {
+                .child(if card.state == State::Error {
                     icon("circle-alert", px(14.), theme::text_muted())
                 } else {
                     icon("download", px(14.), theme::accent())
                 })
-                .child(title),
+                .child(gpui::text!(title)),
         )
         .child(
             div()
                 .text_xs()
                 .text_color(gpui::rgb(theme::text_muted()))
-                .child(detail),
+                .child(gpui::text!(tr(detail))),
         )
         .child(
             div()
@@ -4598,36 +4586,32 @@ fn update_card(card: &UpdateCard, chat: WeakEntity<ChatScreen>) -> gpui::Statefu
                         .px_3()
                         .py_1()
                         .text_xs()
-                        .aria_label(tr(act_now))
-                        .child(tr(act_now))
+                        .child(gpui::text!(tr(act_now)))
                         .on_click(move |_, _, cx| {
                             if let Some(chat) = chat.upgrade() {
                                 chat.update(cx, |chat, cx| chat.open_update(cx));
                             }
                         }),
                 )
-                .when(deferrable, |actions| {
-                    actions.child(
-                        widgets::ghost_button("sidebar-update-card-later")
-                            .debug_selector(|| "sidebar-update-card-later".to_string())
-                            .tab_index(6)
-                            .on_key_down(ChatScreen::sidebar_button_key_down)
-                            .px_3()
-                            .py_1()
-                            .text_xs()
-                            .aria_label(tr("chat-update-card-later"))
-                            .child(tr("chat-update-card-later"))
-                            .on_click(move |_, _, cx| {
-                                if let Some(chat) = later.upgrade() {
-                                    chat.update(cx, |_, cx| {
-                                        cx.emit(crate::update::UpdateRequested(
-                                            crate::update::UpdateAction::Later,
-                                        ));
-                                    });
-                                }
-                            }),
-                    )
-                }),
+                .child(
+                    widgets::ghost_button("sidebar-update-card-later")
+                        .debug_selector(|| "sidebar-update-card-later".to_string())
+                        .tab_index(6)
+                        .on_key_down(ChatScreen::sidebar_button_key_down)
+                        .px_3()
+                        .py_1()
+                        .text_xs()
+                        .child(gpui::text!(tr("update-confirmation-later")))
+                        .on_click(move |_, _, cx| {
+                            if let Some(chat) = later.upgrade() {
+                                chat.update(cx, |_, cx| {
+                                    cx.emit(crate::update::UpdateRequested(
+                                        crate::update::UpdateAction::Later,
+                                    ));
+                                });
+                            }
+                        }),
+                ),
         )
 }
 

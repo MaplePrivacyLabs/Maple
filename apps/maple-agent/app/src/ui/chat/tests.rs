@@ -13075,11 +13075,6 @@ mod state_tests {
         press(cx, "sidebar-update-card-act");
         assert_eq!(*sections.borrow(), [Section::About]);
 
-        // A restart is the only way past an installed update.
-        set(cx, crate::update::State::RestartRequired, true);
-        assert!(cx.debug_bounds("sidebar-update-card").is_some());
-        assert!(cx.debug_bounds("sidebar-update-card-later").is_none());
-
         // Collapsed, the card hides; a dot and the menu row stand in.
         set(cx, crate::update::State::Ready, true);
         chat.update(cx, |this, cx| this.set_sidebar_collapsed(true, cx));

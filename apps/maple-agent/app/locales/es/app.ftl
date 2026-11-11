@@ -1544,16 +1544,11 @@ chat-update-available = Actualización disponible
 chat-update-card-ready = Maple { $version } está listo
 chat-update-card-ready-detail = Reinicia cuando no tengas tareas en curso.
 # $version es la versión de la aplicación y no se traduce.
-chat-update-card-installed = Maple { $version } está instalado
-chat-update-card-installed-detail = Reinicia Maple para terminar la actualización.
-# $version es la versión de la aplicación y no se traduce.
 chat-update-card-available = Maple { $version } está disponible
 chat-update-card-available-detail = Puedes descargarlo desde Configuración.
-chat-update-card-failed = La actualización no terminó
 chat-update-card-failed-detail = Tu versión actual sigue funcionando.
 chat-update-card-restart = Reiniciar
 chat-update-card-details = Detalles
-chat-update-card-later = Más tarde
 chat-store-updating = Actualizando datos locales…
 chat-host-unavailable = El host de Maple no está disponible. Vuelve a abrir Maple para recargar tus tareas. No se volvió a enviar ningún mensaje.
 chat-runtime-start-failed = No se pudo iniciar el agente: { $message }
