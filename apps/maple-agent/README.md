@@ -533,6 +533,9 @@ maple-agent host stop       Stop this profile's host and its running tasks.
 maple-agent --version       Print the version.
 ```
 
+Any other argument is an error with exit status 2; an unrecognized command
+(`maple-agent begin-pairing`) does not open the desktop app.
+
 ### `maple-agent login`
 
 Prompts for the account email (or takes `--email`) and the password, signs
