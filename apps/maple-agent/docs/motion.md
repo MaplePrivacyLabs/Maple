@@ -112,6 +112,13 @@ appear only after 300 ms, so fast loads never flash a spinner.
 - `animated(id, target, ...)` keeps a `Tween` in element state for render code
   that owns no state (chevrons, switches, icon swaps). It never animates on
   mount.
+- `.hover_bg(color)` gives a control a background that eases in under the
+  pointer and back to the fill the control has at rest. It reads that fill
+  from the control, so set it first with `.bg(..)` and leave it unset for a
+  control with none; there is no second colour to keep in step. Every hover
+  background in the app goes through it. Keep native `.hover()` for the
+  cursor and text colour, and native `.active()` for press feedback.
+  `motion::reveal(element, visible)` fades a control in and out in place.
 - `unfold(id, open, content)` opens content in place: its box eases between
   nothing and the content's height while the content fades, so what follows
   glides, and it folds away the same way. Use it for in-flow content a

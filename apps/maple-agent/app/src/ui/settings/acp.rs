@@ -3,6 +3,7 @@
 //! is saved: the pane only shows the command for this installation and examples
 //! of where to put it.
 
+use crate::ui::motion::HoverBg as _;
 use std::path::{Path, PathBuf};
 
 use crate::ui::i18n::{MessageCache, tr};
@@ -239,7 +240,8 @@ impl SettingsScreen {
                 }))
                 .when(selected, |tab| tab.bg(gpui::rgb(theme::bg_sidebar_pill())))
                 .focus_visible(widgets::focus_ring)
-                .hover(|style| style.bg(theme::overlay_hover()).cursor_pointer())
+                .hover(|style| style.cursor_pointer())
+                .hover_bg(theme::overlay_hover())
                 .on_click(cx.listener(move |this, _event, _window, cx| {
                     this.select_acp_example(example, cx);
                 }))

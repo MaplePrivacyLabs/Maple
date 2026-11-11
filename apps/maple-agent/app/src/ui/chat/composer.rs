@@ -1,6 +1,7 @@
 //! The chat pane chrome: the header and its menus, the slash palette,
 //! the plan and side-question cards, and the composer itself.
 
+use crate::ui::motion::HoverBg as _;
 use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
 
@@ -499,14 +500,7 @@ impl ChatScreen {
                     .items_center()
                     .justify_center()
                     .rounded(theme::RADIUS_LG)
-                    .map(|element| {
-                        let rest: gpui::Hsla = gpui::transparent_black();
-                        crate::ui::motion::hover_background(
-                            element,
-                            rest,
-                            gpui::rgb(theme::bg_sidebar_pill()),
-                        )
-                    })
+                    .hover_bg(gpui::rgb(theme::bg_sidebar_pill()))
                     .hover(|style| style.cursor_pointer())
                     .active(|style| style.bg(gpui::rgb(theme::bg_sidebar_pill())))
                     .when(self.attachment_picking, |el| el.opacity(0.5))
@@ -528,22 +522,11 @@ impl ChatScreen {
                         .justify_center()
                         .rounded(theme::RADIUS_LG)
                         .when(recording, |el| el.bg(gpui::rgb(theme::status_error())))
-                        .map(|element| {
-                            let rest: gpui::Hsla = if recording {
-                                gpui::rgb(theme::status_error()).into()
-                            } else {
-                                gpui::transparent_black()
-                            };
-                            crate::ui::motion::hover_background(
-                                element,
-                                rest,
-                                gpui::rgb(if recording {
-                                    theme::status_error()
-                                } else {
-                                    theme::bg_sidebar_pill()
-                                }),
-                            )
-                        })
+                        .hover_bg(gpui::rgb(if recording {
+                            theme::status_error()
+                        } else {
+                            theme::bg_sidebar_pill()
+                        }))
                         .hover(|style| style.cursor_pointer())
                         .when(transcribing, |el| el.opacity(0.5))
                         .tooltip(widgets::tooltip(
@@ -891,18 +874,7 @@ impl ChatScreen {
                     .when(is_selected, |row| {
                         row.bg(gpui::rgb(theme::bg_sidebar_row_selected()))
                     })
-                    .map(|element| {
-                        let rest: gpui::Hsla = if is_selected {
-                            gpui::rgb(theme::bg_sidebar_row_selected()).into()
-                        } else {
-                            gpui::transparent_black()
-                        };
-                        crate::ui::motion::hover_background(
-                            element,
-                            rest,
-                            gpui::rgb(theme::bg_sidebar_row_hover()),
-                        )
-                    })
+                    .hover_bg(gpui::rgb(theme::bg_sidebar_row_hover()))
                     .hover(|style| style.cursor_pointer())
                     .on_click(move |_event, _window, cx: &mut gpui::App| {
                         chat.update(cx, |chat, cx| chat.complete_slash_command(&name, cx))
@@ -1069,14 +1041,7 @@ impl ChatScreen {
                     .cursor_pointer()
                     .text_sm()
                     .text_color(gpui::rgb(theme::text_muted()))
-                    .map(|element| {
-                        let rest: gpui::Hsla = gpui::transparent_black();
-                        crate::ui::motion::hover_background(
-                            element,
-                            rest,
-                            gpui::rgb(theme::bg_elevated()),
-                        )
-                    })
+                    .hover_bg(gpui::rgb(theme::bg_elevated()))
                     .on_click(cx.listener(|this, _event, _window, cx| {
                         this.close_side_thread(cx);
                     }))
@@ -1222,10 +1187,7 @@ impl ChatScreen {
             .px_3()
             .py_2()
             .cursor_pointer()
-            .map(|element| {
-                let rest: gpui::Hsla = gpui::transparent_black();
-                crate::ui::motion::hover_background(element, rest, gpui::rgb(theme::bg_elevated()))
-            })
+            .hover_bg(gpui::rgb(theme::bg_elevated()))
             .on_click(cx.listener(|this, _event, _window, cx| {
                 this.toggle_plan_collapsed(cx);
             }))
@@ -1758,14 +1720,7 @@ impl ChatScreen {
                             .items_center()
                             .justify_center()
                             .rounded(theme::RADIUS_SM)
-                            .map(|element| {
-                                let rest: gpui::Hsla = gpui::transparent_black();
-                                crate::ui::motion::hover_background(
-                                    element,
-                                    rest,
-                                    gpui::rgb(theme::bg_sidebar_pill()),
-                                )
-                            })
+                            .hover_bg(gpui::rgb(theme::bg_sidebar_pill()))
                             .hover(|style| style.cursor_pointer())
                             .tooltip(widgets::tooltip(label, None))
                             .on_click(cx.listener(|this, _event, _window, cx| {
@@ -2092,14 +2047,7 @@ fn chip_frame(
         .font_weight(gpui::FontWeight::MEDIUM)
         .text_color(gpui::rgb(color))
         .when(active, |el| el.bg(gpui::rgb(theme::bg_sidebar_pill())))
-        .map(|element| {
-            let rest: gpui::Hsla = if active {
-                gpui::rgb(theme::bg_sidebar_pill()).into()
-            } else {
-                gpui::transparent_black()
-            };
-            crate::ui::motion::hover_background(element, rest, gpui::rgb(theme::bg_sidebar_pill()))
-        })
+        .hover_bg(gpui::rgb(theme::bg_sidebar_pill()))
         .hover(|style| style.cursor_pointer())
         .active(|style| style.bg(gpui::rgb(theme::bg_sidebar_row_selected())))
         .children(leading.map(|name| icon(name, px(16.), color)))

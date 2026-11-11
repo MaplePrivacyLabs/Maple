@@ -35,6 +35,7 @@
 //!   expanded, a named menu of named items, and the highlighted item as the
 //!   focused one.
 
+use crate::ui::motion::HoverBg as _;
 use std::cell::{Cell, RefCell};
 use std::rc::Rc;
 use std::time::Duration;
@@ -1510,14 +1511,11 @@ fn item_row<V: 'static, K: Clone + PartialEq + 'static>(
         Some(style) => style(row_element),
         None => row_element,
     };
-    crate::ui::motion::hover_background(
-        row_element,
-        gpui::transparent_black(),
-        gpui::rgb(theme::bg_sidebar_row_hover()),
-    )
-    .highlighted(highlighted)
-    .instant(keyboard)
-    .into_any_element()
+    row_element
+        .hover_bg(gpui::rgb(theme::bg_sidebar_row_hover()))
+        .highlighted(highlighted)
+        .instant(keyboard)
+        .into_any_element()
 }
 
 #[derive(Clone, Copy)]

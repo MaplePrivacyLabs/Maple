@@ -3,6 +3,7 @@
 //! leaves every window undecorated: a drag region with a centered title
 //! plus round minimize, maximize, and close controls.
 
+use crate::ui::motion::HoverBg as _;
 use gpui::{Context, Div, Pixels, SharedString, Window, div, prelude::*, px};
 
 use super::decorations::system_draws_titlebar;
@@ -210,14 +211,7 @@ fn control(
         .bg(gpui::rgb(theme::bg_title_control()))
         .text_xs()
         .text_color(gpui::rgb(theme::text_primary()))
-        .map(|element| {
-            let rest: gpui::Hsla = gpui::rgb(theme::bg_title_control()).into();
-            crate::ui::motion::hover_background(
-                element,
-                rest,
-                gpui::rgb(theme::bg_title_control_hover()),
-            )
-        })
+        .hover_bg(gpui::rgb(theme::bg_title_control_hover()))
         .hover(|style| style.cursor_pointer())
         .on_mouse_down(gpui::MouseButton::Left, {
             let action = std::rc::Rc::new(action);

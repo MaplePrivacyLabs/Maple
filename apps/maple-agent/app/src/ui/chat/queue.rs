@@ -2,6 +2,7 @@
 //! actions that steer, edit, or drop a message the runtime is holding
 //! behind the active run.
 
+use crate::ui::motion::HoverBg as _;
 use gpui::{
     Context, Div, InteractiveElement, ParentElement, SharedString, StatefulInteractiveElement,
     Styled, div, point, prelude::FluentBuilder, px,
@@ -330,13 +331,7 @@ impl ChatScreen {
                 .justify_center()
                 .rounded(theme::RADIUS_SM)
                 .when(busy, |button| button.opacity(0.5))
-                .map(|button| {
-                    crate::ui::motion::hover_background(
-                        button,
-                        gpui::transparent_black(),
-                        gpui::rgb(theme::bg_sidebar_row_hover()),
-                    )
-                })
+                .hover_bg(gpui::rgb(theme::bg_sidebar_row_hover()))
                 .when(busy, |button| button.highlighted(false))
                 .when(!busy, |button| button.hover(|style| style.cursor_pointer()))
                 .child(icon(icon_name, px(12.), theme::text_secondary()))
