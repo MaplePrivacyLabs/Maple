@@ -1,5 +1,6 @@
 import type { BillingStatus } from "@/billing/billingApi";
 import { hasApiAccess, isKnownFreePlan } from "@/billing/billingAccess";
+import { isTeamPlan } from "@/billing/plan";
 import type {
   UsageCounts,
   UsageCurrentPeriod,
@@ -576,9 +577,8 @@ export type UsagePlanKind = "free" | "team" | "credits";
 
 /** Which plan card the page shows. */
 export function usagePlanKind(status: BillingStatus | null | undefined): UsagePlanKind {
-  const name = status?.product_name?.toLowerCase() ?? "";
   if (isKnownFreePlan(status)) return "free";
-  if (name.includes("team")) return "team";
+  if (isTeamPlan(status)) return "team";
   if ((status?.total_tokens ?? 0) > 0 || hasApiAccess(status)) return "credits";
   return "free";
 }

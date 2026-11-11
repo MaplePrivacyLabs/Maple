@@ -1,3 +1,4 @@
+import { planDisplayName } from "@/billing/plan";
 import { useBillingState } from "@/state/useLocalState";
 import { formatResetDate } from "@/utils/dateFormat";
 
@@ -86,7 +87,7 @@ export function CreditUsage() {
   const totalLive = billingStatus?.total_tokens;
   const usedLive = billingStatus?.used_tokens;
   const hasUsageData = totalLive != null && totalLive > 0 && usedLive != null;
-  const productName = billingStatus?.product_name;
+  const productName = planDisplayName(billingStatus);
   const apiBalance = billingStatus?.api_credit_balance;
 
   const used = hasUsageData ? Math.max(0, usedLive!) : undefined;

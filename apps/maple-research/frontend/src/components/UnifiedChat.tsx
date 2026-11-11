@@ -91,7 +91,7 @@ import {
 } from "@/services/chatThinkingLevel";
 import { ModelSelector } from "@/components/ModelSelector";
 import { useBillingState, useModelState, useSelectedProjectState } from "@/state/useLocalState";
-import { isKnownFreePlan } from "@/billing/billingAccess";
+import { hasApiAccess, isKnownFreePlan } from "@/billing/billingAccess";
 import {
   findOpenSecretInferenceCapacityError,
   OPEN_SECRET_INFERENCE_SEND_LIMIT_HEADER,
@@ -3936,11 +3936,7 @@ export function UnifiedChat({ isVisible = true }: { isVisible?: boolean }) {
   }, [runtimeStore, selectedProjectId]);
 
   // Check user's billing access
-  const hasProAccess =
-    billingStatus &&
-    (billingStatus.product_name?.toLowerCase().includes("pro") ||
-      billingStatus.product_name?.toLowerCase().includes("max") ||
-      billingStatus.product_name?.toLowerCase().includes("team"));
+  const hasProAccess = hasApiAccess(billingStatus);
 
   const canUseImages = hasProAccess;
   const canUseDocuments = hasProAccess;

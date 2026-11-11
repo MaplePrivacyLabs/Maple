@@ -3,6 +3,7 @@ import { Link } from "@tanstack/react-router";
 import { useOpenSecret } from "@mapleai/sdk";
 import { AlertCircle, Settings } from "lucide-react";
 import { getBillingService } from "@/billing/billingService";
+import { isTeamPlan as isTeamBillingPlan, planDisplayName } from "@/billing/plan";
 import { CreditUsage } from "@/components/CreditUsage";
 import { useCompactSettingsLayout } from "@/components/settings/useCompactSettingsLayout";
 import { useBillingState } from "@/state/useLocalState";
@@ -13,7 +14,7 @@ export function AccountMenu() {
   const os = useOpenSecret();
   const { billingStatus, setBillingStatus } = useBillingState();
   const isCompactSettingsLayout = useCompactSettingsLayout();
-  const isTeamPlan = billingStatus?.product_name?.toLowerCase().includes("team") ?? false;
+  const isTeamPlan = isTeamBillingPlan(billingStatus);
 
   // Keep the shared sidebar billing badge current on every authenticated route.
   // Some routes do not own a route-level billing refresh.
@@ -61,7 +62,7 @@ export function AccountMenu() {
       <Link
         to="/pricing"
         className="group/credit-link min-w-0 flex-1 rounded-xl outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2 focus-visible:ring-offset-background"
-        aria-label={billingStatus ? `${billingStatus.product_name} plan` : "Billing status"}
+        aria-label={billingStatus ? `${planDisplayName(billingStatus)} plan` : "Billing status"}
       >
         <CreditUsage />
       </Link>

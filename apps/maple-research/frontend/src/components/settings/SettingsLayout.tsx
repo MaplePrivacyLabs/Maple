@@ -20,6 +20,7 @@ import {
 } from "lucide-react";
 import { useEffect, useRef, useState, type ComponentType } from "react";
 import { getBillingService } from "@/billing/billingService";
+import { isTeamPlan as isTeamBillingPlan, planDisplayName } from "@/billing/plan";
 import { MapleWordmark } from "@/components/MapleWordmark";
 import { SettingsNavigationLockProvider } from "@/components/settings/SettingsNavigationLockProvider";
 import { useCompactSettingsLayout } from "@/components/settings/useCompactSettingsLayout";
@@ -217,8 +218,7 @@ function SettingsLayoutContent() {
   });
 
   const resolvedBillingStatus = currentBillingStatus ?? billingStatus;
-  const productName = resolvedBillingStatus?.product_name?.toLowerCase() ?? "";
-  const isTeamPlan = productName.includes("team");
+  const isTeamPlan = isTeamBillingPlan(resolvedBillingStatus);
 
   const { data: teamStatus } = useQuery<TeamStatus>({
     queryKey: ["teamStatus"],
@@ -439,8 +439,8 @@ function SettingsLayoutContent() {
               {os.auth.user.user.email || "Maple user"}
             </p>
             <p className="truncate text-[11px] text-muted-foreground">
-              {resolvedBillingStatus?.product_name
-                ? `${resolvedBillingStatus.product_name} Plan`
+              {planDisplayName(resolvedBillingStatus)
+                ? `${planDisplayName(resolvedBillingStatus)} Plan`
                 : "Loading plan..."}
             </p>
           </div>

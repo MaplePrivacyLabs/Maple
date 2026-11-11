@@ -63,6 +63,15 @@ export type BillingStatus = {
     status: string;
     expires_at: string;
   } | null;
+  /**
+   * The plan as billing describes it. Absent from older billing servers and
+   * for a product billing does not recognize; read these through
+   * `@/billing/plan`, which falls back to `product_name`.
+   */
+  plan_key?: string;
+  plan_group?: string;
+  plan_rank?: number | null;
+  plan_display_name?: string;
 };
 
 type BillingRecurringInfo = {
@@ -84,6 +93,13 @@ export type BillingProduct = {
   active: boolean;
   default_price: BillingPriceInfo;
   is_available?: boolean;
+  /** The product's plan as billing describes it; see `BillingStatus.plan_key`. */
+  plan_key?: string;
+  plan_group?: string;
+  plan_rank?: number | null;
+  display_name?: string;
+  /** Plan credits each month; per seat for Team. */
+  monthly_credits?: number;
 };
 
 // Discount Types
