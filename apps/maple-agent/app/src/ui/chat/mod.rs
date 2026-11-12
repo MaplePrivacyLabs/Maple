@@ -2595,7 +2595,9 @@ impl ChatScreen {
             .map(|session| session.id.clone());
         match latest {
             Some(id) => self.select_session(&id, cx),
-            None => self.new_session(cx),
+            // The empty title may already be on screen. Do not clear its
+            // clock: this is the launch visit, not a New Task click.
+            None => self.begin_empty(cx, false),
         }
     }
 
@@ -2604,6 +2606,13 @@ impl ChatScreen {
     /// is sent, so a project switched before then moves it, and a click
     /// that sends nothing leaves no empty row behind.
     pub(super) fn new_session(&mut self, cx: &mut Context<Self>) {
+        self.begin_empty(cx, true);
+    }
+
+    /// Show the empty screen. `replay_glint` is for a person asking for a
+    /// new task. The boot list must pass false, or a glint that already
+    /// started is cut off and played again.
+    fn begin_empty(&mut self, cx: &mut Context<Self>, replay_glint: bool) {
         // The first send is creating its task; a click now would
         // supersede it and lose the message.
         if self.session_setup_pending {
@@ -2627,7 +2636,9 @@ impl ChatScreen {
         // The draft starts from this project's defaults.
         self.permission_mode = self.new_task_permission_mode;
         self.refresh_draft_mcp(cx);
-        self.empty_title.started = None;
+        if replay_glint {
+            self.empty_title.started = None;
+        }
         cx.notify();
     }
 
