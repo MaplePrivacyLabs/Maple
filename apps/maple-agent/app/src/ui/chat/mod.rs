@@ -7539,6 +7539,29 @@ fn embed_cached_view<V: Render>(
         view.cached(style).into_any_element()
     }
 }
+fn update_mark(failed: bool) -> Div {
+    div()
+        .flex_none()
+        .size(px(28.))
+        .rounded(theme::RADIUS_SM)
+        .flex()
+        .items_center()
+        .justify_center()
+        .bg(gpui::rgb(if failed {
+            theme::bg_sidebar_pill()
+        } else {
+            theme::accent_container()
+        }))
+        .child(icon(
+            if failed { "circle-alert" } else { "download" },
+            px(16.),
+            if failed {
+                theme::text_muted()
+            } else {
+                theme::accent_ink()
+            },
+        ))
+}
 
 impl ChatScreen {
     fn render_sidebar(
@@ -7594,7 +7617,58 @@ impl ChatScreen {
     ) -> Div {
         let expanded = expansion > 0.95;
         let open = self.popup.is_open(&ChatPopup::Settings);
-        let button = widgets::ghost_button("open-settings")
+        let notice = self.update_notice();
+        let inline = expanded && notice.is_some();
+        let stacked = !expanded && notice.is_some();
+        let update_button = notice.map(|(title, _, failed)| {
+            let ready = self.update.state == crate::update::State::Ready;
+            let label = if ready {
+                tr("chat-update-ready-detail")
+            } else {
+                title
+            };
+            widgets::ghost_button("settings-update")
+                .debug_selector(|| "settings-update".to_string())
+                .aria_label(label.clone())
+                .a11y_synthetic_children(move |tree| {
+                    if ready {
+                        tree.parent_node()
+                            .set_has_popup(gpui::accesskit::HasPopup::Dialog);
+                    }
+                })
+                .tooltip(widgets::tooltip(label, None))
+                .tooltip_show_delay(widgets::ICON_TOOLTIP_DELAY)
+                .flex_none()
+                .p_0()
+                .size(px(32.))
+                .rounded(theme::RADIUS_SM)
+                .tab_index(if expanded { 7 } else { 6 })
+                .on_key_down(Self::sidebar_button_key_down)
+                .child(update_mark(failed))
+                .on_click(cx.listener(|this, _, _, cx| {
+                    cx.stop_propagation();
+                    this.popup.close(cx);
+                    this.open_update(cx);
+                }))
+        });
+        let button = if inline {
+            // The row owns the hover plate; keep Settings' separate target transparent.
+            div()
+                .id("open-settings")
+                .role(gpui::Role::Button)
+                .flex()
+                .items_center()
+                .py_2()
+                .text_sm()
+                .font_weight(gpui::FontWeight::MEDIUM)
+                .text_color(gpui::rgb(theme::text_secondary()))
+                .cursor_pointer()
+                .focus_visible(widgets::focus_ring)
+                .hover(|style| style.text_color(gpui::rgb(theme::text_primary())))
+        } else {
+            widgets::ghost_button("open-settings")
+        };
+        let button = button
             .aria_label(if self.update.show_banner {
                 tr("chat-settings-menu-update")
             } else {
@@ -7605,52 +7679,102 @@ impl ChatScreen {
                     .set_has_popup(gpui::accesskit::HasPopup::Menu);
             })
             .debug_selector(|| "open-settings".to_string())
-            .w_full()
+            .when(!inline, |button| button.w_full())
             .h(px(40.))
             .px_2()
             .rounded(theme::RADIUS_SM)
-            .tab_index(6)
+            .tab_index(if stacked { 7 } else { 6 })
             .on_key_down(Self::sidebar_button_key_down)
-            .when(open, |button| {
+            .when(open && !inline, |button| {
                 button.bg(gpui::rgb(theme::bg_sidebar_row_hover()))
             })
-            .child(
-                div()
-                    .relative()
-                    .flex_none()
-                    .child(icon("settings", px(16.), theme::text_secondary()))
-                    .when(self.update.show_banner, |gear| {
-                        gear.child(
-                            div()
-                                .debug_selector(|| "settings-update-dot".to_string())
-                                .absolute()
-                                .top(px(-2.))
-                                .right(px(-3.))
-                                .size(px(7.))
-                                .rounded_full()
-                                .bg(gpui::rgb(theme::accent())),
-                        )
-                    }),
-            )
+            .child(icon("settings", px(16.), theme::text_secondary()))
             .when(expanded, |button| {
                 button
                     .justify_start()
                     .gap_2()
                     .child(gpui::text!(tr("chat-settings")))
-                    .child(div().flex_1())
-                    .child(
-                        icon("chevron-down", px(12.), theme::text_muted()).when(!open, |icon| {
-                            icon.with_transformation(gpui::Transformation::rotate(gpui::radians(
-                                std::f32::consts::PI,
-                            )))
-                        }),
-                    )
+                    .when(!inline, |button| {
+                        button.child(div().flex_1()).child(
+                            icon("chevron-down", px(12.), theme::text_muted()).when(
+                                !open,
+                                |icon| {
+                                    icon.with_transformation(gpui::Transformation::rotate(
+                                        gpui::radians(std::f32::consts::PI),
+                                    ))
+                                },
+                            ),
+                        )
+                    })
             });
         let button = self
             .popup
             .trigger(ChatPopup::Settings, button, cx, |this, _, cx| {
                 this.popup.toggle(ChatPopup::Settings, cx);
             });
+        let controls = if expanded {
+            div()
+                .id("settings-controls")
+                .debug_selector(|| "settings-controls".to_string())
+                .w_full()
+                .h(px(40.))
+                .rounded(theme::RADIUS_SM)
+                .flex()
+                .items_center()
+                .gap(px(2.))
+                .when(inline, |row| {
+                    row.hover(|style| style.bg(gpui::rgb(theme::bg_sidebar_row_hover())))
+                        .active(|style| style.bg(gpui::rgb(theme::bg_sidebar_pill())))
+                })
+                .when(open, |row| row.bg(gpui::rgb(theme::bg_sidebar_row_hover())))
+                .child(button)
+                .children(update_button)
+                .when(inline, |row| {
+                    // Extend Settings' pointer target without another keyboard stop.
+                    let tail = div()
+                        .id("settings-pointer-extension")
+                        .debug_selector(|| "settings-pointer-extension".to_string())
+                        .flex_1()
+                        .h_full()
+                        .pr_2()
+                        .flex()
+                        .items_center()
+                        .justify_end()
+                        .cursor_pointer()
+                        .child(icon("chevron-down", px(12.), theme::text_muted()).when(
+                            !open,
+                            |icon| {
+                                icon.with_transformation(gpui::Transformation::rotate(
+                                    gpui::radians(std::f32::consts::PI),
+                                ))
+                            },
+                        ));
+                    row.child(
+                        self.popup
+                            .trigger(ChatPopup::Settings, tail, cx, |this, _, cx| {
+                                this.popup.toggle(ChatPopup::Settings, cx);
+                            }),
+                    )
+                })
+                .into_any_element()
+        } else {
+            div()
+                .w_full()
+                .flex()
+                .flex_col()
+                .items_center()
+                .children(update_button.map(|button| {
+                    div()
+                        .w_full()
+                        .h(px(40.))
+                        .flex()
+                        .items_center()
+                        .justify_center()
+                        .child(button)
+                }))
+                .child(button)
+                .into_any_element()
+        };
         let mut footer = div()
             .absolute()
             .bottom_0()
@@ -7660,13 +7784,13 @@ impl ChatScreen {
             } else {
                 SIDEBAR_RAIL_WIDTH
             })
-            .h(px(54.))
+            .h(px(if stacked { 94. } else { 54. }))
             .px_2()
             .py(px(6.))
             .border_t_1()
             .border_color(gpui::rgb(theme::border_subtle()))
             .bg(gpui::rgb(theme::bg_sidebar()))
-            .child(button);
+            .child(controls);
         if open {
             let usage_label = self.sidebar_plan.as_ref().map_or_else(
                 || tr("chat-usage-unavailable-label"),
@@ -7803,29 +7927,7 @@ impl ChatScreen {
                     .flex()
                     .items_center()
                     .gap(px(10.))
-                    .child(
-                        div()
-                            .flex_none()
-                            .size(px(28.))
-                            .rounded(theme::RADIUS_SM)
-                            .flex()
-                            .items_center()
-                            .justify_center()
-                            .bg(gpui::rgb(if failed {
-                                theme::bg_sidebar_pill()
-                            } else {
-                                theme::accent_container()
-                            }))
-                            .child(icon(
-                                if failed { "circle-alert" } else { "download" },
-                                px(14.),
-                                if failed {
-                                    theme::text_muted()
-                                } else {
-                                    theme::accent_ink()
-                                },
-                            )),
-                    )
+                    .child(update_mark(failed))
                     .child(
                         div()
                             .flex_1()

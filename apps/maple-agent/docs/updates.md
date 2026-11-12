@@ -40,9 +40,10 @@ version, so moving a pointer back does not roll anyone back.
 The desktop checks at startup and about hourly. Automatic download is on by
 default and can be turned off in Settings. A downloaded update waits for
 **Restart to Update**, which asks for confirmation because it stops active work.
-A pending update marks the Settings gear with a small dot in either sidebar
-mode. Its menu leads with the version and action above Usage. Selecting a ready
-update opens the same restart confirmation; other update states open About.
+A pending update adds a shortcut beside Settings, or above the gear in the
+collapsed sidebar. Selecting a ready update opens the same restart confirmation;
+other update states open About. Settings itself still opens its menu, which leads
+with the version and action above Usage.
 About, the application menu and the tray also offer update actions. Paired computers can
 show and request updates for each other through the
 [experimental remote update controls](remote-access.md#experimental-remote-updates).
