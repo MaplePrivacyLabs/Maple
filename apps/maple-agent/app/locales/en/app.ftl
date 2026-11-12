@@ -1543,6 +1543,9 @@ chat-question-label = Question from Maple
 chat-permission-label = Allow this action?
 chat-permission-allow = Allow once
 chat-permission-deny = Deny
+chat-permission-note-placeholder = Or tell Maple what to do instead…
+# $mode is the name of the task's permission mode, for example Auto.
+chat-permission-mode-hint = { $mode } asks before actions like this
 chat-permission-reason-secrets = This reads secrets or credentials.
 chat-permission-reason-secrets-leaving = This could send secrets off this computer.
 chat-permission-reason-sends-out = This sends or publishes something outside this computer.

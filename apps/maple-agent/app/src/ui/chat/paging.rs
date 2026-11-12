@@ -264,6 +264,8 @@ impl ChatScreen {
             .retain(|id| self.timeline_index.contains_key(id));
         self.turn_worked
             .retain(|id, _| self.timeline_index.contains_key(id));
+        self.step_permissions
+            .retain(|id, _| self.timeline_index.contains_key(id));
         self.markdown_cache.clear();
         self.derived.clear();
         self.messages = Default::default();

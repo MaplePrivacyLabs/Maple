@@ -20,9 +20,13 @@ const NODE_CENTRE: Pixels = px(16.);
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(super) enum StepState {
     Running,
+    /// The call waits for the user to allow it.
+    Waiting,
     Done,
     Failed,
     Stopped,
+    /// The user said no to the call.
+    Denied,
 }
 
 impl StepState {
@@ -38,10 +42,19 @@ impl StepState {
     /// Colour of the step's title.
     pub(super) fn ink(self) -> u32 {
         match self {
-            Self::Done | Self::Failed => theme::text_primary(),
-            Self::Running | Self::Stopped => theme::text_muted(),
+            Self::Done | Self::Failed | Self::Waiting => theme::text_primary(),
+            Self::Running | Self::Stopped | Self::Denied => theme::text_muted(),
         }
     }
+}
+
+/// What the user was asked about a tool call, and said.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(super) enum Asked {
+    /// The request is on screen.
+    Waiting,
+    Allowed,
+    Denied,
 }
 
 /// Whether the rail runs on from a step's node to the step drawn right
@@ -50,11 +63,17 @@ pub(super) type Rail = (bool, bool);
 
 /// The icon on a tool call's node, by what the tool does.
 pub(super) fn tool_icon(item: &AgentTimelineItem) -> &'static str {
-    let name = item
-        .label
-        .as_ref()
-        .filter(|label| label.kind == "tool")
-        .and_then(|label| label.name.as_deref());
+    icon_for_tool(
+        item.label
+            .as_ref()
+            .filter(|label| label.kind == "tool")
+            .and_then(|label| label.name.as_deref()),
+    )
+}
+
+/// The icon for a tool by its name; a tool the app does not know gets the
+/// plain one.
+pub(super) fn icon_for_tool(name: Option<&str>) -> &'static str {
     match name {
         Some("bash" | "powershell" | "shell") => "terminal",
         Some("read" | "read_file") => "file-text",
@@ -90,7 +109,9 @@ pub(super) fn step(
     let glyph = match state {
         StepState::Done => theme::text_secondary(),
         StepState::Failed => theme::status_error(),
-        StepState::Running | StepState::Stopped => theme::text_muted(),
+        // Coral means the step waits on the user.
+        StepState::Waiting => theme::accent_ink(),
+        StepState::Running | StepState::Stopped | StepState::Denied => theme::text_muted(),
     };
     let segment = || div().absolute().left(px(10.)).w(px(1.)).bg(line);
     div()
@@ -120,7 +141,11 @@ pub(super) fn step(
                         .rounded_full()
                         .bg(gpui::rgb(theme::bg_app()))
                         .border_1()
-                        .border_color(line)
+                        .border_color(if state == StepState::Waiting {
+                            gpui::rgb(glyph)
+                        } else {
+                            line
+                        })
                         .flex()
                         .items_center()
                         .justify_center()

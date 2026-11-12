@@ -230,6 +230,8 @@ struct TranscriptCtx<'a> {
     /// For a step: whether the thread's rail runs on to the steps drawn
     /// right above and below it.
     rail: step::Rail,
+    /// For a tool call the user was asked to allow: where that stands.
+    asked: Option<step::Asked>,
 }
 
 /// Text-to-speech progress for one message.
@@ -851,6 +853,9 @@ pub struct ChatScreen {
     /// How long finished turns worked, by lead item id. Only turns this
     /// window timed have one.
     turn_worked: HashMap<String, std::time::Duration>,
+    /// What the user said to the permission requests answered in this
+    /// view, by the id of the tool call each was about: allowed, or not.
+    step_permissions: HashMap<String, bool>,
     /// Clocks of the runs this window saw start, by session id.
     run_clocks: HashMap<String, turn::TimedRun>,
     /// A repaint for a running turn's time is on its way.
@@ -1688,6 +1693,7 @@ impl ChatScreen {
             turns: turn::Turns::default(),
             toggled_turns: HashSet::new(),
             turn_worked: HashMap::new(),
+            step_permissions: HashMap::new(),
             run_clocks: HashMap::new(),
             run_tick_pending: std::cell::Cell::new(false),
             question_selected: HashMap::new(),
@@ -3765,6 +3771,7 @@ impl ChatScreen {
         self.toggled_tools.clear();
         self.toggled_turns.clear();
         self.turn_worked.clear();
+        self.step_permissions.clear();
         if let Some(composer) = self.composer.clone() {
             composer.update(cx, |input, cx| input.reset_vim_context(cx));
         }
@@ -5755,8 +5762,14 @@ impl ChatScreen {
         let chat = cx.entity().downgrade();
         let question_chat = chat.clone();
         let application_vim_enabled = self.application_vim_enabled;
+        // On a permission request the field is the other way to answer.
+        let placeholder = if self.current_permission().is_some() {
+            "chat-permission-note-placeholder"
+        } else {
+            "chat-answer-placeholder"
+        };
         let input = cx.new(move |cx| {
-            TextInput::localized("chat-answer-placeholder", cx)
+            TextInput::localized(placeholder, cx)
                 .application_vim(application_vim_enabled)
                 .on_application_escape(move |window, cx| {
                     if let Some(chat) = question_chat.upgrade() {
@@ -5851,6 +5864,7 @@ impl ChatScreen {
         if answer.trim().is_empty() {
             return;
         }
+        self.settle_permission(&question);
         let request_id = question.request_id.clone();
         let callback_request_id = request_id.clone();
         let backend = self.backend.clone();
@@ -7529,6 +7543,7 @@ impl Render for ChatScreen {
                                 input,
                                 &self.question_selected,
                                 &key_labels,
+                                self.permission_mode,
                                 &self.messages,
                                 cx,
                             ),
