@@ -164,7 +164,7 @@ mod tests {
         let account = Uuid::from_u128(7);
         let other_account = Uuid::from_u128(8);
         let flash = route("glm-5-3-flash", ProviderId::Continuum);
-        let kimi = route("kimi-k3", ProviderId::Tinfoil);
+        let kimi = route("kimi-k3-1-pro", ProviderId::Tinfoil);
         let glm = route("glm-5-3", ProviderId::Continuum);
 
         memory.record(account, RESPONSES, AUTO_QUICK_MODEL_ID, flash.clone());

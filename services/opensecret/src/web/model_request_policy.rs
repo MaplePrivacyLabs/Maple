@@ -239,15 +239,14 @@ mod tests {
     use super::*;
     use crate::model_config::{
         DEEPSEEK_V4_1_FLASH_MODEL_ID, GLM_5_3_FLASH_MODEL_ID, GLM_5_3_MODEL_ID,
-        GPT_OSS_120B_MODEL_ID, KIMI_K3_1_PRO_MODEL_ID, KIMI_K3_MODEL_ID,
+        GPT_OSS_120B_MODEL_ID, KIMI_K3_1_PRO_MODEL_ID,
     };
 
-    const REASONING_MODELS: [&str; 8] = [
+    const REASONING_MODELS: [&str; 7] = [
         GPT_OSS_120B_MODEL_ID,
         "gpt-oss-safeguard-120b",
         "gemma4-31b",
         KIMI_K3_1_PRO_MODEL_ID,
-        KIMI_K3_MODEL_ID,
         GLM_5_3_MODEL_ID,
         GLM_5_3_FLASH_MODEL_ID,
         DEEPSEEK_V4_1_FLASH_MODEL_ID,
@@ -293,12 +292,6 @@ mod tests {
             message,
             "Unsupported value: 'none' is not supported with the 'glm-5-3' model. Supported values are: 'low', 'high', 'max'."
         );
-        let message =
-            resolve(KIMI_K3_MODEL_ID, json!("medium"), ModelSelection::Explicit).unwrap_err();
-        assert_eq!(
-            message,
-            "Unsupported value: 'medium' is not supported with the 'kimi-k3' model. Supported values are: 'none', 'low', 'high', 'max'."
-        );
         for rejected in ["none", "medium"] {
             let message = resolve(
                 KIMI_K3_1_PRO_MODEL_ID,
@@ -327,8 +320,6 @@ mod tests {
             (GPT_OSS_120B_MODEL_ID, "minimal", "low"),
             (GPT_OSS_120B_MODEL_ID, "xhigh", "high"),
             (GPT_OSS_120B_MODEL_ID, "max", "high"),
-            (KIMI_K3_MODEL_ID, "medium", "high"),
-            (KIMI_K3_MODEL_ID, "none", "none"),
             (KIMI_K3_1_PRO_MODEL_ID, "medium", "high"),
             (KIMI_K3_1_PRO_MODEL_ID, "none", "low"),
             (DEEPSEEK_V4_1_FLASH_MODEL_ID, "minimal", "low"),
@@ -483,7 +474,7 @@ mod tests {
 
     #[test]
     fn optional_models_keep_their_thinking_switches() {
-        for model in [KIMI_K3_MODEL_ID, DEEPSEEK_V4_1_FLASH_MODEL_ID, "gemma4-31b"] {
+        for model in [DEEPSEEK_V4_1_FLASH_MODEL_ID, "gemma4-31b"] {
             let mut request = body(json!({
                 "model": model,
                 "messages": [],
@@ -498,15 +489,15 @@ mod tests {
     }
 
     #[test]
-    fn kimi_k3_receives_developer_messages_as_system() {
+    fn kimi_k3_1_pro_receives_developer_messages_as_system() {
         let messages = json!([
             {"role": "developer", "content": "Be terse."},
             {"role": "user", "content": "hi"}
         ]);
-        let mut kimi = body(json!({"model": KIMI_K3_MODEL_ID, "messages": messages}));
+        let mut kimi = body(json!({"model": KIMI_K3_1_PRO_MODEL_ID, "messages": messages}));
         apply_model_request_policy(
             &mut kimi,
-            KIMI_K3_MODEL_ID,
+            KIMI_K3_1_PRO_MODEL_ID,
             EffectiveReasoningEffort::Unchanged,
         );
         assert_eq!(kimi["messages"][0]["role"], "system");
