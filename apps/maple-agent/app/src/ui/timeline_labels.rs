@@ -27,19 +27,7 @@ pub(crate) fn title(item: &AgentTimelineItem, cache: &MessageCache) -> Option<Sh
                 };
                 return Some(cache.get(key, [("name", name.clone().into())]));
             }
-            let name = tool_label(item, cache).or_else(|| {
-                Some(match label.name.as_deref()? {
-                    "read" => tr("runtime-timeline-builtin-read"),
-                    "edit" => tr("runtime-timeline-builtin-edit"),
-                    "write" => tr("runtime-timeline-builtin-write"),
-                    "agent_start" => tr("runtime-timeline-agent-start"),
-                    "agent_send" => tr("runtime-timeline-agent-send"),
-                    "agent_status" => tr("runtime-timeline-agent-status"),
-                    "agent_cancel" => tr("runtime-timeline-agent-cancel"),
-                    "list_agent_providers" => tr("runtime-timeline-agent-providers"),
-                    _ => return None,
-                })
-            })?;
+            let name = tool_name(item, cache)?;
             match &label.detail {
                 Some(detail) => cache.get(
                     "runtime-timeline-tool-detail",
@@ -108,6 +96,24 @@ pub(crate) fn body(item: &AgentTimelineItem, cache: &MessageCache) -> Option<Sha
         ),
         "compacted" => tr("runtime-timeline-compacted-body"),
         _ => return None,
+    })
+}
+
+/// The name of a tool the app knows, without what the call acts on.
+pub(crate) fn tool_name(item: &AgentTimelineItem, cache: &MessageCache) -> Option<SharedString> {
+    tool_label(item, cache).or_else(|| {
+        let label = item.label.as_ref().filter(|label| label.kind == "tool")?;
+        Some(match label.name.as_deref()? {
+            "read" => tr("runtime-timeline-builtin-read"),
+            "edit" => tr("runtime-timeline-builtin-edit"),
+            "write" => tr("runtime-timeline-builtin-write"),
+            "agent_start" => tr("runtime-timeline-agent-start"),
+            "agent_send" => tr("runtime-timeline-agent-send"),
+            "agent_status" => tr("runtime-timeline-agent-status"),
+            "agent_cancel" => tr("runtime-timeline-agent-cancel"),
+            "list_agent_providers" => tr("runtime-timeline-agent-providers"),
+            _ => return None,
+        })
     })
 }
 

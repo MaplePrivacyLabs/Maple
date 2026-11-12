@@ -64,6 +64,7 @@ assets!(
     "icons/effort-burst.svg",
     "icons/ellipsis.svg",
     "icons/external-link.svg",
+    "icons/file-text.svg",
     "icons/folder-open.svg",
     "icons/folder-plus.svg",
     "icons/folder.svg",

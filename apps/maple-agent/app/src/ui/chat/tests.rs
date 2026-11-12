@@ -9,7 +9,7 @@ mod state_tests {
     use crate::ui::chat::composer::SideThreadTurn;
     use crate::ui::chat::computers::ProjectTarget;
     use crate::ui::chat::sidebar::{RenameTarget, SidebarEvent, TaskMove, root_display_name};
-    use crate::ui::chat::transcript::{diff_lines_for, tool_label_title};
+    use crate::ui::chat::transcript::{diff_counts, diff_lines_for, tool_label_title};
     use crate::ui::chat::*;
     use gpui::{Context, TestAppContext};
     use maple_agent::agent::{
@@ -6141,6 +6141,31 @@ mod state_tests {
         assert_eq!(lines.len(), MAX_DIFF_LINES);
         assert_eq!(lines[0], (' ', SharedString::from("big.txt")));
         assert_eq!(lines[1], ('+', SharedString::from("0")));
+    }
+
+    /// The counts on a step come from the whole edit, not from the lines
+    /// the display keeps.
+    #[test]
+    fn test_changed_line_counts_are_not_cut_at_the_display_cap() {
+        let lines = |count: usize| {
+            (0..count)
+                .map(|n| n.to_string())
+                .collect::<Vec<_>>()
+                .join("\n")
+        };
+        let mut write = item("write", "tool", None);
+        write.input = Some(serde_json::json!({ "path": "big.txt", "content": lines(1000) }));
+        assert_eq!(diff_counts(&write), (1000, 0));
+
+        let mut edit = item("edit", "tool", None);
+        edit.input = Some(serde_json::json!({
+            "path": "big.txt",
+            "edits": [
+                { "oldText": lines(300), "newText": lines(2) },
+                { "oldText": "one", "newText": "one\ntwo" },
+            ],
+        }));
+        assert_eq!(diff_counts(&edit), (4, 301));
     }
 
     #[test]
@@ -12887,6 +12912,100 @@ mod state_tests {
             thinking_title.size.width > card.size.width * 0.75,
             "a thinking summary too long for its row must claim the row's \
              width before truncating (title {thinking_title:?}, card {card:?})"
+        );
+    }
+
+    /// A step says what it acted on beside its title, an edit also what it
+    /// changed, and the steps' nodes sit under the mark on the turn's line.
+    #[gpui::test]
+    fn test_a_step_shows_what_it_acted_on_and_what_it_changed(cx: &mut TestAppContext) {
+        cx.executor().allow_parking();
+        struct ChatHost {
+            chat: Entity<ChatScreen>,
+        }
+        impl Render for ChatHost {
+            fn render(
+                &mut self,
+                _window: &mut Window,
+                _cx: &mut Context<Self>,
+            ) -> impl IntoElement {
+                div()
+                    .w(px(1200.))
+                    .h(px(800.))
+                    .flex()
+                    .flex_col()
+                    .child(self.chat.clone())
+            }
+        }
+
+        let call = |id: &str, name: &str, acts_on: &str| AgentTimelineItem {
+            label: Some(maple_agent::agent::AgentTimelineLabel {
+                kind: "tool".to_string(),
+                name: Some(name.to_string()),
+                detail: Some(acts_on.to_string()),
+            }),
+            status: Some("completed".to_string()),
+            ..item(id, "tool", None)
+        };
+        let chat = cx.new(|cx| {
+            let _guard = SETTINGS_LOCK.lock();
+            let backend = std::sync::Arc::new(
+                crate::backend::AgentBackend::for_test(
+                    "http://127.0.0.1:9".to_string(),
+                    String::new(),
+                )
+                .expect("backend"),
+            );
+            crate::desktop::register_key_bindings(cx);
+            let mut chat = ChatScreen::new_without_start(backend, "user".to_string(), cx);
+            chat.selected_session = Some("s1".to_string());
+            chat.booting = false;
+            chat.replace_timeline(vec![
+                user_item("u1", "Cap the wait"),
+                call("run", "bash", "cargo test -p net retry"),
+                AgentTimelineItem {
+                    input: Some(serde_json::json!({
+                        "path": "src/net/retry.rs",
+                        "edits": [{
+                            "oldText": "loop {",
+                            "newText": "let deadline = now + MAX;\nloop {",
+                        }],
+                    })),
+                    ..call("edit", "edit", "src/net/retry.rs")
+                },
+            ]);
+            chat.toggle_turn("run", cx);
+            chat
+        });
+
+        let (_host, cx) = cx.add_window_view(|_window, _cx| ChatHost { chat: chat.clone() });
+        cx.simulate_resize(gpui::size(px(1200.), px(800.)));
+
+        // The edit is the last step drawn, so these are its parts.
+        let title = cx.debug_bounds("tool-title").expect("the step's title");
+        let chip = cx
+            .debug_bounds("step-chip")
+            .expect("the path the edit acts on");
+        let changed = cx
+            .debug_bounds("step-changed")
+            .expect("the lines the edit changed");
+        assert!(
+            title.right() <= chip.left() && chip.right() <= changed.left(),
+            "the title, what it acts on and what it changed read in that order: \
+             {title:?}, {chip:?}, {changed:?}"
+        );
+        assert!(
+            (chip.center().y - title.center().y).abs() <= px(1.)
+                && (changed.center().y - title.center().y).abs() <= px(1.),
+            "on one line: {title:?}, {chip:?}, {changed:?}"
+        );
+        let node = cx.debug_bounds("step-node").expect("the step's node");
+        let mark = cx
+            .debug_bounds("turn-mark")
+            .expect("the mark on the turn's line");
+        assert!(
+            (node.center().x - mark.center().x).abs() <= px(1.),
+            "the nodes sit under the mark: {node:?}, {mark:?}"
         );
     }
 

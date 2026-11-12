@@ -1679,7 +1679,6 @@ chat-thinking-save-failed = Denkstufe konnte nicht gespeichert werden: { $error 
 chat-composer-placeholder = Bitte Maple, in diesem Ordner zu arbeiten…
 chat-side-thread-placeholder = Stelle eine Nebenfrage (Esc verlässt das Gespräch)…
 chat-queue-edit-placeholder = Bearbeite die eingereihte Nachricht und sende sie, um ihren Platz zu behalten. Escape verwirft sie.
-chat-status-completed = abgeschlossen
 chat-status-failed = fehlgeschlagen
 chat-status-stopped = gestoppt
 chat-status-running = läuft

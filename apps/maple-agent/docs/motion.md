@@ -85,9 +85,9 @@ the shared 15 fps `ticker` clock and pause in background windows.
 | Screen change (Chat ↔ Settings) and Settings sections | new content fades in, `REVEAL` | immediate |
 | Empty state ↔ conversation (first message, opening a task, New Task) | the composer changes place at once | at once |
 | Switching tasks | transcript fades in when its snapshot lands, `REVEAL` | immediate |
-| Live transcript rows at the end of the thread (sent message, reply, thinking, tool card, error, stop notice) | height grows from 0 and the row fades in, `ENTER`, so older rows glide up; scrolled up, a fade and 6 px rise | — |
+| Live transcript rows at the end of the thread (sent message, reply, thinking, tool call, error, stop notice) | height grows from 0 and the row fades in, `ENTER`, so older rows glide up; scrolled up, a fade and 6 px rise | — |
 | Sent message | the composer empties at once and the bubble's slot opens from the height it gave up, so the thread does not drop; the bubble rises in, the real row takes its exact place, and "Sending…" and the turn's line share one slot under it | — |
-| Tool status | spinner leaves at once, the outcome fades in, `TOGGLE` | — |
+| A step's state | a running step is dim and inks at once when it finishes; nothing on it loops, the turn's line carries the motion | — |
 | Disclosed details (tool output, thinking) | fade in, `REVEAL` | immediate |
 | Streaming text | grows in place, no animation | — |
 | A turn's line ("Maple is thinking", "Worked for 11s") | fades in under the transcript, `REVEAL`, and keeps its place when the turn's first step takes it into the list; a sheen crosses the mark and the words while Maple works, and the words morph when they change | immediate |
