@@ -23,6 +23,14 @@ type ResetApi = {
   ) => Promise<void>;
 };
 
+// The backend is the validator: it looks the code up by a MAC of the exact
+// string, so the form only removes what cannot be part of a code (whitespace
+// picked up when copying from the email) and blocks empty input. Uppercasing is
+// correct only while issued codes are uppercase-only.
+function normalizeResetCode(input: string): string {
+  return input.replace(/\s+/g, "").toUpperCase();
+}
+
 export function PasswordResetFlow({
   email,
   secret,
@@ -80,8 +88,9 @@ export function PasswordResetFlow({
   async function submit(event: React.FormEvent) {
     event.preventDefault();
     if (inFlight.current || !email || !secret || success) return;
-    if (!options && !/^[A-Z0-9]{8,32}$/.test(code.trim().toUpperCase())) {
-      setError("Enter the reset code from your email (8–32 letters or numbers).");
+    const emailCode = normalizeResetCode(code);
+    if (!options && !emailCode) {
+      setError("Enter the reset code from your email.");
       return;
     }
     if (options && ([...newPassword].length < 8 || [...newPassword].length > 64)) {
@@ -105,9 +114,9 @@ export function PasswordResetFlow({
     setError(null);
     try {
       if (!options) {
-        const next = await api.getPasswordResetOptions(email, code.trim().toUpperCase(), secret);
+        const next = await api.getPasswordResetOptions(email, emailCode, secret);
         if (!current()) return;
-        setCode(code.trim().toUpperCase());
+        setCode(emailCode);
         setOptions(next);
         setMode(next.recovery_enrolled ? "preserve" : "destructive");
         setAcknowledged(false);
@@ -217,7 +226,6 @@ export function PasswordResetFlow({
                   autoCapitalize="characters"
                   spellCheck={false}
                   required
-                  maxLength={32}
                 />
                 <p className="text-sm text-muted-foreground">
                   Check spam if the email hasn't arrived. Accounts created with Apple, Google, or
