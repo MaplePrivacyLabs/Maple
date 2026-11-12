@@ -107,9 +107,6 @@ pub(super) const EMPTY_PANE_PADDING_REMS: f32 = 1.5;
 pub(super) struct ComposerFrame {
     /// The composer region: cards, composer box, palette, padding.
     pub(super) region: Option<gpui::Pixels>,
-    /// The region's top in the window, so the composer can glide from
-    /// there when the empty state gives way to a conversation, or back.
-    pub(super) top: Option<gpui::Pixels>,
     /// The height the region takes when expanded.
     pub(super) room: Option<gpui::Pixels>,
     /// The empty state's title and privacy line at rest, which fold away
@@ -138,18 +135,6 @@ pub(super) fn measure(
     )
     .absolute()
     .inset_0()
-}
-
-/// The composer region, painted gliding from window y `from` toward its
-/// place while `glide` runs (see [`ChatScreen::composer_glide_frame`]).
-pub(super) fn glide(
-    region: impl IntoElement,
-    glide: Option<(gpui::Pixels, f32)>,
-) -> gpui::AnyElement {
-    match glide {
-        Some((from, progress)) => motion::glide_from(region, from, progress).into_any_element(),
-        None => region.into_any_element(),
-    }
 }
 
 impl ChatScreen {
@@ -1329,40 +1314,6 @@ impl ChatScreen {
         None
     }
 
-    /// When the empty state gives way to a conversation (the first message,
-    /// or opening a task) or back (New Task), the composer glides from where
-    /// it was last drawn to its new place over [`motion::PANEL`]. Returns
-    /// the window y it starts from and how far along it is; `None` at rest,
-    /// on the first frame, and under reduced motion.
-    pub(super) fn composer_glide_frame(
-        &mut self,
-        empty: bool,
-        window: &mut Window,
-        cx: &mut Context<Self>,
-    ) -> Option<(gpui::Pixels, f32)> {
-        let now = motion::now();
-        let reduced = cx.reduce_motion();
-        if self.composer_was_empty.is_some_and(|was| was != empty) {
-            self.composer_glide = self
-                .composer_frame
-                .get()
-                .top
-                .filter(|_| !reduced)
-                .map(|from| (from, now));
-        }
-        self.composer_was_empty = Some(empty);
-        let glide = self.composer_glide.and_then(|(from, started)| {
-            let progress = motion::progress(started, motion::PANEL, now, reduced);
-            (progress < 1.).then_some((from, progress))
-        });
-        if glide.is_some() {
-            window.request_animation_frame();
-        } else {
-            self.composer_glide = None;
-        }
-        glide
-    }
-
     /// The composer box lays out expanded: at rest there, or on the way.
     pub(super) fn composer_fills(&self) -> bool {
         self.composer_expanded || self.composer_resize.is_some()
@@ -2437,12 +2388,84 @@ mod resize_tests {
         motion::set_test_now(None);
     }
 
-    /// The first message carries the composer from the empty state down to
-    /// the foot of the conversation: it starts where it was drawn, moves
-    /// only down, lands exactly at rest, and then asks for no frames. New
-    /// Task under reduced motion puts it straight back.
+    /// Sending a message several lines long: the composer gets shorter on
+    /// that frame, and the slot the sent message shows in opens from the
+    /// height it gave up. The newest row holds still on the send frame and
+    /// from then on only moves up, to make the room the bubble needs beyond
+    /// that. It never drops first.
     #[gpui::test]
-    fn leaving_the_empty_state_glides_the_composer_down(cx: &mut TestAppContext) {
+    fn sending_a_long_message_never_drops_the_transcript(cx: &mut TestAppContext) {
+        let start = Instant::now();
+        motion::set_test_now(Some(start));
+        cx.update(|cx| cx.set_reduce_motion(false));
+        let (chat, cx) = chat_window(cx, 40);
+        let text = "one\ntwo\nthree\nfour\nfive";
+        chat.update(cx, |chat, cx| {
+            let composer = chat.composer.clone().expect("composer");
+            composer.update(cx, |input, cx| input.set_text(text, cx));
+        });
+        cx.run_until_parked();
+        let typed = start + motion::PANEL.settle * 2;
+        frame_at(typed, cx);
+        let newest = |cx: &mut VisualTestContext| {
+            cx.debug_bounds("timeline-row-m39")
+                .expect("the newest row is on screen")
+                .bottom()
+        };
+        let tall = composer_height(cx);
+        let before = newest(cx);
+
+        // What dispatching a send does to the composer and the slot.
+        chat.update(cx, |chat, cx| {
+            chat.clear_composer_for_send(cx);
+            let preview = crate::ui::chat::sending::SendPreview::new(Some("s1".into()), text, &[])
+                .capture_timeline(&chat.timeline);
+            chat.sending_previews.insert("send-1".into(), preview);
+            cx.notify();
+        });
+        cx.run_until_parked();
+        assert!(
+            composer_height(cx) < tall - px(40.),
+            "the composer emptied on the send frame"
+        );
+        let first = newest(cx);
+        assert!(
+            (first - before).abs() <= px(1.),
+            "the newest row holds still on the send frame: {before:?} then {first:?}"
+        );
+        let mut last = first;
+        for step in 1..=12 {
+            frame_at(typed + motion::ENTER.settle * step / 6, cx);
+            let now = newest(cx);
+            assert!(
+                now <= last + px(0.5),
+                "it only ever moves up: {last:?} then {now:?}"
+            );
+            last = now;
+        }
+        assert!(
+            last < before,
+            "it ends higher, by what the bubble needs beyond the composer's rows"
+        );
+        // The frame asked for while it moved still runs once; then it rests.
+        // gpui's own one-shot fades (the composer's "Sending…" status) read
+        // the executor's clock, so that moves on too.
+        cx.executor().advance_clock(motion::PANEL.settle * 4);
+        frame_at(typed + motion::PANEL.settle * 4, cx);
+        frame_at(typed + motion::PANEL.settle * 5, cx);
+        assert_eq!(newest(cx), last, "settled");
+        assert_eq!(cx.update(|window, app| window.simulate_next_frame(app)), 0);
+        motion::set_test_now(None);
+    }
+
+    /// The composer changes place at once between the empty state and a
+    /// conversation: on the first message it is at the foot of the thread
+    /// on the next frame and asks for no more, and New Task puts it straight
+    /// back. Where the composer sits is not something to animate.
+    #[gpui::test]
+    fn the_composer_changes_place_at_once_between_a_new_task_and_a_conversation(
+        cx: &mut TestAppContext,
+    ) {
         let start = Instant::now();
         motion::set_test_now(Some(start));
         cx.update(|cx| cx.set_reduce_motion(false));
@@ -2475,22 +2498,14 @@ mod resize_tests {
         cx.run_until_parked();
         let first = cx.debug_bounds("composer-box").expect("composer");
         assert!(
-            (first.top() - hero.top()).abs() < px(1.),
-            "starts where it was drawn: {hero:?} {first:?}"
+            first.top() > hero.top() + px(100.),
+            "at the foot of the thread on the first frame: {hero:?} {first:?}"
         );
-        let mut last = first.top();
-        for step in 1..=12 {
-            frame_at(start + motion::PANEL.settle * step / 12, cx);
-            let top = cx.debug_bounds("composer-box").expect("composer").top();
-            assert!(top >= last, "only moves down: {last:?} then {top:?}");
-            last = top;
-        }
-        frame_at(start + motion::PANEL.settle * 2, cx);
+        frame_at(start + motion::PANEL.settle, cx);
         let rest = cx.debug_bounds("composer-box").expect("composer");
-        assert!(rest.top() > hero.top() + px(100.), "{hero:?} {rest:?}");
+        assert_eq!(rest, first, "and it stays there");
         assert_eq!(cx.update(|window, app| window.simulate_next_frame(app)), 0);
 
-        cx.update(|_, cx| cx.set_reduce_motion(true));
         chat.update(cx, |chat, cx| {
             chat.replace_timeline(Vec::new());
             cx.notify();
@@ -2499,8 +2514,9 @@ mod resize_tests {
         let back = cx.debug_bounds("composer-box").expect("composer");
         assert!(
             (back.top() - hero.top()).abs() < px(1.),
-            "reduced motion lands at once: {hero:?} {back:?}"
+            "New Task puts it straight back: {hero:?} {back:?}"
         );
+        assert_eq!(cx.update(|window, app| window.simulate_next_frame(app)), 0);
         motion::set_test_now(None);
     }
 }

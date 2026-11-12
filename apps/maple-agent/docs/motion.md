@@ -11,7 +11,9 @@ between the user and the next action. This page records the shared decisions;
   something went. If removing it loses nothing, remove it.
 - **Never delay input.** Content is clickable and typeable the moment it is
   drawn. Sends, keyboard shortcuts, Escape and Stop act on the frame they
-  arrive; nothing waits for an animation to finish.
+  arrive; nothing waits for an animation to finish. The composer is where
+  the user types, so where it sits never animates: it changes place at once
+  between a new task and a conversation, and it empties at once on a send.
 - **Interruptible.** Every transition that can reverse (hover, reveal,
   switches, chevrons, the composer, the sidebar) is a spring that retargets
   from the value on screen and keeps the speed it has. A second click never
@@ -81,10 +83,10 @@ shared 15 fps `ticker` clock and pause in background windows.
 | Tooltips | fade, `REVEAL`, after the existing delay | immediate |
 | Dialogs and confirmations | scrim fades, card fades and rises, `ENTER` | immediate |
 | Screen change (Chat ↔ Settings) and Settings sections | new content fades in, `REVEAL` | immediate |
-| Empty state ↔ conversation (first message, opening a task, New Task) | the composer glides from where it was drawn to its new place, `PANEL` | same, reversed |
+| Empty state ↔ conversation (first message, opening a task, New Task) | the composer changes place at once | at once |
 | Switching tasks | transcript fades in when its snapshot lands, `REVEAL` | immediate |
 | Live transcript rows at the end of the thread (sent message, reply, thinking, tool card, error, stop notice) | height grows from 0 and the row fades in, `ENTER`, so older rows glide up; scrolled up, a fade and 6 px rise | — |
-| Sent message | the bubble rises in; the real row takes its exact place, and "Sending…" and the waiting dots share one slot under it | — |
+| Sent message | the composer empties at once and the bubble's slot opens from the height it gave up, so the thread does not drop; the bubble rises in, the real row takes its exact place, and "Sending…" and the waiting dots share one slot under it | — |
 | Tool status | spinner leaves at once, the outcome fades in, `TOGGLE` | — |
 | Disclosed details (tool output, thinking) | fade in, `REVEAL` | immediate |
 | Streaming text | grows in place, no animation | — |
@@ -149,7 +151,11 @@ appear only after 300 ms, so fast loads never flash a spinner.
   they scroll away. Their entrance is driven by the arrival time kept in view
   state, so a row animates once and never replays. A row that replaces the
   slot under the transcript (the waiting dots, a sent message, a failed
-  send) opens from the slot's height, so nothing above it jumps.
+  send) opens from the slot's height, so nothing above it jumps. The sent
+  message's row takes over from its bubble by the key the transcript files
+  the row under (`timeline_view_key`), which for a real host's rows is not
+  the id the event names; test hand-offs with rows that carry a live or
+  stored identity.
 - Every animated frame re-renders the window. Keep animations short, request
   frames only while something moves, and never animate inside cached views
   without an element id that is stable across frames.

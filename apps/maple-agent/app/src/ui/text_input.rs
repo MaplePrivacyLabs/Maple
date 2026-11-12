@@ -452,6 +452,21 @@ impl TextInput {
         Some((bounds.size.height, text))
     }
 
+    /// How much shorter the field gets when it is cleared: the height of
+    /// its text beyond one row. Nothing while it fills its parent, which
+    /// keeps its height whatever it holds.
+    pub fn height_beyond_one_row(&self) -> Pixels {
+        if self.fill_height {
+            return px(0.);
+        }
+        self.last_layout.as_ref().map_or(px(0.), |layout| {
+            let text = layout
+                .height()
+                .min(layout.line_height * self.max_lines as f32);
+            (text - layout.line_height).max(px(0.))
+        })
+    }
+
     /// The height to draw for `rows` measured at `width` in `font`. A
     /// new row count under the same measure comes from the text, so the
     /// box eases to it from the height on screen; a new width or font
@@ -660,6 +675,9 @@ impl TextInput {
         self.finish_vim_lifecycle(LifecycleEvent::SendOrClear, cx);
         self.forget_edits();
         self.content = "".into();
+        // A send or a clear empties the field on the frame it happens; only
+        // typing eases its height.
+        self.growth = None;
         self.selected_range = 0..0;
         self.scroll_y = px(0.);
         self.forget_text_positions(cx);
