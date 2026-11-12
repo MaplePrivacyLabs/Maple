@@ -562,6 +562,54 @@ impl ChatScreen {
         if let Some(worked) = self.turn_worked.remove(old) {
             self.turn_worked.insert(new.to_owned(), worked);
         }
+        if let Some(allowed) = self.step_permissions.remove(old) {
+            self.step_permissions.insert(new.to_owned(), allowed);
+        }
+    }
+
+    /// The permission request on screen, if the question card shows one.
+    pub(super) fn current_permission(&self) -> Option<&maple_agent::agent::AgentPermissionPrompt> {
+        self.current_question()?
+            .questions
+            .iter()
+            .find_map(|entry| entry.permission.as_ref())
+    }
+
+    /// The tool call the permission request on screen is about: the
+    /// newest call of the turn that has not finished.
+    pub(super) fn waiting_step(&self) -> Option<usize> {
+        self.current_permission()?;
+        self.timeline
+            .iter()
+            .enumerate()
+            .rev()
+            .take_while(|(_, item)| !starts_turn(item))
+            .find(|(_, item)| {
+                is_tool(item)
+                    && step::StepState::of(item.status.as_deref()) == step::StepState::Running
+            })
+            .map(|(index, _)| index)
+    }
+
+    /// The user answered a permission request: the call it was about keeps
+    /// what they said for as long as this view shows the task.
+    pub(super) fn settle_permission(&mut self, question: &crate::backend::PendingQuestion) {
+        let Some(asked) = question
+            .questions
+            .iter()
+            .position(|entry| entry.permission.is_some())
+        else {
+            return;
+        };
+        let Some(call) = self.waiting_step().and_then(|step| self.timeline.get(step)) else {
+            return;
+        };
+        // Only the first option, "Allow once", lets the call run.
+        let allowed = self
+            .question_selected
+            .get(&asked)
+            .is_some_and(|selection| selection.picked.contains(&0));
+        self.step_permissions.insert(call.id.clone(), allowed);
     }
 
     /// Paint once a second while a run is timed, so the time on its line

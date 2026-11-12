@@ -2154,6 +2154,43 @@ mod state_tests {
         });
     }
 
+    /// A permission request is about the call still running, and that
+    /// call keeps what the user answered.
+    #[gpui::test]
+    fn test_a_call_keeps_what_the_user_said_to_its_permission_request(cx: &mut TestAppContext) {
+        cx.executor().allow_parking();
+        let screen = screen(cx);
+        screen.update(cx, |this, cx| {
+            this.selected_session = Some("s1".to_string());
+            let call = |id: &str, status: &str| AgentTimelineItem {
+                status: Some(status.to_string()),
+                ..item(id, "tool", None)
+            };
+            this.replace_timeline(vec![
+                user_item("u1", "Push it"),
+                call("read", "completed"),
+                call("push", "running"),
+            ]);
+            assert_eq!(this.waiting_step(), None, "nothing waits before a request");
+
+            this.handle_service_event(permission_event("p1"), cx);
+            assert_eq!(
+                this.waiting_step(),
+                Some(2),
+                "the request is about the call that has not finished"
+            );
+            this.toggle_question_option(0, 0, cx);
+            assert_eq!(this.step_permissions.get("push"), Some(&true));
+
+            // The next call is refused; the earlier answer stays.
+            this.apply_incoming_item("s1", call("force", "running"), cx);
+            this.handle_service_event(permission_event("p2"), cx);
+            this.toggle_question_option(0, 1, cx);
+            assert_eq!(this.step_permissions.get("force"), Some(&false));
+            assert_eq!(this.step_permissions.get("push"), Some(&true));
+        });
+    }
+
     /// A permission card and its notification are worded in the interface's
     /// language, and the answer stays the runtime's label in any language.
     #[gpui::test]

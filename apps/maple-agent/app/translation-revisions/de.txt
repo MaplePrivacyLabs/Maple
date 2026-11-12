@@ -230,6 +230,8 @@ chat-page-settled-retry 7819952f23b4deca
 chat-permission-allow 48955332314aface
 chat-permission-deny 247877b375d74e51
 chat-permission-label 003c13cd34c8664b
+chat-permission-mode-hint 3d0a17c847edd1fc
+chat-permission-note-placeholder c0d5f880b0115262
 chat-permission-reason-changes-outside-project 419d3ad8e0d467ef
 chat-permission-reason-changes-project be40ea472bf88e4c
 chat-permission-reason-destructive 7abdcab1435c106b

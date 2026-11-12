@@ -58,6 +58,8 @@ impl ChatScreen {
         let switch_reveal = self.row_motion.switch_progress(now, reduced);
         let show_jump = count > 0 && !self.list_state.is_following_tail();
         let tool_details = self.tool_details;
+        // The call a permission request on screen is about.
+        let waiting_step = self.waiting_step();
         let entity = cx.entity().downgrade();
         let selection = self.selection.clone();
         let transcript_focus = self.transcript_focus.clone();
@@ -122,6 +124,17 @@ impl ChatScreen {
                         turn != TurnRow::Plain
                             && matches!(chat.turns.row(ix + 1), TurnRow::Step(_)),
                     ),
+                    asked: if waiting_step == Some(ix) {
+                        Some(step::Asked::Waiting)
+                    } else {
+                        chat.step_permissions.get(&item.id).map(|allowed| {
+                            if *allowed {
+                                step::Asked::Allowed
+                            } else {
+                                step::Asked::Denied
+                            }
+                        })
+                    },
                 };
                 let expanded = tool_details != chat.toggled_tools.contains(&item.id);
                 let revision = chat
@@ -1345,17 +1358,23 @@ fn revealed<E: Styled>(details: E, reveal: f32) -> E {
     }
 }
 
-/// What a step says after its title when it did not simply finish. A
-/// running step says nothing: it is dim, and the turn's line is the one
-/// thing that moves.
-fn step_outcome(state: StepState) -> Option<Div> {
+/// What a step says after its title when it did not simply run and
+/// finish. A running step says nothing: it is dim, and the turn's line is
+/// the one thing that moves. `allowed`: the user let the call run.
+fn step_outcome(state: StepState, allowed: bool) -> Option<Div> {
     let (label, color) = match state {
+        StepState::Waiting => (tr("chat-status-waiting"), theme::accent_ink()),
+        StepState::Denied => (tr("chat-status-denied"), theme::text_muted()),
         StepState::Failed => (tr("chat-status-failed"), theme::status_error()),
         StepState::Stopped => (tr("chat-status-stopped"), theme::text_muted()),
+        StepState::Running | StepState::Done if allowed => {
+            (tr("chat-status-allowed"), theme::text_muted())
+        }
         StepState::Running | StepState::Done => return None,
     };
     Some(
         div()
+            .debug_selector(|| "step-outcome".to_string())
             .flex_none()
             .font_weight(gpui::FontWeight::NORMAL)
             .text_xs()
@@ -1786,7 +1805,14 @@ fn render_tool(
     diff: bool,
     transcript: &TranscriptCtx,
 ) -> Div {
-    let state = StepState::of(item.status.as_deref());
+    // What the user was asked about the call says more than its status: a
+    // call that waits is not running, and one the user refused did not
+    // fail on its own.
+    let state = match transcript.asked {
+        Some(step::Asked::Waiting) => StepState::Waiting,
+        Some(step::Asked::Denied) => StepState::Denied,
+        Some(step::Asked::Allowed) | None => StepState::of(item.status.as_deref()),
+    };
     let item_id = item.id.clone();
     let chat = transcript.chat.clone();
     let derived = transcript.derived.get(item, revision);
@@ -1836,7 +1862,10 @@ fn render_tool(
                 .filter(|_| state == StepState::Done)
                 .map(step::changed),
         )
-        .children(step_outcome(state))
+        .children(step_outcome(
+            state,
+            transcript.asked == Some(step::Asked::Allowed),
+        ))
         .child(motion::chevron(
             SharedString::from(format!("tool-chevron-{}", item.id)),
             details,
@@ -2288,6 +2317,7 @@ pub(super) fn render_question_card(
     input: Option<Entity<TextInput>>,
     selected: &HashMap<usize, QuestionSelection>,
     key_labels: &[SharedString],
+    mode: maple_agent::agent::AgentPermissionMode,
     messages: &MessageCache,
     cx: &mut Context<ChatScreen>,
 ) -> Div {
@@ -2311,6 +2341,19 @@ pub(super) fn render_question_card(
     let step = step.min(question.questions.len().saturating_sub(1));
     let entry = question.questions.get(step);
     let permission = entry.and_then(|entry| entry.permission.as_ref());
+    // A request comes from the task's mode: the footer says which one
+    // asked. Full access never asks, so it has nothing to say.
+    let mode_hint = match mode {
+        maple_agent::agent::AgentPermissionMode::ReadOnly => Some(tr("chat-mode-read-only")),
+        maple_agent::agent::AgentPermissionMode::Auto => Some(tr("chat-mode-auto")),
+        maple_agent::agent::AgentPermissionMode::FullAccess => None,
+    }
+    .map(|mode| {
+        messages.get(
+            "chat-permission-mode-hint",
+            [("mode", mode.to_string().into())],
+        )
+    });
     let card_label = if permission.is_some() {
         tr("chat-permission-label")
     } else {
@@ -2436,10 +2479,31 @@ pub(super) fn render_question_card(
                         .py_1p5()
                         .rounded(theme::RADIUS_SM)
                         .bg(gpui::rgb(theme::bg_sidebar_pill()))
+                        .flex()
+                        .items_start()
+                        .gap_2()
                         .font_family(crate::assets::FONT_MONO)
                         .text_xs()
                         .text_color(gpui::rgb(theme::text_primary()))
-                        .child(gpui::text!(prompt.action.clone())),
+                        // The icon of the tool that would run, as on its
+                        // step in the transcript.
+                        .child(
+                            div()
+                                .debug_selector(|| "permission-tool".to_string())
+                                .flex_none()
+                                .mt(px(2.))
+                                .child(icon(
+                                    step::icon_for_tool(Some(&prompt.tool)),
+                                    px(13.),
+                                    theme::text_muted(),
+                                )),
+                        )
+                        .child(
+                            div()
+                                .flex_1()
+                                .min_w_0()
+                                .child(gpui::text!(prompt.action.clone())),
+                        ),
                 ),
         );
     } else {
@@ -2603,6 +2667,9 @@ pub(super) fn render_question_card(
                     } else {
                         tr("chat-question-answer-hint")
                     })
+                })
+                .when_some(permission.and(mode_hint), |hint, text| {
+                    hint.child(gpui::text!(text))
                 }),
         )
         .child(
