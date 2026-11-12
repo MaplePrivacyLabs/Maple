@@ -24,8 +24,8 @@ LISTENERS = frozenset({
     "auth-pages-dev-publish.yml", "pages-publish.yml", "proxy-publish.yml", "updates-publish.yml",
     "zapstore-publish.yml",
 })
-NIX_ACTION = "DeterminateSystems/determinate-nix-action@96c5ee93a9dddf2830d31e1da6ec719077336c28"
-NIX_INPUTS = {"source-tag": "v3.23.3", "github-token": ""}
+NIX_ACTION = "DeterminateSystems/determinate-nix-action@16f94ba7aae399b9f9077c254b6719ec6de7e3e3"
+NIX_INPUTS = {"source-tag": "v3.24.2", "github-token": ""}
 # Installs outside the release and EIF workflows also use HTTP/1.1 for substitution.
 NIX_INPUTS_HTTP1 = {**NIX_INPUTS, "extra-conf": "http2 = false"}
 VERIFY_NIX = "bash scripts/ci/verify-nix-runtime.sh"
