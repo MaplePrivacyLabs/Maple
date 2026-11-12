@@ -2,9 +2,10 @@
 //!
 //! The word settles, then a thin light rakes across it from the top: a
 //! bright edge and a soft tail, so the dotted letters catch light without
-//! filling in. It plays when the empty state appears, and again when New
-//! Task is clicked. Reduced motion, and a window nobody is looking at,
-//! paint the settled title and ask for no frames.
+//! filling in. The first appearance fades in. New Task keeps the ink and
+//! only replays the glint. The caller owns the clock, so the title leaving
+//! the tree does not start it again. Reduced motion, and a window nobody
+//! is looking at, paint the settled title and ask for no frames.
 
 use std::time::{Duration, Instant};
 
@@ -36,18 +37,26 @@ const SLICES: usize = 4;
 /// Samples along the lit span. Enough to read as a falloff, not a stack of bars.
 const BANDS: usize = 8;
 
-/// The empty-state title. `play` changes when New Task is clicked, which
-/// starts the glint again even if the title never left the screen.
-pub fn empty_title(text: impl Into<SharedString>, play: u64) -> EmptyTitle {
+/// The empty-state title. `entrance` fades the ink in. A replay passes
+/// `false`, so a title that is already on screen does not blank. `started`
+/// is the caller's clock; `None` paints the settled title.
+pub fn empty_title(
+    text: impl Into<SharedString>,
+    entrance: bool,
+    started: Option<Instant>,
+) -> EmptyTitle {
     EmptyTitle {
         text: text.into(),
-        play,
+        entrance,
+        started,
     }
 }
 
 pub struct EmptyTitle {
     text: SharedString,
-    play: u64,
+    /// Fade the ink in. False once this visit has already shown the title.
+    entrance: bool,
+    started: Option<Instant>,
 }
 
 impl IntoElement for EmptyTitle {
@@ -58,17 +67,12 @@ impl IntoElement for EmptyTitle {
     }
 }
 
-struct Drawn {
-    play: u64,
-    started: Option<Instant>,
-}
-
 impl Element for EmptyTitle {
     type RequestLayoutState = ();
     type PrepaintState = ();
 
     fn id(&self) -> Option<ElementId> {
-        Some(ElementId::NamedInteger("empty-title".into(), self.play))
+        None
     }
 
     fn source_location(&self) -> Option<&'static core::panic::Location<'static>> {
@@ -77,30 +81,11 @@ impl Element for EmptyTitle {
 
     fn request_layout(
         &mut self,
-        id: Option<&GlobalElementId>,
+        _id: Option<&GlobalElementId>,
         _inspector_id: Option<&gpui::InspectorElementId>,
         window: &mut Window,
-        cx: &mut App,
+        _cx: &mut App,
     ) -> (LayoutId, ()) {
-        let id = id.expect("empty title has an id");
-        let play = self.play;
-        let paused = cx.reduce_motion() || !window.is_window_active();
-        let starting = self.text.clone();
-        window.with_element_state::<Drawn, _>(id, |drawn, _| {
-            let mut drawn = drawn.unwrap_or(Drawn {
-                play,
-                started: None,
-            });
-            if drawn.play != play {
-                drawn.play = play;
-                drawn.started = None;
-            }
-            drawn.started = settle(drawn.started, paused);
-            if drawn.started.is_none() && !paused && !starting.is_empty() {
-                drawn.started = Some(Instant::now());
-            }
-            ((), drawn)
-        });
         let text = self.text.clone();
         // The measure closure runs after the parent text style has popped.
         let style = window.text_style();
@@ -137,7 +122,7 @@ impl Element for EmptyTitle {
 
     fn paint(
         &mut self,
-        id: Option<&GlobalElementId>,
+        _id: Option<&GlobalElementId>,
         _inspector_id: Option<&gpui::InspectorElementId>,
         bounds: Bounds<Pixels>,
         _request_layout: &mut (),
@@ -145,7 +130,6 @@ impl Element for EmptyTitle {
         window: &mut Window,
         cx: &mut App,
     ) {
-        let id = id.expect("empty title has an id");
         if self.text.is_empty() || bounds.size.width <= px(0.) {
             return;
         }
@@ -157,21 +141,8 @@ impl Element for EmptyTitle {
         let ink = style.color;
         let light = theme::is_light();
         let paused = cx.reduce_motion() || !window.is_window_active();
-        let elapsed = window.with_element_state::<Drawn, _>(id, |drawn, _| {
-            let mut drawn = drawn.unwrap_or(Drawn {
-                play: self.play,
-                started: None,
-            });
-            drawn.started = settle(drawn.started, paused);
-            let elapsed = drawn.started.map(elapsed_ms);
-            (elapsed, drawn)
-        });
-        let resting = paused || elapsed.is_none_or(sheen_finished);
-        let alpha = if resting {
-            1.
-        } else {
-            title_alpha(elapsed.unwrap_or(0.))
-        };
+        let elapsed = self.started.map(elapsed_ms);
+        let alpha = ink_alpha(self.entrance, elapsed, paused);
         let content = content_width(window, &text, font_size, &style);
         let wrap = wrap_width(
             content,
@@ -407,6 +378,19 @@ pub(crate) fn title_alpha(elapsed_ms: f32) -> f32 {
     ease_out(elapsed_ms / FADE.as_millis() as f32)
 }
 
+/// Full ink on a replay, so a title that is already on screen does not
+/// blank. The first visit still fades in from transparent. The caller
+/// decides which visit this is; a `new_session` before the first paint
+/// is still an entrance.
+pub(crate) fn ink_alpha(entrance: bool, elapsed_ms: Option<f32>, paused: bool) -> f32 {
+    let resting = paused || elapsed_ms.is_none_or(sheen_finished);
+    if resting || !entrance {
+        1.
+    } else {
+        title_alpha(elapsed_ms.unwrap_or(0.))
+    }
+}
+
 /// White overlay on a point of the title. `x` and `y` run `0..=1` across
 /// the line; `y` is 0 at the top. `0` outside the glint.
 pub(crate) fn sheen_overlay(x: f32, y: f32, elapsed_ms: f32) -> f32 {
@@ -443,6 +427,18 @@ fn settle(started: Option<Instant>, paused: bool) -> Option<Instant> {
     if paused && started.is_some_and(|started| !sheen_finished(elapsed_ms(started))) {
         let end = (START_MS + TRAVEL_MS + RAKE_MS + GLOW_MS) as u64 + 1;
         Some(Instant::now() - Duration::from_millis(end))
+    } else {
+        started
+    }
+}
+
+/// Start the glint once per play. A clock that already started is kept, so
+/// the title leaving the tree does not replay it. Pause finishes a running
+/// glint and does not start one.
+pub(crate) fn arm_glint(started: Option<Instant>, paused: bool) -> Option<Instant> {
+    let started = settle(started, paused);
+    if started.is_none() && !paused {
+        Some(Instant::now())
     } else {
         started
     }
@@ -525,7 +521,7 @@ mod tests {
                     gpui::div()
                         .w_full()
                         .debug_selector(|| "empty-title-bounds".to_string())
-                        .child(empty_title(self.text.clone(), 1)),
+                        .child(empty_title(self.text.clone(), false, None)),
                 )
         }
     }
@@ -571,5 +567,19 @@ mod tests {
             settle(Some(running), false).expect("clock")
         )));
         assert!(settle(None, true).is_none());
+    }
+
+    #[test]
+    fn a_replay_keeps_the_ink_and_a_remount_does_not_restart_the_clock() {
+        assert_eq!(ink_alpha(true, Some(0.), false), 0.);
+        assert_eq!(ink_alpha(false, Some(0.), false), 1.);
+        assert_eq!(ink_alpha(true, None, true), 1.);
+        let started = arm_glint(None, false).expect("start");
+        let again = arm_glint(Some(started), false).expect("kept");
+        assert_eq!(again, started);
+        assert!(arm_glint(None, true).is_none());
+        let settled = arm_glint(Some(started), true).expect("settled");
+        assert!(sheen_finished(elapsed_ms(settled)));
+        assert_eq!(arm_glint(Some(settled), false), Some(settled));
     }
 }
