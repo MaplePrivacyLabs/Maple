@@ -217,6 +217,12 @@ tokens! {
     accent_ink: 0xff9771, 0xd04926;
 
     status_running: 0xbabccb, 0xa3a3a3;
+    /// The running task row's outline trace: the running ink on dark, a
+    /// pebble step darker on light so a selected row still shows it.
+    activity_trace: 0xbabccb, 0x6e6f7e;
+    /// A sidebar task that waits on the user. Maple coral on dark;
+    /// maple-700 on light, where the coral was 2:1 on the sidebar.
+    attention: 0xff9771, 0xe8633d;
     status_success: 0x8fa35a, 0x7b8f4a;
     status_error: 0xe07052, 0xd05e41;
     /// Wavy underline under a misspelled word in the composer.
@@ -297,6 +303,17 @@ pub fn overlay_hover() -> gpui::Hsla {
         gpui::hsla(0., 0., 0., 0.06)
     } else {
         gpui::hsla(0., 0., 1., 0.08)
+    }
+}
+
+/// Translucent fill for a pressed control over any surface: one step past
+/// [`overlay_hover`], so a press always reads darker (lighter on dark)
+/// than the hover and the row beneath, whatever that row's own state.
+pub fn overlay_press() -> gpui::Hsla {
+    if is_light() {
+        gpui::hsla(0., 0., 0., 0.11)
+    } else {
+        gpui::hsla(0., 0., 1., 0.14)
     }
 }
 
@@ -403,6 +420,8 @@ mod contrast_tests {
                 ("status_error", palette.status_error),
                 ("status_warning", palette.status_warning),
                 ("link", palette.link),
+                ("attention", palette.attention),
+                ("activity_trace", palette.activity_trace),
             ];
             let ratio = contrast(palette.accent_ink, palette.accent_container);
             if ratio < 3. {

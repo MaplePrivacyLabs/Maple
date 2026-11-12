@@ -191,6 +191,8 @@ the dark background.
 | `status_success` | `#7b8f4a` | `#8fa35a` | success |
 | `status_warning` | `#b45309` Amber 700 | `#d4a35a` | warning; the kit's `#d4a35a` is 2.3:1 on white |
 | `status_error` | `#d05e41` | `#e07052` | error |
+| `attention` | `#e8633d` Maple 700 | `#ff9771` Maple 500 | sidebar mark (dot in a 28% halo with a 70% edge): a task waits on the user |
+| `activity_trace` | `#6e6f7e` | `#babccb` Pebble 300 | a running task row's outline trace |
 | `display_text` | `#474854` Pebble 800 | `#babccb` Pebble 300 | Array titles; large type can sit dimmer than body |
 
 The 60 / 30 / 10 rule maps to: workspace and transcript on `bg_app`;

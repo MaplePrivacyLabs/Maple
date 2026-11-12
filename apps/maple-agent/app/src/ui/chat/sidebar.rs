@@ -77,7 +77,6 @@ pub(crate) struct BrowseState {
 use std::cell::RefCell;
 use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
-use std::time::Duration;
 
 use gpui::{
     AnyElement, AppContext, Context, Div, Entity, EventEmitter, Focusable, SharedString,
@@ -94,7 +93,7 @@ use crate::backend::AgentBackend;
 use crate::settings::{SidebarGroup, SidebarItemKey, SidebarOrder, SidebarSort, SidebarView};
 use crate::ui::i18n::{MessageCache, UiText, tr, tr_args};
 use crate::ui::icons::{icon, wordmark};
-use crate::ui::motion;
+use crate::ui::outline_trace::outline_trace;
 use crate::ui::popup::{Menu, MenuItem, Placement, Popup};
 use crate::ui::text_input::TextInput;
 use crate::ui::theme;
@@ -268,7 +267,7 @@ pub(super) struct SidebarRow {
     /// The hover button that moves the task one rung along
     /// active, settled, archived, deleted.
     pub(super) step_id: SharedString,
-    /// Animation id of the running indicator.
+    /// Animation id of the running row's outline trace.
     pub(super) spinner_id: SharedString,
     pub(super) pin_id: SharedString,
     pub(super) menu_id: SharedString,
@@ -4000,6 +3999,7 @@ impl Sidebar {
                                 &root.row_group,
                                 "square-pen",
                                 tr("chat-new-task"),
+                                false,
                             )
                             .aria_label(root.new_task_label.clone())
                             .tooltip(widgets::tooltip(root.new_task_label.clone(), None))
@@ -4164,10 +4164,15 @@ impl Sidebar {
         cx: &mut Context<Self>,
     ) -> Div {
         let (pinned, rung) = state;
+        // The menu opens below the row and takes the pointer's hover with
+        // it; the strip keeps its fill so the open button still covers the
+        // title, as a project header's does.
+        let open = self.popup.is_open(&target.popup_key());
         let rename = target.clone();
         let advance = target.clone();
         let step = rung.step();
         hover_actions(&row.group, hover_bg)
+            .when(open, |strip| strip.bg(gpui::rgb(hover_bg)))
             .pl_0()
             .when(pinned, |overlay| overlay.right(px(26.)))
             .when(!pinned, |overlay| overlay.right_0().rounded_r(ROW_RADIUS))
@@ -4179,6 +4184,7 @@ impl Sidebar {
                     .bottom_0()
                     .right_full()
                     .w(ROW_FADE)
+                    .when(open, |fade| fade.bg(row_fade_background(hover_bg)))
                     .group_hover(row.group.clone(), |style| {
                         style.bg(row_fade_background(hover_bg))
                     }),
@@ -4261,7 +4267,12 @@ impl Sidebar {
         } else {
             theme::bg_sidebar_row_hover()
         };
-        let row_bg = if is_selected {
+        // An open menu holds the row in its hover fill, as a project
+        // header's does, so the action strip over it never shows as a patch.
+        let menu_open = self.popup.is_open(&SidebarPopup::Task(row.id.clone()));
+        let row_bg = if menu_open {
+            hover_bg
+        } else if is_selected {
             theme::bg_sidebar_row_selected()
         } else {
             theme::bg_sidebar()
@@ -4277,7 +4288,10 @@ impl Sidebar {
             .role(gpui::Role::ListBoxOption)
             .accessibility_id(row.id.to_string())
             .aria_label(row.title.clone())
-            .aria_description(row.metadata.clone())
+            .when_some(
+                self.activity_description(activity, &row.metadata),
+                |row, text| row.aria_description(text),
+            )
             .aria_selected(is_selected)
             .when(application_selected, |row| row.aria_active_descendant())
             .group(row.group.clone())
@@ -4292,6 +4306,7 @@ impl Sidebar {
             .when(is_selected, |row| {
                 row.bg(gpui::rgb(theme::bg_sidebar_row_selected()))
             })
+            .when(menu_open, |row| row.bg(gpui::rgb(hover_bg)))
             .text_color(gpui::rgb(theme::text_sidebar()))
             // A row being renamed is a text field: no hover highlight and
             // no hover actions over it, so the edit is plain to see.
@@ -4326,9 +4341,7 @@ impl Sidebar {
                         )
                     }),
             )
-            .when_some(activity, |row_element, activity| {
-                row_element.child(activity_indicator(&row.spinner_id, activity))
-            })
+            .children(activity.and_then(activity_indicator))
             .when(is_pinned, |row_element| {
                 row_element.child(
                     div()
@@ -4340,11 +4353,8 @@ impl Sidebar {
                         .items_center()
                         .justify_center()
                         .rounded(theme::RADIUS_SM)
-                        .hover(|style| {
-                            style
-                                .bg(gpui::rgb(theme::bg_sidebar_row_selected()))
-                                .cursor_pointer()
-                        })
+                        .hover(|style| style.bg(theme::overlay_hover()).cursor_pointer())
+                        .active(|style| style.bg(theme::overlay_press()))
                         .tooltip(widgets::tooltip(tr("chat-unpin"), None))
                         .on_click(cx.listener(move |this, _event, _window, cx| {
                             cx.stop_propagation();
@@ -4363,6 +4373,11 @@ impl Sidebar {
                     cx,
                 ))
             })
+            // A row being renamed is a text field; the trace stays off it.
+            .when(
+                activity == Some(SessionActivity::Running) && !renaming,
+                |row_element| row_element.child(running_trace(row.spinner_id.clone())),
+            )
     }
 }
 
@@ -4530,65 +4545,93 @@ fn row_fade_background(color: u32) -> gpui::Background {
     )
 }
 
-/// One breath of the running ring's dot.
-const RUNNING_BREATH: Duration = Duration::from_millis(1600);
-
-/// A coral dot while a question waits, a ring with a breathing dot while
-/// the task runs, an alert once a run failed unseen, and a green dot once
-/// one completed unseen. The two dots differ by color; the ring and the
-/// alert differ by shape. The ring runs on the shared low-rate clock, so
-/// any number of running rows cost one repaint per interval; `spinner_id`
-/// is prebuilt so render allocates nothing. Every state sits centered in
-/// one box the size of the largest, so the center stays put as states
-/// change.
-fn activity_indicator(spinner_id: &SharedString, activity: SessionActivity) -> AnyElement {
-    let dot = |color: u32| {
-        div()
-            .size(px(8.))
+/// What a task row shows beside its title. Each state has one channel:
+/// motion means working, so a running row traces its outline (see
+/// [`running_trace`]) and shows no glyph here; a coral dot in an edged
+/// coral halo means the task needs you; a plain green dot means a run
+/// completed unseen; the red alert means one failed unseen. The halo's edge
+/// keeps the two dots apart by shape, not by colour alone, on every row
+/// fill. Every glyph sits centered in one box the size of the largest.
+fn activity_indicator(activity: SessionActivity) -> Option<AnyElement> {
+    let glyph = match activity {
+        SessionActivity::Running => return None,
+        SessionActivity::NeedsYou => div()
+            .size(px(13.))
             .rounded_full()
-            .bg(gpui::rgb(color))
-            .into_any_element()
-    };
-    div()
-        .size(px(13.))
-        .flex_none()
-        .flex()
-        .items_center()
-        .justify_center()
-        .child(match activity {
-            SessionActivity::NeedsYou => dot(theme::accent()),
-            SessionActivity::Running => running_ring(spinner_id.clone()),
-            SessionActivity::Failed => {
-                icon("circle-alert", px(13.), theme::status_error()).into_any_element()
-            }
-            SessionActivity::CompletedUnread => dot(theme::status_success()),
-        })
-        .into_any_element()
-}
-
-/// The running state: a coral ring whose center dot fades in and out. A
-/// fade reads as smooth at the shared clock's low frame rate, where a
-/// turning arc steps visibly.
-fn running_ring(id: SharedString) -> AnyElement {
-    motion::ticker(id, RUNNING_BREATH, |phase| {
-        div()
-            .size(px(12.))
+            .bg(gpui::rgb(theme::attention()).alpha(0.28))
+            .border_1()
+            .border_color(gpui::rgb(theme::attention()).alpha(0.7))
             .flex()
             .items_center()
             .justify_center()
-            .rounded_full()
-            .border_1()
-            .border_color(gpui::rgb(theme::accent()))
             .child(
                 div()
-                    .size(px(6.))
+                    .size(px(5.))
                     .rounded_full()
-                    .bg(gpui::rgb(theme::accent()))
-                    .opacity(motion::pulse(phase, 0., 0.3, 1.)),
+                    .bg(gpui::rgb(theme::attention())),
             )
-            .into_any_element()
-    })
-    .into_any_element()
+            .into_any_element(),
+        SessionActivity::Failed => {
+            icon("circle-alert", px(13.), theme::status_error()).into_any_element()
+        }
+        SessionActivity::CompletedUnread => div()
+            .size(px(8.))
+            .rounded_full()
+            .bg(gpui::rgb(theme::status_success()))
+            .into_any_element(),
+    };
+    Some(
+        div()
+            .size(px(13.))
+            .flex_none()
+            .flex()
+            .items_center()
+            .justify_center()
+            .child(glyph)
+            .into_any_element(),
+    )
+}
+
+impl Sidebar {
+    /// A task row's accessibility description: its status, which the
+    /// indicator and trace only show, ahead of its project details.
+    /// Nothing when there is neither. Rows render on every trace frame, so
+    /// a cache hit borrows the details and allocates nothing.
+    pub(super) fn activity_description(
+        &self,
+        activity: Option<SessionActivity>,
+        details: &SharedString,
+    ) -> Option<SharedString> {
+        let Some(activity) = activity else {
+            return (!details.is_empty()).then(|| details.clone());
+        };
+        let key = match activity {
+            SessionActivity::Running => "chat-task-running",
+            SessionActivity::NeedsYou => "chat-task-needs-you",
+            SessionActivity::Failed => "chat-task-failed",
+            SessionActivity::CompletedUnread => "chat-task-finished-unseen",
+        };
+        if details.is_empty() {
+            return Some(tr(key));
+        }
+        Some(self.messages.computed(key, details, || {
+            let status = tr(key);
+            tr_args(
+                "chat-task-status-details",
+                [
+                    ("status", status.as_ref().into()),
+                    ("details", details.as_ref().into()),
+                ],
+            )
+        }))
+    }
+}
+
+/// The running state: a neutral trace around the row's outline, the one
+/// looping motion in the sidebar. Neutral, not coral, so coral keeps
+/// meaning "needs you". `id` is prebuilt so render allocates no id.
+fn running_trace(id: SharedString) -> impl IntoElement {
+    outline_trace(id, ROW_RADIUS, theme::activity_trace)
 }
 
 /// The strip over a row's end that holds its hover buttons, with the
@@ -4614,7 +4657,7 @@ pub(super) fn row_action(
     on_click: impl Fn(&gpui::ClickEvent, &mut Window, &mut gpui::App) + 'static,
 ) -> gpui::Stateful<Div> {
     let label = label.into();
-    row_button(id, group, icon_name, label.clone())
+    row_button(id, group, icon_name, label.clone(), false)
         .tooltip(widgets::tooltip(label, None))
         .on_click(on_click)
 }
@@ -4628,11 +4671,7 @@ fn row_menu_button(
     open: bool,
 ) -> gpui::Stateful<Div> {
     let label = label.into();
-    row_button(id, group, "ellipsis", label).when(open, |button| {
-        button
-            .opacity(1.)
-            .bg(gpui::rgb(theme::bg_sidebar_row_selected()))
-    })
+    row_button(id, group, "ellipsis", label, open).when(open, |button| button.opacity(1.))
 }
 
 /// An icon button of the Projects header. It stays pressed, without its
@@ -4669,13 +4708,21 @@ fn header_button(
 }
 
 /// The small icon button a sidebar row shows while it is hovered.
+/// `pressed` holds it in its press fill, under the pointer too, while its
+/// menu is open.
 fn row_button(
     id: SharedString,
     group: &SharedString,
     icon_name: &'static str,
     label: impl Into<SharedString>,
+    pressed: bool,
 ) -> gpui::Stateful<Div> {
     let label = label.into();
+    let hover = if pressed {
+        theme::overlay_press()
+    } else {
+        theme::overlay_hover()
+    };
     div()
         .debug_selector(|| id.to_string())
         .id(id)
@@ -4689,12 +4736,11 @@ fn row_button(
         .rounded(theme::RADIUS_SM)
         .opacity(0.)
         .group_hover(group.clone(), |style| style.opacity(1.))
-        .hover(|style| {
-            style
-                .bg(gpui::rgb(theme::bg_sidebar_row_selected()))
-                .cursor_pointer()
-        })
-        .active(|style| style.bg(gpui::rgb(theme::border())))
+        .when(pressed, |button| button.bg(theme::overlay_press()))
+        // Overlays, not fills: the row beneath may be resting, hovered,
+        // selected or both, and a press must read past each of them.
+        .hover(move |style| style.bg(hover).cursor_pointer())
+        .active(|style| style.bg(theme::overlay_press()))
         .child(icon(icon_name, px(14.), theme::text_secondary()))
 }
 
