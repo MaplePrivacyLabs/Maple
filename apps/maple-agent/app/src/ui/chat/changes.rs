@@ -103,15 +103,17 @@ impl TurnChanges {
                     sums.len() - 1
                 });
             let sum = &mut sums[index];
-            for (sign, line) in lines.iter() {
-                match sign {
-                    '+' => sum.added += 1,
-                    '-' => sum.removed += 1,
-                    // The line that names the file, which the row does.
-                    _ => continue,
-                }
-                sum.lines.push((*sign, line.clone()));
-            }
+            // Counted from the whole edit; the lines shown stop at a cap.
+            let (added, removed) = super::transcript::diff_counts(item);
+            sum.added += added;
+            sum.removed += removed;
+            // All but the line that names the file, which the row does.
+            sum.lines.extend(
+                lines
+                    .iter()
+                    .filter(|(sign, _)| matches!(sign, '+' | '-'))
+                    .cloned(),
+            );
         }
         if sums.is_empty() {
             return None;
