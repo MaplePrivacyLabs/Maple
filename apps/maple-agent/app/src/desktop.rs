@@ -2762,7 +2762,7 @@ fn quit_app(cx: &mut App) {
         .map_err(|_| "The host did not answer its activity check".to_string())?
     });
     cx.spawn(async move |cx| match activity.await {
-        Ok(Ok(activity)) if activity.needs_confirmation() || DEBUG_QUIT_PROMPT_LOOP => {
+        Ok(Ok(activity)) if activity.needs_confirmation() || debug_quit_prompt_loop() => {
             cx.update(|cx| show_quit_prompt(QuitPromptKind::Confirm(activity), cx));
         }
         Ok(Ok(_)) => cx.update(|cx| drain_and_quit(state, cx)),
@@ -2963,6 +2963,9 @@ fn show_quit_prompt(kind: QuitPromptKind, cx: &mut App) {
     match cx.open_window(
         WindowOptions {
             window_bounds: Some(WindowBounds::Windowed(bounds)),
+            // X11 WM_CLASS and Wayland app_id must match the packaged desktop
+            // entry so this dialog groups with Maple's other windows.
+            app_id: Some(crate::profile::BUNDLE_ID.to_string()),
             titlebar: Some(gpui::TitlebarOptions {
                 title: Some(crate::profile::DISPLAY_NAME.into()),
                 ..Default::default()
@@ -3004,14 +3007,18 @@ fn show_quit_warning(message: UiText, cx: &mut App) {
 }
 
 /// Debug builds (never tests, never release) confirm every Quit and bring the
-/// prompt back after it is dismissed, so the dialog can be exercised without
-/// live host activity. Release and test binaries keep today's behavior.
-const DEBUG_QUIT_PROMPT_LOOP: bool = cfg!(debug_assertions) && !cfg!(test);
+/// prompt back after it is dismissed when MAPLE_DEBUG_QUIT_LOOP is set, so the
+/// dialog can be exercised without live host activity. The opt-in keeps
+/// ordinary debug builds quittable; release and test binaries keep today's
+/// behavior.
+fn debug_quit_prompt_loop() -> bool {
+    cfg!(debug_assertions) && !cfg!(test) && std::env::var_os("MAPLE_DEBUG_QUIT_LOOP").is_some()
+}
 
-/// The [`DEBUG_QUIT_PROMPT_LOOP`] test loop: re-open the Quit prompt shortly
+/// The [`debug_quit_prompt_loop`] test loop: re-open the Quit prompt shortly
 /// after it is dismissed. A no-op in release builds and tests.
 fn reopen_quit_prompt_after_close(kind: QuitPromptKind, cx: &mut App) {
-    if !DEBUG_QUIT_PROMPT_LOOP {
+    if !debug_quit_prompt_loop() {
         return;
     }
     cx.spawn(async move |cx| {
@@ -3023,7 +3030,7 @@ fn reopen_quit_prompt_after_close(kind: QuitPromptKind, cx: &mut App) {
     .detach();
 }
 
-/// The Editorial prompt's body: the host's live work as one sentence, then
+/// The prompt's body: the host's live work as one sentence, then
 /// what quitting does with it. Zero counts are omitted; the local API joins
 /// the second sentence when its listener is running.
 fn quit_activity_body(
@@ -3114,7 +3121,7 @@ impl QuitPrompt {
             ),
             QuitPromptKind::Failed(message) => (tr("native-still-open"), message.resolve(), true),
             QuitPromptKind::UnknownActivity => (
-                tr("native-stop-title"),
+                tr("native-quit-unknown-title"),
                 tr("native-unknown-activity"),
                 false,
             ),
@@ -3130,8 +3137,11 @@ impl Render for QuitPrompt {
                 .bg(gpui::rgb(ui::theme::bg_elevated()))
                 .into_any_element();
         }
-        // The Editorial prompt: an Array headline, one calm sentence about the
-        // live work, and a quiet Keep open beside the single accent Quit pill.
+        // The prompt: an Array headline, one calm sentence about the live
+        // work, and a quiet Keep open beside the single accent Quit pill.
+        // The window sets its own body font: nothing else in this OS window
+        // inherits MapleApp's root style, and the platform default's metrics
+        // differ on Linux.
         let (headline, body, retry) = self.presentation();
         let kind = self.kind.clone();
         div()
@@ -3145,6 +3155,7 @@ impl Render for QuitPrompt {
             .pt(px(20.))
             .pb(px(28.))
             .bg(gpui::rgb(ui::theme::bg_elevated()))
+            .font_family(crate::assets::FONT_BODY)
             .text_color(gpui::rgb(ui::theme::text_primary()))
             .child(
                 div()
@@ -4468,6 +4479,23 @@ mod tests {
                     "solicitudes de API",
                 ],
             );
+            let german = items(
+                count,
+                [
+                    "laufende Aufgabe",
+                    "verbundener Editor",
+                    "Fernsteuerung",
+                    "Hintergrundauftrag",
+                    "API-Anfrage",
+                ],
+                [
+                    "laufende Aufgaben",
+                    "verbundene Editoren",
+                    "Fernsteuerungen",
+                    "Hintergrundaufträge",
+                    "API-Anfragen",
+                ],
+            );
             for (locale, labels, api_clause, closing) in [
                 (
                     "en",
@@ -4480,6 +4508,12 @@ mod tests {
                     spanish,
                     ", incluida la API local,",
                     "espera a que todo se detenga correctamente antes de cerrarse",
+                ),
+                (
+                    "de",
+                    german,
+                    ", einschließlich der lokalen API,",
+                    "wartet, bis alles ordnungsgemäß gestoppt ist, bevor es sich schließt",
                 ),
                 (
                     "en",
@@ -6177,6 +6211,16 @@ mod tests {
         assert_eq!(
             quit_activity_body(&HostActivity::default(), &messages).as_ref(),
             "Quitting stops the host and waits for its work to stop cleanly before Maple closes."
+        );
+        // A single item keeps the [1] arm's plain period join.
+        let activity = HostActivity {
+            running_tasks: 1,
+            ..Default::default()
+        };
+        assert_eq!(
+            quit_activity_body(&activity, &messages).as_ref(),
+            "1 running task. Quitting stops the host and waits for its work to stop cleanly \
+             before Maple closes."
         );
         // Two items join without the serial comma.
         let activity = HostActivity {

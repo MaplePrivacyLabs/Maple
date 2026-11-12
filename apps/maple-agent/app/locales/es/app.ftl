@@ -1238,6 +1238,9 @@ native-keep-open = Mantener abierto
 native-retry-quit = Reintentar salir
 native-stop-title = Aún trabajando…
 native-still-open = Sigue abierto.
+# The UnknownActivity prompt's headline: the host could not be asked what is
+# live, so the title must not claim any work is running.
+native-quit-unknown-title = ¿Salir de Maple?
 native-unknown-activity = El host no pudo informar su actividad. Al salir, Maple intentará detener los editores conectados, las tareas y las conexiones remotas, y esperará a que el host libere los datos locales.
 native-keep-open-title = ¿Mantener Maple abierto?
 native-no-tray = Este escritorio no tiene una bandeja disponible para volver a abrir Maple. Mantén esta ventana abierta mientras Maple tenga los datos locales desbloqueados, o sal de Maple para detener su host.

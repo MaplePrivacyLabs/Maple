@@ -1336,8 +1336,11 @@ native-installed = Update installed
 native-restart = Restart Maple
 native-keep-open = Keep open
 native-retry-quit = Retry Quit
-native-stop-title = Still working...
+native-stop-title = Still working…
 native-still-open = Still open.
+# The UnknownActivity prompt's headline: the host could not be asked what is
+# live, so the title must not claim any work is running.
+native-quit-unknown-title = Quit Maple?
 native-unknown-activity = The host could not report its activity. Quitting will attempt to stop any attached editors, tasks and remote connections, and wait for the host to release local data.
 native-keep-open-title = Keep Maple open?
 native-no-tray = This desktop has no available tray to reopen Maple. Keep this window open while Maple holds local data unlocked, or Quit Maple to stop its host.

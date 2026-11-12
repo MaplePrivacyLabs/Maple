@@ -1338,6 +1338,9 @@ native-keep-open = Geöffnet lassen
 native-retry-quit = Beenden erneut versuchen
 native-stop-title = Läuft noch…
 native-still-open = Noch geöffnet.
+# The UnknownActivity prompt's headline: the host could not be asked what is
+# live, so the title must not claim any work is running.
+native-quit-unknown-title = Maple beenden?
 native-unknown-activity = Der Host konnte seine Aktivität nicht melden. Beim Beenden wird versucht, verbundene Editoren, Aufgaben und Fernverbindungen zu stoppen und darauf zu warten, dass der Host die lokalen Daten freigibt.
 native-keep-open-title = Maple geöffnet lassen?
 native-no-tray = Dieser Desktop hat keinen verfügbaren Infobereich, um Maple erneut zu öffnen. Lass dieses Fenster geöffnet, solange Maple lokale Daten entsperrt hält, oder beende Maple, um seinen Host zu stoppen.
