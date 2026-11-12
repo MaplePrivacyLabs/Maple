@@ -22,8 +22,9 @@ use gpui::{Context, Div, SharedString, Window, div, prelude::*, px};
 use self::chart::Tip;
 use self::labels::*;
 use self::model::{
-    DailyChart, Metric, MonthBucket, Origin, PeriodProgress, PlanKind, PlanWindow, RangeSummary,
-    SeriesKey, Split, TokenKind, UsageRange, fmt_compact, fmt_count, fmt_price, percent,
+    DailyChart, Metric, ModelRanking, MonthBucket, Origin, PeriodProgress, PlanKind, PlanWindow,
+    RangeSummary, SeriesKey, Split, TokenKind, UsageRange, fmt_compact, fmt_count, fmt_price,
+    percent,
 };
 use self::ui::*;
 use super::billing::BillingTarget;
@@ -77,6 +78,8 @@ pub(super) struct UsageState {
     pub(super) metric: Metric,
     pub(super) split: Split,
     summary: Option<UsageSummary>,
+    /// Catalog grouping for highlights; an older response falls back in model.
+    catalog: Option<maple_sdk::ModelCatalogResponse>,
     /// The range `summary` answers.
     summary_range: Option<UsageRange>,
     /// The range whose last load failed, until a load succeeds.
@@ -103,6 +106,7 @@ impl UsageState {
             metric: Metric::Credits,
             split: Split::Model,
             summary: None,
+            catalog: None,
             summary_range: None,
             failed_range: None,
             summary_loading: false,
@@ -154,6 +158,8 @@ struct RangeData {
 pub(super) struct UsageData {
     today: NaiveDate,
     plan: PlanData,
+    /// Catalog-derived model colors shared by every Usage section.
+    model_ranking: ModelRanking,
     /// The plan card's percent and reset, from the same status as the
     /// lines under it.
     plan_usage: Option<crate::billing::PlanUsage>,
@@ -262,9 +268,13 @@ impl SettingsScreen {
         let user_id = self.user_id.clone();
         self.call_presented(
             async move {
-                backend
-                    .call_presented::<UsageSummary>("usage_summary", (&user_id, query))
-                    .await
+                Ok(tokio::join!(
+                    backend.call_presented::<UsageSummary>("usage_summary", (&user_id, query)),
+                    backend.call_presented::<maple_sdk::ModelCatalogResponse>(
+                        "model_catalog",
+                        (&user_id,)
+                    )
+                ))
             },
             cx,
             move |this, result, cx| {
@@ -274,10 +284,20 @@ impl SettingsScreen {
                 }
                 this.usage.summary_loading = false;
                 match result {
-                    Ok(summary) => {
-                        this.usage.summary = Some(summary);
-                        this.usage.summary_range = Some(range);
-                        this.usage.failed_range = None;
+                    Ok((summary, catalog)) => {
+                        // Catalog failure is not a Usage failure: keep the
+                        // last good response, or use compatibility ranking.
+                        if let Ok(catalog) = catalog {
+                            this.usage.catalog = Some(catalog);
+                        }
+                        match summary {
+                            Ok(summary) => {
+                                this.usage.summary = Some(summary);
+                                this.usage.summary_range = Some(range);
+                                this.usage.failed_range = None;
+                            }
+                            Err(_) => this.usage.failed_range = Some(range),
+                        }
                     }
                     Err(_) => this.usage.failed_range = Some(range),
                 }
@@ -438,6 +458,7 @@ impl SettingsScreen {
             self.usage.summary_range == selected
                 || (self.usage.summary_loading && self.usage.failed_range != selected)
         });
+        let model_ranking = model::ModelRanking::from_catalog(self.usage.catalog.as_ref());
         let range = shown.map(|summary| {
             let dates = model::response_dates(
                 self.usage.range,
@@ -453,6 +474,7 @@ impl SettingsScreen {
                 metric,
                 self.usage.split,
                 &summary.models,
+                &model_ranking,
             );
             let reset_index = plan.window.as_ref().and_then(|window| {
                 let start = model::local_date(window.start);
@@ -485,6 +507,7 @@ impl SettingsScreen {
         self.usage.data = Some(Rc::new(UsageData {
             today,
             plan,
+            model_ranking,
             plan_usage: crate::billing::PlanUsage::from_status(status, chrono::Local::now()),
             range,
             months,

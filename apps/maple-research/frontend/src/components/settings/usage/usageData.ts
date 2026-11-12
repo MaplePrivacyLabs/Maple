@@ -9,13 +9,14 @@ import type {
   UsageRange
 } from "@/billing/usageApi";
 import {
-  HIGHLIGHT_GROUPS,
   MAX_NAMED_MODELS,
   MORE_MODELS_COLOR,
   MORE_MODELS_KEY,
   highlightGroup,
   highlightIndex,
   modelColor,
+  modelHighlights,
+  type ModelHighlights,
   ORIGIN_COLOR,
   ORIGIN_LABEL,
   ORIGINS,
@@ -421,9 +422,9 @@ export type DayBucket = {
 
 export type DailyChart = { series: SeriesDef[]; days: DayBucket[] };
 
-function seriesBefore(left: string, right: string): number {
-  const l = highlightIndex(left);
-  const r = highlightIndex(right);
+function seriesBefore(left: string, right: string, highlights: ModelHighlights): number {
+  const l = highlightIndex(left, highlights);
+  const r = highlightIndex(right, highlights);
   if (l !== undefined && r !== undefined) return l - r;
   if (l !== undefined) return -1;
   if (r !== undefined) return 1;
@@ -432,20 +433,28 @@ function seriesBefore(left: string, right: string): number {
 
 /** Which models get their own series. Everything used, until the legend is full;
  * then the best models stay and the smallest of the rest fold. */
-function chooseNamed(totals: Map<string, number>): { named: string[]; folded: string[] } {
-  const used = new Set([...totals].filter(([, value]) => value > 0).map(([id]) => id));
-  // Keep one legend slot for overflow. If all highlights are used, fold the
-  // lowest-ranked one instead of displacing it with an uncatalogued model.
-  const limit = used.size > MAX_NAMED_MODELS ? MAX_NAMED_MODELS - 1 : MAX_NAMED_MODELS;
-  const highlighted = HIGHLIGHT_GROUPS.flatMap(({ models }) => models).filter((id) => used.has(id));
-  const named: string[] = highlighted.slice(0, limit);
-  const others = [...totals]
-    .filter(([id, value]) => value > 0 && highlightIndex(id) === undefined)
-    .sort((a, b) => b[1] - a[1] || (a[0] < b[0] ? -1 : a[0] > b[0] ? 1 : 0));
-  const room = limit - named.length;
-  const folded = [...highlighted.slice(limit), ...others.splice(room).map(([id]) => id)];
-  named.push(...others.map(([id]) => id));
-  named.sort(seriesBefore);
+function chooseNamed(
+  totals: Map<string, number>,
+  highlights: ModelHighlights
+): { named: string[]; folded: string[] } {
+  // Rank every used model, not only members of the current catalog. A legacy
+  // model absent from a refreshed catalog must still be named or folded.
+  const ranked = [...totals]
+    .filter(([, value]) => value > 0)
+    .sort(([left, leftTotal], [right, rightTotal]) => {
+      const l = highlightIndex(left, highlights);
+      const r = highlightIndex(right, highlights);
+      if (l !== undefined || r !== undefined) {
+        if (l === undefined) return 1;
+        if (r === undefined) return -1;
+        if (l !== r) return l - r;
+      }
+      return rightTotal - leftTotal || (left < right ? -1 : left > right ? 1 : 0);
+    });
+  const limit = ranked.length > MAX_NAMED_MODELS ? MAX_NAMED_MODELS - 1 : MAX_NAMED_MODELS;
+  const named = ranked.slice(0, limit).map(([id]) => id);
+  const folded = ranked.slice(limit).map(([id]) => id);
+  named.sort((left, right) => seriesBefore(left, right, highlights));
   return { named, folded };
 }
 
@@ -465,13 +474,15 @@ export function buildDailyChart({
   rows,
   metric,
   split,
-  labels
+  labels,
+  highlights = modelHighlights()
 }: {
   dates: string[];
   rows: UsageDayRow[];
   metric: Metric;
   split: Split;
   labels: UsageModelLabels;
+  highlights?: ModelHighlights;
 }): DailyChart {
   if (split === "model") {
     const buckets = new Map<string, DayBucket>(
@@ -497,13 +508,13 @@ export function buildDailyChart({
         [...values.values()].reduce((sum, value) => sum + value, 0)
       ])
     );
-    const { named, folded: foldedIds } = chooseNamed(totals);
+    const { named, folded: foldedIds } = chooseNamed(totals, highlights);
     const series: SeriesDef[] = named.map((id) => {
-      const group = highlightGroup(id);
+      const group = highlightGroup(id, highlights);
       return {
         key: id,
         label: modelLabel(id, labels),
-        color: modelColor(id, named),
+        color: modelColor(id, named, highlights),
         ...(group ? { group } : {})
       };
     });

@@ -361,12 +361,12 @@ pub(super) fn token_name(kind: TokenKind) -> SharedString {
     })
 }
 
-pub(super) fn model_group_name(group: &str) -> SharedString {
-    match group {
+pub(super) fn model_group_name(group: &maple_sdk::CatalogGroup) -> SharedString {
+    match group.id.as_str() {
         "capable" => tr("chat-model-group-capable"),
         "uncensored" => tr("chat-model-group-uncensored"),
         "fast" => tr("chat-model-group-fast"),
-        _ => group.into(),
+        _ => group.label.clone().into(),
     }
 }
 

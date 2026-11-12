@@ -161,7 +161,10 @@ impl SettingsScreen {
                                 .items_center()
                                 .gap_2()
                                 .min_w_0()
-                                .child(chart::swatch(palette::model(&request.model), px(8.)))
+                                .child(chart::swatch(
+                                    palette::model(&request.model, &data.model_ranking),
+                                    px(8.),
+                                ))
                                 .child(
                                     div()
                                         .truncate()
@@ -322,7 +325,10 @@ impl SettingsScreen {
                         .items_center()
                         .gap_2()
                         .min_w_0()
-                        .child(chart::swatch(palette::model(&price.id), px(8.)))
+                        .child(chart::swatch(
+                            palette::model(&price.id, &data.model_ranking),
+                            px(8.),
+                        ))
                         .child(
                             div()
                                 .truncate()
@@ -360,7 +366,10 @@ impl SettingsScreen {
                         .items_center()
                         .gap_2()
                         .min_w_0()
-                        .child(chart::swatch(palette::model(model), px(8.)))
+                        .child(chart::swatch(
+                            palette::model(model, &data.model_ranking),
+                            px(8.),
+                        ))
                         .child(
                             div()
                                 .truncate()

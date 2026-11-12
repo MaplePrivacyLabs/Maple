@@ -15,6 +15,8 @@ import { cn } from "@/utils/utils";
 import { Legend, ShareBar, SplitBar, StackedBars, Swatch, type StackDatum } from "./charts";
 import {
   modelColor,
+  modelHighlights,
+  type ModelHighlights,
   MORE_MODELS_KEY,
   ORIGIN_COLOR,
   ORIGIN_LABEL,
@@ -261,21 +263,31 @@ function DailyChart({
   dates,
   kind,
   summary,
-  periodStartDate
+  periodStartDate,
+  highlights
 }: {
   usage: UsageResponse;
   dates: string[];
   kind: UsagePlanKind;
   summary: RangeSummary;
   periodStartDate: string | null;
+  highlights: ModelHighlights;
 }) {
   const free = kind === "free";
   const [metric, setMetric] = useState<Metric>(free ? "requests" : "credits");
   const [split, setSplit] = useState<Split>("model");
 
   const chart = useMemo(
-    () => buildDailyChart({ dates, rows: usage.days, metric, split, labels: usage.models }),
-    [dates, usage, metric, split]
+    () =>
+      buildDailyChart({
+        dates,
+        rows: usage.days,
+        metric,
+        split,
+        labels: usage.models,
+        highlights
+      }),
+    [dates, usage, metric, split, highlights]
   );
   const data: StackDatum[] = chart.days.map((day) => ({
     key: day.date,
@@ -372,7 +384,7 @@ function DailyChart({
           <p className="mt-4 text-xs text-muted-foreground">No usage in this range.</p>
         )}
       </SettingsSection>
-      <ModelTable summary={summary} free={free} namedModels={namedModels} />
+      <ModelTable summary={summary} free={free} namedModels={namedModels} highlights={highlights} />
     </>
   );
 }
@@ -380,12 +392,14 @@ function DailyChart({
 function ModelTable({
   summary,
   free,
-  namedModels
+  namedModels,
+  highlights
 }: {
   summary: RangeSummary;
   free: boolean;
   /** The chart's named models; folded and zero-for-this-metric models stay gray. */
   namedModels?: readonly string[];
+  highlights: ModelHighlights;
 }) {
   const rows = sortModels(summary.byModel, free ? "requests" : "credits");
   const shareOf = (r: (typeof rows)[number]) => (free ? r.requests : r.credits);
@@ -424,7 +438,7 @@ function ModelTable({
             </thead>
             <tbody>
               {rows.map((row) => {
-                const color = modelColor(row.model, namedModels);
+                const color = modelColor(row.model, namedModels, highlights);
                 return (
                   <tr key={row.model} className="border-b border-border/50 last:border-0">
                     <td className="px-4 py-2.5 sm:pl-6">
@@ -493,7 +507,8 @@ export function UsageExplorer({
   onRangeChange,
   usage,
   today,
-  periodStartDate
+  periodStartDate,
+  highlights = modelHighlights()
 }: {
   kind: UsagePlanKind;
   range: UsageRange;
@@ -501,6 +516,7 @@ export function UsageExplorer({
   usage: UsageState;
   today: string;
   periodStartDate: string | null;
+  highlights?: ModelHighlights;
 }) {
   const label = rangeLabel(range, today);
   const data = usage.data;
@@ -532,6 +548,7 @@ export function UsageExplorer({
             kind={kind}
             summary={summary}
             periodStartDate={periodStartDate}
+            highlights={highlights}
           />
         </div>
       ) : usage.isError ? (

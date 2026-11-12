@@ -65,7 +65,7 @@ fn palette() -> &'static Palette {
 pub(super) fn series(key: SeriesKey) -> u32 {
     let palette = palette();
     match key {
-        SeriesKey::Model(slot) => palette.series[slot % palette.series.len()],
+        SeriesKey::Model(slot) => palette.series[slot],
         SeriesKey::MoreModels => palette.more_models,
         SeriesKey::Origin(origin) => self::origin(origin),
         SeriesKey::Plan => palette.plan,
@@ -93,17 +93,22 @@ pub(super) fn token(kind: TokenKind) -> u32 {
     }
 }
 
-pub(super) fn model(model: &str) -> u32 {
+pub(super) fn model(model: &str, ranking: &super::model::ModelRanking) -> u32 {
     series(
-        super::model::model_slot(model)
+        ranking
+            .model_slot(model)
             .map(SeriesKey::Model)
             .unwrap_or(SeriesKey::MoreModels),
     )
 }
 
 /// Same color the chart uses when `peers` are the models drawn beside this one.
-pub(super) fn model_among(model: &str, peers: &[&str]) -> u32 {
-    match super::model::color_slot(model, peers) {
+pub(super) fn model_among(
+    model: &str,
+    peers: &[&str],
+    ranking: &super::model::ModelRanking,
+) -> u32 {
+    match ranking.color_slot(model, peers) {
         Some(slot) => series(SeriesKey::Model(slot)),
         None => palette().more_models,
     }
@@ -111,11 +116,16 @@ pub(super) fn model_among(model: &str, peers: &[&str]) -> u32 {
 
 /// Follow the model chart even when the selected metric leaves it empty.
 /// With another split, retain the table's stable model highlights.
-pub(super) fn model_table_color(model: &str, peers: &[&str], split: Split) -> u32 {
+pub(super) fn model_table_color(
+    model: &str,
+    peers: &[&str],
+    split: Split,
+    ranking: &super::model::ModelRanking,
+) -> u32 {
     if split == Split::Model {
-        model_among(model, peers)
+        model_among(model, peers, ranking)
     } else {
-        self::model(model)
+        self::model(model, ranking)
     }
 }
 
@@ -134,18 +144,19 @@ mod tests {
     #[test]
     fn table_colors_follow_the_selected_model_chart() {
         let peers = ["glm-5-3", "llama"];
+        let ranking = super::super::model::ModelRanking::default();
         assert_eq!(
-            model_table_color("llama", &peers, Split::Model),
+            model_table_color("llama", &peers, Split::Model, &ranking),
             series(SeriesKey::Model(0))
         );
         assert_eq!(
-            model_table_color("glm-5-3", &[], Split::Model),
+            model_table_color("glm-5-3", &[], Split::Model, &ranking),
             series(SeriesKey::MoreModels),
             "zero usage for the selected metric stays gray"
         );
         for split in [Split::Origin, Split::Pool, Split::Token] {
             assert_eq!(
-                model_table_color("glm-5-3", &peers, split),
+                model_table_color("glm-5-3", &peers, split, &ranking),
                 series(SeriesKey::Model(2)),
                 "other charts leave the table's highlights intact"
             );

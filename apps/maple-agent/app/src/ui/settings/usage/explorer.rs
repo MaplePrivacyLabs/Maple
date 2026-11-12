@@ -74,7 +74,7 @@ impl SettingsScreen {
                     ))
                 })
                 .child(self.daily_chart(data, range, cx))
-                .child(self.models_table(range))
+                .child(self.models_table(data, range))
                 .child(self.apps_list(range)),
         )
     }
@@ -330,8 +330,13 @@ impl SettingsScreen {
         } else {
             div().flex().flex_wrap().gap_x_4().gap_y_3().children(
                 chart_data.series.iter().enumerate().map(|(index, series)| {
-                    let heading = series.group.filter(|group| {
-                        index == 0 || chart_data.series[index - 1].group != Some(*group)
+                    let heading = series.group.as_ref().filter(|group| {
+                        index == 0
+                            || chart_data.series[index - 1]
+                                .group
+                                .as_ref()
+                                .map(|previous| &previous.id)
+                                != Some(&group.id)
                     });
                     div()
                         .flex()
@@ -459,7 +464,7 @@ impl SettingsScreen {
         section
     }
 
-    pub(super) fn models_table(&self, range: &RangeData) -> Div {
+    pub(super) fn models_table(&self, data: &UsageData, range: &RangeData) -> Div {
         let models = &range.summary.by_model;
         let total = range.summary.counts.credits;
         let peak = models
@@ -486,7 +491,12 @@ impl SettingsScreen {
             .filter_map(|series| series.model.as_deref())
             .collect();
         let rows = models.iter().map(|model| {
-            let color = palette::model_table_color(&model.model, &peers, self.usage.split);
+            let color = palette::model_table_color(
+                &model.model,
+                &peers,
+                self.usage.split,
+                &data.model_ranking,
+            );
             let (mix, more) = &model.mix;
             // One app needs no percentage: `Work`, not `100% Work`.
             let mut mix: Vec<String> = match mix.as_slice() {

@@ -5,12 +5,14 @@ import { getBillingService } from "@/billing/billingService";
 import type { UsageRange } from "@/billing/usageApi";
 import { useUsageSummary } from "@/billing/useUsage";
 import { SettingsPage, SettingsSection } from "@/components/settings/SettingsPage";
+import type { OpenSecretModelCatalog } from "@/state/LocalStateContextDef";
 import { useBillingState } from "@/state/useLocalState";
 import type { TeamStatus } from "@/types/team";
 import { getTeamSeatCounts } from "@/utils/teamSeats";
 import { CreditPlanCard, FreePlanCard, TeamPlanCard } from "./UsagePlanCard";
 import { UsageExplorer } from "./UsageExplorer";
 import { AboutNumbers, LastTwelveMonths, PricingTable, RecentRequests } from "./UsageSections";
+import { modelHighlights } from "./palette";
 import { ErrorBlock, LoadingBlock, ScopeNote } from "./ui";
 import {
   browserTimeZone,
@@ -42,6 +44,13 @@ export function UsageSettings() {
     enabled: !!accountId
   });
   const status = statusQuery.data ?? billingStatus;
+  const catalog = useQuery<OpenSecretModelCatalog>({
+    queryKey: ["usageModelCatalog", accountId],
+    queryFn: async () => (await os.fetchModelCatalog()) as unknown as OpenSecretModelCatalog,
+    enabled: !!accountId,
+    staleTime: 5 * 60 * 1000
+  });
+  const highlights = useMemo(() => modelHighlights(catalog.data), [catalog.data]);
   const kind = usagePlanKind(status);
   const planWindow = statusWindow(status);
 
@@ -148,6 +157,7 @@ export function UsageSettings() {
       )}
       <UsageExplorer
         kind={kind}
+        highlights={highlights}
         range={range}
         onRangeChange={setRange}
         usage={{
@@ -162,7 +172,7 @@ export function UsageSettings() {
       {kind !== "free" && usage.data && (
         <LastTwelveMonths months={usage.data.months} currentMonth={today.slice(0, 7)} />
       )}
-      <RecentRequests accountId={accountId} kind={kind} tz={tz} />
+      <RecentRequests accountId={accountId} kind={kind} tz={tz} highlights={highlights} />
       <PricingTable usedModels={usedModels} />
       <AboutNumbers
         kind={kind}

@@ -4,31 +4,89 @@ import type { UsageClientApp, UsagePool } from "@/billing/usageApi";
 // ΔE >= 8, normal vision >= 15 against light and dark cards). Coral stays
 // reserved for the plan meter and Chat; models never use it.
 
-/** Display groups matching the model picker. Selection and daily usage do
- * not reorder these stable identities. Unlisted models retain a series until
- * the seven-color chart fills; overflow folds into "More models".
+export type ModelHighlights = {
+  groups: readonly { id: string; label: string; models: readonly string[] }[];
+  /** Group labels for catalog models, including explicitly ungrouped ones. */
+  groupsByModel: ReadonlyMap<string, string | undefined>;
+  /** A usable served catalog completely replaces the legacy hardcoded ranks. */
+  fromCatalog: boolean;
+};
+
+/** Compatibility with an older or unavailable catalog. The served catalog,
+ * when present, owns this hierarchy instead. Usage never reorders these
+ * stable identities; unlisted models retain a series until the chart fills.
  */
 export const HIGHLIGHT_GROUPS = [
-  { label: "Most capable", models: ["kimi-k3-1-pro", "kimi-k3", "glm-5-3"] },
-  { label: "Uncensored", models: ["deepseek-v4-1-flash-1017-uncensored"] },
-  { label: "Fast & cheap", models: ["gemma4-31b", "glm-5-3-flash", "deepseek-v4-1-flash"] }
+  { id: "capable", label: "Most capable", models: ["kimi-k3-1-pro", "kimi-k3", "glm-5-3"] },
+  {
+    id: "uncensored",
+    label: "Uncensored",
+    models: ["deepseek-v4-1-flash-1017-uncensored"]
+  },
+  {
+    id: "fast",
+    label: "Fast & cheap",
+    models: ["gemma4-31b", "glm-5-3-flash", "deepseek-v4-1-flash"]
+  }
 ] as const;
 
-const HIGHLIGHT_MODELS: readonly string[] = HIGHLIGHT_GROUPS.flatMap(({ models }) => models);
+const LEGACY_MODELS: readonly string[] = HIGHLIGHT_GROUPS.flatMap(({ models }) => models);
+const LEGACY_HIGHLIGHTS: ModelHighlights = {
+  groups: HIGHLIGHT_GROUPS,
+  groupsByModel: new Map(),
+  fromCatalog: false
+};
 
-export function highlightGroup(model: string): string | undefined {
-  return HIGHLIGHT_GROUPS.find(({ models }) => (models as readonly string[]).includes(model))
-    ?.label;
+/** Only the catalog fields that affect Usage. Full SDK catalog responses
+ * satisfy this shape. `data` order is the picker's within-group order. */
+export type UsageModelCatalog = {
+  data: readonly { id: string; group?: string; available_in_agent?: boolean }[];
+  groups?: readonly { id: string; label: string }[];
+};
+
+export function modelHighlights(catalog?: UsageModelCatalog): ModelHighlights {
+  if (!catalog?.groups?.length) return LEGACY_HIGHLIGHTS;
+  const labels = new Map(catalog.groups.map(({ id, label }) => [id, label || id]));
+  const groups = catalog.groups.map(({ id, label }) => ({
+    id,
+    label: label || id,
+    models: catalog.data
+      .filter((model) => model.group === id && model.available_in_agent !== false)
+      .map((model) => model.id)
+  }));
+  return {
+    groups,
+    groupsByModel: new Map(catalog.data.map((model) => [model.id, labels.get(model.group ?? "")])),
+    fromCatalog: true
+  };
 }
 
-/** Named series before the rest fold. One per color, and every model Work offers. */
-export const MAX_NAMED_MODELS = HIGHLIGHT_MODELS.length;
+/** Named series before the rest fold. Seven distinct palette colors. */
+export const MAX_NAMED_MODELS = 7;
 
 export const MORE_MODELS_KEY = "more";
 export const MORE_MODELS_COLOR = "var(--series-other)";
 
-export function highlightIndex(model: string): number | undefined {
-  const index = HIGHLIGHT_MODELS.indexOf(model);
+export function highlightGroup(
+  model: string,
+  highlights: ModelHighlights = LEGACY_HIGHLIGHTS
+): string | undefined {
+  for (const { label, models } of highlights.groups) {
+    if (models.includes(model)) return label;
+  }
+  if (highlights.fromCatalog) return highlights.groupsByModel.get(model);
+  return HIGHLIGHT_GROUPS.find(({ models }) => (models as readonly string[]).includes(model))
+    ?.label;
+}
+
+export function highlightIndex(
+  model: string,
+  highlights: ModelHighlights = LEGACY_HIGHLIGHTS
+): number | undefined {
+  const served = highlights.groups.flatMap(({ models }) => models).indexOf(model);
+  if (served >= 0 && served < MAX_NAMED_MODELS) return served;
+  if (highlights.fromCatalog) return undefined;
+  const index = LEGACY_MODELS.indexOf(model);
   return index === -1 ? undefined : index;
 }
 
@@ -41,16 +99,22 @@ export function seriesColor(slot: number): string {
  * Other peers take the lowest free slot, in id order. Undefined when the
  * model is not highlighted and no free slot is left.
  */
-export function modelColorSlot(model: string, peers: readonly string[]): number | undefined {
+export function modelColorSlot(
+  model: string,
+  peers: readonly string[],
+  highlights: ModelHighlights = LEGACY_HIGHLIGHTS
+): number | undefined {
   if (!peers.includes(model)) return undefined;
-  const pinned = highlightIndex(model);
+  const pinned = highlightIndex(model, highlights);
   if (pinned !== undefined) return pinned;
   const taken = new Set<number>();
   for (const peer of peers) {
-    const slot = highlightIndex(peer);
+    const slot = highlightIndex(peer, highlights);
     if (slot !== undefined) taken.add(slot);
   }
-  const rank = peers.filter((peer) => highlightIndex(peer) === undefined && peer < model).length;
+  const rank = peers.filter(
+    (peer) => highlightIndex(peer, highlights) === undefined && peer < model
+  ).length;
   let free = 0;
   for (let slot = 0; slot < MAX_NAMED_MODELS; slot++) {
     if (taken.has(slot)) continue;
@@ -60,12 +124,16 @@ export function modelColorSlot(model: string, peers: readonly string[]): number 
   return undefined;
 }
 
-export function modelColor(model: string, peers?: readonly string[]): string {
+export function modelColor(
+  model: string,
+  peers?: readonly string[],
+  highlights: ModelHighlights = LEGACY_HIGHLIGHTS
+): string {
   if (peers) {
-    const slot = modelColorSlot(model, peers);
+    const slot = modelColorSlot(model, peers, highlights);
     return slot === undefined ? MORE_MODELS_COLOR : seriesColor(slot);
   }
-  const pinned = highlightIndex(model);
+  const pinned = highlightIndex(model, highlights);
   return pinned === undefined ? MORE_MODELS_COLOR : seriesColor(pinned);
 }
 
