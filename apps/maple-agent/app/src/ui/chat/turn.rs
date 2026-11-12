@@ -423,13 +423,15 @@ impl ChatScreen {
 
     /// Whether the run on screen is working on the turn led by the row at
     /// `lead`. Until a new run's first row lands the last turn is an
-    /// earlier one, and the line waits in the slot instead. A window paged
-    /// back in history does not hold the turn the run works on at all.
+    /// earlier one, and the line waits in the slot instead. A window that
+    /// is paged back in history, or still lacks the run's newest rows,
+    /// does not hold the turn the run works on at all.
     fn turn_runs(&self, lead: usize) -> bool {
         self.turns.tail() == Some(lead)
             && self.is_run_active()
             && !self.awaiting_first_token
             && !self.pages.after
+            && !self.pages.live_has_more
     }
 
     /// The line of the turn led by the row at `lead`.
