@@ -6222,6 +6222,11 @@ impl ChatScreen {
             // needs a fresh bounded open, so keep Reload latest available even
             // after paging reaches the committed tail.
             self.pages.live_has_more = true;
+            // A row the view did not take in: the run can no longer be
+            // timed, as when its task is not the one on screen.
+            if let Some(timed) = self.run_clocks.get_mut(session_id) {
+                timed.stop_timing();
+            }
             return None;
         }
         if let Some(index) = alias_index
