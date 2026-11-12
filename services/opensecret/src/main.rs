@@ -2347,7 +2347,7 @@ impl AppState {
         hashed_secret: String,
         project_id: i32,
     ) -> Result<String, Error> {
-        let alphanumeric_code = self.generate_alphanumeric_code();
+        let alphanumeric_code = generate_alphanumeric_code();
 
         // Check if the user exists
         match self.db.get_user_by_email(email.clone(), project_id) {
@@ -2463,6 +2463,7 @@ impl AppState {
             .map_err(Error::RateLimited)?;
 
         // MAC the provided alphanumeric code for lookup, bound to this user/project.
+        let alphanumeric_code = normalize_password_reset_code(&alphanumeric_code);
         let reset_code_mac =
             password_reset_code_mac(&self.enclave_key, project_id, user.uuid, &alphanumeric_code)
                 .map_err(|e| Error::EncryptionError(e.to_string()))?;
@@ -2662,24 +2663,12 @@ impl AppState {
         Ok(new_auth_context)
     }
 
-    fn generate_alphanumeric_code(&self) -> String {
-        const CHARSET: &[u8] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789";
-        const CODE_LEN: usize = 8;
-
-        let random_bytes: [u8; CODE_LEN] = generate_random();
-
-        random_bytes
-            .iter()
-            .map(|&b| CHARSET[b as usize % CHARSET.len()] as char)
-            .collect()
-    }
-
     pub async fn create_platform_password_reset_request(
         &self,
         email: String,
         hashed_secret: String,
     ) -> Result<String, Error> {
-        let alphanumeric_code = self.generate_alphanumeric_code();
+        let alphanumeric_code = generate_alphanumeric_code();
 
         // Check if the platform user exists
         match self.db.get_platform_user_by_email(&email) {
@@ -2771,6 +2760,7 @@ impl AppState {
         // Deterministically encrypt the provided alphanumeric code for lookup
         let secret_key = SecretKey::from_slice(&self.enclave_key)
             .map_err(|e| Error::EncryptionError(e.to_string()))?;
+        let alphanumeric_code = normalize_password_reset_code(&alphanumeric_code);
         let encrypted_code = encrypt_key_deterministic(&secret_key, alphanumeric_code.as_bytes());
 
         let reset_request = self
@@ -3127,6 +3117,78 @@ impl AppState {
         // Get the project's Resend API key
         self.get_project_secret(project_id, PROJECT_RESEND_API_KEY)
             .await
+    }
+}
+
+/// Length of emailed password reset codes.
+const ALPHANUMERIC_CODE_LEN: usize = 32;
+
+fn generate_alphanumeric_code() -> String {
+    const CHARSET: &[u8] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789";
+
+    let random_bytes: [u8; ALPHANUMERIC_CODE_LEN] = generate_random();
+
+    random_bytes
+        .iter()
+        .map(|&b| CHARSET[b as usize % CHARSET.len()] as char)
+        .collect()
+}
+
+/// Canonical form of a submitted password reset code, applied before lookup.
+///
+/// Issued codes are uppercase ASCII alphanumerics and lookup is by exact
+/// value, so a code retyped in lowercase or pasted with stray whitespace
+/// would otherwise miss and spend a guess. Normalizing here makes every
+/// client lenient the same way. It is only valid while issued codes contain
+/// neither lowercase letters nor whitespace.
+fn normalize_password_reset_code(code: &str) -> String {
+    code.chars()
+        .filter(|c| !c.is_whitespace())
+        .map(|c| c.to_ascii_uppercase())
+        .collect()
+}
+
+#[cfg(test)]
+mod alphanumeric_code_tests {
+    use super::*;
+
+    #[test]
+    fn alphanumeric_code_is_32_uppercase_alphanumeric_characters() {
+        let code = generate_alphanumeric_code();
+        assert_eq!(code.len(), ALPHANUMERIC_CODE_LEN);
+        assert!(code
+            .bytes()
+            .all(|b| b.is_ascii_uppercase() || b.is_ascii_digit()));
+        assert_ne!(code, generate_alphanumeric_code());
+    }
+
+    #[test]
+    fn normalization_leaves_issued_codes_unchanged() {
+        let issued = generate_alphanumeric_code();
+        assert_eq!(normalize_password_reset_code(&issued), issued);
+        // Codes issued before the move to 32 characters stay valid for 24 hours.
+        assert_eq!(normalize_password_reset_code("OABCDE12"), "OABCDE12");
+    }
+
+    #[test]
+    fn normalization_ignores_case_and_whitespace() {
+        for submitted in [
+            "oabcde12",
+            "OaBcDe12",
+            " OABCDE12 ",
+            "OABC DE12",
+            "oabc\nde12\t",
+            "\u{a0}OABC\u{2003}DE12\r\n",
+        ] {
+            assert_eq!(normalize_password_reset_code(submitted), "OABCDE12");
+        }
+    }
+
+    #[test]
+    fn normalization_keeps_other_characters_for_the_lookup_to_reject() {
+        assert_eq!(normalize_password_reset_code("oabc-de12"), "OABC-DE12");
+        assert_eq!(normalize_password_reset_code("\u{e9}abc"), "\u{e9}ABC");
+        assert_eq!(normalize_password_reset_code(" \n"), "");
     }
 }
 

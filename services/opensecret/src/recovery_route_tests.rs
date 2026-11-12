@@ -1137,6 +1137,23 @@ async fn password_reset_v2_options_reveals_status_after_proof_without_consuming_
         json!({ "recovery_enrolled": true, "destructive_reset_available": true })
     );
 
+    // The code is matched without regard to case or whitespace, so a
+    // retyped or loosely pasted code proves the same request.
+    for submitted in ["oabcde12", " OABC de12\n"] {
+        let lenient = proof_fixture(&fixture.email, submitted, &proof.secret, project.client_id);
+        let accepted = send(
+            app.clone(),
+            v2_request(
+                "POST",
+                "/password-reset/v2/options",
+                Some(lenient.request_body()),
+                None,
+            ),
+        )
+        .await;
+        assert_eq!(accepted.status(), StatusCode::OK, "code {submitted:?}");
+    }
+
     // Repeating the same proof is safe and changes nothing: the route is
     // read-only until the request expires or a completion consumes it.
     let repeat = send(
