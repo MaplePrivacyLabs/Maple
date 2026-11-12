@@ -902,8 +902,8 @@ mod tests {
                 Some(tr("flows-login-paste-required").as_ref())
             );
         });
-        // The pasted URL goes to the backend: the unreachable backend either
-        // still runs the completion or has replaced the error with its own.
+        // The pasted URL starts the completion: it either still runs or has
+        // failed with an error of its own, since no sign-in was begun here.
         cx.simulate_input("http://127.0.0.1:1/callback?code=fixture&state=fixture");
         cx.simulate_keystrokes("enter");
         cx.update(|_window, app| {
