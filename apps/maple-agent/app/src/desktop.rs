@@ -2443,6 +2443,22 @@ impl Render for MapleApp {
                         }
                     }),
             );
+        // The Quit confirmation floats in its own OS window; dim this window
+        // behind it so the prompt reads as on top of the app, with the same
+        // scrim the in-app dialogs use.
+        let quit_prompt_open = cx.try_global::<QuitPromptOpen>().is_some_and(|open| open.0);
+        let root = root.when(quit_prompt_open, |root| {
+            root.child(
+                div()
+                    .id("quit-scrim")
+                    .absolute()
+                    .size_full()
+                    .top_0()
+                    .left_0()
+                    .occlude()
+                    .bg(ui::theme::scrim()),
+            )
+        });
         #[cfg(target_os = "linux")]
         let root = root.children(self.restart_confirmation.clone());
         root
@@ -2746,7 +2762,7 @@ fn quit_app(cx: &mut App) {
         .map_err(|_| "The host did not answer its activity check".to_string())?
     });
     cx.spawn(async move |cx| match activity.await {
-        Ok(Ok(activity)) if activity.needs_confirmation() => {
+        Ok(Ok(activity)) if activity.needs_confirmation() || debug_quit_prompt_loop() => {
             cx.update(|cx| show_quit_prompt(QuitPromptKind::Confirm(activity), cx));
         }
         Ok(Ok(_)) => cx.update(|cx| drain_and_quit(state, cx)),
@@ -2928,10 +2944,32 @@ fn main_window_failure(error: &impl std::fmt::Display) -> String {
 
 /// A separate window also works when Quit comes from a tray with no open window.
 fn show_quit_prompt(kind: QuitPromptKind, cx: &mut App) {
-    let bounds = Bounds::centered(None, size(px(560.), px(270.)), cx);
-    if let Err(error) = cx.open_window(
+    // Only one confirmation belongs on screen. A fresh Quit can race the
+    // debug loop's reopen timer, and a failed drain supersedes a Confirm,
+    // so close any prompt already open the AccessKit-safe way first.
+    for handle in cx.windows() {
+        let _ = handle.update(cx, |_, window, cx| {
+            if let Some(prompt) = window.root::<QuitPrompt>().flatten() {
+                prompt.update(cx, |prompt, cx| prompt.close(cx));
+            }
+        });
+    }
+    let height = match &kind {
+        QuitPromptKind::Failed(_) => 340.,
+        _ => 300.,
+    };
+    let bounds = Bounds::centered(None, size(px(520.), px(height)), cx);
+    let reopen_kind = kind.clone();
+    match cx.open_window(
         WindowOptions {
             window_bounds: Some(WindowBounds::Windowed(bounds)),
+            // X11 WM_CLASS and Wayland app_id must match the packaged desktop
+            // entry so this dialog groups with Maple's other windows.
+            app_id: Some(crate::profile::BUNDLE_ID.to_string()),
+            titlebar: Some(gpui::TitlebarOptions {
+                title: Some(crate::profile::DISPLAY_NAME.into()),
+                ..Default::default()
+            }),
             ..Default::default()
         },
         |window, cx| {
@@ -2943,13 +2981,23 @@ fn show_quit_prompt(kind: QuitPromptKind, cx: &mut App) {
             let closing = prompt.downgrade();
             window.on_window_should_close(cx, move |_, cx| {
                 cancel_quit(cx);
-                closing.update(cx, |prompt, cx| prompt.close(cx)).is_err()
+                closing
+                    .update(cx, |prompt, cx| {
+                        if !prompt.closing {
+                            prompt.close(cx);
+                            reopen_quit_prompt_after_close(reopen_kind.clone(), cx);
+                        }
+                    })
+                    .is_err()
             });
             prompt
         },
     ) {
-        cancel_quit(cx);
-        log::error!("Could not show Quit confirmation: {error}");
+        Ok(_) => set_quit_prompt_open(true, cx),
+        Err(error) => {
+            cancel_quit(cx);
+            log::error!("Could not show Quit confirmation: {error}");
+        }
     }
     cx.activate(true);
 }
@@ -2958,10 +3006,92 @@ fn show_quit_warning(message: UiText, cx: &mut App) {
     show_quit_prompt(QuitPromptKind::Failed(message), cx);
 }
 
+/// Debug builds (never tests, never release) confirm every Quit and bring the
+/// prompt back after it is dismissed when MAPLE_DEBUG_QUIT_LOOP is set, so the
+/// dialog can be exercised without live host activity. The opt-in keeps
+/// ordinary debug builds quittable; release and test binaries keep today's
+/// behavior.
+fn debug_quit_prompt_loop() -> bool {
+    cfg!(debug_assertions) && !cfg!(test) && std::env::var_os("MAPLE_DEBUG_QUIT_LOOP").is_some()
+}
+
+/// The [`debug_quit_prompt_loop`] test loop: re-open the Quit prompt shortly
+/// after it is dismissed. A no-op in release builds and tests.
+fn reopen_quit_prompt_after_close(kind: QuitPromptKind, cx: &mut App) {
+    if !debug_quit_prompt_loop() {
+        return;
+    }
+    cx.spawn(async move |cx| {
+        cx.background_executor()
+            .timer(std::time::Duration::from_millis(400))
+            .await;
+        cx.update(|cx| show_quit_prompt(kind, cx));
+    })
+    .detach();
+}
+
+/// The prompt's body: the host's live work as one sentence, then
+/// what quitting does with it. Zero counts are omitted; the local API joins
+/// the second sentence when its listener is running.
+fn quit_activity_body(
+    activity: &HostActivity,
+    messages: &ui::i18n::MessageCache,
+) -> gpui::SharedString {
+    let mut items: Vec<String> = Vec::new();
+    for (count, key) in [
+        (activity.running_tasks, "native-quit-item-tasks"),
+        (activity.acp_clients, "native-quit-item-editors"),
+        (activity.remote_controllers, "native-quit-item-controllers"),
+        (activity.background_tasks, "native-quit-item-jobs"),
+        (activity.local_api_requests, "native-quit-item-requests"),
+    ] {
+        if count > 0 {
+            items.push(messages.get(key, [("count", count.into())]).to_string());
+        }
+    }
+    let api = if activity.local_api_running {
+        tr("native-quit-api-clause").to_string()
+    } else {
+        String::new()
+    };
+    let count = items.len();
+    let item_args = ["a", "b", "c", "d", "e"]
+        .into_iter()
+        .zip(items)
+        .map(|(name, item)| (name, item.into()));
+    messages.get(
+        "native-quit-activity",
+        [("count", count.into()), ("api", api.into())]
+            .into_iter()
+            .chain(item_args),
+    )
+}
+
+#[derive(Clone)]
 enum QuitPromptKind {
     Confirm(HostActivity),
     UnknownActivity,
     Failed(UiText),
+}
+
+/// Whether the Quit confirmation window is on screen, so the main window
+/// dims behind it with the same scrim the in-app dialogs use.
+struct QuitPromptOpen(bool);
+impl gpui::Global for QuitPromptOpen {}
+
+/// Mark the Quit confirmation open or closed and redraw the main window,
+/// whose scrim follows the prompt.
+fn set_quit_prompt_open(open: bool, cx: &mut App) {
+    if cx.try_global::<QuitPromptOpen>().map(|flag| flag.0) != Some(open) {
+        cx.set_global(QuitPromptOpen(open));
+        for handle in cx.windows() {
+            let _ = handle.update(cx, |_, window, cx| {
+                if let Some(app) = window.root::<MapleApp>().flatten() {
+                    app.update(cx, |_, cx| cx.notify());
+                }
+            });
+        }
+    }
 }
 struct QuitPrompt {
     kind: QuitPromptKind,
@@ -2978,6 +3108,7 @@ impl QuitPrompt {
     /// only the root, which answers safely. zed-industries/zed#64143 fixes
     /// the adapter's lifetime; this can go when the pin includes it.
     fn close(&mut self, cx: &mut Context<Self>) {
+        set_quit_prompt_open(false, cx);
         self.closing = true;
         cx.notify();
     }
@@ -2985,21 +3116,12 @@ impl QuitPrompt {
         match &self.kind {
             QuitPromptKind::Confirm(activity) => (
                 tr("native-stop-title"),
-                self.messages.get(
-                    "native-quit-activity",
-                    [
-                        ("tasks", activity.running_tasks.into()),
-                        ("editors", activity.acp_clients.into()),
-                        ("controllers", activity.remote_controllers.into()),
-                        ("jobs", activity.background_tasks.into()),
-                        ("requests", activity.local_api_requests.into()),
-                    ],
-                ),
+                quit_activity_body(activity, &self.messages),
                 false,
             ),
             QuitPromptKind::Failed(message) => (tr("native-still-open"), message.resolve(), true),
             QuitPromptKind::UnknownActivity => (
-                tr("native-stop-title"),
+                tr("native-quit-unknown-title"),
                 tr("native-unknown-activity"),
                 false,
             ),
@@ -3012,38 +3134,65 @@ impl Render for QuitPrompt {
             window.on_next_frame(|window, _| window.remove_window());
             return div()
                 .size_full()
-                .bg(gpui::rgb(ui::theme::bg_app()))
+                .bg(gpui::rgb(ui::theme::bg_elevated()))
                 .into_any_element();
         }
-        let (title, message, retry) = self.presentation();
+        // The prompt: an Array headline, one calm sentence about the live
+        // work, and a quiet Keep open beside the single accent Quit pill.
+        // The window sets its own body font: nothing else in this OS window
+        // inherits MapleApp's root style, and the platform default's metrics
+        // differ on Linux.
+        let (headline, body, retry) = self.presentation();
+        let kind = self.kind.clone();
         div()
             .id("quit-prompt")
             .role(gpui::Role::Dialog)
-            .aria_label(title.clone())
+            .aria_label(headline.clone())
             .size_full()
             .flex()
             .flex_col()
-            .gap_4()
-            .p_6()
-            .bg(gpui::rgb(ui::theme::bg_app()))
+            .px(px(36.))
+            .pt(px(20.))
+            .pb(px(28.))
+            .bg(gpui::rgb(ui::theme::bg_elevated()))
+            .font_family(crate::assets::FONT_BODY)
             .text_color(gpui::rgb(ui::theme::text_primary()))
-            .child(div().text_lg().child(gpui::text!(title)))
-            .child(gpui::text!(message))
+            .child(
+                div()
+                    .font_family(crate::assets::FONT_DISPLAY)
+                    .text_size(px(40.))
+                    .line_height(px(42.))
+                    .text_color(gpui::rgb(ui::theme::text_heading()))
+                    .child(gpui::text!(headline)),
+            )
+            .child(
+                div()
+                    .mt_4()
+                    .max_w(px(360.))
+                    .text_size(px(15.))
+                    .line_height(px(24.))
+                    .text_color(gpui::rgb(ui::theme::text_secondary()))
+                    .child(gpui::text!(body)),
+            )
+            .child(div().flex_1())
             .child(
                 div()
                     .flex()
-                    .gap_4()
+                    .items_center()
+                    .justify_end()
+                    .gap_2()
                     .child(
-                        ui::widgets::secondary_button("keep-maple-open")
+                        ui::widgets::ghost_button("keep-maple-open")
                             .debug_selector(|| "keep-maple-open".to_string())
                             .child(gpui::text!(tr("native-keep-open")))
-                            .on_click(cx.listener(|prompt, _, _, cx| {
+                            .on_click(cx.listener(move |prompt, _, _, cx| {
                                 cancel_quit(cx);
                                 prompt.close(cx);
+                                reopen_quit_prompt_after_close(kind.clone(), cx);
                             })),
                     )
                     .child(
-                        ui::widgets::secondary_button("retry-maple-quit")
+                        ui::widgets::primary_button("retry-maple-quit")
                             .debug_selector(|| "retry-maple-quit".to_string())
                             .child(gpui::text!(tr(if retry {
                                 "native-retry-quit"
@@ -4270,6 +4419,19 @@ mod tests {
     #[test]
     fn quit_warning_preserves_all_counts_when_switching_locale() {
         let _locale = ui::i18n::TestLocalizationGuard::enable();
+        // The body omits zero counts, so an idle host with only the API
+        // listener lists no items.
+        let items = |count: usize, singular: [&str; 5], plural: [&str; 5]| {
+            if count == 0 {
+                Vec::new()
+            } else {
+                let labels = if count == 1 { singular } else { plural };
+                labels
+                    .iter()
+                    .map(|label| format!("{count} {label}"))
+                    .collect::<Vec<_>>()
+            }
+        };
         for count in [0, 1, 2] {
             let prompt = QuitPrompt {
                 closing: false,
@@ -4283,48 +4445,91 @@ mod tests {
                 }),
                 messages: Default::default(),
             };
-            for (locale, labels, drain) in [
+            let english = items(
+                count,
+                [
+                    "running task",
+                    "attached editor",
+                    "remote controller",
+                    "background job",
+                    "API request",
+                ],
+                [
+                    "running tasks",
+                    "attached editors",
+                    "remote controllers",
+                    "background jobs",
+                    "API requests",
+                ],
+            );
+            let spanish = items(
+                count,
+                [
+                    "tarea en ejecución",
+                    "editor conectado",
+                    "controlador remoto",
+                    "trabajo en segundo plano",
+                    "solicitud de API",
+                ],
+                [
+                    "tareas en ejecución",
+                    "editores conectados",
+                    "controladores remotos",
+                    "trabajos en segundo plano",
+                    "solicitudes de API",
+                ],
+            );
+            let german = items(
+                count,
+                [
+                    "laufende Aufgabe",
+                    "verbundener Editor",
+                    "Fernsteuerung",
+                    "Hintergrundauftrag",
+                    "API-Anfrage",
+                ],
+                [
+                    "laufende Aufgaben",
+                    "verbundene Editoren",
+                    "Fernsteuerungen",
+                    "Hintergrundaufträge",
+                    "API-Anfragen",
+                ],
+            );
+            for (locale, labels, api_clause, closing) in [
                 (
                     "en",
-                    [
-                        "running tasks",
-                        "attached editors",
-                        "remote controllers",
-                        "background jobs",
-                        "active requests",
-                    ],
-                    "waits for them to drain",
+                    english.clone(),
+                    ", including the local API,",
+                    "and then closes",
                 ),
                 (
                     "es",
-                    [
-                        "tareas en ejecución",
-                        "editores conectados",
-                        "controladores remotos",
-                        "trabajos en segundo plano",
-                        "solicitudes activas",
-                    ],
-                    "espera a que terminen",
+                    spanish,
+                    ", incluida la API local,",
+                    "y luego Maple se cierra",
+                ),
+                (
+                    "de",
+                    german,
+                    ", einschließlich der lokalen API,",
+                    "danach schließt sich Maple",
                 ),
                 (
                     "en",
-                    [
-                        "running tasks",
-                        "attached editors",
-                        "remote controllers",
-                        "background jobs",
-                        "active requests",
-                    ],
-                    "waits for them to drain",
+                    english,
+                    ", including the local API,",
+                    "and then closes",
                 ),
             ] {
                 ui::i18n::apply_preference(Some(locale));
                 let (_, detail, retry) = prompt.presentation();
                 assert!(!retry);
-                for label in labels {
-                    assert!(detail.contains(&format!("{label} ({count})")), "{detail}");
+                for label in &labels {
+                    assert!(detail.contains(label.as_str()), "{detail}");
                 }
-                assert!(detail.contains(drain));
+                assert!(detail.contains(api_clause), "{detail}");
+                assert!(detail.contains(closing), "{detail}");
                 assert!(
                     matches!(&prompt.kind, QuitPromptKind::Confirm(activity) if activity.needs_confirmation())
                 );
@@ -5942,6 +6147,87 @@ mod tests {
         assert!(
             cx.windows().is_empty(),
             "Keep open dismisses the confirmation, not the app"
+        );
+    }
+
+    #[gpui::test]
+    fn a_second_quit_prompt_replaces_the_first_instead_of_stacking(cx: &mut gpui::TestAppContext) {
+        assert!(cx.windows().is_empty());
+        cx.update(|cx| show_quit_warning("A first drain failed.".into(), cx));
+        cx.update(|cx| show_quit_warning("A second drain failed.".into(), cx));
+        assert_eq!(
+            cx.windows().len(),
+            2,
+            "the replaced window empties a frame before it goes"
+        );
+        let mut replaced = gpui::VisualTestContext::from_window(cx.windows()[0], cx);
+        replaced.run_until_parked();
+        replaced.update(|window, cx| window.simulate_next_frame(cx));
+        replaced.run_until_parked();
+        assert_eq!(
+            cx.windows().len(),
+            1,
+            "showing a new prompt replaces the open one instead of stacking"
+        );
+        let mut survivor = gpui::VisualTestContext::from_window(cx.windows()[0], cx);
+        assert!(
+            survivor.update(|window, cx| matches!(
+                &window.root::<QuitPrompt>().flatten().unwrap().read(cx).kind,
+                QuitPromptKind::Failed(UiText::Raw(message)) if message == "A second drain failed."
+            )),
+            "the newest prompt is the one that stays"
+        );
+    }
+
+    #[test]
+    fn quit_prompt_body_lists_live_work_then_closes() {
+        let _localization = ui::i18n::TestLocalizationGuard::enable();
+        let messages = ui::i18n::MessageCache::default();
+        let activity = HostActivity {
+            running_tasks: 2,
+            acp_clients: 1,
+            remote_controllers: 1,
+            background_tasks: 1,
+            local_api_running: true,
+            local_api_requests: 3,
+        };
+        assert_eq!(
+            quit_activity_body(&activity, &messages).as_ref(),
+            "2 running tasks, 1 attached editor, 1 remote controller, 1 background job, and 3 API \
+             requests. Quitting stops the host, including the local API, and then closes."
+        );
+        // Only the API listener is live: no list, and the host drains alone.
+        let activity = HostActivity {
+            local_api_running: true,
+            ..Default::default()
+        };
+        assert_eq!(
+            quit_activity_body(&activity, &messages).as_ref(),
+            "Quitting stops the host, including the local API, and then closes."
+        );
+        // An idle host, as the debug loop shows, has nothing to list.
+        assert_eq!(
+            quit_activity_body(&HostActivity::default(), &messages).as_ref(),
+            "Quitting stops the host and then closes."
+        );
+        // A single item keeps the [1] arm's plain period join.
+        let activity = HostActivity {
+            running_tasks: 1,
+            ..Default::default()
+        };
+        assert_eq!(
+            quit_activity_body(&activity, &messages).as_ref(),
+            "1 running task. Quitting stops the host and then closes."
+        );
+        // Two items join without the serial comma.
+        let activity = HostActivity {
+            running_tasks: 1,
+            acp_clients: 2,
+            ..Default::default()
+        };
+        assert_eq!(
+            quit_activity_body(&activity, &messages).as_ref(),
+            "1 running task and 2 attached editors. Quitting stops the host and then closes."
         );
     }
 

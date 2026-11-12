@@ -1236,8 +1236,11 @@ native-installed = Actualización instalada
 native-restart = Reiniciar Maple
 native-keep-open = Mantener abierto
 native-retry-quit = Reintentar salir
-native-stop-title = ¿Detener el host de Maple de esta computadora?
-native-still-open = Maple sigue abierto
+native-stop-title = Aún trabajando…
+native-still-open = Sigue abierto.
+# The UnknownActivity prompt's headline: the host could not be asked what is
+# live, so the title must not claim any work is running.
+native-quit-unknown-title = ¿Salir de Maple?
 native-unknown-activity = El host no pudo informar su actividad. Al salir, Maple intentará detener los editores conectados, las tareas y las conexiones remotas, y esperará a que el host libere los datos locales.
 native-keep-open-title = ¿Mantener Maple abierto?
 native-no-tray = Este escritorio no tiene una bandeja disponible para volver a abrir Maple. Mantén esta ventana abierta mientras Maple tenga los datos locales desbloqueados, o sal de Maple para detener su host.
@@ -1266,8 +1269,44 @@ native-stop-unavailable = Maple no puede volver a intentar detener su host. Mant
 native-stop-failed = Maple no pudo terminar de detener su host: { $error }. Mantén esta ventana abierta e intenta detener el host de nuevo antes de volver a iniciar Maple.
 # $error is an external diagnostic, preserved verbatim.
 native-restart-failed = No se pudo reiniciar Maple: { $error }
-# Counts of tasks, attached editors, remote controllers, background jobs, and API requests.
-native-quit-activity = Al salir, Maple detiene las tareas en ejecución ({ $tasks }), los editores conectados ({ $editors }), los controladores remotos ({ $controllers }) y los trabajos en segundo plano ({ $jobs }). También detiene la API local de esta computadora y sus solicitudes activas ({ $requests }). Maple espera a que terminen antes de cerrar.
+# $count running tasks for the Quit prompt.
+native-quit-item-tasks = { $count } { $count ->
+    [one] tarea en ejecución
+   *[other] tareas en ejecución
+}
+# $count attached editors for the Quit prompt.
+native-quit-item-editors = { $count } { $count ->
+    [one] editor conectado
+   *[other] editores conectados
+}
+# $count remote controllers for the Quit prompt.
+native-quit-item-controllers = { $count } { $count ->
+    [one] controlador remoto
+   *[other] controladores remotos
+}
+# $count background jobs for the Quit prompt.
+native-quit-item-jobs = { $count } { $count ->
+    [one] trabajo en segundo plano
+   *[other] trabajos en segundo plano
+}
+# $count API requests for the Quit prompt.
+native-quit-item-requests = { $count } { $count ->
+    [one] solicitud de API
+   *[other] solicitudes de API
+}
+# The Quit prompt's body: $count is how many kinds of work are live (at most
+# five), $a, $b, $c, $d and $e are those items, and $api is
+# ", including the local API," or empty when the local API is not running.
+native-quit-activity = { $count ->
+    [1] { $a }. Al salir, se detiene el host{ $api } y luego Maple se cierra.
+    [2] { $a } y { $b }. Al salir, se detiene el host{ $api } y luego Maple se cierra.
+    [3] { $a }, { $b } y { $c }. Al salir, se detiene el host{ $api } y luego Maple se cierra.
+    [4] { $a }, { $b }, { $c } y { $d }. Al salir, se detiene el host{ $api } y luego Maple se cierra.
+    [5] { $a }, { $b }, { $c }, { $d } y { $e }. Al salir, se detiene el host{ $api } y luego Maple se cierra.
+   *[0] Al salir, se detiene el host{ $api } y luego Maple se cierra.
+}
+# The $api clause of native-quit-activity.
+native-quit-api-clause = , incluida la API local,
 # $version is the app version; $status is the localized updater status.
 native-about-details = Versión { $version }
     { $status }
