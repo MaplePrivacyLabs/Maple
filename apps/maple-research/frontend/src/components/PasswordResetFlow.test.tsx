@@ -67,31 +67,36 @@ function submitButton() {
 }
 
 describe("PasswordResetFlow", () => {
-  for (const emailCode of ["abcd1234", "a".repeat(9), "0123456789abcdef".repeat(2)]) {
-    test(`accepts a ${emailCode.length}-character email reset code`, async () => {
+  for (const [typed, sent] of [
+    [" abcd1234 ", "ABCD1234"],
+    ["4mi1aupg", "4MI1AUPG"],
+    ["ABCD 1234", "ABCD1234"],
+    // A 32-character code copied from the email with a line wrap and padding.
+    [" 0123456789abcdef\n0123456789ABCDEF\t", "0123456789ABCDEF0123456789ABCDEF"],
+    // Shapes the form does not know about are left for the backend to judge.
+    ["abcd-1234", "ABCD-1234"],
+    ["a".repeat(7), "A".repeat(7)],
+    ["a".repeat(40), "A".repeat(40)]
+  ]) {
+    test(`sends the email reset code ${JSON.stringify(typed)} as ${sent}`, async () => {
       const api = await mount();
-      expect(view.root.findByProps({ id: "reset-email-code" }).props.maxLength).toBe(32);
-      await input("reset-email-code", ` ${emailCode} `);
+      expect(view.root.findByProps({ id: "reset-email-code" }).props.maxLength).toBeUndefined();
+      await input("reset-email-code", typed);
       await submit();
-      expect(api.getPasswordResetOptions).toHaveBeenCalledWith(
-        props.email,
-        emailCode.toUpperCase(),
-        props.secret
-      );
+      expect(api.getPasswordResetOptions).toHaveBeenCalledWith(props.email, sent, props.secret);
       await passwords();
       await input("reset-recovery-code", RECOVERY_CODE);
       await submit();
-      expect(api.completePasswordReset.mock.calls[0][1]).toBe(emailCode.toUpperCase());
+      expect(api.completePasswordReset.mock.calls[0][1]).toBe(sent);
     });
   }
 
-  for (const emailCode of ["a".repeat(7), "a".repeat(33), "abcd-1234", "abcd 1234"]) {
-    test("rejects an email reset code outside the accepted alphanumeric shape", async () => {
+  for (const emailCode of ["", "   ", " \n\t "]) {
+    test(`rejects the blank email reset code ${JSON.stringify(emailCode)} without a request`, async () => {
       const api = await mount();
       await input("reset-email-code", emailCode);
       await submit();
-      expect(text(view.root)).toContain("8–32 letters or numbers");
-      expect(view.root.findByProps({ id: "reset-email-code" }).props.value).toBe(emailCode);
+      expect(text(view.root)).toContain("Enter the reset code from your email.");
       expect(api.getPasswordResetOptions).not.toHaveBeenCalled();
       expect(api.completePasswordReset).not.toHaveBeenCalled();
     });
