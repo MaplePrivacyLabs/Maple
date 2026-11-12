@@ -3052,14 +3052,12 @@ fn quit_activity_body(
         .into_iter()
         .zip(items)
         .map(|(name, item)| (name, item.into()));
-    let body = messages.get(
+    messages.get(
         "native-quit-activity",
         [("count", count.into()), ("api", api.into())]
             .into_iter()
             .chain(item_args),
-    );
-    // The closing note spells out what "waits for it to drain" means.
-    format!("{body} {}", tr("native-quit-drain-note")).into()
+    )
 }
 
 #[derive(Clone)]
@@ -4410,8 +4408,8 @@ mod tests {
     #[test]
     fn quit_warning_preserves_all_counts_when_switching_locale() {
         let _locale = ui::i18n::TestLocalizationGuard::enable();
-        // The Editorial body omits zero counts, so an idle host with only the
-        // API listener reads as the host draining alone.
+        // The body omits zero counts, so an idle host with only the API
+        // listener lists no items.
         let items = |count: usize, singular: [&str; 5], plural: [&str; 5]| {
             if count == 0 {
                 Vec::new()
@@ -4470,32 +4468,24 @@ mod tests {
                     "solicitudes de API",
                 ],
             );
-            for (locale, labels, api_clause, drain) in [
+            for (locale, labels, api_clause, closing) in [
                 (
                     "en",
                     english.clone(),
                     ", including the local API,",
-                    if count == 0 {
-                        "waits for it to drain"
-                    } else {
-                        "waits for them to drain"
-                    },
+                    "waits for its work to stop cleanly before Maple closes",
                 ),
                 (
                     "es",
                     spanish,
                     ", incluida la API local,",
-                    "espera a que todo termine",
+                    "espera a que todo se detenga correctamente antes de cerrarse",
                 ),
                 (
                     "en",
                     english,
                     ", including the local API,",
-                    if count == 0 {
-                        "waits for it to drain"
-                    } else {
-                        "waits for them to drain"
-                    },
+                    "waits for its work to stop cleanly before Maple closes",
                 ),
             ] {
                 ui::i18n::apply_preference(Some(locale));
@@ -4505,7 +4495,7 @@ mod tests {
                     assert!(detail.contains(label.as_str()), "{detail}");
                 }
                 assert!(detail.contains(api_clause), "{detail}");
-                assert!(detail.contains(drain), "{detail}");
+                assert!(detail.contains(closing), "{detail}");
                 assert!(
                     matches!(&prompt.kind, QuitPromptKind::Confirm(activity) if activity.needs_confirmation())
                 );
@@ -6156,7 +6146,7 @@ mod tests {
     }
 
     #[test]
-    fn quit_prompt_body_lists_live_work_and_closes_with_the_drain_note() {
+    fn quit_prompt_body_lists_live_work_and_waits_for_a_clean_stop() {
         let _localization = ui::i18n::TestLocalizationGuard::enable();
         let messages = ui::i18n::MessageCache::default();
         let activity = HostActivity {
@@ -6170,8 +6160,8 @@ mod tests {
         assert_eq!(
             quit_activity_body(&activity, &messages).as_ref(),
             "2 running tasks, 1 attached editor, 1 remote controller, 1 background job, and 3 API \
-             requests. Quitting stops the host, including the local API, and waits for them to \
-             drain. In-flight work finishes before Maple closes."
+             requests. Quitting stops the host, including the local API, and waits for its work \
+             to stop cleanly before Maple closes."
         );
         // Only the API listener is live: no list, and the host drains alone.
         let activity = HostActivity {
@@ -6180,14 +6170,13 @@ mod tests {
         };
         assert_eq!(
             quit_activity_body(&activity, &messages).as_ref(),
-            "Quitting stops the host, including the local API, and waits for it to drain. \
-             In-flight work finishes before Maple closes."
+            "Quitting stops the host, including the local API, and waits for its work to stop \
+             cleanly before Maple closes."
         );
         // An idle host, as the debug loop shows, has nothing to list.
         assert_eq!(
             quit_activity_body(&HostActivity::default(), &messages).as_ref(),
-            "Quitting stops the host and waits for it to drain. In-flight work finishes before \
-             Maple closes."
+            "Quitting stops the host and waits for its work to stop cleanly before Maple closes."
         );
         // Two items join without the serial comma.
         let activity = HostActivity {
@@ -6197,8 +6186,8 @@ mod tests {
         };
         assert_eq!(
             quit_activity_body(&activity, &messages).as_ref(),
-            "1 running task and 2 attached editors. Quitting stops the host and waits for them to \
-             drain. In-flight work finishes before Maple closes."
+            "1 running task and 2 attached editors. Quitting stops the host and waits for its \
+             work to stop cleanly before Maple closes."
         );
     }
 

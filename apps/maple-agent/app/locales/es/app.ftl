@@ -1295,17 +1295,15 @@ native-quit-item-requests = { $count } { $count ->
 # five), $a, $b, $c, $d and $e are those items, and $api is
 # ", including the local API," or empty when the local API is not running.
 native-quit-activity = { $count ->
-    [1] { $a }. Al salir, se detiene el host{ $api } y Maple espera a que todo termine.
-    [2] { $a } y { $b }. Al salir, se detiene el host{ $api } y Maple espera a que todo termine.
-    [3] { $a }, { $b } y { $c }. Al salir, se detiene el host{ $api } y Maple espera a que todo termine.
-    [4] { $a }, { $b }, { $c } y { $d }. Al salir, se detiene el host{ $api } y Maple espera a que todo termine.
-    [5] { $a }, { $b }, { $c }, { $d } y { $e }. Al salir, se detiene el host{ $api } y Maple espera a que todo termine.
-   *[0] Al salir, se detiene el host{ $api } y Maple espera a que todo termine.
+    [1] { $a }. Al salir, se detiene el host{ $api } y Maple espera a que todo se detenga correctamente antes de cerrarse.
+    [2] { $a } y { $b }. Al salir, se detiene el host{ $api } y Maple espera a que todo se detenga correctamente antes de cerrarse.
+    [3] { $a }, { $b } y { $c }. Al salir, se detiene el host{ $api } y Maple espera a que todo se detenga correctamente antes de cerrarse.
+    [4] { $a }, { $b }, { $c } y { $d }. Al salir, se detiene el host{ $api } y Maple espera a que todo se detenga correctamente antes de cerrarse.
+    [5] { $a }, { $b }, { $c }, { $d } y { $e }. Al salir, se detiene el host{ $api } y Maple espera a que todo se detenga correctamente antes de cerrarse.
+   *[0] Al salir, se detiene el host{ $api } y Maple espera a que todo se detenga correctamente antes de cerrarse.
 }
 # The $api clause of native-quit-activity.
 native-quit-api-clause = , incluida la API local,
-# The Quit prompt's closing note, appended after native-quit-activity.
-native-quit-drain-note = El trabajo en curso se completa antes de que Maple se cierre.
 # $version is the app version; $status is the localized updater status.
 native-about-details = Versión { $version }
     { $status }
