@@ -6,6 +6,8 @@ import {
   MAX_NAMED_MODELS,
   MORE_MODELS_COLOR,
   MORE_MODELS_KEY,
+  highlightGroup,
+  highlightIndex,
   modelColor,
   modelHighlights,
   type UsageOrigin
@@ -324,8 +326,92 @@ describe("buildDailyChart", () => {
     row({ date: "2026-09-30", model: "glm-5-3", credits: 999 })
   ];
 
+  const catalogHighlights = modelHighlights({
+    groups: [
+      { id: "capable", label: "Most capable" },
+      { id: "uncensored", label: "Uncensored" },
+      { id: "fast", label: "Fast & cheap" }
+    ],
+    data: [
+      { id: "kimi-k3-1-pro", group: "capable" },
+      { id: "kimi-k3", group: "capable" },
+      { id: "glm-5-3", group: "capable" },
+      { id: "deepseek-v4-1-flash-1017-uncensored", group: "uncensored" },
+      { id: "gemma4-31b", group: "fast" },
+      { id: "glm-5-3-flash", group: "fast" },
+      { id: "deepseek-v4-1-flash", group: "fast" },
+      { id: "gpt-oss-120b" }
+    ]
+  });
+
+  test("group-less catalogs keep Uncensored purple without pinning GPT-OSS", () => {
+    for (const highlights of [
+      modelHighlights(),
+      modelHighlights({
+        data: [{ id: "deepseek-v4-1-flash-1017-uncensored", group: "uncensored" }]
+      })
+    ]) {
+      expect(highlightIndex("deepseek-v4-1-flash-1017-uncensored", highlights)).toBe(3);
+      expect(highlightGroup("deepseek-v4-1-flash-1017-uncensored", highlights)).toBe("Uncensored");
+      expect(highlightIndex("gpt-oss-120b", highlights)).toBeUndefined();
+    }
+  });
+
+  test("unranked overflow is independent of the metric", () => {
+    const models = [
+      "model-a",
+      "model-b",
+      "model-c",
+      "model-d",
+      "model-e",
+      "model-f",
+      "model-g",
+      "model-h"
+    ];
+    const history = models.map((model, index) =>
+      row({ date: dates[0], model, credits: index + 1, requests: 8 - index })
+    );
+    for (const metric of ["credits", "requests"] as const) {
+      const chart = buildDailyChart({
+        dates,
+        rows: history,
+        metric,
+        split: "model",
+        labels: {},
+        highlights: modelHighlights()
+      });
+      expect(
+        chart.series.map((series) => series.key),
+        metric
+      ).toEqual([...models.slice(0, 6), MORE_MODELS_KEY]);
+      expect(
+        chart.series.map((series) => series.color),
+        metric
+      ).toEqual([
+        "var(--series-1)",
+        "var(--series-2)",
+        "var(--series-3)",
+        "var(--series-4)",
+        "var(--series-5)",
+        "var(--series-6)",
+        MORE_MODELS_COLOR
+      ]);
+      expect(
+        chart.days[0].folded.map(({ model }) => model),
+        metric
+      ).toEqual(metric === "credits" ? ["model-h", "model-g"] : ["model-g", "model-h"]);
+    }
+  });
+
   test("model split names every used model, including ones outside the highlight list", () => {
-    const chart = buildDailyChart({ dates, rows, metric: "credits", split: "model", labels });
+    const chart = buildDailyChart({
+      dates,
+      rows,
+      metric: "credits",
+      split: "model",
+      labels,
+      highlights: catalogHighlights
+    });
     // The capable group precedes fast models, independent of their usage totals.
     // The ungrouped llama is still named and borrows the first free color.
     // No "More models": only four models were used.
@@ -387,24 +473,6 @@ describe("buildDailyChart", () => {
       ["first-model", "var(--series-1)", "Served"],
       ["second-model", "var(--series-2)", "Served"]
     ]);
-  });
-
-  const catalogHighlights = modelHighlights({
-    groups: [
-      { id: "capable", label: "Most capable" },
-      { id: "uncensored", label: "Uncensored" },
-      { id: "fast", label: "Fast & cheap" }
-    ],
-    data: [
-      { id: "kimi-k3-1-pro", group: "capable" },
-      { id: "kimi-k3", group: "capable" },
-      { id: "glm-5-3", group: "capable" },
-      { id: "deepseek-v4-1-flash-1017-uncensored", group: "uncensored" },
-      { id: "gemma4-31b", group: "fast" },
-      { id: "glm-5-3-flash", group: "fast" },
-      { id: "deepseek-v4-1-flash", group: "fast" },
-      { id: "gpt-oss-120b" }
-    ]
   });
 
   test("DeepSeek Uncensored keeps the purple slot and GPT-OSS is not pinned", () => {
@@ -624,7 +692,7 @@ describe("buildDailyChart", () => {
     });
     expect(twoOver.series).toHaveLength(count);
     expect(twoOver.series.at(-1)!.label).toBe("More models");
-    expect(twoOver.days[0].folded.map((f) => f.model)).toEqual(["model-6", "overflow", "also"]);
+    expect(twoOver.days[0].folded.map((f) => f.model)).toEqual(["model-5", "model-6", "overflow"]);
   });
 
   test("a full legend keeps highlights over higher-usage other models", () => {
@@ -646,7 +714,8 @@ describe("buildDailyChart", () => {
       ],
       metric: "credits",
       split: "model",
-      labels
+      labels,
+      highlights: catalogHighlights
     });
     const named = chart.series.filter((s) => s.key !== MORE_MODELS_KEY).map((s) => s.key);
     expect(named).toEqual(highlights.slice(0, -1));

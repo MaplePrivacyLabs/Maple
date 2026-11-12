@@ -424,7 +424,7 @@ export type DayBucket = {
 export type DailyChart = { series: SeriesDef[]; days: DayBucket[] };
 
 /** Which models get their own series. Everything used, until the legend is full;
- * then the best models stay and the smallest of the rest fold. */
+ * then catalog order wins and unranked models use stable ID order. */
 function chooseNamed(
   totals: Map<string, number>,
   highlights: ModelHighlights
@@ -433,7 +433,7 @@ function chooseNamed(
   // model absent from a refreshed catalog must still be named or folded.
   const ranked = [...totals]
     .filter(([, value]) => value > 0)
-    .sort(([left, leftTotal], [right, rightTotal]) => {
+    .sort(([left], [right]) => {
       const l = catalogIndex(left, highlights);
       const r = catalogIndex(right, highlights);
       if (l !== undefined || r !== undefined) {
@@ -441,7 +441,7 @@ function chooseNamed(
         if (r === undefined) return -1;
         if (l !== r) return l - r;
       }
-      return rightTotal - leftTotal || (left < right ? -1 : left > right ? 1 : 0);
+      return left < right ? -1 : left > right ? 1 : 0;
     });
   const limit = ranked.length > MAX_NAMED_MODELS ? MAX_NAMED_MODELS - 1 : MAX_NAMED_MODELS;
   const named = ranked.slice(0, limit).map(([id]) => id);

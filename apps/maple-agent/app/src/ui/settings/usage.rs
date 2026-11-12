@@ -228,7 +228,7 @@ impl SettingsScreen {
     }
 
     /// Optional highlight metadata. Never hold billing for this request: a
-    /// stalled catalog leaves the history usable with cached or legacy colors.
+    /// stalled catalog leaves the history usable with cached models and colors.
     fn load_usage_catalog(&mut self, cx: &mut Context<Self>) {
         if self.usage.catalog_loading {
             return;

@@ -378,8 +378,8 @@ impl ModelRanking {
     }
 
     /// Every model used in the range gets its own series until the chart runs
-    /// out of colors. Catalog order chooses the best members; usage then
-    /// chooses among uncatalogued or ungrouped models, as before.
+    /// out of colors. Catalog order chooses the best members; unranked models
+    /// use stable ID order so changing the metric cannot change that selection.
     fn choose_named<'a>(&'a self, totals: &[(&'a str, f64)]) -> (Vec<&'a str>, Vec<&'a str>) {
         let used = |id: &str| {
             totals
@@ -405,7 +405,7 @@ impl ModelRanking {
             .filter(|(id, total)| *total > 0.0 && self.catalog_index(id).is_none())
             .map(|(id, total)| (*id, *total))
             .collect();
-        others.sort_by(|left, right| right.1.total_cmp(&left.1).then_with(|| left.0.cmp(right.0)));
+        others.sort_by(|left, right| left.0.cmp(right.0));
         let room = limit - named.len();
         named.extend(others.iter().take(room).map(|(id, _)| *id));
         named.sort_by(|left, right| self.series_before(left, right));
@@ -1132,13 +1132,15 @@ mod tests {
                 display_name: Some("Llama X".into()),
             },
         );
+        let catalog = current_catalog();
+        let ranking = ModelRanking::from_catalog(Some(&catalog));
         let chart = build_daily_chart(
             &dates,
             &rows,
             Metric::Credits,
             Split::Model,
             &labels,
-            &ModelRanking::default(),
+            &ranking,
         );
         assert_eq!(
             chart
@@ -1168,7 +1170,7 @@ mod tests {
             Metric::Credits,
             Split::Model,
             &labels,
-            &ModelRanking::default(),
+            &ranking,
         );
         assert_eq!(
             chart
@@ -1191,6 +1193,102 @@ mod tests {
     }
 
     #[test]
+    fn group_less_catalog_keeps_the_legacy_purple_highlight() {
+        let mut older = current_catalog();
+        older.groups.clear();
+        for ranking in [
+            ModelRanking::default(),
+            ModelRanking::from_catalog(None),
+            ModelRanking::from_catalog(Some(&older)),
+        ] {
+            assert_eq!(ranking.model_slot("kimi-k3"), Some(1));
+            assert_eq!(
+                ranking.model_slot("deepseek-v4-1-flash-1017-uncensored"),
+                Some(3)
+            );
+            assert_eq!(ranking.model_slot("gpt-oss-120b"), None);
+            assert_eq!(
+                ranking
+                    .model_group("deepseek-v4-1-flash-1017-uncensored")
+                    .map(|group| group.id.as_str()),
+                Some("uncensored")
+            );
+        }
+    }
+
+    #[test]
+    fn unranked_overflow_is_independent_of_the_metric() {
+        let dates = date_range(day("2026-10-01"), day("2026-10-01"));
+        let rows = [
+            "model-a", "model-b", "model-c", "model-d", "model-e", "model-f", "model-g", "model-h",
+        ]
+        .into_iter()
+        .enumerate()
+        .map(|(index, model)| {
+            let mut row = row("2026-10-01", model, "app", None, "plan", (index + 1) as f64);
+            row.counts.requests = 8 - index as u64;
+            row
+        })
+        .collect::<Vec<_>>();
+        for (metric, folded) in [
+            (Metric::Credits, ["model-h", "model-g"]),
+            (Metric::Requests, ["model-g", "model-h"]),
+        ] {
+            let chart = build_daily_chart(
+                &dates,
+                &rows,
+                metric,
+                Split::Model,
+                &UsageModelLabels::default(),
+                &ModelRanking::default(),
+            );
+            assert_eq!(
+                chart
+                    .series
+                    .iter()
+                    .map(|series| series.key)
+                    .collect::<Vec<_>>(),
+                [
+                    SeriesKey::Model(0),
+                    SeriesKey::Model(1),
+                    SeriesKey::Model(2),
+                    SeriesKey::Model(3),
+                    SeriesKey::Model(4),
+                    SeriesKey::Model(5),
+                    SeriesKey::MoreModels,
+                ],
+                "{metric:?}"
+            );
+            assert_eq!(
+                chart
+                    .series
+                    .iter()
+                    .take(6)
+                    .map(|series| series.label.as_deref())
+                    .collect::<Vec<_>>(),
+                [
+                    Some("model-a"),
+                    Some("model-b"),
+                    Some("model-c"),
+                    Some("model-d"),
+                    Some("model-e"),
+                    Some("model-f"),
+                ],
+                "{metric:?}"
+            );
+            assert_eq!(
+                chart.days[0]
+                    .folded
+                    .iter()
+                    .map(|(label, _)| label.as_str())
+                    .collect::<Vec<_>>(),
+                folded,
+                "{metric:?}"
+            );
+        }
+    }
+
+    #[test]
     fn current_catalog_keeps_uncensored_purple_and_oss_unpinned() {
         let catalog = current_catalog();
         let ranking = ModelRanking::from_catalog(Some(&catalog));
@@ -1203,9 +1301,18 @@ mod tests {
         assert_eq!(ranking.model_slot("gpt-oss-120b"), None);
         assert_eq!(ranking.model_slot("glm-5-3"), Some(2));
         assert!(
-            ranking.highlight_models().eq(HIGHLIGHT_GROUPS
-                .iter()
-                .flat_map(|(_, models)| models.iter().copied()))
+            ranking
+                .highlight_models()
+                .eq(catalog.groups.iter().flat_map(|group| {
+                    catalog
+                        .data
+                        .iter()
+                        .filter(move |model| {
+                            model.available_in_agent != Some(false)
+                                && model.group.as_deref() == Some(group.id.as_str())
+                        })
+                        .map(|model| model.id.as_str())
+                }))
         );
         assert_eq!(
             ranking
@@ -1433,100 +1540,9 @@ mod tests {
         assert_eq!(
             chart.days[0].folded,
             [
+                ("m5".to_string(), 2.0),
                 ("m6".to_string(), 1.0),
-                ("overflow".to_string(), 0.5),
-                ("also".to_string(), 0.25)
-            ]
-        );
-    }
-
-    #[test]
-    fn legacy_fallback_keeps_source_order_over_heavier_others() {
-        let ranking = ModelRanking::default();
-        assert!(
-            ModelRanking::from_catalog(None)
-                .highlight_models()
-                .eq(ranking.highlight_models())
-        );
-        let mut older = current_catalog();
-        older.groups.clear();
-        assert_eq!(
-            ModelRanking::from_catalog(Some(&older))
-                .model_slot("deepseek-v4-1-flash-1017-uncensored"),
-            Some(3)
-        );
-        let dates = date_range(day("2026-10-01"), day("2026-10-01"));
-        let mut rows: Vec<UsageDayRow> = ranking
-            .highlight_models()
-            .map(|model| row("2026-10-01", model, "app", None, "plan", 1.0))
-            .collect();
-        rows.push(row(
-            "2026-10-01",
-            "gpt-oss-120b",
-            "app",
-            None,
-            "plan",
-            500.0,
-        ));
-        rows.push(row(
-            "2026-10-01",
-            "llama3-3-70b",
-            "app",
-            None,
-            "plan",
-            400.0,
-        ));
-        let chart = build_daily_chart(
-            &dates,
-            &rows,
-            Metric::Credits,
-            Split::Model,
-            &UsageModelLabels::default(),
-            &ranking,
-        );
-        let named: Vec<_> = chart
-            .series
-            .iter()
-            .filter(|series| series.key != SeriesKey::MoreModels)
-            .map(|series| series.label.clone())
-            .collect();
-        assert_eq!(
-            named,
-            [
-                Some("kimi-k3-1-pro".into()),
-                Some("kimi-k3".into()),
-                Some("glm-5-3".into()),
-                Some("deepseek-v4-1-flash-1017-uncensored".into()),
-                Some("gemma4-31b".into()),
-                Some("glm-5-3-flash".into()),
-            ]
-        );
-        assert_eq!(
-            chart
-                .series
-                .iter()
-                .map(|series| series.group.as_ref().map(|group| group.id.as_str()))
-                .collect::<Vec<_>>(),
-            [
-                Some("capable"),
-                Some("capable"),
-                Some("capable"),
-                Some("uncensored"),
-                Some("fast"),
-                Some("fast"),
-                None,
-            ]
-        );
-        assert_eq!(
-            chart.series.last().map(|series| series.key),
-            Some(SeriesKey::MoreModels)
-        );
-        assert_eq!(
-            chart.days[0].folded,
-            [
-                ("gpt-oss-120b".to_string(), 500.0),
-                ("llama3-3-70b".to_string(), 400.0),
-                ("deepseek-v4-1-flash".to_string(), 1.0)
+                ("overflow".to_string(), 0.5)
             ]
         );
     }
@@ -1534,16 +1550,22 @@ mod tests {
     #[test]
     fn catalog_absent_historical_usage_survives_overflow() {
         let mut catalog = current_catalog();
+        let mut rows: Vec<UsageDayRow> = catalog
+            .groups
+            .iter()
+            .flat_map(|group| {
+                catalog
+                    .data
+                    .iter()
+                    .filter(move |model| model.group.as_deref() == Some(group.id.as_str()))
+                    .map(|model| row("2026-10-01", &model.id, "app", None, "plan", 1.0))
+            })
+            .collect();
         catalog
             .data
             .retain(|model| model.id != "deepseek-v4-1-flash");
         let ranking = ModelRanking::from_catalog(Some(&catalog));
         assert_eq!(ranking.model_slot("deepseek-v4-1-flash"), None);
-        let mut rows: Vec<UsageDayRow> = HIGHLIGHT_GROUPS
-            .iter()
-            .flat_map(|(_, models)| models.iter())
-            .map(|model| row("2026-10-01", model, "app", None, "plan", 1.0))
-            .collect();
         rows.push(row(
             "2026-10-01",
             "gpt-oss-120b",

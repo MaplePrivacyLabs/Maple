@@ -144,10 +144,16 @@ mod tests {
     #[test]
     fn table_colors_follow_the_selected_model_chart() {
         let peers = ["glm-5-3", "llama"];
-        let ranking = super::super::model::ModelRanking::default();
+        let catalog: maple_sdk::ModelCatalogResponse = serde_json::from_value(serde_json::json!({
+            "object": "list",
+            "groups": [{"id": "capable", "label": "Most capable"}],
+            "data": [{"id": "glm-5-3", "group": "capable"}]
+        }))
+        .unwrap();
+        let ranking = super::super::model::ModelRanking::from_catalog(Some(&catalog));
         assert_eq!(
             model_table_color("llama", &peers, Split::Model, &ranking),
-            series(SeriesKey::Model(0))
+            series(SeriesKey::Model(1))
         );
         assert_eq!(
             model_table_color("glm-5-3", &[], Split::Model, &ranking),
@@ -157,7 +163,7 @@ mod tests {
         for split in [Split::Origin, Split::Pool, Split::Token] {
             assert_eq!(
                 model_table_color("glm-5-3", &peers, split, &ranking),
-                series(SeriesKey::Model(2)),
+                series(SeriesKey::Model(0)),
                 "other charts leave the table's highlights intact"
             );
         }
