@@ -810,14 +810,9 @@ pub struct ChatScreen {
     timeline_index: HashMap<String, (usize, u64)>,
     /// Guards against a slow session load overwriting a newer selection.
     selection_generation: u64,
-    /// Clock for the empty-title glint. Lives here, not on the element, so
-    /// the title leaving the tree does not start the glint again.
-    empty_title_started: Option<std::time::Instant>,
-    /// The empty title has been painted for this visit. A new clock while
-    /// this is set keeps the ink. Leaving the empty screen clears it, so
-    /// the next visit fades in. Bootstrap calls `new_session` before the
-    /// first paint, and that visit still fades.
-    empty_title_seen: bool,
+    /// Screen-owned glint clock. The element does not keep it, so the title
+    /// leaving the tree does not start it again.
+    empty_title: crate::ui::empty_title::GlintVisit,
     /// Same guard for mid-run history reloads. Separate from the selection
     /// generation so a reload never cancels a task switch in flight.
     reload_generation: u64,
@@ -1655,8 +1650,7 @@ impl ChatScreen {
             branch_watcher: None,
             watched_git_dir: None,
             selection_generation: 0,
-            empty_title_started: None,
-            empty_title_seen: false,
+            empty_title: crate::ui::empty_title::GlintVisit::new(),
             reload_generation: 0,
             attachment_images: HashMap::new(),
             attachment_requests: HashSet::new(),
@@ -2633,7 +2627,7 @@ impl ChatScreen {
         // The draft starts from this project's defaults.
         self.permission_mode = self.new_task_permission_mode;
         self.refresh_draft_mcp(cx);
-        self.empty_title_started = None;
+        self.empty_title.started = None;
         cx.notify();
     }
 
@@ -7313,8 +7307,7 @@ impl Render for ChatScreen {
         let main = if empty {
             self.render_empty_state(window, cx)
         } else {
-            self.empty_title_seen = false;
-            self.empty_title_started = None;
+            self.empty_title = crate::ui::empty_title::end_visit(self.empty_title);
             div()
                 .flex()
                 .flex_col()
@@ -8033,15 +8026,14 @@ impl ChatScreen {
     /// and privacy note centered in the pane (mirrors EmptyAgentState).
     fn render_empty_state(&mut self, window: &mut Window, cx: &mut Context<Self>) -> Div {
         let expanded = self.composer_expanded;
-        let entrance = !expanded && !self.empty_title_seen;
         if !expanded {
-            self.empty_title_started = crate::ui::empty_title::arm_glint(
-                self.empty_title_started,
+            self.empty_title = crate::ui::empty_title::step_title(
+                self.empty_title,
                 cx.reduce_motion() || !window.is_window_active(),
             );
-            self.empty_title_seen = true;
         }
-        let started = self.empty_title_started;
+        let entrance = self.empty_title.entrance;
+        let started = self.empty_title.started;
         let body = div()
             .flex()
             .flex_col()

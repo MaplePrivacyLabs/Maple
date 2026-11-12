@@ -444,6 +444,43 @@ pub(crate) fn arm_glint(started: Option<Instant>, paused: bool) -> Option<Instan
     }
 }
 
+/// The screen-owned glint clock. `entrance` is chosen when a clock starts
+/// and kept until that clock is replaced, so the fade is not one frame.
+#[derive(Clone, Copy)]
+pub(crate) struct GlintVisit {
+    pub started: Option<Instant>,
+    pub seen: bool,
+    pub entrance: bool,
+}
+
+impl GlintVisit {
+    pub(crate) fn new() -> Self {
+        Self {
+            started: None,
+            seen: false,
+            entrance: true,
+        }
+    }
+}
+
+/// One frame with the title in the tree.
+pub(crate) fn step_title(mut visit: GlintVisit, paused: bool) -> GlintVisit {
+    if visit.started.is_none() && !paused {
+        visit.entrance = !visit.seen;
+    }
+    visit.started = arm_glint(visit.started, paused);
+    visit.seen = true;
+    visit
+}
+
+/// The empty screen went away. The next visit fades in again.
+pub(crate) fn end_visit(mut visit: GlintVisit) -> GlintVisit {
+    visit.started = None;
+    visit.seen = false;
+    visit.entrance = true;
+    visit
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -581,5 +618,31 @@ mod tests {
         let settled = arm_glint(Some(started), true).expect("settled");
         assert!(sheen_finished(elapsed_ms(settled)));
         assert_eq!(arm_glint(Some(settled), false), Some(settled));
+    }
+
+    #[test]
+    fn an_entrance_fade_lasts_past_the_frame_that_started_it() {
+        let first = step_title(GlintVisit::new(), false);
+        assert!(first.entrance);
+        let second = step_title(first, false);
+        assert!(second.entrance, "the next frame must keep the fade");
+        assert_eq!(second.started, first.started);
+        assert!(ink_alpha(second.entrance, Some(16.), false) < 0.99);
+
+        let mut replay = second;
+        replay.started = None;
+        let replay = step_title(replay, false);
+        assert!(!replay.entrance);
+        assert_eq!(ink_alpha(replay.entrance, Some(0.), false), 1.);
+        assert!(!step_title(replay, false).entrance);
+
+        let mut boot = end_visit(replay);
+        boot.started = None;
+        let shown = step_title(boot, false);
+        assert!(
+            shown.entrance,
+            "bootstrap before the first paint still fades"
+        );
+        assert!(step_title(shown, false).entrance);
     }
 }
