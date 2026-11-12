@@ -21,20 +21,6 @@
         overlays = [
           (import rust-overlay)
           (final: prev: {
-            # Use Git's 2026-11-10 security release for development and CI tools.
-            # The pinned nixpkgs snapshot still provides Git 2.56.0; remove
-            # this override once that input has a fixed Git package.
-            git =
-              if prev.git.version == "2.56.0" then
-                prev.git.overrideAttrs (_: rec {
-                  version = "2.56.1";
-                  src = final.fetchurl {
-                    url = "https://www.kernel.org/pub/software/scm/git/git-${version}.tar.xz";
-                    hash = "sha256-8LC/iSZLm9LhxkA2PnUpZDmJ2nYoFgBHPFB0XNNKYH8=";
-                  };
-                })
-              else
-                prev.git;
             # Keep bun on versions.bun (and setup-bun's Windows pin) when nixpkgs moves ahead.
             bun = prev.bun.overrideAttrs (old: rec {
               version = versions.bun;
@@ -73,6 +59,24 @@
           };
         };
         lib = pkgs.lib;
+        # Git's 2026-11-10 security release for development and CI tools. The
+        # pinned nixpkgs snapshot still provides Git 2.56.0. This is a separate
+        # package, not an overlay: replacing pkgs.git would change the hash of
+        # everything that depends on Git and force a cold source rebuild of that
+        # whole closure in CI. The upstream test suite is skipped for the same
+        # reason. Remove this once the nixpkgs input ships a fixed Git.
+        gitFixed =
+          if pkgs.git.version == "2.56.0" then
+            pkgs.git.overrideAttrs (_: rec {
+              version = "2.56.1";
+              src = pkgs.fetchurl {
+                url = "https://www.kernel.org/pub/software/scm/git/git-${version}.tar.xz";
+                hash = "sha256-8LC/iSZLm9LhxkA2PnUpZDmJ2nYoFgBHPFB0XNNKYH8=";
+              };
+              doInstallCheck = false;
+            })
+          else
+            pkgs.git;
         # Darwin can expose 512-byte pipes. Larger heredocs must use Bash's
         # tempfile path instead of filling a pipe before starting its reader.
         mapleBash = if pkgs.stdenv.hostPlatform.isDarwin then
@@ -249,7 +253,7 @@
           file
           findutils
           gawk
-          git
+          gitFixed
           gnumake
           gnused
           gnutar
@@ -720,7 +724,7 @@
           # toolchain, native setup hooks, or credentials while installing Wrangler.
           pages =
             let
-              shellPackages = with pkgs; [ bun nodejs python3 cacert git ];
+              shellPackages = with pkgs; [ bun nodejs python3 cacert gitFixed ];
             in
             mkShellForHost {
               packages = shellPackages;
@@ -788,7 +792,7 @@
           # Every scripts/ci test (workflow policy, contracts, the planner, the
           # release and publication scripts).
           ci-scripts = pkgs.runCommand "maple-ci-scripts-check" {
-            nativeBuildInputs = with pkgs; [ mapleBash binutils findutils git jq minisign patchelf stdenv.cc python3 unzip yq-go ];
+            nativeBuildInputs = with pkgs; [ mapleBash binutils findutils gitFixed jq minisign patchelf stdenv.cc python3 unzip yq-go ];
             src = ./.;
           } ''
             cd "$src"
@@ -797,7 +801,7 @@
           '';
 
           pcr-compatibility = pkgs.runCommand "maple-pcr-compatibility-check" {
-            nativeBuildInputs = [ pkgs.git (pkgs.python3.withPackages (ps: [ ps.cryptography ])) ];
+            nativeBuildInputs = [ gitFixed (pkgs.python3.withPackages (ps: [ ps.cryptography ])) ];
             src = ./.;
           } ''
             cd "$src"
@@ -830,7 +834,7 @@
               binutils
               coreutils
               findutils
-              git
+              gitFixed
               jq
               python3
               ripgrep
