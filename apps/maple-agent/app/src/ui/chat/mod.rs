@@ -7144,6 +7144,10 @@ impl ChatScreen {
             .timeline_revisions
             .entry(session_id.to_string())
             .or_insert(0) += 1;
+        // A run whose rows this view did not take in is no longer one it
+        // watched: it cannot tell where the run's turns began, so it says
+        // no time for them rather than a wrong one.
+        self.run_clocks.remove(session_id);
     }
 
     /// Drop every queued question of a session whose run ended.
