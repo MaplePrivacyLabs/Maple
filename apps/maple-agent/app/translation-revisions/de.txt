@@ -397,6 +397,7 @@ chat-trust-description 1e3842500e30ef07
 chat-trust-keep d6e02ad22aeeeba6
 chat-trust-saved 92a4e34ef0b734ae
 chat-trust-title 4a6389783686eec6
+chat-turn-files-changed 708debceb2de53ea
 chat-turn-waiting 130514d0bacc91a7
 chat-turn-worked 5dcfb6d76e519bf9
 chat-turn-worked-minutes 9b13b6f2c1f967be

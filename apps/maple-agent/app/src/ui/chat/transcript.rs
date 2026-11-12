@@ -16,6 +16,7 @@ use maple_agent::agent::{
 };
 
 use super::cache::{MAX_DIFF_LINES, MarkdownKind};
+use super::changes;
 use super::speech::speak_message_button;
 use super::step::{self, StepState};
 use super::turn::{self, TurnRow};
@@ -135,6 +136,14 @@ impl ChatScreen {
                             }
                         })
                     },
+                    changes: chat.changes_under(ix).map(|(lead, changes)| {
+                        let lead = chat.timeline[lead].id.as_str();
+                        changes::ReplyChanges {
+                            changes,
+                            lead,
+                            open: chat.open_changes.get(lead),
+                        }
+                    }),
                 };
                 let expanded = tool_details != chat.toggled_tools.contains(&item.id);
                 let revision = chat
@@ -1268,6 +1277,9 @@ fn render_message(item: &AgentTimelineItem, revision: u64, transcript: &Transcri
                     })
                     .child(timestamp_label(item, &group, transcript.messages))
             }))
+            .children(transcript.changes.as_ref().map(|card| {
+                changes::render_changes(card, &item.id, transcript.chat, transcript.messages)
+            }))
     }
 }
 
@@ -1726,20 +1738,25 @@ pub(super) fn diff_lines_for(item: &AgentTimelineItem) -> Vec<(char, SharedStrin
     lines
 }
 
-/// The +/- lines of an edit or write, coloured.
+/// The +/- lines of an edit or write, coloured, in the box a step's
+/// details show them in.
 fn render_diff(lines: &[(char, SharedString)]) -> Option<Div> {
     if lines.is_empty() {
         return None;
     }
-    let mut diff = div()
-        .flex()
-        .flex_col()
-        .mt_1()
-        .rounded(theme::RADIUS_SM)
-        .bg(gpui::rgb(theme::bg_code_block()))
-        .border_1()
-        .border_color(gpui::rgb(theme::border_subtle()))
-        .overflow_x_hidden();
+    Some(
+        diff_rows(lines)
+            .mt_1()
+            .rounded(theme::RADIUS_SM)
+            .bg(gpui::rgb(theme::bg_code_block()))
+            .border_1()
+            .border_color(gpui::rgb(theme::border_subtle())),
+    )
+}
+
+/// One row per +/- line, each clipped to the width it has.
+pub(super) fn diff_rows(lines: &[(char, SharedString)]) -> Div {
+    let mut diff = div().flex().flex_col().overflow_x_hidden();
     for (sign, line) in lines {
         let color = match sign {
             '+' => theme::status_success(),
@@ -1770,7 +1787,7 @@ fn render_diff(lines: &[(char, SharedString)]) -> Option<Div> {
                 ),
         );
     }
-    Some(diff)
+    diff
 }
 
 /// Title shown before the model summary arrives: just the tool label from
@@ -3655,5 +3672,73 @@ mod motion_tests {
                 "the turn worked 4 s before the question and 7 s after the answer"
             );
         });
+    }
+
+    #[gpui::test]
+    fn a_finished_turn_lists_what_it_changed_under_its_reply(cx: &mut TestAppContext) {
+        use maple_agent::agent::{AgentRunEvent, AgentRunTerminal};
+
+        let _clock = Clock::start();
+        let (chat, cx) = pane(cx, 0);
+        chat.update(cx, |chat, cx| {
+            chat.replace_timeline(vec![user_item("ask", "Cap the wait")]);
+            chat.handle_service_event(run_event(AgentRunEvent::Started), cx);
+            for row in [
+                AgentTimelineItem {
+                    status: Some("completed".to_string()),
+                    input: Some(serde_json::json!({
+                        "path": "src/net/retry.rs",
+                        "edits": [{
+                            "oldText": "loop {",
+                            "newText": "let deadline = now + MAX;\nloop {",
+                        }],
+                    })),
+                    ..item("edit", "tool", None)
+                },
+                item("reply", "message", Some("Done.")),
+            ] {
+                chat.handle_service_event(run_event(AgentRunEvent::TimelineItem(row)), cx);
+            }
+        });
+        redraw(&chat, cx);
+        assert!(
+            cx.debug_bounds("turn-changes").is_none(),
+            "a turn still running has not finished changing things"
+        );
+
+        chat.update(cx, |chat, cx| {
+            chat.handle_service_event(
+                run_event(AgentRunEvent::Finished(AgentRunTerminal::Completed)),
+                cx,
+            );
+        });
+        // Past the reply's entrance, so its row has its full height.
+        motion::set_test_now(Some(motion::now() + motion::ENTER.settle * 2));
+        redraw(&chat, cx);
+        let card = bounds(cx, "turn-changes");
+        let reply = bounds(cx, "timeline-row-reply");
+        assert!(
+            card.top() > reply.top() && card.bottom() <= reply.bottom(),
+            "the card sits in the reply's row, which grew to hold it: {card:?} in {reply:?}"
+        );
+        assert!(
+            cx.debug_bounds("turn-change-diff").is_none(),
+            "a file's changes start folded"
+        );
+
+        let file = bounds(cx, "turn-change").center();
+        cx.simulate_click(file, gpui::Modifiers::default());
+        redraw(&chat, cx);
+        let diff = bounds(cx, "turn-change-diff");
+        let opened = bounds(cx, "turn-changes");
+        let reply = bounds(cx, "timeline-row-reply");
+        assert!(
+            opened.size.height > card.size.height
+                && diff.top() > opened.top()
+                && diff.bottom() <= opened.bottom()
+                && opened.bottom() <= reply.bottom(),
+            "the file's changes open inside the card, and the row grows again: \
+             {diff:?} in {opened:?} in {reply:?}"
+        );
     }
 }
