@@ -136,6 +136,9 @@ pub(super) struct RunClock {
 pub(super) struct TimedRun {
     run_id: String,
     clock: RunClock,
+    /// The lead row of the turn the run is working on, once that turn has
+    /// a step: the row its time is kept under when the turn ends.
+    lead: Option<String>,
 }
 
 impl RunClock {
@@ -152,6 +155,14 @@ impl RunClock {
             .unwrap_or(now)
             .saturating_duration_since(self.began)
             .saturating_sub(self.waited)
+    }
+
+    /// Start counting again from `now`, for the run's next turn. A wait
+    /// under way carries on.
+    fn restart(&mut self, now: Instant) {
+        self.began = now;
+        self.waited = Duration::ZERO;
+        self.waiting_since = self.waiting_since.map(|_| now);
     }
 
     /// A question for the user stops the clock; its answer starts it again.
@@ -374,7 +385,7 @@ pub(super) fn render_line(
                 .font_weight(gpui::FontWeight::NORMAL)
                 .text_xs()
                 .text_color(gpui::rgb(theme::text_muted()))
-                .child(time)
+                .child(gpui::text!(time))
         }));
     let row = div().h(WAITING_ROW_HEIGHT).flex().items_center();
     let Some((lead, open)) = fold else {
@@ -412,9 +423,13 @@ impl ChatScreen {
 
     /// Whether the run on screen is working on the turn led by the row at
     /// `lead`. Until a new run's first row lands the last turn is an
-    /// earlier one, and the line waits in the slot instead.
+    /// earlier one, and the line waits in the slot instead. A window paged
+    /// back in history does not hold the turn the run works on at all.
     fn turn_runs(&self, lead: usize) -> bool {
-        self.turns.tail() == Some(lead) && self.is_run_active() && !self.awaiting_first_token
+        self.turns.tail() == Some(lead)
+            && self.is_run_active()
+            && !self.awaiting_first_token
+            && !self.pages.after
     }
 
     /// The line of the turn led by the row at `lead`.
@@ -510,15 +525,38 @@ impl ChatScreen {
             TimedRun {
                 run_id: run_id.to_owned(),
                 clock: RunClock::new(motion::now()),
+                lead: None,
             },
         );
         self.schedule_run_tick(cx);
     }
 
+    /// A row arrived at the end of the task while its run is timed. A
+    /// turn's first step is the row the turn's time is kept under. A
+    /// message from the user, queued or steering the run, ends the turn
+    /// before it, and the time starts again for the next.
+    pub(super) fn time_arrival(&mut self, session_id: &str, index: usize) {
+        let Some(timed) = self.run_clocks.get_mut(session_id) else {
+            return;
+        };
+        let Some(item) = self.timeline.get(index) else {
+            return;
+        };
+        if self.turns.row(index) == TurnRow::Lead {
+            timed.lead = Some(item.id.clone());
+        } else if starts_turn(item) {
+            let now = motion::now();
+            if let Some(lead) = timed.lead.take() {
+                self.turn_worked.insert(lead, timed.clock.worked(now));
+            }
+            timed.clock.restart(now);
+        }
+    }
+
     /// Keep the clocks in step with the runs and the questions, wherever
     /// either changed. A run that left `active_runs` stops its clock, and
-    /// the turn on screen keeps how long it worked. A run that waits on
-    /// the user holds its time.
+    /// the turn it was working on keeps how long it worked. A run that
+    /// waits on the user holds its time.
     pub(super) fn sync_run_clocks(&mut self) {
         if self.run_clocks.is_empty() {
             return;
@@ -534,14 +572,14 @@ impl ChatScreen {
             let Some(timed) = self.run_clocks.remove(&session) else {
                 continue;
             };
-            // A run that ended before anything came back has no turn of
-            // its own on screen: the last one is an earlier turn's.
+            // A run that ended before its turn had a step has no line to
+            // say the time on.
             if self.is_selected(&session)
-                && !self.awaiting_first_token
-                && let Some(lead) = self.turns.tail().and_then(|lead| self.timeline.get(lead))
+                && let Some(lead) = timed
+                    .lead
+                    .filter(|lead| self.timeline_index.contains_key(lead))
             {
-                self.turn_worked
-                    .insert(lead.id.clone(), timed.clock.worked(now));
+                self.turn_worked.insert(lead, timed.clock.worked(now));
             }
         }
         let questions = &self.pending_questions;
@@ -561,6 +599,11 @@ impl ChatScreen {
         }
         if let Some(worked) = self.turn_worked.remove(old) {
             self.turn_worked.insert(new.to_owned(), worked);
+        }
+        for timed in self.run_clocks.values_mut() {
+            if timed.lead.as_deref() == Some(old) {
+                timed.lead = Some(new.to_owned());
+            }
         }
     }
 
