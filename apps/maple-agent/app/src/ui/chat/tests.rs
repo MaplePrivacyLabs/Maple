@@ -13027,7 +13027,7 @@ mod state_tests {
     }
 
     #[gpui::test]
-    fn update_badge_marks_settings_and_its_menu_row_routes_by_state(cx: &mut TestAppContext) {
+    fn update_controls_route_by_state_without_opening_settings(cx: &mut TestAppContext) {
         use std::cell::RefCell;
         use std::rc::Rc;
         let (chat, cx) = chat_window(cx, |_, _| {});
@@ -13067,39 +13067,113 @@ mod state_tests {
             cx.run_until_parked();
         };
 
-        assert!(cx.debug_bounds("settings-update-badge").is_none());
+        assert!(cx.debug_bounds("settings-update").is_none());
         press(cx, "open-settings");
         assert!(cx.debug_bounds("settings-menu-update").is_none());
         press(cx, "open-settings");
 
         set(cx, crate::update::State::Ready, true);
-        let badge = cx.debug_bounds("settings-update-badge").expect("badge");
+        let badge = cx.debug_bounds("settings-update").expect("update button");
         let settings = cx.debug_bounds("open-settings").expect("settings button");
-        assert!(
-            badge.left() > settings.left() + px(40.) && badge.right() < settings.center().x,
-            "the badge follows the Settings label: {badge:?}, {settings:?}"
-        );
-        assert!(badge.top() >= settings.top() && badge.bottom() <= settings.bottom());
-        press(cx, "open-settings");
-        assert!(
-            cx.debug_bounds("settings-menu-update").unwrap().top()
-                < cx.debug_bounds("settings-menu-account").unwrap().top()
-        );
-        press(cx, "settings-menu-update");
+        // Separate hit targets prevent a restart click from toggling Settings.
+        assert!(badge.left() >= settings.right());
+        assert_eq!(badge.center().y, settings.center().y);
+        press(cx, "settings-update");
         assert!(cx.debug_bounds("settings-menu").is_none());
         assert_eq!(*actions.borrow(), [crate::update::UpdateAction::Restart]);
 
-        set(cx, crate::update::State::Error, true);
+        press(cx, "settings-pointer-extension");
+        assert!(
+            cx.debug_bounds("settings-menu-update").unwrap().bottom()
+                < cx.debug_bounds("settings-menu-usage").unwrap().top()
+        );
+        press(cx, "settings-pointer-extension");
+        assert!(cx.debug_bounds("settings-menu").is_none());
+        assert_eq!(actions.borrow().len(), 1);
         press(cx, "open-settings");
         press(cx, "settings-menu-update");
-        assert_eq!(*sections.borrow(), [Section::About]);
-        assert_eq!(actions.borrow().len(), 1);
+        assert!(cx.debug_bounds("settings-menu").is_none());
+        assert_eq!(*actions.borrow(), [crate::update::UpdateAction::Restart; 2]);
 
-        // "Later" in About hides both until the next release.
+        // The direct action still works while the menu is already open.
+        press(cx, "open-settings");
+        press(cx, "settings-update");
+        assert!(cx.debug_bounds("settings-menu").is_none());
+        assert_eq!(*actions.borrow(), [crate::update::UpdateAction::Restart; 3]);
+
+        for state in [
+            crate::update::State::Error,
+            crate::update::State::Available,
+            crate::update::State::RestartRequired,
+        ] {
+            set(cx, state, true);
+            press(cx, "settings-update");
+            assert!(cx.debug_bounds("settings-menu").is_none());
+            press(cx, "open-settings");
+            press(cx, "settings-menu-update");
+        }
+        assert_eq!(*sections.borrow(), [Section::About; 6]);
+        assert_eq!(actions.borrow().len(), 3);
+
+        // "Later" in About hides both entry points until the next release.
         set(cx, crate::update::State::Ready, false);
-        assert!(cx.debug_bounds("settings-update-badge").is_none());
+        assert!(cx.debug_bounds("settings-update").is_none());
         press(cx, "open-settings");
         assert!(cx.debug_bounds("settings-menu-update").is_none());
+        cx.simulate_keystrokes("escape");
+        set(cx, crate::update::State::Ready, true);
+
+        let composer = cx.update(|_, app| chat.read(app).composer.clone().unwrap());
+        let composer_focus = cx.update(|_, app| composer.read(app).focus_handle(app));
+        cx.update(|_, app| app.set_reduce_motion(true));
+        for collapsed in [false, true] {
+            chat.update(cx, |chat, cx| chat.set_sidebar_collapsed(collapsed, cx));
+            cx.update(|window, _| window.refresh());
+            cx.run_until_parked();
+            if collapsed {
+                let badge = cx.debug_bounds("settings-update").expect("rail update");
+                let settings = cx.debug_bounds("open-settings").expect("rail settings");
+                assert!(badge.bottom() <= settings.top());
+                assert_eq!(badge.center().x, settings.center().x);
+            }
+            for key in ["enter", "space"] {
+                composer.update(cx, |input, cx| input.set_text("Unsent draft", cx));
+                cx.update(|window, app| window.focus(&composer_focus, app));
+                let update_tab_index = if collapsed { 6 } else { 7 };
+                for _ in 0..12 {
+                    cx.simulate_keystrokes("tab");
+                    if cx.update(|window, app| {
+                        window
+                            .focused(app)
+                            .is_some_and(|focus| focus.tab_index == update_tab_index)
+                    }) {
+                        break;
+                    }
+                }
+                assert_eq!(
+                    cx.update(|window, app| window.focused(app).unwrap().tab_index),
+                    update_tab_index
+                );
+                let before = actions.borrow().len();
+                cx.simulate_keystrokes(key);
+                cx.update(|window, app| {
+                    window.dispatch_event(
+                        gpui::PlatformInput::KeyUp(gpui::KeyUpEvent {
+                            keystroke: gpui::Keystroke::parse(key).unwrap(),
+                        }),
+                        app,
+                    );
+                });
+                cx.run_until_parked();
+                assert_eq!(actions.borrow().len(), before + 1);
+                assert_eq!(
+                    actions.borrow().last(),
+                    Some(&crate::update::UpdateAction::Restart)
+                );
+                assert!(cx.debug_bounds("settings-menu").is_none());
+                assert_eq!(composer.update(cx, |input, _| input.text()), "Unsent draft");
+            }
+        }
     }
 
     #[gpui::test]
