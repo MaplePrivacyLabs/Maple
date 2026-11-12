@@ -55,6 +55,7 @@ mod summaries;
 mod tests;
 mod thinking;
 mod transcript;
+mod turn;
 #[cfg(test)]
 mod upload_tests;
 mod uploads;
@@ -68,7 +69,6 @@ use self::sidebar::SessionActivity;
 use self::sidebar::{Sidebar, SidebarEvent, TaskActivity, session_summary_eq};
 use self::transcript::{
     ActiveSubagent, PlanEntry, PlanStatus, plan_entries, plan_finished, render_question_card,
-    render_waiting_indicator,
 };
 
 gpui::actions!(
@@ -653,11 +653,11 @@ pub struct ChatScreen {
     snapshot_revision: u64,
     /// Virtualized transcript state; bottom-aligned like a chat log.
     list_state: gpui::ListState,
-    /// First and past-last transcript rows painted in view in the last
-    /// frame. A wheel outside the list reports them for paging and
-    /// images, as the list's own wheel reports its visible range; the
-    /// list's scroll top names no row while it rests at the end.
-    painted_rows: std::rc::Rc<std::cell::Cell<Option<(usize, usize)>>>,
+    /// The transcript rows painted in view in the last frame. A wheel
+    /// outside the list reports them for paging and images, as the list's
+    /// own wheel reports its visible range; the list's scroll top names no
+    /// row while it rests at the end.
+    painted_rows: transcript::PaintedRows,
     /// Set when the transcript should jump to its newest content on the
     /// next render (session switch or send); streaming follows only while
     /// the view is already at the bottom.
@@ -827,8 +827,8 @@ pub struct ChatScreen {
     /// Focus handle of the transcript; a selection press moves focus here
     /// so the copy keybinding applies.
     transcript_focus: Option<gpui::FocusHandle>,
-    /// True from send until the first agent item of the run arrives; shows
-    /// the waiting indicator under the transcript.
+    /// True from send until the first agent item of the run arrives. The
+    /// turn's line waits under the transcript meanwhile.
     awaiting_first_token: bool,
     /// Live row entrances and reveals in the transcript, kept here so a
     /// row scrolled away and back never replays them.
@@ -839,6 +839,18 @@ pub struct ChatScreen {
     /// Item ids whose tool card or thinking row was clicked; membership
     /// inverts the `tool_details` default for that item.
     toggled_tools: HashSet<String>,
+    /// Each row's place in its turn, rebuilt or extended with `timeline`.
+    turns: turn::Turns,
+    /// Lead item ids of turns whose line was clicked; membership inverts
+    /// the `tool_details` default for whether that turn's steps show.
+    toggled_turns: HashSet<String>,
+    /// How long finished turns worked, by lead item id. Only turns this
+    /// window timed have one.
+    turn_worked: HashMap<String, std::time::Duration>,
+    /// Clocks of the runs this window saw start, by session id.
+    run_clocks: HashMap<String, turn::TimedRun>,
+    /// A repaint for a running turn's time is on its way.
+    run_tick_pending: std::cell::Cell<bool>,
     /// Ticked options of a multi-select question.
     question_selected: HashMap<usize, QuestionSelection>,
     /// Index of the question being shown within the current card; a batch
@@ -1131,6 +1143,7 @@ impl ChatScreen {
     /// tasks wait, run, or ended unseen, and the recent roots. Called when
     /// any of them changed; the sidebar rebuilds only what moved.
     fn sync_sidebar(&mut self, cx: &mut Context<Self>) {
+        self.sync_run_clocks();
         let sessions = self.sessions.clone();
         let selected = self.sidebar_selection();
         let activity = self.task_activity();
@@ -1147,6 +1160,7 @@ impl ChatScreen {
     /// Push only the row indicators: a question arrived or went away.
     /// Other computers' sidebars show them too.
     fn sync_sidebar_activity(&mut self, cx: &mut Context<Self>) {
+        self.sync_run_clocks();
         let activity = self.task_activity();
         self.sidebar
             .update(cx, |sidebar, cx| sidebar.set_activity(activity, cx));
@@ -1667,6 +1681,11 @@ impl ChatScreen {
             row_motion: transcript::RowMotion::default(),
             loading_since: None,
             toggled_tools: HashSet::new(),
+            turns: turn::Turns::default(),
+            toggled_turns: HashSet::new(),
+            turn_worked: HashMap::new(),
+            run_clocks: HashMap::new(),
+            run_tick_pending: std::cell::Cell::new(false),
             question_selected: HashMap::new(),
             question_step: 0,
             question_step_answers: HashMap::new(),
@@ -3452,6 +3471,7 @@ impl ChatScreen {
         self.timeline = timeline.into_iter().map(paging::normalize).collect();
         self.pages.weights.clear();
         self.bound_transcript_window(true);
+        self.turns.rebuild(&self.timeline);
         self.timeline_index = self
             .timeline
             .iter()
@@ -3739,6 +3759,8 @@ impl ChatScreen {
         self.attachment_queue.clear();
         self.attachment_viewport = 0..0;
         self.toggled_tools.clear();
+        self.toggled_turns.clear();
+        self.turn_worked.clear();
         if let Some(composer) = self.composer.clone() {
             composer.update(cx, |input, cx| input.reset_vim_context(cx));
         }
@@ -6217,6 +6239,7 @@ impl ChatScreen {
             self.timeline_index.insert(item.id.clone(), (index, 0));
             self.rekey_summary(&old, &item.id);
             self.row_motion.rekey(&old, &item.id);
+            self.rekey_turn(&old, &item.id);
         }
         if let Some((index, _)) = self.timeline_index.get(&item.id)
             && let (Some(old), Some(new)) = (&self.timeline[*index].persisted, &item.persisted)
@@ -6265,6 +6288,7 @@ impl ChatScreen {
                     ..
                 } = item;
                 let existing = &mut self.timeline[index];
+                let part = turn::part(existing);
                 existing.revision = incoming_revision;
                 if let Some(label) = incoming_label {
                     match &mut existing.label {
@@ -6300,6 +6324,12 @@ impl ChatScreen {
                     existing.output = incoming_output.or_else(|| existing.output.take());
                     existing.merge = incoming_merge;
                 }
+                // A row that became a step, or stopped being one, moves
+                // every row after it to another place in its turn.
+                if turn::part(&self.timeline[index]) != part {
+                    self.turns.rebuild(&self.timeline);
+                    self.list_state.remeasure_items(index..self.timeline.len());
+                }
                 index
             }
             None => {
@@ -6310,6 +6340,7 @@ impl ChatScreen {
                     motion::now(),
                     self.list_state.is_following_tail(),
                 );
+                self.turns.push(&item);
                 self.timeline.push(item);
                 self.list_state.splice(index..index, 1);
                 index
@@ -6380,7 +6411,7 @@ impl ChatScreen {
     }
 
     /// Whether the slot under the transcript shows something: the message
-    /// being sent or the waiting dots.
+    /// being sent or the turn's line.
     fn waiting_slot_shown(&self) -> bool {
         self.has_send_feedback() || (self.awaiting_first_token && self.is_run_active())
     }
@@ -6405,7 +6436,7 @@ impl ChatScreen {
         let Some(index) = self.apply_timeline_item(session_id, item) else {
             return;
         };
-        // The waiting row (or the sent message's status) leaves the slot
+        // The turn's line (or the sent message's status) leaves the slot
         // under the transcript as this row arrives: the row opens from that
         // height, so nothing above it jumps.
         if new_row && self.row_motion.slot_on_screen && !self.waiting_slot_shown() {
@@ -7093,6 +7124,7 @@ impl ChatScreen {
             AgentRunEvent::Started => {
                 self.active_runs
                     .insert(session_id.to_string(), run_id.to_string());
+                self.run_began(session_id, run_id, cx);
                 // The sections read `active_runs`; keep them in step.
                 self.sync_sidebar(cx);
                 self.start_usage_poller(session_id.to_string(), cx);
@@ -7218,7 +7250,7 @@ impl ChatScreen {
                     self.clear_session_questions(session_id, cx);
                 }
                 if self.is_selected(session_id) {
-                    // Another task finishing must not hide the dots for
+                    // Another task finishing must not hide the line for
                     // the send that is still waiting here.
                     self.awaiting_first_token = false;
                     self.refresh_context_usage(cx);
@@ -8317,10 +8349,6 @@ impl ChatScreen {
                                     frame.region = Some(bounds.size.height);
                                 },
                             )),
-                    )
-                    .when(
-                        self.awaiting_first_token && self.is_run_active(),
-                        |column| column.child(div().mt_6().child(render_waiting_indicator())),
                     )
                     .children(privacy)
                     .when_some(self.runtime_error.clone(), |column, error| {

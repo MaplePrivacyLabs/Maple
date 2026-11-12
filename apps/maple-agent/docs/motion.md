@@ -71,8 +71,8 @@ of `app/src/ui/effort_slider.rs` and `app/src/ui/chat/effort.rs`, and they
 stay out of the tokens on purpose: nothing else should move like it.
 
 Press feedback is immediate (`.active()`), and focus rings appear at once.
-Looping indicators (spinners, the waiting dots, the running ring) use the
-shared 15 fps `ticker` clock and pause in background windows.
+Looping indicators (spinners, a running turn's line, the running ring) use
+the shared 15 fps `ticker` clock and pause in background windows.
 
 ## Where motion applies
 
@@ -86,11 +86,12 @@ shared 15 fps `ticker` clock and pause in background windows.
 | Empty state ↔ conversation (first message, opening a task, New Task) | the composer changes place at once | at once |
 | Switching tasks | transcript fades in when its snapshot lands, `REVEAL` | immediate |
 | Live transcript rows at the end of the thread (sent message, reply, thinking, tool card, error, stop notice) | height grows from 0 and the row fades in, `ENTER`, so older rows glide up; scrolled up, a fade and 6 px rise | — |
-| Sent message | the composer empties at once and the bubble's slot opens from the height it gave up, so the thread does not drop; the bubble rises in, the real row takes its exact place, and "Sending…" and the waiting dots share one slot under it | — |
+| Sent message | the composer empties at once and the bubble's slot opens from the height it gave up, so the thread does not drop; the bubble rises in, the real row takes its exact place, and "Sending…" and the turn's line share one slot under it | — |
 | Tool status | spinner leaves at once, the outcome fades in, `TOGGLE` | — |
 | Disclosed details (tool output, thinking) | fade in, `REVEAL` | immediate |
 | Streaming text | grows in place, no animation | — |
-| Waiting dots | fade in, `REVEAL` | immediate |
+| A turn's line ("Maple is thinking", "Worked for 11s") | fades in under the transcript, `REVEAL`, and keeps its place when the turn's first step takes it into the list; a sheen crosses the mark and the words while Maple works, and the words morph when they change | immediate |
+| A turn's steps, shown from its line | fade in, `REVEAL`; the chevron turns, `TOGGLE` | immediate |
 | Notices, queued messages, cards above the composer | fade and rise, `ENTER` | immediate |
 | Files attached to the draft | fade and 6 px rise, `ENTER` | immediate |
 | Composer and multi-line fields | height eases to the new line count, `resize(distance)` | same |
@@ -150,8 +151,10 @@ appear only after 300 ms, so fast loads never flash a spinner.
 - Transcript rows sit in a `gpui::list`, whose items lose element state when
   they scroll away. Their entrance is driven by the arrival time kept in view
   state, so a row animates once and never replays. A row that replaces the
-  slot under the transcript (the waiting dots, a sent message, a failed
-  send) opens from the slot's height, so nothing above it jumps. The sent
+  slot under the transcript (a turn's line, a sent message, a failed
+  send) opens from the slot's height, so nothing above it jumps. A turn's
+  first step draws the line itself: the line stays where the slot showed it
+  and only what is under it opens. The sent
   message's row takes over from its bubble by the key the transcript files
   the row under (`timeline_view_key`), which for a real host's rows is not
   the id the event names; test hand-offs with rows that carry a live or

@@ -1557,6 +1557,14 @@ chat-permission-reason-uncertain = Maple ist nicht sicher, ob diese Aktion siche
 chat-permission-reason-unavailable = Maple konnte diese Aktion nicht prüfen.
 chat-permission-reason-too-long = Diese Aktion ist zu lang, um von Maple geprüft zu werden.
 chat-thinking-label = Maple denkt nach
+chat-turn-working = Maple arbeitet
+chat-turn-writing = Maple schreibt
+chat-turn-waiting = Wartet auf dich
+chat-turn-worked = Gearbeitet
+# $seconds is a whole number of seconds, under 60.
+chat-turn-worked-seconds = { $seconds } s gearbeitet
+# $minutes is a whole number of minutes; $seconds is the rest, under 60.
+chat-turn-worked-minutes = { $minutes } min { $seconds } s gearbeitet
 chat-settings = Einstellungen
 chat-usage = Nutzung
 chat-usage-unavailable = Nutzung nicht verfügbar

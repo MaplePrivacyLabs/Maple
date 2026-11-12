@@ -396,6 +396,12 @@ chat-trust-description 1e3842500e30ef07
 chat-trust-keep d6e02ad22aeeeba6
 chat-trust-saved 92a4e34ef0b734ae
 chat-trust-title 4a6389783686eec6
+chat-turn-waiting 130514d0bacc91a7
+chat-turn-worked 5dcfb6d76e519bf9
+chat-turn-worked-minutes 9b13b6f2c1f967be
+chat-turn-worked-seconds 4807eaf86de7008a
+chat-turn-working e96e500129b24c76
+chat-turn-writing 99f475aed0d017b8
 chat-unpin 4aee1206999bb9d1
 chat-unpin-task b4d9f9b7b531c64a
 chat-untrust-project ff48514cda33c012

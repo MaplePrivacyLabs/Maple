@@ -196,7 +196,10 @@ the dark background.
 The 60 / 30 / 10 rule maps to: workspace and transcript on `bg_app`;
 sidebar, settings navigation, popups, and hover fills on Pebble; coral only
 on the send button, the composer border, focus rings, the new-task row,
-selected menu items, and primary buttons.
+selected menu items, and primary buttons. Status in the transcript stays
+neutral with a coral glyph at most: the Maple mark on a turn's line is
+Pebble (`status_running`), a coral sheen (`accent_ink`) crosses it while
+Maple works, and it rests in coral only while Maple waits for the user.
 
 ### Type
 

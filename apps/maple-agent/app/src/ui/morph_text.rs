@@ -7,6 +7,9 @@
 //! One shaping per change and one tiny shaped run per letter per frame,
 //! only while a morph runs; at rest it paints a single line and asks for no
 //! frames. Reduced motion swaps the text at once.
+//!
+//! Text that reports work in progress can also carry a shine: a band of a
+//! second colour that crosses the words on the shared loop clock.
 
 use std::time::{Duration, Instant};
 
@@ -25,6 +28,7 @@ pub struct MorphText {
     text: SharedString,
     color: Option<Hsla>,
     instant: bool,
+    shine: Option<(Duration, Hsla)>,
 }
 
 /// Morphing text in the surrounding text style; `id` keeps its state
@@ -35,6 +39,7 @@ pub fn morph_text(id: impl Into<ElementId>, text: impl Into<SharedString>) -> Mo
         text: text.into(),
         color: None,
         instant: false,
+        shine: None,
     }
 }
 
@@ -53,6 +58,23 @@ impl MorphText {
         self.instant = instant;
         self
     }
+
+    /// Sweep a band of `color` across the words once every `cycle`. It
+    /// holds still when loops do: under reduced motion, and in a window
+    /// that is not active.
+    pub fn shine(mut self, cycle: Duration, color: impl Into<Hsla>) -> Self {
+        self.shine = Some((cycle, color.into()));
+        self
+    }
+}
+
+/// How much of the shine a letter `at` of the way along the line takes
+/// when the band is `phase` of the way through its pass.
+fn shine_level(at: f32, phase: f32) -> f32 {
+    // The band enters and leaves past the ends of the line.
+    const REACH: f32 = 0.3;
+    let head = -REACH + phase * (1. + 2. * REACH);
+    crate::ui::motion::smoothstep((1. - (at - head).abs() / REACH).max(0.))
 }
 
 /// One letter and where it sits from the line's start.
@@ -295,32 +317,50 @@ impl Element for MorphText {
         let font_size = style.font_size.to_pixels(rem);
         let line_height = style.line_height_in_pixels(rem);
         let fallback = style.color;
+        // Where the band is this frame, while loops run.
+        let shine = self
+            .shine
+            .filter(|_| !crate::ui::motion::loops_paused(window, cx))
+            .map(|(cycle, color)| (crate::ui::motion::phase(cycle), color));
         let animating = window.with_element_state::<State, _>(id, |state, window| {
             let state = state.unwrap_or_default();
             let progress = state.progress(Instant::now());
             let eased = progress.map(ease);
             let color = state.visual_color(eased, fallback);
+            // A letter `x` along the line takes the shine where the band is.
+            let tint = |x: Pixels| match shine {
+                Some((phase, shine)) if state.width > px(0.) => {
+                    mix(color, shine, shine_level(x / state.width, phase))
+                }
+                _ => color,
+            };
+            let draw = |window: &mut Window,
+                        cx: &mut App,
+                        text: &SharedString,
+                        runs: &[gpui::TextRun],
+                        x,
+                        y| {
+                window
+                    .text_system()
+                    .shape_line(text.clone(), font_size, runs, None)
+                    .paint(
+                        point(bounds.left() + x, bounds.top() + y),
+                        line_height,
+                        TextAlign::Left,
+                        None,
+                        window,
+                        cx,
+                    )
+                    .ok();
+            };
             let paint =
                 |window: &mut Window, cx: &mut App, text: &SharedString, x, y, alpha: f32| {
                     if alpha <= 0. {
                         return;
                     }
                     let mut run = style.to_run(text.len());
-                    run.color = color.opacity(alpha);
-                    let shaped =
-                        window
-                            .text_system()
-                            .shape_line(text.clone(), font_size, &[run], None);
-                    shaped
-                        .paint(
-                            point(bounds.left() + x, bounds.top() + y),
-                            line_height,
-                            TextAlign::Left,
-                            None,
-                            window,
-                            cx,
-                        )
-                        .ok();
+                    run.color = tint(x).opacity(alpha);
+                    draw(window, cx, text, &[run], x, y);
                 };
             match (progress, &state.morph) {
                 (Some(t), Some(morph)) if t < 1. => {
@@ -349,6 +389,21 @@ impl Element for MorphText {
                     }
                     (true, state)
                 }
+                _ if shine.is_some() => {
+                    // One line with a run per letter, so the shine does
+                    // not disturb the spacing of the words.
+                    let runs: Vec<_> = state
+                        .letters
+                        .iter()
+                        .map(|letter| {
+                            let mut run = style.to_run(letter.text.len());
+                            run.color = tint(letter.x);
+                            run
+                        })
+                        .collect();
+                    draw(window, cx, &state.text, &runs, px(0.), px(0.));
+                    (false, state)
+                }
                 _ => {
                     paint(window, cx, &state.text, px(0.), px(0.), 1.);
                     (false, state)
@@ -357,6 +412,8 @@ impl Element for MorphText {
         });
         if animating {
             window.request_animation_frame();
+        } else if shine.is_some() {
+            crate::ui::motion::schedule_loop_frame(window, cx);
         }
     }
 }
