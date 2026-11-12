@@ -13027,7 +13027,7 @@ mod state_tests {
     }
 
     #[gpui::test]
-    fn update_badge_marks_settings_and_its_menu_row_routes_by_state(cx: &mut TestAppContext) {
+    fn update_dot_marks_settings_and_its_menu_header_routes_by_state(cx: &mut TestAppContext) {
         use std::cell::RefCell;
         use std::rc::Rc;
         let (chat, cx) = chat_window(cx, |_, _| {});
@@ -13067,30 +13067,23 @@ mod state_tests {
             cx.run_until_parked();
         };
 
-        assert!(cx.debug_bounds("settings-update-badge").is_none());
+        assert!(cx.debug_bounds("settings-update-dot").is_none());
         press(cx, "open-settings");
         assert!(cx.debug_bounds("settings-menu-update").is_none());
         press(cx, "open-settings");
 
         set(cx, crate::update::State::Ready, true);
-        // The menu row says which version is ready and what a click does.
-        let (title, detail, failed) = cx
-            .update(|_, app| chat.read(app).update_notice())
-            .expect("update notice");
-        assert_eq!(title.as_ref(), "Maple 0.0.14 is ready");
-        assert_eq!(detail.as_deref(), Some("Restart to install"));
-        assert!(!failed);
-        let badge = cx.debug_bounds("settings-update-badge").expect("badge");
+        let badge = cx.debug_bounds("settings-update-dot").expect("dot");
         let settings = cx.debug_bounds("open-settings").expect("settings button");
         assert!(
-            badge.left() > settings.left() + px(40.) && badge.right() < settings.center().x,
-            "the badge follows the Settings label: {badge:?}, {settings:?}"
+            badge.left() > settings.left() && badge.right() < settings.left() + px(40.),
+            "the dot stays on the gear, not beside the Settings label: {badge:?}, {settings:?}"
         );
         assert!(badge.top() >= settings.top() && badge.bottom() <= settings.bottom());
         press(cx, "open-settings");
         assert!(
-            cx.debug_bounds("settings-menu-update").unwrap().top()
-                < cx.debug_bounds("settings-menu-account").unwrap().top()
+            cx.debug_bounds("settings-menu-update").unwrap().bottom()
+                < cx.debug_bounds("settings-menu-usage").unwrap().top()
         );
         press(cx, "settings-menu-update");
         assert!(cx.debug_bounds("settings-menu").is_none());
@@ -13104,9 +13097,30 @@ mod state_tests {
 
         // "Later" in About hides both until the next release.
         set(cx, crate::update::State::Ready, false);
-        assert!(cx.debug_bounds("settings-update-badge").is_none());
+        assert!(cx.debug_bounds("settings-update-dot").is_none());
         press(cx, "open-settings");
         assert!(cx.debug_bounds("settings-menu-update").is_none());
+
+        // Collapsing keeps the update discoverable and first in keyboard order.
+        cx.simulate_keystrokes("escape");
+        set(cx, crate::update::State::Ready, true);
+        chat.update(cx, |chat, cx| {
+            chat.set_sidebar_collapsed(true, cx);
+            chat.popup.open(ChatPopup::Settings, cx);
+        });
+        cx.update(|window, _| window.refresh());
+        cx.run_until_parked();
+        let dot = cx
+            .debug_bounds("settings-update-dot")
+            .expect("collapsed dot");
+        let settings = cx
+            .debug_bounds("open-settings")
+            .expect("collapsed settings");
+        assert!(dot.left() >= settings.left() && dot.right() <= settings.right());
+        assert!(dot.top() >= settings.top() && dot.bottom() <= settings.bottom());
+        cx.simulate_keystrokes("home enter");
+        assert!(cx.debug_bounds("settings-menu").is_none());
+        assert_eq!(*actions.borrow(), [crate::update::UpdateAction::Restart; 2]);
     }
 
     #[gpui::test]

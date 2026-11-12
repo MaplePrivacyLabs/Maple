@@ -403,7 +403,6 @@ chat-update-available dbec8c4fab61ccd6
 chat-update-available-detail 72d803675f9f86e8
 chat-update-available-version a6efeb25f1a3ae6d
 chat-update-error 9c328658eceee405
-chat-update-error-detail e74f42ccbbe8ed6d
 chat-update-ready 5e10b52f01d6b6ee
 chat-update-ready-detail 4baec3978867fa75
 chat-update-restart 17d5de3c0dccd790

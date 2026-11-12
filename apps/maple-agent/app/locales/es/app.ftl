@@ -1546,7 +1546,6 @@ chat-update-ready-detail = Reinicia para instalar
 # $version es la versión de la aplicación y no se traduce.
 chat-update-available-version = Maple { $version } está disponible
 chat-update-available-detail = Descárgalo desde Acerca de.
-chat-update-error-detail = Tu versión actual sigue funcionando.
 chat-store-updating = Actualizando datos locales…
 chat-host-unavailable = El host de Maple no está disponible. Vuelve a abrir Maple para recargar tus tareas. No se volvió a enviar ningún mensaje.
 chat-runtime-start-failed = No se pudo iniciar el agente: { $message }

@@ -1666,7 +1666,6 @@ chat-update-ready-detail = Restart to install
 # $version is the application version, not translated.
 chat-update-available-version = Maple { $version } is available
 chat-update-available-detail = Download it from About.
-chat-update-error-detail = Your current version still works.
 chat-store-updating = Updating local data…
 chat-host-unavailable = The Maple host is unavailable. Reopen Maple to reload your tasks. No message was resent.
 # $message is the underlying error, which may be untranslated.
