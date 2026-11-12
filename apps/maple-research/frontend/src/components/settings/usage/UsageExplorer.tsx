@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useLayoutEffect, useMemo, useState } from "react";
 import type { UsageRange, UsageResponse } from "@/billing/usageApi";
 import { SettingsSection } from "@/components/settings/SettingsPage";
 import {
@@ -338,7 +338,7 @@ function DailyChart({
         : undefined,
     [chart.series, split]
   );
-  useEffect(() => {
+  useLayoutEffect(() => {
     onNamedModelsChange(namedModels);
   }, [namedModels, onNamedModelsChange]);
 
@@ -532,7 +532,7 @@ export function UsageExplorer({
   const data = usage.data;
   const summary = useMemo(() => (data ? summarizeDays(data.days, data.models) : null), [data]);
   const dates = useMemo(() => (data ? responseDates(data, today) : []), [data, today]);
-  useEffect(() => {
+  useLayoutEffect(() => {
     if (!data) onNamedModelsChange(undefined);
   }, [data, onNamedModelsChange]);
 

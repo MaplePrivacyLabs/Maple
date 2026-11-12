@@ -95,8 +95,8 @@ export function catalogIndex(
     const indexed = new Map<string, number>();
     highlights.groups
       .flatMap(({ models }) => models)
-      .forEach((id, index) => {
-        if (!indexed.has(id)) indexed.set(id, index);
+      .forEach((id) => {
+        if (!indexed.has(id)) indexed.set(id, indexed.size);
       });
     ranks = indexed;
     HIGHLIGHT_RANKS.set(highlights, ranks);

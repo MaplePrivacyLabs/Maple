@@ -359,6 +359,36 @@ describe("buildDailyChart", () => {
     expect(chart.days[1].extraCredits).toBe(20);
   });
 
+  test("duplicate catalog entries do not change the following model's slot", () => {
+    const duplicates = modelHighlights({
+      groups: [
+        { id: "served", label: "Served" },
+        { id: "served", label: "Repeated" }
+      ],
+      data: [
+        { id: "first-model", group: "served" },
+        { id: "second-model", group: "served" }
+      ]
+    });
+    const chart = buildDailyChart({
+      dates: [dates[0]],
+      rows: [
+        row({ date: dates[0], model: "first-model", credits: 1 }),
+        row({ date: dates[0], model: "second-model", credits: 2 })
+      ],
+      metric: "credits",
+      split: "model",
+      labels,
+      highlights: duplicates
+    });
+    // Native assigns the first group of duplicate memberships too. Duplicates
+    // must not consume a second index and shift the next model's color on web.
+    expect(chart.series.map(({ key, color, group }) => [key, color, group])).toEqual([
+      ["first-model", "var(--series-1)", "Served"],
+      ["second-model", "var(--series-2)", "Served"]
+    ]);
+  });
+
   const catalogHighlights = modelHighlights({
     groups: [
       { id: "capable", label: "Most capable" },

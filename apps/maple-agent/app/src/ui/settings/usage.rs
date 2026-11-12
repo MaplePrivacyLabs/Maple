@@ -215,6 +215,9 @@ impl SettingsScreen {
     /// Fetch the history, recent requests and prices for the page. Needs
     /// the flag and billing status; runs again when either arrives.
     pub(super) fn load_usage(&mut self, cx: &mut Context<Self>) {
+        if self.usage.enabled == Some(true) {
+            self.load_usage_catalog(cx);
+        }
         if !self.usage.shows_insights(self.billing.status.as_ref()) {
             self.load_usage_flag(cx);
             return;
@@ -227,7 +230,7 @@ impl SettingsScreen {
     /// Optional highlight metadata. Never hold billing for this request: a
     /// stalled catalog leaves the history usable with cached or legacy colors.
     fn load_usage_catalog(&mut self, cx: &mut Context<Self>) {
-        if self.usage.catalog.is_some() || self.usage.catalog_loading {
+        if self.usage.catalog_loading {
             return;
         }
         self.usage.catalog_loading = true;
@@ -288,11 +291,11 @@ impl SettingsScreen {
     }
 
     fn load_usage_summary(&mut self, cx: &mut Context<Self>) {
+        self.load_usage_catalog(cx);
         let Some(status) = self.billing.status.as_ref() else {
             return;
         };
         let window = model::status_window(status);
-        self.load_usage_catalog(cx);
         let query = UsageQuery {
             range: self.usage.range.query(),
             tz: self.usage.tz.clone(),
@@ -939,6 +942,51 @@ mod tests {
         settle(&settings, cx, |this| !this.usage.summary_loading);
         assert!(cx.debug_bounds("usage-range-error-retry").is_some());
         assert!(cx.debug_bounds("usage-total-credits").is_some());
+    }
+
+    #[gpui::test]
+    fn catalog_refreshes_without_billing_and_keeps_a_cached_catalog_on_error(
+        cx: &mut TestAppContext,
+    ) {
+        let (settings, cx) = usage_window(cx);
+        settings.update(cx, |this, cx| {
+            assert!(this.billing.status.is_none());
+            this.usage.enabled = Some(true);
+            this.usage.flag_failed = false;
+            this.load_usage(cx);
+            assert!(
+                this.usage.catalog_loading,
+                "metadata does not wait for billing"
+            );
+            assert!(
+                !this.usage.summary_loading,
+                "history still needs billing status"
+            );
+        });
+        settle(&settings, cx, |this| !this.usage.catalog_loading);
+        settings.update(cx, |this, cx| {
+            this.usage.catalog = Some(maple_sdk::ModelCatalogResponse {
+                object: "last-good".into(),
+                ..Default::default()
+            });
+            this.load_usage_summary(cx);
+            assert!(
+                this.usage.catalog_loading,
+                "a cached catalog is revalidated"
+            );
+            assert!(
+                !this.usage.summary_loading,
+                "no billing status is available"
+            );
+        });
+        settle(&settings, cx, |this| !this.usage.catalog_loading);
+        settings.update(cx, |this, _cx| {
+            assert_eq!(
+                this.usage.catalog.as_ref().map(|catalog| catalog.object.as_str()),
+                Some("last-good"),
+                "the test backend has no account, so this failed refresh retains the last good catalog"
+            );
+        });
     }
 
     #[gpui::test]
