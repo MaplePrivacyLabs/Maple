@@ -22,8 +22,9 @@ use gpui::{Context, Div, SharedString, Window, div, prelude::*, px};
 use self::chart::Tip;
 use self::labels::*;
 use self::model::{
-    DailyChart, Metric, MonthBucket, Origin, PeriodProgress, PlanKind, PlanWindow, RangeSummary,
-    SeriesKey, Split, TokenKind, UsageRange, fmt_compact, fmt_count, fmt_price, percent,
+    DailyChart, Metric, ModelRanking, MonthBucket, Origin, PeriodProgress, PlanKind, PlanWindow,
+    RangeSummary, SeriesKey, Split, TokenKind, UsageRange, fmt_compact, fmt_count, fmt_price,
+    percent,
 };
 use self::ui::*;
 use super::billing::BillingTarget;
@@ -77,6 +78,9 @@ pub(super) struct UsageState {
     pub(super) metric: Metric,
     pub(super) split: Split,
     summary: Option<UsageSummary>,
+    /// Catalog grouping for highlights; an older response falls back in model.
+    catalog: Option<maple_sdk::ModelCatalogResponse>,
+    catalog_loading: bool,
     /// The range `summary` answers.
     summary_range: Option<UsageRange>,
     /// The range whose last load failed, until a load succeeds.
@@ -103,6 +107,8 @@ impl UsageState {
             metric: Metric::Credits,
             split: Split::Model,
             summary: None,
+            catalog: None,
+            catalog_loading: false,
             summary_range: None,
             failed_range: None,
             summary_loading: false,
@@ -154,6 +160,8 @@ struct RangeData {
 pub(super) struct UsageData {
     today: NaiveDate,
     plan: PlanData,
+    /// Catalog-derived model colors shared by every Usage section.
+    model_ranking: ModelRanking,
     /// The plan card's percent and reset, from the same status as the
     /// lines under it.
     plan_usage: Option<crate::billing::PlanUsage>,
@@ -207,6 +215,9 @@ impl SettingsScreen {
     /// Fetch the history, recent requests and prices for the page. Needs
     /// the flag and billing status; runs again when either arrives.
     pub(super) fn load_usage(&mut self, cx: &mut Context<Self>) {
+        if self.usage.enabled == Some(true) {
+            self.load_usage_catalog(cx);
+        }
         if !self.usage.shows_insights(self.billing.status.as_ref()) {
             self.load_usage_flag(cx);
             return;
@@ -214,6 +225,42 @@ impl SettingsScreen {
         self.load_usage_summary(cx);
         self.load_usage_requests(true, cx);
         self.load_usage_prices(cx);
+    }
+
+    /// Optional highlight metadata. Never hold billing for this request: a
+    /// stalled catalog leaves the history usable with cached models and colors.
+    fn load_usage_catalog(&mut self, cx: &mut Context<Self>) {
+        if self.usage.catalog_loading {
+            return;
+        }
+        self.usage.catalog_loading = true;
+        let backend = self.backend.clone();
+        let user_id = self.user_id.clone();
+        let request_user_id = user_id.clone();
+        self.call_presented(
+            async move {
+                backend
+                    .call_presented::<maple_sdk::ModelCatalogResponse>(
+                        "model_catalog",
+                        (&request_user_id,),
+                    )
+                    .await
+            },
+            cx,
+            move |this, result, cx| {
+                this.usage.catalog_loading = false;
+                if this.user_id != user_id {
+                    return;
+                }
+                if let Ok(catalog) = result {
+                    this.usage.catalog = Some(catalog);
+                    // Apply to the current selection; never resurrect an
+                    // old range's summary or loading state.
+                    this.rebuild_usage_data();
+                }
+                this.usage_changed(cx);
+            },
+        );
     }
 
     /// Today's model prices; fetched once, or again after a failure.
@@ -244,6 +291,7 @@ impl SettingsScreen {
     }
 
     fn load_usage_summary(&mut self, cx: &mut Context<Self>) {
+        self.load_usage_catalog(cx);
         let Some(status) = self.billing.status.as_ref() else {
             return;
         };
@@ -438,6 +486,7 @@ impl SettingsScreen {
             self.usage.summary_range == selected
                 || (self.usage.summary_loading && self.usage.failed_range != selected)
         });
+        let model_ranking = model::ModelRanking::from_catalog(self.usage.catalog.as_ref());
         let range = shown.map(|summary| {
             let dates = model::response_dates(
                 self.usage.range,
@@ -453,6 +502,7 @@ impl SettingsScreen {
                 metric,
                 self.usage.split,
                 &summary.models,
+                &model_ranking,
             );
             let reset_index = plan.window.as_ref().and_then(|window| {
                 let start = model::local_date(window.start);
@@ -485,6 +535,7 @@ impl SettingsScreen {
         self.usage.data = Some(Rc::new(UsageData {
             today,
             plan,
+            model_ranking,
             plan_usage: crate::billing::PlanUsage::from_status(status, chrono::Local::now()),
             range,
             months,
@@ -891,6 +942,51 @@ mod tests {
         settle(&settings, cx, |this| !this.usage.summary_loading);
         assert!(cx.debug_bounds("usage-range-error-retry").is_some());
         assert!(cx.debug_bounds("usage-total-credits").is_some());
+    }
+
+    #[gpui::test]
+    fn catalog_refreshes_without_billing_and_keeps_a_cached_catalog_on_error(
+        cx: &mut TestAppContext,
+    ) {
+        let (settings, cx) = usage_window(cx);
+        settings.update(cx, |this, cx| {
+            assert!(this.billing.status.is_none());
+            this.usage.enabled = Some(true);
+            this.usage.flag_failed = false;
+            this.load_usage(cx);
+            assert!(
+                this.usage.catalog_loading,
+                "metadata does not wait for billing"
+            );
+            assert!(
+                !this.usage.summary_loading,
+                "history still needs billing status"
+            );
+        });
+        settle(&settings, cx, |this| !this.usage.catalog_loading);
+        settings.update(cx, |this, cx| {
+            this.usage.catalog = Some(maple_sdk::ModelCatalogResponse {
+                object: "last-good".into(),
+                ..Default::default()
+            });
+            this.load_usage_summary(cx);
+            assert!(
+                this.usage.catalog_loading,
+                "a cached catalog is revalidated"
+            );
+            assert!(
+                !this.usage.summary_loading,
+                "no billing status is available"
+            );
+        });
+        settle(&settings, cx, |this| !this.usage.catalog_loading);
+        settings.update(cx, |this, _cx| {
+            assert_eq!(
+                this.usage.catalog.as_ref().map(|catalog| catalog.object.as_str()),
+                Some("last-good"),
+                "the test backend has no account, so this failed refresh retains the last good catalog"
+            );
+        });
     }
 
     #[gpui::test]

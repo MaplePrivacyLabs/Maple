@@ -114,6 +114,19 @@ impl SettingsScreen {
         if requests.rows.is_empty() {
             return section.child(empty_note(tr("settings-usage-requests-empty")));
         }
+        // `None` means there is no model chart (another split or no range).
+        // Some(empty) means a model chart is drawn and every row is folded.
+        let named_models: Option<Vec<&str>> = match &data.range {
+            Some(range) if self.usage.split == Split::Model => Some(
+                range
+                    .chart
+                    .series
+                    .iter()
+                    .filter_map(|series| series.model.as_deref())
+                    .collect(),
+            ),
+            _ => None,
+        };
         let now = chrono::Local::now();
         let header = table_row(
             [
@@ -145,6 +158,11 @@ impl SettingsScreen {
                         origin => origin_name(origin),
                     };
                     let label = model::model_label(&request.model, &requests.labels);
+                    let color = if let Some(models) = named_models.as_deref() {
+                        palette::model_among(&request.model, models, &data.model_ranking)
+                    } else {
+                        palette::model(&request.model, &data.model_ranking)
+                    };
                     let extra = request.pool == "extra" && kind == PlanKind::Credits;
                     table_row([
                         (
@@ -161,7 +179,7 @@ impl SettingsScreen {
                                 .items_center()
                                 .gap_2()
                                 .min_w_0()
-                                .child(chart::swatch(palette::model(&request.model), px(8.)))
+                                .child(chart::swatch(color, px(8.)))
                                 .child(
                                     div()
                                         .truncate()
@@ -322,7 +340,10 @@ impl SettingsScreen {
                         .items_center()
                         .gap_2()
                         .min_w_0()
-                        .child(chart::swatch(palette::model(&price.id), px(8.)))
+                        .child(chart::swatch(
+                            palette::model(&price.id, &data.model_ranking),
+                            px(8.),
+                        ))
                         .child(
                             div()
                                 .truncate()
@@ -360,7 +381,10 @@ impl SettingsScreen {
                         .items_center()
                         .gap_2()
                         .min_w_0()
-                        .child(chart::swatch(palette::model(model), px(8.)))
+                        .child(chart::swatch(
+                            palette::model(model, &data.model_ranking),
+                            px(8.),
+                        ))
                         .child(
                             div()
                                 .truncate()

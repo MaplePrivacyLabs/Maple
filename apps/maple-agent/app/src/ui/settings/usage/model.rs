@@ -9,16 +9,100 @@ use crate::billing::{BillingStatus, UsageDayRow, UsageModelLabels, UsageMonthRow
 /// Longest date list built from server-supplied bounds.
 const MAX_DAYS: u64 = 400;
 
-/// Fixed color slots for the current flagship models. A model keeps its
-/// color across ranges; every other model folds into "More models" in
-/// charts, while tables still list it by name.
-pub(crate) const MODEL_SLOTS: [&str; 5] = [
-    "glm-5-3",
-    "kimi-k3",
-    "deepseek-v4-1-flash",
-    "gpt-oss-120b",
-    "glm-5-3-flash",
+/// Compatibility highlights for servers whose catalogs predate groups. The
+/// served catalog controls current grouping and order; GPT-OSS stays unpinned.
+const HIGHLIGHT_GROUPS: [(&str, &[&str]); 3] = [
+    ("capable", &["kimi-k3-1-pro", "kimi-k3", "glm-5-3"]),
+    ("uncensored", &["deepseek-v4-1-flash-1017-uncensored"]),
+    (
+        "fast",
+        &["gemma4-31b", "glm-5-3-flash", "deepseek-v4-1-flash"],
+    ),
 ];
+
+/// Named series before the rest fold into "More models"; one per chart color.
+pub(crate) const MAX_NAMED_MODELS: usize = 7;
+
+/// The picker's grouped models in chart order, with owned group headings.
+pub(crate) struct ModelRanking {
+    groups: Vec<maple_sdk::CatalogGroup>,
+    models: Vec<(String, Option<usize>)>,
+}
+
+impl Default for ModelRanking {
+    fn default() -> Self {
+        Self {
+            groups: HIGHLIGHT_GROUPS
+                .iter()
+                .map(|(id, _)| maple_sdk::CatalogGroup {
+                    id: (*id).to_string(),
+                    label: String::new(),
+                })
+                .collect(),
+            models: HIGHLIGHT_GROUPS
+                .iter()
+                .enumerate()
+                .flat_map(|(group, (_, models))| {
+                    models
+                        .iter()
+                        .map(move |model| ((*model).to_string(), Some(group)))
+                })
+                .collect(),
+        }
+    }
+}
+
+impl ModelRanking {
+    pub(crate) fn from_catalog(catalog: Option<&maple_sdk::ModelCatalogResponse>) -> Self {
+        let Some(catalog) = catalog.filter(|catalog| !catalog.groups.is_empty()) else {
+            return Self::default();
+        };
+        let mut models = Vec::new();
+        for (group_index, group) in catalog.groups.iter().enumerate() {
+            for model in catalog.data.iter().filter(|model| {
+                model.available_in_agent != Some(false)
+                    && model.group.as_deref() == Some(group.id.as_str())
+            }) {
+                if models
+                    .iter()
+                    .all(|(candidate, _): &(String, Option<usize>)| candidate != &model.id)
+                {
+                    models.push((model.id.clone(), Some(group_index)));
+                }
+            }
+        }
+        Self {
+            groups: catalog.groups.clone(),
+            models,
+        }
+    }
+
+    /// Position in the catalog's quality order, independent of palette size.
+    fn catalog_index(&self, model: &str) -> Option<usize> {
+        self.models
+            .iter()
+            .position(|(candidate, _)| candidate == model)
+    }
+
+    /// Only palette-sized ranks are pinned. Later catalog entries borrow a
+    /// free color when selected; they never wrap around by catalog position.
+    pub(crate) fn model_slot(&self, model: &str) -> Option<usize> {
+        self.catalog_index(model)
+            .filter(|slot| *slot < MAX_NAMED_MODELS)
+    }
+
+    fn model_group(&self, model: &str) -> Option<&maple_sdk::CatalogGroup> {
+        let (_, group) = self
+            .models
+            .iter()
+            .find(|(candidate, _)| candidate == model)?;
+        self.groups.get((*group)?)
+    }
+
+    fn highlight_models(&self) -> impl Iterator<Item = &str> {
+        self.models.iter().map(|(model, _)| model.as_str())
+    }
+}
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) enum PlanKind {
@@ -283,8 +367,80 @@ pub(crate) fn model_label(model: &str, labels: &UsageModelLabels) -> String {
         .to_string()
 }
 
-pub(crate) fn model_slot(model: &str) -> Option<usize> {
-    MODEL_SLOTS.iter().position(|slot| *slot == model)
+impl ModelRanking {
+    fn series_before(&self, left: &str, right: &str) -> std::cmp::Ordering {
+        match (self.catalog_index(left), self.catalog_index(right)) {
+            (Some(left), Some(right)) => left.cmp(&right),
+            (Some(_), None) => std::cmp::Ordering::Less,
+            (None, Some(_)) => std::cmp::Ordering::Greater,
+            (None, None) => left.cmp(right),
+        }
+    }
+
+    /// Every model used in the range gets its own series until the chart runs
+    /// out of colors. Catalog order chooses the best members; unranked models
+    /// use stable ID order so changing the metric cannot change that selection.
+    fn choose_named<'a>(&'a self, totals: &[(&'a str, f64)]) -> (Vec<&'a str>, Vec<&'a str>) {
+        let used = |id: &str| {
+            totals
+                .iter()
+                .any(|(candidate, total)| *candidate == id && *total > 0.0)
+        };
+        // Overflow still occupies one of the seven legend slots. Fold the
+        // lowest catalog-ranked member rather than displace it with an
+        // uncatalogued model, even if the member sits beyond palette capacity.
+        let used_models = totals.iter().filter(|(_, total)| *total > 0.0).count();
+        let limit = if used_models > MAX_NAMED_MODELS {
+            MAX_NAMED_MODELS - 1
+        } else {
+            MAX_NAMED_MODELS
+        };
+        let mut named: Vec<&str> = self
+            .highlight_models()
+            .filter(|id| used(id))
+            .take(limit)
+            .collect();
+        let mut others: Vec<(&str, f64)> = totals
+            .iter()
+            .filter(|(id, total)| *total > 0.0 && self.catalog_index(id).is_none())
+            .map(|(id, total)| (*id, *total))
+            .collect();
+        others.sort_by(|left, right| left.0.cmp(right.0));
+        let room = limit - named.len();
+        named.extend(others.iter().take(room).map(|(id, _)| *id));
+        named.sort_by(|left, right| self.series_before(left, right));
+        let mut folded: Vec<&'a str> = self
+            .highlight_models()
+            .filter(|id| used(id))
+            .skip(limit)
+            .collect();
+        folded.extend(others.into_iter().skip(room).map(|(id, _)| id));
+        (named, folded)
+    }
+
+    /// Color slot for a model drawn with `named`. Highlights keep their fixed
+    /// slots; each other model takes the next free slot.
+    pub(crate) fn color_slot(&self, model: &str, named: &[&str]) -> Option<usize> {
+        if !named.contains(&model) {
+            return None;
+        }
+        if let Some(slot) = self.model_slot(model) {
+            return Some(slot);
+        }
+        let rank = named
+            .iter()
+            .filter(|peer| {
+                self.model_slot(peer).is_none() && self.series_before(peer, model).is_lt()
+            })
+            .count();
+        (0..MAX_NAMED_MODELS)
+            .filter(|slot| {
+                named
+                    .iter()
+                    .all(|peer| self.model_slot(peer) != Some(*slot))
+            })
+            .nth(rank)
+    }
 }
 
 #[derive(Clone, Debug, PartialEq)]
@@ -374,6 +530,10 @@ pub(crate) struct Series {
     /// The model's name for model series, and for "More models" when one
     /// model alone folded into it; `None` takes the key's localized label.
     pub(crate) label: Option<String>,
+    /// Canonical id for a named model, so matching tables get the same color.
+    pub(crate) model: Option<String>,
+    /// The model picker's display group, including its served English label.
+    pub(crate) group: Option<maple_sdk::CatalogGroup>,
 }
 
 #[derive(Clone, Debug, PartialEq)]
@@ -396,12 +556,123 @@ pub(crate) struct DailyChart {
     pub(crate) scale: NiceScale,
 }
 
+fn build_model_chart(
+    dates: &[NaiveDate],
+    rows: &[UsageDayRow],
+    metric: Metric,
+    labels: &UsageModelLabels,
+    ranking: &ModelRanking,
+) -> DailyChart {
+    let mut model_ids: Vec<&str> = Vec::new();
+    let mut per_model: Vec<Vec<f64>> = Vec::new();
+    let mut requests = vec![0u64; dates.len()];
+    let mut extra_credits = vec![0.0; dates.len()];
+    for row in rows {
+        let Some(day) =
+            parse_date(&row.date).and_then(|date| dates.iter().position(|d| *d == date))
+        else {
+            continue;
+        };
+        requests[day] += row.counts.requests;
+        if row.pool == "extra" {
+            extra_credits[day] += row.counts.credits;
+        }
+        let mut counts = Counts::default();
+        counts.add(&row.counts);
+        let value = counts.metric(metric);
+        let index = match model_ids.iter().position(|id| *id == row.model.as_str()) {
+            Some(index) => index,
+            None => {
+                model_ids.push(row.model.as_str());
+                per_model.push(vec![0.0; dates.len()]);
+                model_ids.len() - 1
+            }
+        };
+        per_model[index][day] += value;
+    }
+
+    let totals: Vec<(&str, f64)> = model_ids
+        .iter()
+        .zip(&per_model)
+        .map(|(id, days)| (*id, days.iter().sum()))
+        .collect();
+    let (named, folded_ids) = ranking.choose_named(&totals);
+    let mut series: Vec<Series> = named
+        .iter()
+        .map(|id| Series {
+            key: SeriesKey::Model(
+                ranking
+                    .color_slot(id, &named)
+                    .expect("a named model has a free color"),
+            ),
+            label: Some(model_label(id, labels)),
+            model: Some((*id).to_string()),
+            group: ranking.model_group(id).cloned(),
+        })
+        .collect();
+    if !folded_ids.is_empty() {
+        let label = (folded_ids.len() == 1).then(|| model_label(folded_ids[0], labels));
+        series.push(Series {
+            key: SeriesKey::MoreModels,
+            label,
+            model: None,
+            group: None,
+        });
+    }
+
+    let several_folded = folded_ids.len() > 1;
+    let days: Vec<ChartDay> = dates
+        .iter()
+        .enumerate()
+        .map(|(day, &date)| {
+            let mut values: Vec<f64> = named
+                .iter()
+                .map(|id| {
+                    model_ids
+                        .iter()
+                        .position(|candidate| *candidate == *id)
+                        .map(|index| per_model[index][day])
+                        .unwrap_or(0.0)
+                })
+                .collect();
+            let mut folded = Vec::new();
+            let mut folded_total = 0.0;
+            for id in &folded_ids {
+                let value = model_ids
+                    .iter()
+                    .position(|candidate| *candidate == *id)
+                    .map(|index| per_model[index][day])
+                    .unwrap_or(0.0);
+                if value > 0.0 {
+                    folded_total += value;
+                    folded.push((model_label(id, labels), value));
+                }
+            }
+            if !folded_ids.is_empty() {
+                values.push(folded_total);
+            }
+            folded.sort_by(|left, right| right.1.total_cmp(&left.1));
+            ChartDay {
+                date,
+                total: values.iter().sum(),
+                values,
+                requests: requests[day],
+                extra_credits: extra_credits[day],
+                folded: if several_folded { folded } else { Vec::new() },
+            }
+        })
+        .collect();
+    let peak = days.iter().map(|day| day.total).fold(0.0, f64::max);
+    DailyChart {
+        series,
+        days,
+        scale: nice_scale((peak.max(1.0)) * 1.04),
+    }
+}
+
 fn split_keys(split: Split) -> Vec<SeriesKey> {
     match split {
-        Split::Model => (0..MODEL_SLOTS.len())
-            .map(SeriesKey::Model)
-            .chain([SeriesKey::MoreModels])
-            .collect(),
+        Split::Model => Vec::new(),
         Split::Origin => Origin::ALL.into_iter().map(SeriesKey::Origin).collect(),
         Split::Pool => vec![SeriesKey::Plan, SeriesKey::Extra],
         Split::Token => TokenKind::ALL.into_iter().map(SeriesKey::Token).collect(),
@@ -414,14 +685,16 @@ pub(crate) fn build_daily_chart(
     metric: Metric,
     split: Split,
     labels: &UsageModelLabels,
+    ranking: &ModelRanking,
 ) -> DailyChart {
+    if split == Split::Model {
+        return build_model_chart(dates, rows, metric, labels, ranking);
+    }
     let keys = split_keys(split);
     let mut values = vec![vec![0.0; keys.len()]; dates.len()];
     let mut requests = vec![0u64; dates.len()];
     let mut extra_credits = vec![0.0; dates.len()];
-    // Models behind "More models", by id: two models can share a name.
-    let mut folded: Vec<Vec<(&str, f64)>> = vec![Vec::new(); dates.len()];
-    let mut folded_models: Vec<&str> = Vec::new();
+
     for row in rows {
         let Some(day) =
             parse_date(&row.date).and_then(|date| dates.iter().position(|d| *d == date))
@@ -446,9 +719,7 @@ pub(crate) fn build_daily_chart(
         counts.add(&row.counts);
         let value = counts.metric(metric);
         let key = match split {
-            Split::Model => model_slot(&row.model)
-                .map(SeriesKey::Model)
-                .unwrap_or(SeriesKey::MoreModels),
+            Split::Model => unreachable!("handled above"),
             Split::Origin => SeriesKey::Origin(Origin::of(&row.source, row.client_app.as_deref())),
             Split::Pool if row.pool == "extra" => SeriesKey::Extra,
             Split::Pool => SeriesKey::Plan,
@@ -459,57 +730,31 @@ pub(crate) fn build_daily_chart(
             .position(|k| *k == key)
             .expect("key of this split");
         values[day][index] += value;
-        if key == SeriesKey::MoreModels && value > 0.0 {
-            let model = row.model.as_str();
-            if !folded_models.contains(&model) {
-                folded_models.push(model);
-            }
-            match folded[day].iter_mut().find(|(id, _)| *id == model) {
-                Some((_, total)) => *total += value,
-                None => folded[day].push((model, value)),
-            }
-        }
     }
     let used: Vec<usize> = (0..keys.len())
         .filter(|&index| values.iter().map(|day| day[index]).sum::<f64>() > 0.0)
         .collect();
     let series = used
         .iter()
-        .map(|&index| {
-            let key = keys[index];
-            let label = match key {
-                SeriesKey::Model(slot) => Some(model_label(MODEL_SLOTS[slot], labels)),
-                SeriesKey::MoreModels if folded_models.len() == 1 => {
-                    Some(model_label(folded_models[0], labels))
-                }
-                _ => None,
-            };
-            Series { key, label }
+        .map(|&index| Series {
+            key: keys[index],
+            label: None,
+            model: None,
+            group: None,
         })
         .collect();
-    let several_folded = folded_models.len() > 1;
     let days: Vec<ChartDay> = dates
         .iter()
         .enumerate()
         .map(|(day, &date)| {
             let day_values: Vec<f64> = used.iter().map(|&index| values[day][index]).collect();
-            let day_folded = if several_folded {
-                let mut models = std::mem::take(&mut folded[day]);
-                models.sort_by(|a, b| b.1.total_cmp(&a.1));
-                models
-                    .into_iter()
-                    .map(|(id, value)| (model_label(id, labels), value))
-                    .collect()
-            } else {
-                Vec::new()
-            };
             ChartDay {
                 date,
                 total: day_values.iter().sum(),
                 values: day_values,
                 requests: requests[day],
                 extra_credits: extra_credits[day],
-                folded: day_folded,
+                folded: Vec::new(),
             }
         })
         .collect();
@@ -811,6 +1056,29 @@ mod tests {
         parse_date(value).unwrap()
     }
 
+    fn current_catalog() -> maple_sdk::ModelCatalogResponse {
+        serde_json::from_value(serde_json::json!({
+            "object": "list",
+            "groups": [
+                {"id": "capable", "label": "Most capable"},
+                {"id": "uncensored", "label": "Uncensored"},
+                {"id": "fast", "label": "Fast"},
+            ],
+            "data": [
+                {"id": "kimi-k3-1-pro", "group": "capable"},
+                {"id": "kimi-k3", "group": "capable"},
+                {"id": "glm-5-3", "group": "capable"},
+                {"id": "deepseek-v4-1-flash-1017-uncensored", "group": "uncensored"},
+                {"id": "gemma4-31b", "group": "fast"},
+                {"id": "glm-5-3-flash", "group": "fast"},
+                {"id": "deepseek-v4-1-flash", "group": "fast"},
+                {"id": "gpt-oss-120b"},
+                {"id": "llama3-3-70b"},
+            ]
+        }))
+        .unwrap()
+    }
+
     #[test]
     fn nice_scale_matches_the_web_axis() {
         let cases: [(f64, f64, &[f64]); 4] = [
@@ -850,7 +1118,7 @@ mod tests {
     }
 
     #[test]
-    fn daily_chart_folds_unslotted_models_and_names_a_lone_one() {
+    fn daily_chart_names_every_used_model_until_the_legend_is_full() {
         let dates = date_range(day("2026-10-01"), day("2026-10-03"));
         let rows = [
             row("2026-10-01", "glm-5-3", "app", None, "plan", 4.0),
@@ -864,7 +1132,16 @@ mod tests {
                 display_name: Some("Llama X".into()),
             },
         );
-        let chart = build_daily_chart(&dates, &rows, Metric::Credits, Split::Model, &labels);
+        let catalog = current_catalog();
+        let ranking = ModelRanking::from_catalog(Some(&catalog));
+        let chart = build_daily_chart(
+            &dates,
+            &rows,
+            Metric::Credits,
+            Split::Model,
+            &labels,
+            &ranking,
+        );
         assert_eq!(
             chart
                 .series
@@ -872,28 +1149,597 @@ mod tests {
                 .map(|s| (s.key, s.label.clone()))
                 .collect::<Vec<_>>(),
             [
-                (SeriesKey::Model(0), Some("glm-5-3".into())),
-                (SeriesKey::MoreModels, Some("Llama X".into())),
+                (SeriesKey::Model(2), Some("glm-5-3".into())),
+                (SeriesKey::Model(0), Some("Llama X".into())),
             ]
         );
         assert_eq!(chart.days[0].values, [4.0, 0.0]);
         assert_eq!(chart.days[1].values, [0.0, 3.0]);
-        // One folded model needs no per-day breakdown.
         assert!(chart.days[1].folded.is_empty());
         assert_eq!(chart.days[2].total, 0.0);
 
+        // Two models outside the highlight list are still named. "More models"
+        // is an overflow bucket, not a home for everything we did not pin.
         let rows = [
             row("2026-10-02", "llama-x", "app", None, "plan", 3.0),
             row("2026-10-02", "qwen-y", "app", None, "extra", 5.0),
         ];
-        let chart = build_daily_chart(&dates, &rows, Metric::Credits, Split::Model, &labels);
-        assert_eq!(chart.series[0].label, None);
-        assert_eq!(
-            chart.days[1].folded,
-            [("qwen-y".to_string(), 5.0), ("Llama X".to_string(), 3.0)]
+        let chart = build_daily_chart(
+            &dates,
+            &rows,
+            Metric::Credits,
+            Split::Model,
+            &labels,
+            &ranking,
         );
+        assert_eq!(
+            chart
+                .series
+                .iter()
+                .map(|series| series.label.clone())
+                .collect::<Vec<_>>(),
+            [Some("Llama X".into()), Some("qwen-y".into())]
+        );
+        assert!(
+            chart
+                .series
+                .iter()
+                .all(|series| series.key != SeriesKey::MoreModels)
+        );
+        assert_eq!(chart.days[1].values, [3.0, 5.0]);
+        assert!(chart.days[1].folded.is_empty());
         assert_eq!(chart.days[1].extra_credits, 5.0);
         assert_eq!(extra_credit_span(&chart.days), Some((1, 1)));
+    }
+
+    #[test]
+    fn group_less_catalog_keeps_the_legacy_purple_highlight() {
+        let mut older = current_catalog();
+        older.groups.clear();
+        for ranking in [
+            ModelRanking::default(),
+            ModelRanking::from_catalog(None),
+            ModelRanking::from_catalog(Some(&older)),
+        ] {
+            assert_eq!(ranking.model_slot("kimi-k3"), Some(1));
+            assert_eq!(
+                ranking.model_slot("deepseek-v4-1-flash-1017-uncensored"),
+                Some(3)
+            );
+            assert_eq!(ranking.model_slot("gpt-oss-120b"), None);
+            assert_eq!(
+                ranking
+                    .model_group("deepseek-v4-1-flash-1017-uncensored")
+                    .map(|group| group.id.as_str()),
+                Some("uncensored")
+            );
+        }
+    }
+
+    #[test]
+    fn unranked_overflow_is_independent_of_the_metric() {
+        let dates = date_range(day("2026-10-01"), day("2026-10-01"));
+        let rows = [
+            "model-a", "model-b", "model-c", "model-d", "model-e", "model-f", "model-g", "model-h",
+        ]
+        .into_iter()
+        .enumerate()
+        .map(|(index, model)| {
+            let mut row = row("2026-10-01", model, "app", None, "plan", (index + 1) as f64);
+            row.counts.requests = 8 - index as u64;
+            row
+        })
+        .collect::<Vec<_>>();
+        for (metric, folded) in [
+            (Metric::Credits, ["model-h", "model-g"]),
+            (Metric::Requests, ["model-g", "model-h"]),
+        ] {
+            let chart = build_daily_chart(
+                &dates,
+                &rows,
+                metric,
+                Split::Model,
+                &UsageModelLabels::default(),
+                &ModelRanking::default(),
+            );
+            assert_eq!(
+                chart
+                    .series
+                    .iter()
+                    .map(|series| series.key)
+                    .collect::<Vec<_>>(),
+                [
+                    SeriesKey::Model(0),
+                    SeriesKey::Model(1),
+                    SeriesKey::Model(2),
+                    SeriesKey::Model(3),
+                    SeriesKey::Model(4),
+                    SeriesKey::Model(5),
+                    SeriesKey::MoreModels,
+                ],
+                "{metric:?}"
+            );
+            assert_eq!(
+                chart
+                    .series
+                    .iter()
+                    .take(6)
+                    .map(|series| series.label.as_deref())
+                    .collect::<Vec<_>>(),
+                [
+                    Some("model-a"),
+                    Some("model-b"),
+                    Some("model-c"),
+                    Some("model-d"),
+                    Some("model-e"),
+                    Some("model-f"),
+                ],
+                "{metric:?}"
+            );
+            assert_eq!(
+                chart.days[0]
+                    .folded
+                    .iter()
+                    .map(|(label, _)| label.as_str())
+                    .collect::<Vec<_>>(),
+                folded,
+                "{metric:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn current_catalog_keeps_uncensored_purple_and_oss_unpinned() {
+        let catalog = current_catalog();
+        let ranking = ModelRanking::from_catalog(Some(&catalog));
+        assert_eq!(ranking.color_slot("gemma4-31b", &[]), None);
+        assert_eq!(ranking.color_slot("gpt-oss-120b", &[]), None);
+        assert_eq!(
+            ranking.model_slot("deepseek-v4-1-flash-1017-uncensored"),
+            Some(3)
+        );
+        assert_eq!(ranking.model_slot("gpt-oss-120b"), None);
+        assert_eq!(ranking.model_slot("glm-5-3"), Some(2));
+        assert!(
+            ranking
+                .highlight_models()
+                .eq(catalog.groups.iter().flat_map(|group| {
+                    catalog
+                        .data
+                        .iter()
+                        .filter(move |model| {
+                            model.available_in_agent != Some(false)
+                                && model.group.as_deref() == Some(group.id.as_str())
+                        })
+                        .map(|model| model.id.as_str())
+                }))
+        );
+        assert_eq!(
+            ranking
+                .model_group("deepseek-v4-1-flash-1017-uncensored")
+                .map(|group| group.id.as_str()),
+            Some("uncensored")
+        );
+
+        let dates = date_range(day("2026-10-01"), day("2026-10-01"));
+        let rows = [
+            row(
+                "2026-10-01",
+                "deepseek-v4-1-flash-1017-uncensored",
+                "app",
+                None,
+                "plan",
+                40.0,
+            ),
+            row("2026-10-01", "gpt-oss-120b", "app", None, "plan", 2.0),
+        ];
+        let chart = build_daily_chart(
+            &dates,
+            &rows,
+            Metric::Credits,
+            Split::Model,
+            &UsageModelLabels::default(),
+            &ranking,
+        );
+        assert_eq!(
+            chart
+                .series
+                .iter()
+                .map(|series| series.key)
+                .collect::<Vec<_>>(),
+            [SeriesKey::Model(3), SeriesKey::Model(0)]
+        );
+        assert!(
+            chart
+                .series
+                .iter()
+                .all(|series| series.key != SeriesKey::MoreModels)
+        );
+    }
+
+    #[test]
+    fn served_model_replacement_does_not_resurrect_legacy_k3() {
+        let mut catalog = current_catalog();
+        catalog.data[1].id = "kimi-k4".into();
+        let ranking = ModelRanking::from_catalog(Some(&catalog));
+        assert!(ranking.highlight_models().eq([
+            "kimi-k3-1-pro",
+            "kimi-k4",
+            "glm-5-3",
+            "deepseek-v4-1-flash-1017-uncensored",
+            "gemma4-31b",
+            "glm-5-3-flash",
+            "deepseek-v4-1-flash",
+        ]));
+        assert_eq!(ranking.model_slot("kimi-k3"), None);
+        assert_eq!(ranking.model_slot("kimi-k4"), Some(1));
+        assert_eq!(
+            ranking.model_slot("deepseek-v4-1-flash-1017-uncensored"),
+            Some(3)
+        );
+    }
+
+    #[test]
+    fn served_order_controls_groups_and_slots_instead_of_usage_totals() {
+        let catalog: maple_sdk::ModelCatalogResponse = serde_json::from_value(serde_json::json!({
+            "object": "list",
+            "groups": [
+                {"id": "future", "label": "New arrivals"},
+                {"id": "capable", "label": "Most capable"},
+            ],
+            "data": [
+                {"id": "z-first-in-data", "group": "future"},
+                {"id": "a-second-in-data", "group": "future"},
+                {"id": "glm-5-3", "group": "capable"},
+                {"id": "gpt-oss-120b"},
+            ]
+        }))
+        .unwrap();
+        let ranking = ModelRanking::from_catalog(Some(&catalog));
+        let dates = date_range(day("2026-10-01"), day("2026-10-01"));
+        let rows = [
+            row("2026-10-01", "a-second-in-data", "app", None, "plan", 1.0),
+            row("2026-10-01", "z-first-in-data", "app", None, "plan", 100.0),
+            row("2026-10-01", "glm-5-3", "app", None, "plan", 50.0),
+            row("2026-10-01", "gpt-oss-120b", "app", None, "plan", 500.0),
+        ];
+        let chart = build_daily_chart(
+            &dates,
+            &rows,
+            Metric::Credits,
+            Split::Model,
+            &UsageModelLabels::default(),
+            &ranking,
+        );
+        assert_eq!(
+            chart
+                .series
+                .iter()
+                .map(|series| (series.label.as_deref(), series.key))
+                .collect::<Vec<_>>(),
+            [
+                (Some("z-first-in-data"), SeriesKey::Model(0)),
+                (Some("a-second-in-data"), SeriesKey::Model(1)),
+                (Some("glm-5-3"), SeriesKey::Model(2)),
+                (Some("gpt-oss-120b"), SeriesKey::Model(3)),
+            ]
+        );
+        assert_eq!(
+            chart
+                .series
+                .iter()
+                .map(|series| {
+                    series
+                        .group
+                        .as_ref()
+                        .map(|group| (group.id.as_str(), group.label.as_str()))
+                })
+                .collect::<Vec<_>>(),
+            [
+                Some(("future", "New arrivals")),
+                Some(("future", "New arrivals")),
+                Some(("capable", "Most capable")),
+                None,
+            ]
+        );
+        let requests = build_daily_chart(
+            &dates,
+            &rows,
+            Metric::Requests,
+            Split::Model,
+            &UsageModelLabels::default(),
+            &ranking,
+        );
+        assert_eq!(requests.series, chart.series);
+    }
+
+    #[test]
+    fn current_catalog_makes_omitted_and_unavailable_legacy_models_unranked() {
+        let mut omitted = current_catalog();
+        omitted
+            .data
+            .retain(|model| model.id != "deepseek-v4-1-flash-1017-uncensored");
+        let ranking = ModelRanking::from_catalog(Some(&omitted));
+        assert_eq!(
+            ranking.model_slot("deepseek-v4-1-flash-1017-uncensored"),
+            None
+        );
+
+        let mut unavailable = current_catalog();
+        unavailable
+            .data
+            .iter_mut()
+            .find(|model| model.id == "deepseek-v4-1-flash-1017-uncensored")
+            .unwrap()
+            .available_in_agent = Some(false);
+        let ranking = ModelRanking::from_catalog(Some(&unavailable));
+        assert_eq!(
+            ranking.model_slot("deepseek-v4-1-flash-1017-uncensored"),
+            None
+        );
+    }
+
+    #[test]
+    fn more_models_appears_only_after_the_legend_is_full() {
+        let dates = date_range(day("2026-10-01"), day("2026-10-01"));
+        let mut rows = Vec::new();
+        for index in 0..MAX_NAMED_MODELS {
+            rows.push(row(
+                "2026-10-01",
+                &format!("m{index}"),
+                "app",
+                None,
+                "plan",
+                (MAX_NAMED_MODELS - index) as f64,
+            ));
+        }
+        let chart = build_daily_chart(
+            &dates,
+            &rows,
+            Metric::Credits,
+            Split::Model,
+            &UsageModelLabels::default(),
+            &ModelRanking::default(),
+        );
+        assert!(
+            chart
+                .series
+                .iter()
+                .all(|series| series.key != SeriesKey::MoreModels)
+        );
+        assert_eq!(chart.series.len(), MAX_NAMED_MODELS);
+
+        rows.push(row("2026-10-01", "overflow", "app", None, "plan", 0.5));
+        let chart = build_daily_chart(
+            &dates,
+            &rows,
+            Metric::Credits,
+            Split::Model,
+            &UsageModelLabels::default(),
+            &ModelRanking::default(),
+        );
+        assert_eq!(chart.series.len(), MAX_NAMED_MODELS);
+        assert_eq!(chart.series.last().unwrap().key, SeriesKey::MoreModels);
+        assert_eq!(chart.series.last().unwrap().label, None);
+        assert_eq!(
+            chart.days[0].folded,
+            [("m6".to_string(), 1.0), ("overflow".to_string(), 0.5)]
+        );
+
+        rows.push(row("2026-10-01", "also", "app", None, "plan", 0.25));
+        let chart = build_daily_chart(
+            &dates,
+            &rows,
+            Metric::Credits,
+            Split::Model,
+            &UsageModelLabels::default(),
+            &ModelRanking::default(),
+        );
+        assert_eq!(chart.series.len(), MAX_NAMED_MODELS);
+        assert_eq!(chart.series.last().unwrap().label, None);
+        assert_eq!(
+            chart.days[0].folded,
+            [
+                ("m5".to_string(), 2.0),
+                ("m6".to_string(), 1.0),
+                ("overflow".to_string(), 0.5)
+            ]
+        );
+    }
+
+    #[test]
+    fn catalog_absent_historical_usage_survives_overflow() {
+        let mut catalog = current_catalog();
+        let mut rows: Vec<UsageDayRow> = catalog
+            .groups
+            .iter()
+            .flat_map(|group| {
+                catalog
+                    .data
+                    .iter()
+                    .filter(move |model| model.group.as_deref() == Some(group.id.as_str()))
+                    .map(|model| row("2026-10-01", &model.id, "app", None, "plan", 1.0))
+            })
+            .collect();
+        catalog
+            .data
+            .retain(|model| model.id != "deepseek-v4-1-flash");
+        let ranking = ModelRanking::from_catalog(Some(&catalog));
+        assert_eq!(ranking.model_slot("deepseek-v4-1-flash"), None);
+        rows.push(row(
+            "2026-10-01",
+            "gpt-oss-120b",
+            "app",
+            None,
+            "plan",
+            500.0,
+        ));
+        rows.push(row(
+            "2026-10-01",
+            "llama3-3-70b",
+            "app",
+            None,
+            "plan",
+            400.0,
+        ));
+        let expected: f64 = rows.iter().map(|row| row.counts.credits).sum();
+        let chart = build_daily_chart(
+            &date_range(day("2026-10-01"), day("2026-10-01")),
+            &rows,
+            Metric::Credits,
+            Split::Model,
+            &UsageModelLabels::default(),
+            &ranking,
+        );
+        assert_eq!(
+            chart.series.last().map(|series| series.key),
+            Some(SeriesKey::MoreModels)
+        );
+        assert!(
+            chart.days[0]
+                .folded
+                .contains(&("deepseek-v4-1-flash".to_string(), 1.0))
+        );
+        assert_eq!(chart.days[0].total, expected);
+        assert_eq!(chart.days[0].values.iter().sum::<f64>(), expected);
+    }
+
+    #[test]
+    fn served_catalog_growth_never_wraps_color_slots() {
+        let catalog: maple_sdk::ModelCatalogResponse = serde_json::from_value(serde_json::json!({
+            "object": "list",
+            "groups": [{"id": "growing", "label": "Growing"}],
+            "data": [
+                {"id": "model-0", "group": "growing"},
+                {"id": "model-1", "group": "growing"},
+                {"id": "model-2", "group": "growing"},
+                {"id": "model-3", "group": "growing"},
+                {"id": "model-4", "group": "growing"},
+                {"id": "model-5", "group": "growing"},
+                {"id": "model-6", "group": "growing"},
+                {"id": "model-7", "group": "growing"},
+            ]
+        }))
+        .unwrap();
+        let ranking = ModelRanking::from_catalog(Some(&catalog));
+        assert_eq!(ranking.model_slot("model-6"), Some(6));
+        assert_eq!(ranking.model_slot("model-7"), None);
+        assert_eq!(ranking.color_slot("model-7", &["model-7"]), Some(0));
+
+        let rows: Vec<UsageDayRow> = (0..8)
+            .map(|index| {
+                row(
+                    "2026-10-01",
+                    &format!("model-{index}"),
+                    "app",
+                    None,
+                    "plan",
+                    (index + 1) as f64,
+                )
+            })
+            .collect();
+        let expected: f64 = rows.iter().map(|row| row.counts.credits).sum();
+        let chart = build_daily_chart(
+            &date_range(day("2026-10-01"), day("2026-10-01")),
+            &rows,
+            Metric::Credits,
+            Split::Model,
+            &UsageModelLabels::default(),
+            &ranking,
+        );
+        assert!(chart.series.iter().all(|series| match series.key {
+            SeriesKey::Model(slot) => slot < MAX_NAMED_MODELS,
+            _ => true,
+        }));
+        assert_eq!(
+            chart.series.last().map(|series| series.key),
+            Some(SeriesKey::MoreModels)
+        );
+        assert_eq!(
+            chart.days[0].folded,
+            [("model-7".to_string(), 8.0), ("model-6".to_string(), 7.0)]
+        );
+        assert_eq!(chart.days[0].total, expected);
+
+        let mut priority_rows: Vec<UsageDayRow> = (0..5)
+            .map(|index| {
+                row(
+                    "2026-10-01",
+                    &format!("model-{index}"),
+                    "app",
+                    None,
+                    "plan",
+                    (index + 1) as f64,
+                )
+            })
+            .collect();
+        priority_rows.push(row("2026-10-01", "model-7", "app", None, "plan", 1.0));
+        priority_rows.push(row(
+            "2026-10-01",
+            "unlisted-heavy",
+            "app",
+            None,
+            "plan",
+            1_000.0,
+        ));
+        priority_rows.push(row(
+            "2026-10-01",
+            "gpt-oss-120b",
+            "app",
+            None,
+            "plan",
+            500.0,
+        ));
+        let priority = build_daily_chart(
+            &date_range(day("2026-10-01"), day("2026-10-01")),
+            &priority_rows,
+            Metric::Credits,
+            Split::Model,
+            &UsageModelLabels::default(),
+            &ranking,
+        );
+        // A late catalog member is still better than an uncatalogued model,
+        // regardless of usage or its position beyond the seven fixed slots.
+        assert_eq!(
+            priority
+                .series
+                .iter()
+                .filter_map(|series| series.model.as_deref())
+                .collect::<Vec<_>>(),
+            [
+                "model-0", "model-1", "model-2", "model-3", "model-4", "model-7"
+            ]
+        );
+        assert_eq!(priority.series[5].key, SeriesKey::Model(5));
+        assert_eq!(
+            priority.series.last().map(|series| series.key),
+            Some(SeriesKey::MoreModels)
+        );
+        assert_eq!(
+            priority.days[0].folded,
+            [
+                ("unlisted-heavy".to_string(), 1_000.0),
+                ("gpt-oss-120b".to_string(), 500.0)
+            ]
+        );
+
+        priority_rows.retain(|row| row.model != "unlisted-heavy");
+        let mixed = build_daily_chart(
+            &date_range(day("2026-10-01"), day("2026-10-01")),
+            &priority_rows,
+            Metric::Credits,
+            Split::Model,
+            &UsageModelLabels::default(),
+            &ranking,
+        );
+        assert_eq!(
+            (mixed.series[5].model.as_deref(), mixed.series[5].key),
+            (Some("model-7"), SeriesKey::Model(5))
+        );
+        assert_eq!(
+            (mixed.series[6].model.as_deref(), mixed.series[6].key),
+            (Some("gpt-oss-120b"), SeriesKey::Model(6))
+        );
     }
 
     #[test]

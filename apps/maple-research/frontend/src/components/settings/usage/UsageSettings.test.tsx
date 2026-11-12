@@ -9,6 +9,7 @@ import * as billing from "@/billing/billingService";
 import * as select from "@/components/ui/select";
 import type { UsageQuery, UsageRequestsPage, UsageResponse } from "@/billing/usageApi";
 import * as localState from "@/state/useLocalState";
+import { SettingsSection } from "@/components/settings/SettingsPage";
 import * as platform from "@/utils/platform";
 import { UsageSettings } from "./UsageSettings";
 
@@ -140,7 +141,11 @@ describe("Usage settings page", () => {
       .forEach((restore) => restore());
   });
 
-  async function mount(service: Partial<FakeService>, cached: BillingStatus | null = null) {
+  async function mount(
+    service: Partial<FakeService>,
+    cached: BillingStatus | null = null,
+    catalog?: unknown
+  ) {
     const fake: FakeService = {
       getBillingStatus: () => new Promise(() => {}),
       getUsage: () => Promise.resolve(usage),
@@ -154,7 +159,8 @@ describe("Usage settings page", () => {
         auth: {
           user: { user: { id: "account-fixture", email: "a@example.invalid" } },
           loading: false
-        }
+        },
+        fetchModelCatalog: catalog ? () => Promise.resolve(catalog) : undefined
       } as ReturnType<typeof sdk.useOpenSecret>),
       spyOn(billing, "getBillingService").mockReturnValue(
         fake as unknown as ReturnType<typeof billing.getBillingService>
@@ -268,6 +274,56 @@ describe("Usage settings page", () => {
       (heading) => content.indexOf(heading)
     );
     expect(order).toEqual([...order].sort((a, b) => a - b));
+  });
+
+  test("recent requests use the model chart's actual highlight colors", async () => {
+    const catalogModels = Array.from({ length: 7 }, (_, index) => `catalog-${index}`);
+    // GLM is an eighth, late catalog member and still takes the last colored
+    // series. Recent Requests must not fall back to its raw catalog index.
+    catalogModels.push("glm-5-3");
+    // Keep one catalog entry inactive: seven used models fit, including the
+    // eighth catalog member. Exceeding the limit would legitimately fold it.
+    const days = [
+      ...catalogModels.slice(0, 6).map((model, index) => ({
+        ...usage.days[0],
+        model,
+        credits: index + 1
+      })),
+      { ...usage.days[0], credits: 1 }
+    ];
+    await mount(
+      {
+        getBillingStatus: () => Promise.resolve(pro),
+        getUsage: () => Promise.resolve({ ...usage, days }),
+        getUsageRequests: () =>
+          Promise.resolve({
+            ...requests,
+            models: usage.models,
+            requests: [{ ...requests.requests[0], model: "glm-5-3" }]
+          })
+      },
+      pro,
+      {
+        groups: [{ id: "served", label: "Served" }],
+        data: catalogModels.map((id) => ({ id, group: "served" }))
+      }
+    );
+    for (const title of ["By model", "Recent requests"]) {
+      const section = renderer!.root
+        .findAllByType(SettingsSection)
+        .find((section) => textContent(section).startsWith(title));
+      const rows = section
+        ? section.findAllByType("tr").filter((row) => textContent(row).includes("GLM-5.3"))
+        : [];
+      expect(rows).toHaveLength(1);
+      for (const row of rows) {
+        expect(
+          row.findAll(
+            (node) => node.type === "span" && node.props.style?.background === "var(--series-7)"
+          )
+        ).toHaveLength(1);
+      }
+    }
   });
 
   test("recent requests open with 10 rows and load 50 more at a time", async () => {

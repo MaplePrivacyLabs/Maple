@@ -3,11 +3,11 @@
 //! at least 8). Coral stays with the plan meter and Chat; models never use
 //! it.
 
-use super::model::{Origin, SeriesKey, TokenKind};
+use super::model::{Origin, SeriesKey, Split, TokenKind};
 use crate::ui::theme;
 
 struct Palette {
-    series: [u32; 5],
+    series: [u32; 7],
     more_models: u32,
     chat: u32,
     work: u32,
@@ -23,7 +23,9 @@ struct Palette {
 }
 
 const LIGHT: Palette = Palette {
-    series: [0x2f7ed8, 0x1a9e7a, 0xe09b12, 0x7a5cc8, 0xd2578f],
+    series: [
+        0x2f7ed8, 0x1a9e7a, 0xe09b12, 0x7a5cc8, 0xd2578f, 0x8d0da0, 0x237915,
+    ],
     more_models: 0xa3a3a3,
     chat: 0xe5683f,
     work: 0x0e9fb3,
@@ -39,7 +41,9 @@ const LIGHT: Palette = Palette {
 };
 
 const DARK: Palette = Palette {
-    series: [0x3987e5, 0x199e70, 0xc98500, 0x9085e9, 0xd55181],
+    series: [
+        0x3987e5, 0x199e70, 0xc98500, 0x9085e9, 0xd55181, 0xe198e1, 0x5ae25a,
+    ],
     more_models: 0x6b6b6b,
     chat: 0xdd6236,
     work: 0x17a2b8,
@@ -61,7 +65,7 @@ fn palette() -> &'static Palette {
 pub(super) fn series(key: SeriesKey) -> u32 {
     let palette = palette();
     match key {
-        SeriesKey::Model(slot) => palette.series[slot % palette.series.len()],
+        SeriesKey::Model(slot) => palette.series[slot],
         SeriesKey::MoreModels => palette.more_models,
         SeriesKey::Origin(origin) => self::origin(origin),
         SeriesKey::Plan => palette.plan,
@@ -89,12 +93,40 @@ pub(super) fn token(kind: TokenKind) -> u32 {
     }
 }
 
-pub(super) fn model(model: &str) -> u32 {
+pub(super) fn model(model: &str, ranking: &super::model::ModelRanking) -> u32 {
     series(
-        super::model::model_slot(model)
+        ranking
+            .model_slot(model)
             .map(SeriesKey::Model)
             .unwrap_or(SeriesKey::MoreModels),
     )
+}
+
+/// Same color the chart uses when `peers` are the models drawn beside this one.
+pub(super) fn model_among(
+    model: &str,
+    peers: &[&str],
+    ranking: &super::model::ModelRanking,
+) -> u32 {
+    match ranking.color_slot(model, peers) {
+        Some(slot) => series(SeriesKey::Model(slot)),
+        None => palette().more_models,
+    }
+}
+
+/// Follow the model chart even when the selected metric leaves it empty.
+/// With another split, retain the table's stable model highlights.
+pub(super) fn model_table_color(
+    model: &str,
+    peers: &[&str],
+    split: Split,
+    ranking: &super::model::ModelRanking,
+) -> u32 {
+    if split == Split::Model {
+        model_among(model, peers, ranking)
+    } else {
+        self::model(model, ranking)
+    }
 }
 
 pub(super) fn grid() -> u32 {
@@ -103,4 +135,37 @@ pub(super) fn grid() -> u32 {
 
 pub(super) fn axis() -> u32 {
     palette().axis
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn table_colors_follow_the_selected_model_chart() {
+        let peers = ["glm-5-3", "llama"];
+        let catalog: maple_sdk::ModelCatalogResponse = serde_json::from_value(serde_json::json!({
+            "object": "list",
+            "groups": [{"id": "capable", "label": "Most capable"}],
+            "data": [{"id": "glm-5-3", "group": "capable"}]
+        }))
+        .unwrap();
+        let ranking = super::super::model::ModelRanking::from_catalog(Some(&catalog));
+        assert_eq!(
+            model_table_color("llama", &peers, Split::Model, &ranking),
+            series(SeriesKey::Model(1))
+        );
+        assert_eq!(
+            model_table_color("glm-5-3", &[], Split::Model, &ranking),
+            series(SeriesKey::MoreModels),
+            "zero usage for the selected metric stays gray"
+        );
+        for split in [Split::Origin, Split::Pool, Split::Token] {
+            assert_eq!(
+                model_table_color("glm-5-3", &peers, split, &ranking),
+                series(SeriesKey::Model(0)),
+                "other charts leave the table's highlights intact"
+            );
+        }
+    }
 }

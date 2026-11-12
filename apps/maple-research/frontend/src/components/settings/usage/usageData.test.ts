@@ -2,7 +2,16 @@ import { describe, expect, test } from "bun:test";
 import type { BillingStatus } from "@/billing/billingApi";
 import type { UsageClientApp, UsageDayRow, UsageMonthRow, UsageSource } from "@/billing/usageApi";
 import { niceScale } from "./chartScale";
-import { MORE_MODELS_KEY, type UsageOrigin } from "./palette";
+import {
+  MAX_NAMED_MODELS,
+  MORE_MODELS_COLOR,
+  MORE_MODELS_KEY,
+  highlightGroup,
+  highlightIndex,
+  modelColor,
+  modelHighlights,
+  type UsageOrigin
+} from "./palette";
 import {
   addDays,
   buildDailyChart,
@@ -317,39 +326,410 @@ describe("buildDailyChart", () => {
     row({ date: "2026-09-30", model: "glm-5-3", credits: 999 })
   ];
 
-  test("model split uses identity order and folds unslotted models", () => {
-    const chart = buildDailyChart({ dates, rows, metric: "credits", split: "model", labels });
-    expect(chart.series.map((s) => [s.key, s.label, s.color])).toEqual([
-      ["glm-5-3", "GLM-5.3", "var(--series-1)"],
-      ["kimi-k3", "Kimi K3", "var(--series-2)"],
-      [MORE_MODELS_KEY, "More models", "var(--series-other)"]
+  const catalogHighlights = modelHighlights({
+    groups: [
+      { id: "capable", label: "Most capable" },
+      { id: "uncensored", label: "Uncensored" },
+      { id: "fast", label: "Fast & cheap" }
+    ],
+    data: [
+      { id: "kimi-k3-1-pro", group: "capable" },
+      { id: "kimi-k3", group: "capable" },
+      { id: "glm-5-3", group: "capable" },
+      { id: "deepseek-v4-1-flash-1017-uncensored", group: "uncensored" },
+      { id: "gemma4-31b", group: "fast" },
+      { id: "glm-5-3-flash", group: "fast" },
+      { id: "deepseek-v4-1-flash", group: "fast" },
+      { id: "gpt-oss-120b" }
+    ]
+  });
+
+  test("group-less catalogs keep Uncensored purple without pinning GPT-OSS", () => {
+    for (const highlights of [
+      modelHighlights(),
+      modelHighlights({
+        data: [{ id: "deepseek-v4-1-flash-1017-uncensored", group: "uncensored" }]
+      })
+    ]) {
+      expect(highlightIndex("deepseek-v4-1-flash-1017-uncensored", highlights)).toBe(3);
+      expect(highlightGroup("deepseek-v4-1-flash-1017-uncensored", highlights)).toBe("Uncensored");
+      expect(highlightIndex("gpt-oss-120b", highlights)).toBeUndefined();
+    }
+  });
+
+  test("unranked overflow is independent of the metric", () => {
+    const models = [
+      "model-a",
+      "model-b",
+      "model-c",
+      "model-d",
+      "model-e",
+      "model-f",
+      "model-g",
+      "model-h"
+    ];
+    const history = models.map((model, index) =>
+      row({ date: dates[0], model, credits: index + 1, requests: 8 - index })
+    );
+    for (const metric of ["credits", "requests"] as const) {
+      const chart = buildDailyChart({
+        dates,
+        rows: history,
+        metric,
+        split: "model",
+        labels: {},
+        highlights: modelHighlights()
+      });
+      expect(
+        chart.series.map((series) => series.key),
+        metric
+      ).toEqual([...models.slice(0, 6), MORE_MODELS_KEY]);
+      expect(
+        chart.series.map((series) => series.color),
+        metric
+      ).toEqual([
+        "var(--series-1)",
+        "var(--series-2)",
+        "var(--series-3)",
+        "var(--series-4)",
+        "var(--series-5)",
+        "var(--series-6)",
+        MORE_MODELS_COLOR
+      ]);
+      expect(
+        chart.days[0].folded.map(({ model }) => model),
+        metric
+      ).toEqual(metric === "credits" ? ["model-h", "model-g"] : ["model-g", "model-h"]);
+    }
+  });
+
+  test("model split names every used model, including ones outside the highlight list", () => {
+    const chart = buildDailyChart({
+      dates,
+      rows,
+      metric: "credits",
+      split: "model",
+      labels,
+      highlights: catalogHighlights
+    });
+    // The capable group precedes fast models, independent of their usage totals.
+    // The ungrouped llama is still named and borrows the first free color.
+    // No "More models": only four models were used.
+    expect(chart.series.map((s) => [s.key, s.label, s.color, s.group])).toEqual([
+      ["kimi-k3", "Kimi K3", "var(--series-2)", "Most capable"],
+      ["glm-5-3", "GLM-5.3", "var(--series-3)", "Most capable"],
+      ["gemma4-31b", "Gemma 4 31B", "var(--series-5)", "Fast & cheap"],
+      ["llama3-3-70b", "Llama 3.3 70B", "var(--series-1)", undefined]
     ]);
     expect(chart.days.map((d) => d.date)).toEqual(dates);
-    expect(chart.days[0].values).toEqual({ "kimi-k3": 30, "glm-5-3": 50, more: 2 });
-    expect(chart.days[1].values).toEqual({ more: 7, "glm-5-3": 20 });
-    expect(chart.days[2].values).toEqual({});
-    expect(chart.days[0].folded).toEqual([
-      { model: "llama3-3-70b", label: "Llama 3.3 70B", value: 2 }
-    ]);
+    expect(chart.days[0].values).toEqual({
+      "kimi-k3": 30,
+      "glm-5-3": 50,
+      "llama3-3-70b": 2,
+      "gemma4-31b": 0
+    });
+    expect(chart.days[1].values).toEqual({
+      "gemma4-31b": 7,
+      "glm-5-3": 20,
+      "kimi-k3": 0,
+      "llama3-3-70b": 0
+    });
+    expect(chart.days[2].values).toEqual({
+      "kimi-k3": 0,
+      "glm-5-3": 0,
+      "llama3-3-70b": 0,
+      "gemma4-31b": 0
+    });
+    expect(chart.days[0].folded).toEqual([]);
     expect(chart.days[0].requests).toBe(11);
     expect(chart.days[1].extraCredits).toBe(20);
   });
 
-  test("a single unslotted model is named instead of folded", () => {
+  test("duplicate catalog entries do not change the following model's slot", () => {
+    const duplicates = modelHighlights({
+      groups: [
+        { id: "served", label: "Served" },
+        { id: "served", label: "Repeated" }
+      ],
+      data: [
+        { id: "first-model", group: "served" },
+        { id: "second-model", group: "served" }
+      ]
+    });
+    const chart = buildDailyChart({
+      dates: [dates[0]],
+      rows: [
+        row({ date: dates[0], model: "first-model", credits: 1 }),
+        row({ date: dates[0], model: "second-model", credits: 2 })
+      ],
+      metric: "credits",
+      split: "model",
+      labels,
+      highlights: duplicates
+    });
+    // Native assigns the first group of duplicate memberships too. Duplicates
+    // must not consume a second index and shift the next model's color on web.
+    expect(chart.series.map(({ key, color, group }) => [key, color, group])).toEqual([
+      ["first-model", "var(--series-1)", "Served"],
+      ["second-model", "var(--series-2)", "Served"]
+    ]);
+  });
+
+  test("DeepSeek Uncensored keeps the purple slot and GPT-OSS is not pinned", () => {
     const chart = buildDailyChart({
       dates,
-      rows: rows.filter((r) => r.model !== "gemma4-31b"),
-      metric: "requests",
+      rows: [
+        row({ date: "2026-10-01", model: "deepseek-v4-1-flash-1017-uncensored", credits: 40 }),
+        row({ date: "2026-10-01", model: "gpt-oss-120b", credits: 2 })
+      ],
+      metric: "credits",
+      split: "model",
+      labels,
+      highlights: catalogHighlights
+    });
+    // Uncensored owns slot 3 (series-4, purple). OSS is not a highlight but is
+    // still named, borrowing the lowest free slot (0 -> blue). No gray fold.
+    expect(chart.series.map((s) => [s.key, s.color])).toEqual([
+      ["deepseek-v4-1-flash-1017-uncensored", "var(--series-4)"],
+      ["gpt-oss-120b", "var(--series-1)"]
+    ]);
+    expect(chart.series.some((s) => s.key === MORE_MODELS_KEY)).toBe(false);
+  });
+
+  test("a served catalog replaces old IDs without losing their historical usage", () => {
+    const highlights = modelHighlights({
+      groups: catalogHighlights.groups.map(({ id, label }) => ({ id, label })),
+      data: [
+        { id: "kimi-k3-1-pro", group: "capable" },
+        { id: "kimi-k4", group: "capable" },
+        { id: "glm-5-3", group: "capable" },
+        { id: "deepseek-v4-1-flash-1017-uncensored", group: "uncensored" },
+        { id: "gpt-oss-120b" }
+      ]
+    });
+    const chart = buildDailyChart({
+      dates: [dates[0]],
+      rows: [
+        row({ date: dates[0], model: "kimi-k4", credits: 2 }),
+        row({ date: dates[0], model: "deepseek-v4-1-flash-1017-uncensored", credits: 1 }),
+        row({ date: dates[0], model: "kimi-k3", credits: 300 }),
+        row({ date: dates[0], model: "gpt-oss-120b", credits: 500 })
+      ],
+      metric: "credits",
+      split: "model",
+      labels,
+      highlights
+    });
+    // Catalog order, not the range's usage ranking, controls the best models.
+    // The omitted K3 is unpinned and must not retain an obsolete catalog slot.
+    expect(chart.series.map((s) => [s.key, s.color, s.group])).toEqual([
+      ["kimi-k4", "var(--series-2)", "Most capable"],
+      ["deepseek-v4-1-flash-1017-uncensored", "var(--series-4)", "Uncensored"],
+      ["gpt-oss-120b", "var(--series-1)", undefined],
+      ["kimi-k3", "var(--series-3)", undefined]
+    ]);
+    expect(chart.series.some((s) => s.key === MORE_MODELS_KEY)).toBe(false);
+  });
+
+  const growthCatalog = {
+    groups: catalogHighlights.groups.map(({ id, label }) => ({ id, label })),
+    data: [
+      { id: "kimi-k3-1-pro", group: "capable" },
+      { id: "kimi-k4", group: "capable" },
+      { id: "glm-5-3", group: "capable" },
+      { id: "deepseek-v4-1-flash-1017-uncensored", group: "uncensored" },
+      ...[
+        "gemma4-31b",
+        "glm-5-3-flash",
+        "deepseek-v4-1-flash",
+        "future-fast-a",
+        "future-fast-b"
+      ].map((id) => ({ id, group: "fast" }))
+    ]
+  };
+  const highlights = modelHighlights(growthCatalog);
+
+  test("historical models and catalog growth preserve every credit inside the palette", () => {
+    const data = growthCatalog.data;
+    const chart = buildDailyChart({
+      dates: [dates[0]],
+      rows: [
+        ...data.map(({ id }) => row({ date: dates[0], model: id, credits: 1 })),
+        row({ date: dates[0], model: "kimi-k3", credits: 13 }),
+        row({ date: dates[0], model: "gpt-oss-120b", credits: 2 })
+      ],
+      metric: "credits",
+      split: "model",
+      labels,
+      highlights
+    });
+    expect(chart.series.map((s) => s.color)).toEqual([
+      "var(--series-1)",
+      "var(--series-2)",
+      "var(--series-3)",
+      "var(--series-4)",
+      "var(--series-5)",
+      "var(--series-6)",
+      MORE_MODELS_COLOR
+    ]);
+    expect(chart.days[0].values[MORE_MODELS_KEY]).toBe(18);
+    expect(Object.values(chart.days[0].values).reduce((sum, value) => sum + value, 0)).toBe(24);
+    expect(
+      chart.days[0].folded.some(({ model, value }) => model === "kimi-k3" && value === 13)
+    ).toBe(true);
+    expect(chart.days[0].folded.some(({ model }) => model === "future-fast-a")).toBe(true);
+  });
+
+  test("a sparse catalog borrows free colors beyond palette capacity", () => {
+    const model = growthCatalog.data.at(-1)!.id;
+    // Only a model beyond the packed palette is active. It borrows the first
+    // free color instead of indexing that palette by its catalog position.
+    const sparse = buildDailyChart({
+      dates: [dates[0]],
+      rows: [row({ date: dates[0], model, credits: 1 })],
+      metric: "credits",
+      split: "model",
+      labels,
+      highlights
+    });
+    expect(sparse.series.map((series) => [series.key, series.color])).toEqual([
+      [model, "var(--series-1)"]
+    ]);
+    expect(sparse.series.some((series) => series.key === MORE_MODELS_KEY)).toBe(false);
+    expect(sparse.days[0].values[model]).toBe(1);
+  });
+
+  test("catalog priority reaches past the palette before heavier unlisted usage", () => {
+    const late = growthCatalog.data.at(-1)!.id;
+    const priority = buildDailyChart({
+      dates: [dates[0]],
+      rows: [
+        ...growthCatalog.data
+          .slice(0, 5)
+          .map(({ id }, index) => row({ date: dates[0], model: id, credits: index + 1 })),
+        row({ date: dates[0], model: late, credits: 1 }),
+        row({ date: dates[0], model: "unlisted-heavy", credits: 1_000 }),
+        row({ date: dates[0], model: "gpt-oss-120b", credits: 500 })
+      ],
+      metric: "credits",
+      split: "model",
+      labels,
+      highlights
+    });
+    // Eight used models leave six named slots. A low-usage catalog member
+    // ranks before heavier uncatalogued usage, but borrows a valid free color.
+    expect(priority.series.map(({ key }) => key)).toEqual([
+      ...growthCatalog.data.slice(0, 5).map(({ id }) => id),
+      late,
+      MORE_MODELS_KEY
+    ]);
+    expect(priority.series[5].color).toBe("var(--series-6)");
+    expect(priority.days[0].folded.map(({ model }) => model)).toEqual([
+      "unlisted-heavy",
+      "gpt-oss-120b"
+    ]);
+  });
+
+  test("late catalog members and uncatalogued models borrow distinct colors", () => {
+    const late = growthCatalog.data.at(-1)!.id;
+    const chart = buildDailyChart({
+      dates: [dates[0]],
+      rows: [
+        ...growthCatalog.data
+          .slice(0, 5)
+          .map(({ id }, index) => row({ date: dates[0], model: id, credits: index + 1 })),
+        row({ date: dates[0], model: late, credits: 1 }),
+        row({ date: dates[0], model: "gpt-oss-120b", credits: 2 })
+      ],
+      metric: "credits",
+      split: "model",
+      labels,
+      highlights
+    });
+    const colors = new Map(chart.series.map(({ key, color }) => [key, color]));
+    expect(colors.get(late)).toBe("var(--series-6)");
+    expect(colors.get("gpt-oss-120b")).toBe("var(--series-7)");
+  });
+
+  test("overflow reserves a legend series and folds every excess model", () => {
+    const count = MAX_NAMED_MODELS;
+    const fill = Array.from({ length: count }, (_, i) => `model-${i}`);
+    // Exactly at the cap: all named, no fold.
+    const atCap = buildDailyChart({
+      dates,
+      rows: fill.map((m) => row({ date: "2026-10-01", model: m, credits: 10 })),
+      metric: "credits",
       split: "model",
       labels
     });
-    expect(chart.series.at(-1)).toEqual({
-      key: MORE_MODELS_KEY,
-      label: "Llama 3.3 70B",
-      color: "var(--series-other)"
+    expect(atCap.series.some((s) => s.key === MORE_MODELS_KEY)).toBe(false);
+    expect(atCap.series).toHaveLength(count);
+
+    // One past the cap reserves a slot, so two models share the gray series.
+    const oneOver = buildDailyChart({
+      dates,
+      rows: [...fill, "overflow"].map((m) => row({ date: "2026-10-01", model: m, credits: 10 })),
+      metric: "credits",
+      split: "model",
+      labels
     });
-    expect(chart.days[0].values.more).toBe(5);
-    expect(chart.days[0].folded).toEqual([]);
+    expect(oneOver.series).toHaveLength(count);
+    const last = oneOver.series.at(-1)!;
+    expect(last.key).toBe(MORE_MODELS_KEY);
+    expect(last.label).toBe("More models");
+    expect(oneOver.days[0].values[MORE_MODELS_KEY]).toBe(20);
+    expect(oneOver.days[0].folded.map((f) => f.model)).toEqual(["model-6", "overflow"]);
+
+    // Two past the cap: real fold, with a per-day breakdown.
+    const twoOver = buildDailyChart({
+      dates,
+      rows: [...fill, "overflow", "also"].map((m, i) =>
+        row({ date: "2026-10-01", model: m, credits: 100 - i })
+      ),
+      metric: "credits",
+      split: "model",
+      labels
+    });
+    expect(twoOver.series).toHaveLength(count);
+    expect(twoOver.series.at(-1)!.label).toBe("More models");
+    expect(twoOver.days[0].folded.map((f) => f.model)).toEqual(["model-5", "model-6", "overflow"]);
+  });
+
+  test("a full legend keeps highlights over higher-usage other models", () => {
+    const highlights = [
+      "kimi-k3-1-pro",
+      "kimi-k3",
+      "glm-5-3",
+      "deepseek-v4-1-flash-1017-uncensored",
+      "gemma4-31b",
+      "glm-5-3-flash",
+      "deepseek-v4-1-flash"
+    ];
+    const chart = buildDailyChart({
+      dates,
+      rows: [
+        ...highlights.map((m) => row({ date: "2026-10-01", model: m, credits: 1 })),
+        row({ date: "2026-10-01", model: "gpt-oss-120b", credits: 500 }),
+        row({ date: "2026-10-01", model: "llama3-3-70b", credits: 400 })
+      ],
+      metric: "credits",
+      split: "model",
+      labels,
+      highlights: catalogHighlights
+    });
+    const named = chart.series.filter((s) => s.key !== MORE_MODELS_KEY).map((s) => s.key);
+    expect(named).toEqual(highlights.slice(0, -1));
+    expect(chart.series).toHaveLength(MAX_NAMED_MODELS);
+    expect(chart.series.at(-1)!.label).toBe("More models");
+    expect(chart.days[0].folded.map((f) => f.model)).toEqual([
+      "gpt-oss-120b",
+      "llama3-3-70b",
+      "deepseek-v4-1-flash"
+    ]);
+    const namedIds = chart.series.filter((s) => s.key !== MORE_MODELS_KEY).map((s) => s.key);
+    expect(modelColor("gpt-oss-120b", namedIds)).toBe(MORE_MODELS_COLOR);
+    expect(modelColor("deepseek-v4-1-flash", namedIds)).toBe(MORE_MODELS_COLOR);
+    expect(modelColor("glm-5-3", [])).toBe(MORE_MODELS_COLOR);
   });
 
   test("origin, pool and token splits pivot the same rows", () => {

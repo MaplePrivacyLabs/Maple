@@ -9,9 +9,15 @@ import type {
   UsageRange
 } from "@/billing/usageApi";
 import {
-  MODEL_SLOTS,
+  MAX_NAMED_MODELS,
   MORE_MODELS_COLOR,
   MORE_MODELS_KEY,
+  catalogIndex,
+  highlightGroup,
+  modelColor,
+  modelHighlights,
+  seriesBefore,
+  type ModelHighlights,
   ORIGIN_COLOR,
   ORIGIN_LABEL,
   ORIGINS,
@@ -404,7 +410,7 @@ export function sortModels(models: ModelSummary[], by: "credits" | "requests"): 
 // ---------------------------------------------------------------------------
 // Daily chart
 
-export type SeriesDef = { key: string; label: string; color: string };
+export type SeriesDef = { key: string; label: string; color: string; group?: string };
 
 export type DayBucket = {
   date: string;
@@ -417,12 +423,37 @@ export type DayBucket = {
 
 export type DailyChart = { series: SeriesDef[]; days: DayBucket[] };
 
-const SLOT_ORDER = Object.keys(MODEL_SLOTS);
+/** Which models get their own series. Everything used, until the legend is full;
+ * then catalog order wins and unranked models use stable ID order. */
+function chooseNamed(
+  totals: Map<string, number>,
+  highlights: ModelHighlights
+): { named: string[]; folded: string[] } {
+  // Rank every used model, not only members of the current catalog. A legacy
+  // model absent from a refreshed catalog must still be named or folded.
+  const ranked = [...totals]
+    .filter(([, value]) => value > 0)
+    .sort(([left], [right]) => {
+      const l = catalogIndex(left, highlights);
+      const r = catalogIndex(right, highlights);
+      if (l !== undefined || r !== undefined) {
+        if (l === undefined) return 1;
+        if (r === undefined) return -1;
+        if (l !== r) return l - r;
+      }
+      return left < right ? -1 : left > right ? 1 : 0;
+    });
+  const limit = ranked.length > MAX_NAMED_MODELS ? MAX_NAMED_MODELS - 1 : MAX_NAMED_MODELS;
+  const named = ranked.slice(0, limit).map(([id]) => id);
+  const folded = ranked.slice(limit).map(([id]) => id);
+  named.sort((left, right) => seriesBefore(left, right, highlights));
+  return { named, folded };
+}
 
-function seriesKey(row: UsageDayRow, split: Split): string {
+function seriesKey(row: UsageDayRow, split: "origin" | "pool"): string {
   if (split === "origin") return usageOrigin(row);
   if (split === "pool") return row.pool;
-  return row.model in MODEL_SLOTS ? row.model : MORE_MODELS_KEY;
+  return row.model;
 }
 
 /**
@@ -435,19 +466,81 @@ export function buildDailyChart({
   rows,
   metric,
   split,
-  labels
+  labels,
+  highlights = modelHighlights()
 }: {
   dates: string[];
   rows: UsageDayRow[];
   metric: Metric;
   split: Split;
   labels: UsageModelLabels;
+  highlights?: ModelHighlights;
 }): DailyChart {
+  if (split === "model") {
+    const buckets = new Map<string, DayBucket>(
+      dates.map((date) => [date, { date, values: {}, requests: 0, extraCredits: 0, folded: [] }])
+    );
+    const perModel = new Map<string, Map<string, number>>();
+    for (const row of rows) {
+      const day = buckets.get(row.date);
+      if (!day) continue;
+      day.requests += row.requests;
+      if (row.pool === "extra") day.extraCredits += row.credits;
+      const value = metricOf(row, metric);
+      let values = perModel.get(row.model);
+      if (!values) {
+        values = new Map();
+        perModel.set(row.model, values);
+      }
+      values.set(row.date, (values.get(row.date) ?? 0) + value);
+    }
+    const totals = new Map(
+      [...perModel].map(([id, values]) => [
+        id,
+        [...values.values()].reduce((sum, value) => sum + value, 0)
+      ])
+    );
+    const { named, folded: foldedIds } = chooseNamed(totals, highlights);
+    const series: SeriesDef[] = named.map((id) => {
+      const group = highlightGroup(id, highlights);
+      return {
+        key: id,
+        label: modelLabel(id, labels),
+        color: modelColor(id, named, highlights),
+        ...(group ? { group } : {})
+      };
+    });
+    if (foldedIds.length > 0) {
+      series.push({
+        key: MORE_MODELS_KEY,
+        label: foldedIds.length === 1 ? modelLabel(foldedIds[0], labels) : "More models",
+        color: MORE_MODELS_COLOR
+      });
+    }
+    for (const day of buckets.values()) {
+      for (const id of named) {
+        day.values[id] = perModel.get(id)?.get(day.date) ?? 0;
+      }
+      if (foldedIds.length > 0) {
+        let total = 0;
+        const folded: DayBucket["folded"] = [];
+        for (const id of foldedIds) {
+          const value = perModel.get(id)?.get(day.date) ?? 0;
+          if (value > 0) {
+            total += value;
+            folded.push({ model: id, label: modelLabel(id, labels), value });
+          }
+        }
+        day.values[MORE_MODELS_KEY] = total;
+        day.folded = foldedIds.length > 1 ? folded.sort((a, b) => b.value - a.value) : [];
+      }
+    }
+    return { series, days: [...buckets.values()] };
+  }
   const buckets = new Map<string, DayBucket>(
     dates.map((date) => [date, { date, values: {}, requests: 0, extraCredits: 0, folded: [] }])
   );
   const totals = new Map<string, number>();
-  const foldedModels = new Set<string>();
 
   for (const row of rows) {
     const day = buckets.get(row.date);
@@ -468,13 +561,6 @@ export function buildDailyChart({
     const key = seriesKey(row, split);
     day.values[key] = (day.values[key] ?? 0) + value;
     totals.set(key, (totals.get(key) ?? 0) + value);
-
-    if (key === MORE_MODELS_KEY && value > 0) {
-      foldedModels.add(row.model);
-      const existing = day.folded.find((f) => f.model === row.model);
-      if (existing) existing.value += value;
-      else day.folded.push({ model: row.model, label: modelLabel(row.model, labels), value });
-    }
   }
 
   const used = (key: string) => (totals.get(key) ?? 0) > 0;
@@ -491,37 +577,14 @@ export function buildDailyChart({
       label: ORIGIN_LABEL[origin],
       color: ORIGIN_COLOR[origin]
     }));
-  } else if (split === "pool") {
+  } else {
     series = POOLS.filter(used).map((p) => ({
       key: p,
       label: POOL_LABEL[p],
       color: POOL_COLOR[p]
     }));
-  } else {
-    series = SLOT_ORDER.filter(used).map((m) => ({
-      key: m,
-      label: modelLabel(m, labels),
-      color: MODEL_SLOTS[m]
-    }));
-    if (used(MORE_MODELS_KEY)) {
-      // One unslotted model is named outright; only a real fold says "More models".
-      const only = foldedModels.size === 1 ? [...foldedModels][0] : null;
-      series.push({
-        key: MORE_MODELS_KEY,
-        label: only ? modelLabel(only, labels) : "More models",
-        color: MORE_MODELS_COLOR
-      });
-    }
   }
-
-  const days = [...buckets.values()];
-  for (const day of days) {
-    day.folded =
-      foldedModels.size > 1
-        ? day.folded.sort((a, b) => b.value - a.value)
-        : ([] as DayBucket["folded"]);
-  }
-  return { series, days };
+  return { series, days: [...buckets.values()] };
 }
 
 /** First and last day in the range that drew on Extra credits. */

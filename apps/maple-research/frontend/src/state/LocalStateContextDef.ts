@@ -44,6 +44,8 @@ export interface OpenSecretModel extends Model {
   enabled?: boolean;
   deprecated?: boolean;
   sort_order?: number;
+  group?: string;
+  available_in_agent?: boolean;
 }
 
 export type OpenSecretModelAlias = {
@@ -62,6 +64,9 @@ export type OpenSecretModelAlias = {
 export type OpenSecretModelCatalog = {
   object: "list";
   data: OpenSecretModel[];
+  /** Optional catalog order and headings for Usage highlights. Older catalogs
+   * omit this metadata; clients retain the legacy highlight fallback. */
+  groups?: { id: string; label: string }[];
   aliases: OpenSecretModelAlias[];
   defaults?: {
     quick: "auto:quick";

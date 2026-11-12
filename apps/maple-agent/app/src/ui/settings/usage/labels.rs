@@ -361,12 +361,21 @@ pub(super) fn token_name(kind: TokenKind) -> SharedString {
     })
 }
 
+pub(super) fn model_group_name(group: &maple_sdk::CatalogGroup) -> SharedString {
+    match group.id.as_str() {
+        "capable" => tr("chat-model-group-capable"),
+        "uncensored" => tr("chat-model-group-uncensored"),
+        "fast" => tr("chat-model-group-fast"),
+        _ => group.label.clone().into(),
+    }
+}
+
 pub(super) fn series_name(key: SeriesKey, label: Option<&str>) -> SharedString {
     if let Some(label) = label {
         return label.to_string().into();
     }
     match key {
-        SeriesKey::Model(slot) => model::MODEL_SLOTS[slot].into(),
+        SeriesKey::Model(_) => unreachable!("model series have catalog labels"),
         SeriesKey::MoreModels => tr("settings-usage-more-models"),
         SeriesKey::Origin(origin) => origin_name(origin),
         SeriesKey::Plan => tr("settings-usage-pool-plan"),

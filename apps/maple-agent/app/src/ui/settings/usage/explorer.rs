@@ -74,7 +74,7 @@ impl SettingsScreen {
                     ))
                 })
                 .child(self.daily_chart(data, range, cx))
-                .child(self.models_table(range))
+                .child(self.models_table(data, range))
                 .child(self.apps_list(range)),
         )
     }
@@ -328,17 +328,37 @@ impl SettingsScreen {
                 .text_color(gpui::rgb(theme::text_muted()))
                 .child(tr("settings-usage-no-usage"))
         } else {
-            div()
-                .flex()
-                .flex_wrap()
-                .gap_x_4()
-                .gap_y_1()
-                .children(chart_data.series.iter().map(|series| {
-                    legend_item(
-                        palette::series(series.key),
-                        series_name(series.key, series.label.as_deref()),
-                    )
-                }))
+            div().flex().flex_wrap().gap_x_4().gap_y_3().children(
+                chart_data.series.iter().enumerate().map(|(index, series)| {
+                    let heading = series.group.as_ref().filter(|group| {
+                        index == 0
+                            || chart_data.series[index - 1]
+                                .group
+                                .as_ref()
+                                .map(|previous| &previous.id)
+                                != Some(&group.id)
+                    });
+                    div()
+                        .flex()
+                        .items_center()
+                        .gap_2()
+                        .when_some(heading, |row, group| {
+                            row.child(
+                                div()
+                                    .text_xs()
+                                    .text_color(gpui::rgb(theme::text_muted()))
+                                    .child(gpui::text!(
+                                        id = ("usage-model-group", index),
+                                        model_group_name(group)
+                                    )),
+                            )
+                        })
+                        .child(legend_item(
+                            palette::series(series.key),
+                            series_name(series.key, series.label.as_deref()),
+                        ))
+                }),
+            )
         };
         widgets::card_row()
             .p_5()
@@ -444,7 +464,7 @@ impl SettingsScreen {
         section
     }
 
-    pub(super) fn models_table(&self, range: &RangeData) -> Div {
+    pub(super) fn models_table(&self, data: &UsageData, range: &RangeData) -> Div {
         let models = &range.summary.by_model;
         let total = range.summary.counts.credits;
         let peak = models
@@ -464,8 +484,19 @@ impl SettingsScreen {
             .into_iter()
             .map(|(label, column)| (column, header_cell(label))),
         );
+        let peers: Vec<&str> = range
+            .chart
+            .series
+            .iter()
+            .filter_map(|series| series.model.as_deref())
+            .collect();
         let rows = models.iter().map(|model| {
-            let color = palette::model(&model.model);
+            let color = palette::model_table_color(
+                &model.model,
+                &peers,
+                self.usage.split,
+                &data.model_ranking,
+            );
             let (mix, more) = &model.mix;
             // One app needs no percentage: `Work`, not `100% Work`.
             let mut mix: Vec<String> = match mix.as_slice() {
