@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-expected='nix (Determinate Nix 3.23.3) 2.35.3'
+expected='nix (Determinate Nix 3.24.2) 2.35.3'
 actual="$(nix --version)"
 
 if [[ "$actual" != "$expected" ]]; then
