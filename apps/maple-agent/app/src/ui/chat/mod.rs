@@ -6377,9 +6377,15 @@ impl ChatScreen {
                     motion::now(),
                     self.list_state.is_following_tail(),
                 );
+                // A message from the user ends the turn before it, whose
+                // reply may now carry the card of what the turn changed.
+                let settled = self.turns.tail_reply().filter(|_| turn::starts_turn(&item));
                 self.turns.push(&item);
                 self.timeline.push(item);
                 self.list_state.splice(index..index, 1);
+                if let Some(reply) = settled {
+                    self.list_state.remeasure_items(reply..reply + 1);
+                }
                 // The step before a new one loses the gap under it, so
                 // the rail joins them: its height changed too.
                 if index > 0

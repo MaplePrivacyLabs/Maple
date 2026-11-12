@@ -439,7 +439,11 @@ impl ChatScreen {
                             this.markdown_cache.clear();
                             this.derived.clear();
                             this.messages = Default::default();
-                            this.remeasure_item(index);
+                            // The whole input may change what its turn's
+                            // card lists, and so the height of the reply
+                            // that carries it.
+                            this.turn_changes.clear();
+                            this.list_state.remeasure_items(index..this.timeline.len());
                             this.warm_markdown(cx);
                         }
                     }

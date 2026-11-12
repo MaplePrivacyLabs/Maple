@@ -302,7 +302,13 @@ impl ChatScreen {
                 self.timeline[lead..reply]
                     .iter()
                     .enumerate()
-                    .filter(|(offset, _)| self.turns.row(lead + offset) != TurnRow::Plain)
+                    // Only the calls that changed a file have their
+                    // rows derived: a turn of commands derives none.
+                    .filter(|(offset, item)| {
+                        self.turns.row(lead + offset) != TurnRow::Plain
+                            && StepState::of(item.status.as_deref()) == StepState::Done
+                            && changed_path(item).is_some()
+                    })
                     .map(|(_, item)| {
                         let revision = self
                             .timeline_index
