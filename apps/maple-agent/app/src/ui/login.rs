@@ -68,7 +68,7 @@ impl LoginScreen {
             cx.new(|cx| SecretInput::localized("flows-login-password", cx).with_tab_index(1));
         let callback =
             cx.new(|cx| TextInput::localized("flows-login-callback", cx).with_tab_index(0));
-        // The email handler receives its own text rather than reading the
+        // Each Enter handler receives its own text rather than reading the
         // leased input. SecretInput emits a content-free submission event.
         let weak = cx.entity().downgrade();
         let email_weak = weak.clone();
@@ -89,9 +89,9 @@ impl LoginScreen {
         });
         let oauth_weak = weak;
         callback.update(cx, |input, _| {
-            input.set_on_enter(move |_, _, cx| {
+            input.set_on_enter(move |redirected, _, cx| {
                 if let Some(this) = oauth_weak.upgrade() {
-                    this.update(cx, |screen, cx| screen.confirm_oauth(cx));
+                    this.update(cx, |screen, cx| screen.confirm_oauth(redirected, cx));
                 }
             });
         });
@@ -331,14 +331,13 @@ impl LoginScreen {
         );
     }
 
-    fn confirm_oauth(&mut self, cx: &mut Context<Self>) {
+    fn confirm_oauth(&mut self, redirected: String, cx: &mut Context<Self>) {
         let OAuthFlow::Pending { provider, .. } = self.oauth else {
             return;
         };
         if self.busy {
             return;
         }
-        let redirected = self.callback_input.read(cx).text();
         if redirected.trim().is_empty() {
             self.error = Some(UiText::key("flows-login-paste-required"));
             cx.notify();
@@ -553,7 +552,8 @@ impl Render for LoginScreen {
                             .when(busy, |el| el.bg(gpui::rgb(theme::bg_sidebar_pill())))
                             .when(!busy, |el| {
                                 el.on_click(cx.listener(|this, _event, _window, cx| {
-                                    this.confirm_oauth(cx);
+                                    let redirected = this.callback_input.read(cx).text();
+                                    this.confirm_oauth(redirected, cx);
                                 }))
                             })
                             .child(gpui::text!(if busy {
@@ -868,6 +868,53 @@ mod tests {
             assert_eq!(
                 screen.error.as_ref().map(UiText::resolve).as_deref(),
                 Some(tr(EMPTY_CREDENTIALS_ERROR).as_ref())
+            );
+        });
+    }
+
+    #[gpui::test]
+    fn oauth_paste_enter_confirms_without_reentrant_field_access(cx: &mut TestAppContext) {
+        cx.executor().allow_parking();
+        let backend =
+            Arc::new(AgentBackend::for_test("http://127.0.0.1:9".into(), String::new()).unwrap());
+        let screen = cx.new(|cx| {
+            crate::desktop::register_key_bindings(cx);
+            let mut screen = LoginScreen::new(backend, cx);
+            screen.oauth = OAuthFlow::Pending {
+                provider: OAuthProvider::Google,
+                auth_url: "https://example.test/authorize".to_string(),
+            };
+            screen
+        });
+        let (_host, cx) = cx.add_window_view(|_window, _cx| LoginHost {
+            screen: screen.clone(),
+        });
+        cx.simulate_resize(size(px(900.), px(700.)));
+        let callback_focus =
+            cx.update(|_window, app| screen.read(app).callback_input.read(app).focus_handle(app));
+        cx.update(|window, app| window.focus(&callback_focus, app));
+        cx.simulate_keystrokes("enter");
+        cx.update(|_window, app| {
+            let screen = screen.read(app);
+            assert!(!screen.busy);
+            assert_eq!(
+                screen.error.as_ref().map(UiText::resolve).as_deref(),
+                Some(tr("flows-login-paste-required").as_ref())
+            );
+        });
+        // The pasted URL goes to the backend: the unreachable backend either
+        // still runs the completion or has replaced the error with its own.
+        cx.simulate_input("http://127.0.0.1:1/callback?code=fixture&state=fixture");
+        cx.simulate_keystrokes("enter");
+        cx.update(|_window, app| {
+            let screen = screen.read(app);
+            assert!(
+                screen.busy
+                    || screen
+                        .error
+                        .as_ref()
+                        .is_some_and(|error| error.resolve() != tr("flows-login-paste-required")),
+                "Enter on a pasted URL must start the completion"
             );
         });
     }
