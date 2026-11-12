@@ -1,8 +1,8 @@
 # SQLCipher provider pins
 
 Maple uses released rusqlite 0.40.2 with libsqlite3-sys 0.38.2 from the public
-[MaplePrivacyLabs/rusqlite fork](https://github.com/MaplePrivacyLabs/rusqlite/tree/5f1c23d440773eb0121bc982ebc20a7450ff9ed3).
-The workspace pins commit `5f1c23d440773eb0121bc982ebc20a7450ff9ed3`, one signed
+[MaplePrivacyLabs/rusqlite fork](https://github.com/MaplePrivacyLabs/rusqlite/tree/853a8daf0f20b47123d228762490d2bdd52ad77c).
+The workspace pins commit `853a8daf0f20b47123d228762490d2bdd52ad77c`, one signed
 patch above upstream release commit `e88f112bef7899234a497baed5cc3c3d553deeb8`.
 The functional delta is confined to the crate manifest and build script; its
 small README documents the adaptation and removal criteria. Maple does not
@@ -10,8 +10,8 @@ copy the upstream dependency's source tree into this repository.
 
 The patch backports source selection from
 [rusqlite#1917](https://github.com/rusqlite/rusqlite/pull/1917) and adds the
-`bundled-sqlcipher-openssl4` feature. It selects `sqlcipher-src =419.0.6`
-(SQLCipher 4.19.0 / SQLite 3.53.4) and `openssl-src =400.0.2` (OpenSSL 4.0.3).
+`bundled-sqlcipher-openssl4` feature. It selects `sqlcipher-src =420.0.0`
+(SQLCipher 4.20.0 / SQLite 3.54.1) and `openssl-src =400.0.2` (OpenSSL 4.0.3).
 OpenSSL is built from source and its static crypto archive is linked after
 SQLCipher. The route explicitly selects the OpenSSL provider and rejects
 competing provider/linkage features and ambient pkg-config selection.
@@ -51,11 +51,12 @@ pinned primary signer without a revoked-key signature. It runs upstream
 `configure` and `make sqlite3.c`, then compares C, public headers and the
 SQLCipher license against the registry crate selected by Cargo.
 
-Exactly one existing source-crate transformation is allowed: the wasm
-`.fini_array` guard from its
-[pinned assembly script](https://github.com/LucaCappelletti94/sqlcipher-src/blob/5d0b69527a8264eff892903e73ef6da9cd7018e2/tools/assemble.py).
+No source-crate transformation is allowed: since SQLCipher 4.20.0 ships its
+own wasm `.fini_array` guard, the source crate's
+[pinned assembly script](https://github.com/LucaCappelletti94/sqlcipher-src/blob/617c0cc9673cadddd1beefda6db47aa732d5a7ab/tools/assemble.py)
+copies the generated `sqlite3.c` unchanged.
 The release key and signer pin come from that source crate's
-[verification inputs](https://github.com/LucaCappelletti94/sqlcipher-src/blob/5d0b69527a8264eff892903e73ef6da9cd7018e2/tools/releases.sh).
+[verification inputs](https://github.com/LucaCappelletti94/sqlcipher-src/blob/617c0cc9673cadddd1beefda6db47aa732d5a7ab/tools/releases.sh).
 Review those trust inputs when changing the pin. Matching hashes alone do not
 establish signature verification or independent regeneration.
 

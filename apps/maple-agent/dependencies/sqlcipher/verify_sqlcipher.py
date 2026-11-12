@@ -89,14 +89,7 @@ def verify(metadata):
         run([str(tree / "configure")], cwd=tree, environment=environment)
         run(["make", "sqlite3.c"], cwd=tree, environment=environment)
 
-        original = (tree / "sqlite3.c").read_bytes()
-        before = (
-            b"#else\nstatic void (*const sqlcipher_fini_func)(void) "
-            b'__attribute__((used, section(".fini_array"))) = sqlcipher_fini;\n#endif\n'
-        )
-        after = before.replace(b"#else\n", b"#elif !defined(__wasm__)\n", 1)
-        require(original.count(before) == 1, "the allowed wasm finalizer hunk moved")
-        regenerated = original.replace(before, after, 1)
+        regenerated = (tree / "sqlite3.c").read_bytes()
         require(regenerated == (source / "sqlcipher.c").read_bytes(), "regenerated SQLCipher C differs")
         for upstream_name, packaged_name in [
             ("sqlite3.h", "sqlite3.h"),
@@ -113,7 +106,7 @@ def verify(metadata):
             "commit": commit,
             "signer_fingerprint": primary,
             "amalgamation_sha256": hashlib.sha256(regenerated).hexdigest(),
-            "allowed_transformations": 1,
+            "allowed_transformations": 0,
         }
 
 

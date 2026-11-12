@@ -5651,7 +5651,7 @@ dependencies = [
 [[package]]
 name = "libsqlite3-sys"
 version = "0.38.2"
-source = "git+https://github.com/MaplePrivacyLabs/rusqlite.git?rev=5f1c23d440773eb0121bc982ebc20a7450ff9ed3#5f1c23d440773eb0121bc982ebc20a7450ff9ed3"
+source = "git+https://github.com/MaplePrivacyLabs/rusqlite.git?rev=853a8daf0f20b47123d228762490d2bdd52ad77c#853a8daf0f20b47123d228762490d2bdd52ad77c"
 dependencies = [
  "cc",
  "openssl-src",
@@ -10176,9 +10176,9 @@ dependencies = [
 
 [[package]]
 name = "sqlcipher-src"
-version = "419.0.6+sqlcipher-4.19.0-sqlite-3.53.4-libtomcrypt-1.18.2"
+version = "420.0.0+sqlcipher-4.20.0-sqlite-3.54.1-libtomcrypt-1.18.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "ab732d48ebf2a1449e94d071b26544f99845834c75c3c210e927ace097b49aa4"
+checksum = "fd6b5280ed2593d07b2816ec531821c15c306903bcca224716f1fbcc2bbfedfe"
 
 [[package]]
 name = "sqlite-wasm-rs"

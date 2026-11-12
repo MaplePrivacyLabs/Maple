@@ -65,7 +65,7 @@ its result; reconnect drops old pending and unsent requests.
 
 ## Source and provider verification
 
-The static provider is SQLCipher 4.19.0 / SQLite 3.53.4, with OpenSSL 4.0.3 from
+The static provider is SQLCipher 4.20.0 / SQLite 3.54.1, with OpenSSL 4.0.3 from
 `openssl-src`. A revision-pinned public `MaplePrivacyLabs/rusqlite` fork carries
 one focused `libsqlite3-sys` patch above the release base, while rusqlite 0.40.2
 remains the released registry crate. The dependency source is fetched by Cargo

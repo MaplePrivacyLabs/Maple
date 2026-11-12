@@ -1,24 +1,24 @@
 {
   "format": 2,
-  "reviewed_on": "2026-10-21",
+  "reviewed_on": "2026-11-12",
   "packages": {
     "libsqlite3-sys": {
       "version": "0.38.2",
       "repository": "https://github.com/MaplePrivacyLabs/rusqlite.git",
-      "revision": "5f1c23d440773eb0121bc982ebc20a7450ff9ed3",
+      "revision": "853a8daf0f20b47123d228762490d2bdd52ad77c",
       "upstream_commit": "e88f112bef7899234a497baed5cc3c3d553deeb8",
       "upstream_release_archive_sha256": "f1d20bef17f513b9b3004532233187769cd072d790971f4e4da0e346eb6401e8",
       "upstream_release_download_url": "https://static.crates.io/crates/libsqlite3-sys/libsqlite3-sys-0.38.2.crate",
       "files_sha256": {
         ".gitignore": "d89b7a44f37a816f5b0ca8297e0d17067ca5f41e45d1455b0a56d072679a00a6",
-        "Cargo.toml": "599375c94d220bb805e4e2775ac73ddd066199a2475ced3377487eaaa592de7d",
+        "Cargo.toml": "bae8c43b28810ef4d5a4b39b4dcde2ad1f730dd2ea0c0ca23a1277f68be45e59",
         "LICENSE": "c10c1f27337546471e5f7e4e97fdd398b35b9d4e126115dcd22de8d8e65abf6f",
-        "README.maple.md": "3307ea0b3f42c165b2f13e6a0247ca27822e0c57e22152a974bf1eac1f5ef9a4",
+        "README.maple.md": "8d18de974717dffac35168854a4efdad1282f0d045affa08c677d82e66e97ed7",
         "README.md": "17a4e830209b642f0bfebd4b3f581fa4fea24efca5e500e10eee58760de99969",
         "Upgrade.md": "d151a67d4bbb1a5a300d084d210d6cd238d833a6d4bd5d958ae7469a9deccb36",
         "bindgen-bindings/bindgen_3.34.1.rs": "4f94d0192ec890b62773368cb026daf219f5182094952c007d28ed6d3812fd68",
         "bindgen-bindings/bindgen_3.34.1_ext.rs": "44ff11f09886f8c41494f65043ac2ddba4e476bb17a81fe93a8c10c7bffdf4a8",
-        "build.rs": "b3682b4926276f48fabf72b1efc62ea5b2bfd7cdb34b858352dff6f10ab70aa6",
+        "build.rs": "c82849aed9452cd2929dc04e340ec18799faf9eda8c1da09aa314407c9165cc3",
         "sqlcipher/LICENSE": "ea4fcb309f14a22065e1ea45362d494d320012249ed865fe9c7c0946db754131",
         "sqlcipher/bindgen_bundled_version.rs": "971ec006a2405a7cc443ec69500b1b6fbe45cf3f6ababf7f7815e9a3edbd6dbe",
         "sqlcipher/sqlite3.c": "ea0bf0b08f688ca5d9312b2e33e7f81b3f4ae54b5016fb062ae1f2632a30a1b9",
@@ -39,14 +39,14 @@
       }
     },
     "sqlcipher-src": {
-      "version": "419.0.6+sqlcipher-4.19.0-sqlite-3.53.4-libtomcrypt-1.18.2",
-      "archive_sha256": "ab732d48ebf2a1449e94d071b26544f99845834c75c3c210e927ace097b49aa4",
-      "download_url": "https://static.crates.io/crates/sqlcipher-src/sqlcipher-src-419.0.6+sqlcipher-4.19.0-sqlite-3.53.4-libtomcrypt-1.18.2.crate",
-      "vcs_commit": "5d0b69527a8264eff892903e73ef6da9cd7018e2",
+      "version": "420.0.0+sqlcipher-4.20.0-sqlite-3.54.1-libtomcrypt-1.18.2",
+      "archive_sha256": "fd6b5280ed2593d07b2816ec531821c15c306903bcca224716f1fbcc2bbfedfe",
+      "download_url": "https://static.crates.io/crates/sqlcipher-src/sqlcipher-src-420.0.0+sqlcipher-4.20.0-sqlite-3.54.1-libtomcrypt-1.18.2.crate",
+      "vcs_commit": "617c0cc9673cadddd1beefda6db47aa732d5a7ab",
       "files_sha256": {
-        "sqlcipher/sqlcipher.c": "838b2ed8a586b8b77f03e82c5a25b97e1a55e524ebac0de05354193865703072",
-        "sqlcipher/sqlite3.h": "8a9d1bff44d75174ca6dea3ea9bac50a6104d86facb566647b8bb839375b7b3a",
-        "sqlcipher/sqlite3ext.h": "ac9645e5c9ff0cf176efdd6e75cb5e98f46295d38e02db5c4d208826a39ab4be",
+        "sqlcipher/sqlcipher.c": "8cd2347d18886fee4651153fabeeeffb7cec008700987dab1c00261febc4220f",
+        "sqlcipher/sqlite3.h": "e36eb6ed4de77e56a633866a8f84ed339785662d0cf79cf099f420b638bf28ec",
+        "sqlcipher/sqlite3ext.h": "48963abfefb41ac329ef9d706acb5eadba952a99a748285c9ded6b5e0942721b",
         "sqlcipher/LICENSE-sqlcipher": "2a2826f6acf46fa650730cf42cbb22a642be33a7ef119c9c4f4bf6daf3bef48e"
       }
     },
@@ -66,12 +66,12 @@
   },
   "sqlcipher_upstream": {
     "repository": "https://github.com/sqlcipher/sqlcipher.git",
-    "tag": "v4.19.0",
-    "tag_object": "58beb4a302f0e3c37341d2312cef521f858b1273",
-    "commit": "c4b275a47932888216bade83aff2bbc73df0ff85",
+    "tag": "v4.20.0",
+    "tag_object": "52252487a5cada9b430e8d4b20025790c5a6ba20",
+    "commit": "355d4db92d3404e71faa8088d071a71d767807f4",
     "signer_fingerprint": "D92204901CD8BFDF63A2D9F952E8883F1591F4CE",
     "public_key_file": "keys/sqlcipher.asc",
     "public_key_sha256": "8ae2247dacc4ebf409da820e6329691bf89828b4f2d7d64dfa2dbd90fb388ec2",
-    "source_crate_transformation": "Only replace the .fini_array #else with #elif !defined(__wasm__), per sqlcipher-src pinned tools/assemble.py; no Maple changes to generated C."
+    "source_crate_transformation": "None: sqlcipher-src pinned tools/assemble.py copies upstream sqlite3.c unchanged; no Maple changes to generated C."
   }
 }

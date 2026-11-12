@@ -38,5 +38,5 @@ strip = true
 # The embedded proxy requires `maple-sdk` from the registry; resolve it to the same
 # in-tree source as the workspace dependency above (docs/sdk-publishing.md).
 [patch.crates-io]
-libsqlite3-sys = { git = "https://github.com/MaplePrivacyLabs/rusqlite.git", rev = "5f1c23d440773eb0121bc982ebc20a7450ff9ed3" }
+libsqlite3-sys = { git = "https://github.com/MaplePrivacyLabs/rusqlite.git", rev = "853a8daf0f20b47123d228762490d2bdd52ad77c" }
 maple-sdk = { path = "../../sdk/rust" }
