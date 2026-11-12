@@ -3668,4 +3668,38 @@ mod motion_tests {
             );
         });
     }
+
+    #[gpui::test]
+    fn a_message_queued_into_a_run_ends_the_turn_before_it(cx: &mut TestAppContext) {
+        use maple_agent::agent::{AgentRunEvent, AgentRunTerminal};
+
+        let clock = Clock::start();
+        let chat = screen(cx);
+        chat.update(cx, |chat, cx| {
+            chat.replace_timeline(vec![user_item("ask", "Run the tests")]);
+            let row = |row| run_event(AgentRunEvent::TimelineItem(row));
+            chat.handle_service_event(run_event(AgentRunEvent::Started), cx);
+            chat.handle_service_event(row(tool_call("first")), cx);
+            // Five seconds in, the run takes up a queued message: the
+            // same run, the next turn.
+            clock.at(Duration::from_secs(5));
+            chat.handle_service_event(row(user_item("next", "Now lint")), cx);
+            chat.handle_service_event(row(tool_call("second")), cx);
+            clock.at(Duration::from_secs(9));
+            chat.handle_service_event(
+                run_event(AgentRunEvent::Finished(AgentRunTerminal::Completed)),
+                cx,
+            );
+            assert_eq!(
+                chat.turn_worked.get("first"),
+                Some(&Duration::from_secs(5)),
+                "the first turn keeps its own time"
+            );
+            assert_eq!(
+                chat.turn_worked.get("second"),
+                Some(&Duration::from_secs(4)),
+                "and the second starts from the message that began it"
+            );
+        });
+    }
 }

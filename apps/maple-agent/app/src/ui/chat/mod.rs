@@ -6343,6 +6343,7 @@ impl ChatScreen {
                 self.turns.push(&item);
                 self.timeline.push(item);
                 self.list_state.splice(index..index, 1);
+                self.time_arrival(session_id, index);
                 index
             }
         };
