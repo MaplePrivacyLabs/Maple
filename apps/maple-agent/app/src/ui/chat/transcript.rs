@@ -3670,6 +3670,35 @@ mod motion_tests {
     }
 
     #[gpui::test]
+    fn a_run_whose_rows_a_paged_back_view_missed_keeps_no_time(cx: &mut TestAppContext) {
+        use maple_agent::agent::{AgentRunEvent, AgentRunTerminal};
+
+        let clock = Clock::start();
+        let chat = screen(cx);
+        chat.update(cx, |chat, cx| {
+            chat.replace_timeline(vec![user_item("ask", "Run the tests")]);
+            let row = |row| run_event(AgentRunEvent::TimelineItem(row));
+            chat.handle_service_event(run_event(AgentRunEvent::Started), cx);
+            chat.handle_service_event(row(tool_call("first")), cx);
+            // Paged back in history, the view does not take in the queued
+            // message that starts the run's next turn.
+            chat.pages.after = true;
+            clock.at(Duration::from_secs(5));
+            chat.handle_service_event(row(user_item("next", "Now lint")), cx);
+            clock.at(Duration::from_secs(9));
+            chat.handle_service_event(
+                run_event(AgentRunEvent::Finished(AgentRunTerminal::Completed)),
+                cx,
+            );
+            assert_eq!(
+                chat.turn_worked.get("first"),
+                None,
+                "the first turn is not charged for a turn the view never saw begin"
+            );
+        });
+    }
+
+    #[gpui::test]
     fn a_message_queued_into_a_run_ends_the_turn_before_it(cx: &mut TestAppContext) {
         use maple_agent::agent::{AgentRunEvent, AgentRunTerminal};
 
