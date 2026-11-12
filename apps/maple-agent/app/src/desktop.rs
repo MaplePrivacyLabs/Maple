@@ -3052,12 +3052,14 @@ fn quit_activity_body(
         .into_iter()
         .zip(items)
         .map(|(name, item)| (name, item.into()));
-    messages.get(
+    let body = messages.get(
         "native-quit-activity",
         [("count", count.into()), ("api", api.into())]
             .into_iter()
             .chain(item_args),
-    )
+    );
+    // The closing note spells out what "waits for it to drain" means.
+    format!("{body} {}", tr("native-quit-drain-note")).into()
 }
 
 #[derive(Clone)]
@@ -6154,7 +6156,7 @@ mod tests {
     }
 
     #[test]
-    fn quit_prompt_body_lists_live_work_in_one_sentence() {
+    fn quit_prompt_body_lists_live_work_and_closes_with_the_drain_note() {
         let _localization = ui::i18n::TestLocalizationGuard::enable();
         let messages = ui::i18n::MessageCache::default();
         let activity = HostActivity {
@@ -6169,7 +6171,7 @@ mod tests {
             quit_activity_body(&activity, &messages).as_ref(),
             "2 running tasks, 1 attached editor, 1 remote controller, 1 background job, and 3 API \
              requests. Quitting stops the host, including the local API, and waits for them to \
-             drain."
+             drain. In-flight work finishes before Maple closes."
         );
         // Only the API listener is live: no list, and the host drains alone.
         let activity = HostActivity {
@@ -6178,12 +6180,14 @@ mod tests {
         };
         assert_eq!(
             quit_activity_body(&activity, &messages).as_ref(),
-            "Quitting stops the host, including the local API, and waits for it to drain."
+            "Quitting stops the host, including the local API, and waits for it to drain. \
+             In-flight work finishes before Maple closes."
         );
         // An idle host, as the debug loop shows, has nothing to list.
         assert_eq!(
             quit_activity_body(&HostActivity::default(), &messages).as_ref(),
-            "Quitting stops the host and waits for it to drain."
+            "Quitting stops the host and waits for it to drain. In-flight work finishes before \
+             Maple closes."
         );
         // Two items join without the serial comma.
         let activity = HostActivity {
@@ -6194,7 +6198,7 @@ mod tests {
         assert_eq!(
             quit_activity_body(&activity, &messages).as_ref(),
             "1 running task and 2 attached editors. Quitting stops the host and waits for them to \
-             drain."
+             drain. In-flight work finishes before Maple closes."
         );
     }
 

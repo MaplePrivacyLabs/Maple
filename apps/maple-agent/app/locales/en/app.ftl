@@ -1404,6 +1404,8 @@ native-quit-activity = { $count ->
 }
 # The $api clause of native-quit-activity.
 native-quit-api-clause = , including the local API,
+# The Quit prompt's closing note, appended after native-quit-activity.
+native-quit-drain-note = In-flight work finishes before Maple closes.
 # $version is the app version; $status is the localized updater status.
 native-about-details = Version { $version }
     { $status }
