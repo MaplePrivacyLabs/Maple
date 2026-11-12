@@ -202,7 +202,7 @@ pub(super) fn chip(text: SharedString) -> Div {
         .text_xs()
         .text_color(gpui::rgb(theme::text_secondary()))
         .truncate()
-        .child(text)
+        .child(gpui::text!(text))
 }
 
 /// The lines an edit adds and removes.
@@ -218,11 +218,11 @@ pub(super) fn changed((added, removed): &(SharedString, SharedString)) -> Div {
         .child(
             div()
                 .text_color(gpui::rgb(theme::status_success()))
-                .child(added.clone()),
+                .child(gpui::text!(added.clone())),
         )
         .child(
             div()
                 .text_color(gpui::rgb(theme::status_error()))
-                .child(removed.clone()),
+                .child(gpui::text!(removed.clone())),
         )
 }

@@ -15,7 +15,7 @@ use maple_agent::agent::{AgentTimelineItem, ExternalAgentActivity};
 
 use super::ChatScreen;
 use super::transcript::{
-    PlanEntry, diff_lines_for, external_agent_activity, plan_entries, tool_input_line,
+    PlanEntry, diff_counts, diff_lines_for, external_agent_activity, plan_entries, tool_input_line,
     tool_output_markdown,
 };
 use crate::ui::markdown;
@@ -287,9 +287,8 @@ pub(super) const MAX_DIFF_LINES: usize = 200;
 impl ItemDerived {
     fn build(item: &AgentTimelineItem) -> Self {
         let output_text = tool_output_markdown(item).map(SharedString::from);
-        let diff_lines = diff_lines_for(item);
-        let count = |sign| diff_lines.iter().filter(|(line, _)| *line == sign).count();
-        let (added, removed) = (count('+'), count('-'));
+        // Counted from the whole input: the lines shown stop at a cap.
+        let (added, removed) = diff_counts(item);
         Self {
             text: SharedString::from(item.text.clone().unwrap_or_default()),
             attachments: super::transcript::attachment_metadata(item)
@@ -316,7 +315,7 @@ impl ItemDerived {
                 .filter(|label| label.kind == "tool" && label.name.as_deref() != Some("load_skill"))
                 .and_then(|label| label.detail.clone())
                 .map(SharedString::from),
-            diff_lines: Arc::new(diff_lines),
+            diff_lines: Arc::new(diff_lines_for(item)),
             external_agent: external_agent_activity(item).map(Arc::new),
             plan: plan_entries(item),
         }

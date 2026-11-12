@@ -9,7 +9,7 @@ mod state_tests {
     use crate::ui::chat::composer::SideThreadTurn;
     use crate::ui::chat::computers::ProjectTarget;
     use crate::ui::chat::sidebar::{RenameTarget, SidebarEvent, TaskMove, root_display_name};
-    use crate::ui::chat::transcript::{diff_lines_for, tool_label_title};
+    use crate::ui::chat::transcript::{diff_counts, diff_lines_for, tool_label_title};
     use crate::ui::chat::*;
     use gpui::{Context, TestAppContext};
     use maple_agent::agent::{
@@ -6178,6 +6178,31 @@ mod state_tests {
         assert_eq!(lines.len(), MAX_DIFF_LINES);
         assert_eq!(lines[0], (' ', SharedString::from("big.txt")));
         assert_eq!(lines[1], ('+', SharedString::from("0")));
+    }
+
+    /// The counts on a step come from the whole edit, not from the lines
+    /// the display keeps.
+    #[test]
+    fn test_changed_line_counts_are_not_cut_at_the_display_cap() {
+        let lines = |count: usize| {
+            (0..count)
+                .map(|n| n.to_string())
+                .collect::<Vec<_>>()
+                .join("\n")
+        };
+        let mut write = item("write", "tool", None);
+        write.input = Some(serde_json::json!({ "path": "big.txt", "content": lines(1000) }));
+        assert_eq!(diff_counts(&write), (1000, 0));
+
+        let mut edit = item("edit", "tool", None);
+        edit.input = Some(serde_json::json!({
+            "path": "big.txt",
+            "edits": [
+                { "oldText": lines(300), "newText": lines(2) },
+                { "oldText": "one", "newText": "one\ntwo" },
+            ],
+        }));
+        assert_eq!(diff_counts(&edit), (4, 301));
     }
 
     #[test]

@@ -1726,6 +1726,26 @@ pub(super) fn diff_lines_for(item: &AgentTimelineItem) -> Vec<(char, SharedStrin
     lines
 }
 
+/// How many lines an edit or write adds and removes, counted from the
+/// whole input. `diff_lines_for` stops at the display cap; this does not.
+pub(super) fn diff_counts(item: &AgentTimelineItem) -> (usize, usize) {
+    let Some(serde_json::Value::Object(map)) = item.input.as_ref() else {
+        return (0, 0);
+    };
+    let lines = |text: Option<&serde_json::Value>| {
+        text.and_then(|text| text.as_str())
+            .map_or(0, |text| text.lines().count())
+    };
+    let (mut added, mut removed) = (lines(map.get("content")), 0);
+    if let Some(serde_json::Value::Array(edits)) = map.get("edits") {
+        for edit in edits {
+            removed += lines(edit.get("oldText"));
+            added += lines(edit.get("newText"));
+        }
+    }
+    (added, removed)
+}
+
 /// The +/- lines of an edit or write, coloured.
 fn render_diff(lines: &[(char, SharedString)]) -> Option<Div> {
     if lines.is_empty() {
@@ -3653,6 +3673,40 @@ mod motion_tests {
                 chat.turn_worked.get("call"),
                 Some(&Duration::from_secs(11)),
                 "the turn worked 4 s before the question and 7 s after the answer"
+            );
+        });
+    }
+
+    #[gpui::test]
+    fn a_message_queued_into_a_run_ends_the_turn_before_it(cx: &mut TestAppContext) {
+        use maple_agent::agent::{AgentRunEvent, AgentRunTerminal};
+
+        let clock = Clock::start();
+        let chat = screen(cx);
+        chat.update(cx, |chat, cx| {
+            chat.replace_timeline(vec![user_item("ask", "Run the tests")]);
+            let row = |row| run_event(AgentRunEvent::TimelineItem(row));
+            chat.handle_service_event(run_event(AgentRunEvent::Started), cx);
+            chat.handle_service_event(row(tool_call("first")), cx);
+            // Five seconds in, the run takes up a queued message: the
+            // same run, the next turn.
+            clock.at(Duration::from_secs(5));
+            chat.handle_service_event(row(user_item("next", "Now lint")), cx);
+            chat.handle_service_event(row(tool_call("second")), cx);
+            clock.at(Duration::from_secs(9));
+            chat.handle_service_event(
+                run_event(AgentRunEvent::Finished(AgentRunTerminal::Completed)),
+                cx,
+            );
+            assert_eq!(
+                chat.turn_worked.get("first"),
+                Some(&Duration::from_secs(5)),
+                "the first turn keeps its own time"
+            );
+            assert_eq!(
+                chat.turn_worked.get("second"),
+                Some(&Duration::from_secs(4)),
+                "and the second starts from the message that began it"
             );
         });
     }
