@@ -7105,9 +7105,10 @@ impl ChatScreen {
             .entry(session_id.to_string())
             .or_insert(0) += 1;
         // A run whose rows this view did not take in is no longer one it
-        // watched: it cannot tell where the run's turns began, so it says
-        // no time for them rather than a wrong one.
-        self.run_clocks.remove(session_id);
+        // can time: it cannot tell where the run's turns began.
+        if let Some(timed) = self.run_clocks.get_mut(session_id) {
+            timed.stop_timing();
+        }
     }
 
     /// Drop every queued question of a session whose run ended.
