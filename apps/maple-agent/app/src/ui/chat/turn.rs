@@ -135,10 +135,21 @@ pub(super) struct RunClock {
 /// A run this window saw start, with its clock.
 pub(super) struct TimedRun {
     run_id: String,
-    clock: RunClock,
+    /// `None` once the view missed some of the run's rows: it is still
+    /// the run it saw start, but it can no longer say a true time for it.
+    clock: Option<RunClock>,
     /// The lead row of the turn the run is working on, once that turn has
     /// a step: the row its time is kept under when the turn ends.
     lead: Option<String>,
+}
+
+impl TimedRun {
+    /// The view did not take in a row of this run. Where its turns began
+    /// is lost, so it shows no time rather than a wrong one.
+    pub(super) fn stop_timing(&mut self) {
+        self.clock = None;
+        self.lead = None;
+    }
 }
 
 impl RunClock {
@@ -466,7 +477,8 @@ impl ChatScreen {
                 .selected_session
                 .as_ref()
                 .and_then(|session| self.run_clocks.get(session))
-                .map(|timed| timed.clock.worked(now)),
+                .and_then(|timed| timed.clock.as_ref())
+                .map(|clock| clock.worked(now)),
             still,
         }
     }
@@ -526,7 +538,7 @@ impl ChatScreen {
             session_id.to_owned(),
             TimedRun {
                 run_id: run_id.to_owned(),
-                clock: RunClock::new(motion::now()),
+                clock: Some(RunClock::new(motion::now())),
                 lead: None,
             },
         );
@@ -544,14 +556,17 @@ impl ChatScreen {
         let Some(item) = self.timeline.get(index) else {
             return;
         };
+        let Some(clock) = timed.clock.as_mut() else {
+            return;
+        };
         if self.turns.row(index) == TurnRow::Lead {
             timed.lead = Some(item.id.clone());
         } else if starts_turn(item) {
             let now = motion::now();
             if let Some(lead) = timed.lead.take() {
-                self.turn_worked.insert(lead, timed.clock.worked(now));
+                self.turn_worked.insert(lead, clock.worked(now));
             }
-            timed.clock.restart(now);
+            clock.restart(now);
         }
     }
 
@@ -577,11 +592,12 @@ impl ChatScreen {
             // A run that ended before its turn had a step has no line to
             // say the time on.
             if self.is_selected(&session)
+                && let Some(clock) = timed.clock
                 && let Some(lead) = timed
                     .lead
                     .filter(|lead| self.timeline_index.contains_key(lead))
             {
-                self.turn_worked.insert(lead, timed.clock.worked(now));
+                self.turn_worked.insert(lead, clock.worked(now));
             }
         }
         let questions = &self.pending_questions;
@@ -589,7 +605,9 @@ impl ChatScreen {
             let waiting = questions
                 .iter()
                 .any(|question| &question.session_id == session);
-            timed.clock.set_waiting(waiting, now);
+            if let Some(clock) = timed.clock.as_mut() {
+                clock.set_waiting(waiting, now);
+            }
         }
     }
 
