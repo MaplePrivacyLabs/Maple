@@ -270,6 +270,11 @@ pub(super) struct ItemDerived {
     pub(super) input_line: Option<SharedString>,
     /// +/- lines of an edit or write tool, capped at `MAX_DIFF_LINES`.
     pub(super) diff_lines: Arc<Vec<(char, SharedString)>>,
+    /// Lines that edit or write adds and removes, as "+12" and "−3".
+    pub(super) changed: Option<(SharedString, SharedString)>,
+    /// What a tool call acts on: the command, path or query the host put
+    /// in its label.
+    pub(super) acted_on: Option<SharedString>,
     /// What an external agent (Codex) did, for the row of the tool call
     /// that ran it.
     pub(super) external_agent: Option<Arc<ExternalAgentActivity>>,
@@ -282,6 +287,9 @@ pub(super) const MAX_DIFF_LINES: usize = 200;
 impl ItemDerived {
     fn build(item: &AgentTimelineItem) -> Self {
         let output_text = tool_output_markdown(item).map(SharedString::from);
+        let diff_lines = diff_lines_for(item);
+        let count = |sign| diff_lines.iter().filter(|(line, _)| *line == sign).count();
+        let (added, removed) = (count('+'), count('-'));
         Self {
             text: SharedString::from(item.text.clone().unwrap_or_default()),
             attachments: super::transcript::attachment_metadata(item)
@@ -295,7 +303,20 @@ impl ItemDerived {
                 .collect(),
             output_text,
             input_line: tool_input_line(item).map(SharedString::from),
-            diff_lines: Arc::new(diff_lines_for(item)),
+            changed: (added + removed > 0).then(|| {
+                (
+                    format!("+{added}").into(),
+                    format!("\u{2212}{removed}").into(),
+                )
+            }),
+            acted_on: item
+                .label
+                .as_ref()
+                // A skill's name is already its row's title.
+                .filter(|label| label.kind == "tool" && label.name.as_deref() != Some("load_skill"))
+                .and_then(|label| label.detail.clone())
+                .map(SharedString::from),
+            diff_lines: Arc::new(diff_lines),
             external_agent: external_agent_activity(item).map(Arc::new),
             plan: plan_entries(item),
         }

@@ -50,6 +50,7 @@ mod sending;
 mod sidebar;
 mod speech;
 mod staging;
+mod step;
 mod summaries;
 #[cfg(test)]
 mod tests;
@@ -226,6 +227,9 @@ struct TranscriptCtx<'a> {
     /// How far the row's just-opened details are through fading in; 1 at
     /// rest.
     reveal: f32,
+    /// For a step: whether the thread's rail runs on to the steps drawn
+    /// right above and below it.
+    rail: step::Rail,
 }
 
 /// Text-to-speech progress for one message.

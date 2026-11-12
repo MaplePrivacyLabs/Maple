@@ -12,6 +12,7 @@ use gpui::{Context, Div, SharedString, div, prelude::*, px};
 use maple_agent::agent::AgentTimelineItem;
 
 use super::ChatScreen;
+use super::step;
 use super::transcript::{
     WAITING_ROW_HEIGHT, format_subagent_elapsed, has_tool_input, plan_entries, plan_finished,
 };
@@ -343,14 +344,24 @@ pub(super) fn render_line(
         } else {
             theme::text_secondary()
         }))
-        .child(if running {
-            motion::ticker(id("mark"), MARK_CYCLE, |phase| {
-                maple_mark(Mark::Working, phase).into_any_element()
-            })
-            .into_any_element()
-        } else {
-            maple_mark(mark, 0.).into_any_element()
-        })
+        // The mark sits in the column of the steps' nodes, and the words
+        // start where the steps' titles do.
+        .child(
+            div()
+                .flex_none()
+                .w(step::NODE)
+                .mr(px(2.))
+                .flex()
+                .justify_center()
+                .child(if running {
+                    motion::ticker(id("mark"), MARK_CYCLE, |phase| {
+                        maple_mark(Mark::Working, phase).into_any_element()
+                    })
+                    .into_any_element()
+                } else {
+                    maple_mark(mark, 0.).into_any_element()
+                }),
+        )
         .child(if running {
             words.shine(SHINE_CYCLE, gpui::rgb(theme::text_heading()))
         } else {

@@ -12890,6 +12890,100 @@ mod state_tests {
         );
     }
 
+    /// A step says what it acted on beside its title, an edit also what it
+    /// changed, and the steps' nodes sit under the mark on the turn's line.
+    #[gpui::test]
+    fn test_a_step_shows_what_it_acted_on_and_what_it_changed(cx: &mut TestAppContext) {
+        cx.executor().allow_parking();
+        struct ChatHost {
+            chat: Entity<ChatScreen>,
+        }
+        impl Render for ChatHost {
+            fn render(
+                &mut self,
+                _window: &mut Window,
+                _cx: &mut Context<Self>,
+            ) -> impl IntoElement {
+                div()
+                    .w(px(1200.))
+                    .h(px(800.))
+                    .flex()
+                    .flex_col()
+                    .child(self.chat.clone())
+            }
+        }
+
+        let call = |id: &str, name: &str, acts_on: &str| AgentTimelineItem {
+            label: Some(maple_agent::agent::AgentTimelineLabel {
+                kind: "tool".to_string(),
+                name: Some(name.to_string()),
+                detail: Some(acts_on.to_string()),
+            }),
+            status: Some("completed".to_string()),
+            ..item(id, "tool", None)
+        };
+        let chat = cx.new(|cx| {
+            let _guard = SETTINGS_LOCK.lock();
+            let backend = std::sync::Arc::new(
+                crate::backend::AgentBackend::for_test(
+                    "http://127.0.0.1:9".to_string(),
+                    String::new(),
+                )
+                .expect("backend"),
+            );
+            crate::desktop::register_key_bindings(cx);
+            let mut chat = ChatScreen::new_without_start(backend, "user".to_string(), cx);
+            chat.selected_session = Some("s1".to_string());
+            chat.booting = false;
+            chat.replace_timeline(vec![
+                user_item("u1", "Cap the wait"),
+                call("run", "bash", "cargo test -p net retry"),
+                AgentTimelineItem {
+                    input: Some(serde_json::json!({
+                        "path": "src/net/retry.rs",
+                        "edits": [{
+                            "oldText": "loop {",
+                            "newText": "let deadline = now + MAX;\nloop {",
+                        }],
+                    })),
+                    ..call("edit", "edit", "src/net/retry.rs")
+                },
+            ]);
+            chat.toggle_turn("run", cx);
+            chat
+        });
+
+        let (_host, cx) = cx.add_window_view(|_window, _cx| ChatHost { chat: chat.clone() });
+        cx.simulate_resize(gpui::size(px(1200.), px(800.)));
+
+        // The edit is the last step drawn, so these are its parts.
+        let title = cx.debug_bounds("tool-title").expect("the step's title");
+        let chip = cx
+            .debug_bounds("step-chip")
+            .expect("the path the edit acts on");
+        let changed = cx
+            .debug_bounds("step-changed")
+            .expect("the lines the edit changed");
+        assert!(
+            title.right() <= chip.left() && chip.right() <= changed.left(),
+            "the title, what it acts on and what it changed read in that order: \
+             {title:?}, {chip:?}, {changed:?}"
+        );
+        assert!(
+            (chip.center().y - title.center().y).abs() <= px(1.)
+                && (changed.center().y - title.center().y).abs() <= px(1.),
+            "on one line: {title:?}, {chip:?}, {changed:?}"
+        );
+        let node = cx.debug_bounds("step-node").expect("the step's node");
+        let mark = cx
+            .debug_bounds("turn-mark")
+            .expect("the mark on the turn's line");
+        assert!(
+            (node.center().x - mark.center().x).abs() <= px(1.),
+            "the nodes sit under the mark: {node:?}, {mark:?}"
+        );
+    }
+
     #[gpui::test]
     fn out_of_usage_offers_billing_from_the_composer_until_a_later_turn(cx: &mut TestAppContext) {
         use std::cell::Cell;

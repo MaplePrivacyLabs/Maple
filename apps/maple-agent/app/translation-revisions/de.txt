@@ -352,7 +352,6 @@ chat-staging-unsafe-directory 13ed7aa88e08c0a8
 chat-starting f00ec83fc396c4b0
 chat-starting-agent 0e61b8da983ef787
 chat-status-allowed 11310a7438dc9e0c
-chat-status-completed f7f8f9dd4adb3a0c
 chat-status-denied deee947bb13482c4
 chat-status-done 54904e435ce0c52e
 chat-status-failed 3aa7979f86ebefa0

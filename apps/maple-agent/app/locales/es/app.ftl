@@ -1556,7 +1556,6 @@ chat-thinking-save-failed = No se pudo guardar el nivel de razonamiento: { $erro
 chat-composer-placeholder = Pídele a Maple que trabaje en esta carpeta…
 chat-side-thread-placeholder = Haz una pregunta aparte (Esc para salir del hilo)…
 chat-queue-edit-placeholder = Edita el mensaje en cola y envíalo para conservar su lugar. Esc descarta los cambios.
-chat-status-completed = completado
 chat-status-failed = falló
 chat-status-stopped = detenido
 chat-status-running = en ejecución

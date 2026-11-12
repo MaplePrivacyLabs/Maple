@@ -17,11 +17,12 @@ use maple_agent::agent::{
 
 use super::cache::{MAX_DIFF_LINES, MarkdownKind};
 use super::speech::speak_message_button;
+use super::step::{self, StepState};
 use super::turn::{self, TurnRow};
 use super::{CONTENT_WIDTH, ChatScreen, QuestionSelection, TranscriptCtx};
 
 use crate::ui::i18n::{MessageCache, tr};
-use crate::ui::icons::{icon, spinner, spinner_with_id};
+use crate::ui::icons::{icon, spinner};
 use crate::ui::markdown;
 use crate::ui::motion;
 use crate::ui::rich_text::{self, RenderCtx};
@@ -112,6 +113,15 @@ impl ChatScreen {
                     speech_available: chat.audio_caps.speech,
                     position: (ix + 1, chat.timeline.len()),
                     reveal: chat.row_motion.disclosure(&item.id, now, reduced),
+                    // Steps of one turn that sit next to each other share
+                    // the rail; a reply between two of them breaks it.
+                    rail: (
+                        matches!(turn, TurnRow::Step(_))
+                            && ix > 0
+                            && chat.turns.row(ix - 1) != TurnRow::Plain,
+                        turn != TurnRow::Plain
+                            && matches!(chat.turns.row(ix + 1), TurnRow::Step(_)),
+                    ),
                 };
                 let expanded = tool_details != chat.toggled_tools.contains(&item.id);
                 let revision = chat
@@ -927,12 +937,11 @@ pub(super) fn render_timeline_item(
                     Some(plan) => plan,
                     None => return div().into_any_element(),
                 }
-            } else if has_tool_input(item, "edits")
-                || (has_tool_input(item, "content") && has_tool_input(item, "path"))
-            {
-                render_tool_with_diff(item, revision, expanded, transcript)
             } else {
-                render_tool(item, revision, expanded, transcript)
+                // An edit or a write carries replacements to show.
+                let diff = has_tool_input(item, "edits")
+                    || (has_tool_input(item, "content") && has_tool_input(item, "path"));
+                render_tool(item, revision, expanded, diff, transcript)
             }
         }
         "error" => render_error(item, transcript),
@@ -940,10 +949,11 @@ pub(super) fn render_timeline_item(
         _ => render_system(item, transcript),
     };
     // Per-item spacing (instead of a container gap) keeps non-renderable
-    // items from producing phantom gaps. Rows a screen reader should
+    // items from producing phantom gaps. Steps joined by the thread's rail
+    // sit flush, so the rail has no break. Rows a screen reader should
     // announce get a role, a sender, and their position in the
     // conversation; the others stay plain containers.
-    let row = div().pb_2().child(item);
+    let row = div().when(!transcript.rail.1, |row| row.pb_2()).child(item);
     match role {
         Some(role) => {
             let (position, count) = transcript.position;
@@ -1255,12 +1265,17 @@ fn render_thinking(
     transcript: &TranscriptCtx,
 ) -> Div {
     let text = transcript.derived.get(item, revision).text.clone();
+    let id = SharedString::from(format!("thinking-toggle-{}", item.id));
     if text.trim().is_empty() {
-        return div().child(
-            div()
-                .text_color(gpui::rgb(theme::status_running()))
-                .text_sm()
+        // Nothing to open yet.
+        return step::step(
+            "brain",
+            StepState::Running,
+            transcript.rail,
+            step::step_header(id)
+                .text_color(gpui::rgb(StepState::Running.ink()))
                 .child(tr("chat-thinking")),
+            None,
         );
     }
     let item_id = item.id.clone();
@@ -1275,68 +1290,49 @@ fn render_thinking(
                 .unwrap_or_else(|| tr("chat-thinking-title"))
         });
     // Only the header toggles, so clicks in the body still select text.
-    let header = div()
-        .id(gpui::SharedString::from(format!(
-            "thinking-toggle-{}",
-            item.id
-        )))
+    let header = step::step_header(id)
         .role(gpui::Role::DisclosureTriangle)
         .aria_label(title.clone())
         .aria_expanded(expanded)
-        .flex()
-        .items_center()
-        .gap_1()
-        .text_sm()
-        .text_color(gpui::rgb(theme::text_muted()))
-        .hover(|style| {
-            style
-                .cursor_pointer()
-                .text_color(gpui::rgb(theme::text_secondary()))
-        })
-        .on_click(move |_event, _window, cx: &mut gpui::App| {
-            chat.update(cx, |chat, cx| {
-                chat.toggle_tool(&item_id, cx);
-            })
-            .ok();
-        })
+        .cursor_pointer()
+        .font_weight(gpui::FontWeight::MEDIUM)
+        .text_color(gpui::rgb(StepState::Done.ink()))
+        .child(
+            div()
+                // Same prose-summary rule as a tool call's title.
+                .min_w_0()
+                .truncate()
+                .debug_selector(|| "thinking-title".to_string())
+                .child(title),
+        )
         .child(motion::chevron(
             SharedString::from(format!("thinking-chevron-{}", item.id)),
             expanded,
             px(14.),
             theme::text_muted(),
         ))
-        .child(
-            div()
-                // Same prose-summary rule as the tool card title.
-                .min_w_0()
-                .flex_1()
-                .truncate()
-                .debug_selector(|| "thinking-title".to_string())
-                .child(title),
-        );
-    let card = div()
-        .px_3()
-        .py_2()
-        .rounded(theme::RADIUS_SM)
-        .bg(gpui::rgb(theme::bg_elevated()))
-        .flex()
-        .flex_col()
-        .gap_1()
-        .child(header);
-    if !expanded {
-        return card;
-    }
-    card.child(revealed(
-        typography::chat_reading(div())
-            .text_color(gpui::rgb(theme::text_secondary()))
-            .child(markdown::render_with(
-                &transcript
-                    .markdown_cache
-                    .get(&item.id, MarkdownKind::Body, revision, &text),
-                transcript.render,
-            )),
-        transcript.reveal,
-    ))
+        .hover_bg(theme::overlay_hover())
+        .on_click(move |_event, _window, cx: &mut gpui::App| {
+            chat.update(cx, |chat, cx| {
+                chat.toggle_tool(&item_id, cx);
+            })
+            .ok();
+        });
+    let details = expanded.then(|| {
+        revealed(
+            typography::chat_reading(div())
+                .text_color(gpui::rgb(theme::text_secondary()))
+                .child(markdown::render_with(
+                    &transcript
+                        .markdown_cache
+                        .get(&item.id, MarkdownKind::Body, revision, &text),
+                    transcript.render,
+                )),
+            transcript.reveal,
+        )
+        .into_any_element()
+    });
+    step::step("brain", StepState::Done, transcript.rail, header, details)
 }
 
 /// Details the user just opened fade in; `reveal` is how far along they
@@ -1349,47 +1345,22 @@ fn revealed<E: Styled>(details: E, reveal: f32) -> E {
     }
 }
 
-fn tool_status_style(status: Option<&str>) -> (SharedString, u32) {
-    match status {
-        Some("completed") => (tr("chat-status-completed"), theme::status_success()),
-        Some("failed") | Some("error") => (tr("chat-status-failed"), theme::status_error()),
-        Some("cancelled") => (tr("chat-status-stopped"), theme::text_muted()),
-        _ => (tr("chat-status-running"), theme::status_running()),
-    }
-}
-
-/// A tool card's spinner and status label. When the call finishes on
-/// screen the running state goes at once and the outcome fades in over
-/// [`motion::TOGGLE`]: two labels drawn over each other would read as
-/// one garbled word. A card that mounts finished (history, a row scrolled
-/// back) shows its state at once.
-fn tool_status(item_id: &str, running: bool, label: SharedString, color: u32) -> motion::Animated {
-    let spinner_id = SharedString::from(format!("tool-spinner-{item_id}"));
-    motion::animated(
-        SharedString::from(format!("tool-status-{item_id}")),
-        if running { 0. } else { 1. },
-        motion::TOGGLE,
-        move |done| {
-            div()
-                .flex()
-                .items_center()
-                .gap_2()
-                .opacity(if running { 1. - done } else { done })
-                .when(running, |state| {
-                    state.child(spinner_with_id(
-                        spinner_id.clone(),
-                        px(12.),
-                        theme::accent(),
-                    ))
-                })
-                .child(
-                    div()
-                        .text_xs()
-                        .text_color(gpui::rgb(color))
-                        .child(label.clone()),
-                )
-                .into_any_element()
-        },
+/// What a step says after its title when it did not simply finish. A
+/// running step says nothing: it is dim, and the turn's line is the one
+/// thing that moves.
+fn step_outcome(state: StepState) -> Option<Div> {
+    let (label, color) = match state {
+        StepState::Failed => (tr("chat-status-failed"), theme::status_error()),
+        StepState::Stopped => (tr("chat-status-stopped"), theme::text_muted()),
+        StepState::Running | StepState::Done => return None,
+    };
+    Some(
+        div()
+            .flex_none()
+            .font_weight(gpui::FontWeight::NORMAL)
+            .text_xs()
+            .text_color(gpui::rgb(color))
+            .child(label),
     )
 }
 
@@ -1495,8 +1466,8 @@ pub(super) fn plan_finished(plan: &[PlanEntry]) -> bool {
             .all(|entry| entry.status == PlanStatus::Completed)
 }
 
-/// The transcript row of a finished todo list: a foldable card like a tool
-/// call's, or `None` while the list is unfinished and the pinned card
+/// The transcript row of a finished todo list: a step that opens like a
+/// tool call's, or `None` while the list is unfinished and the pinned card
 /// shows it.
 fn render_finished_plan(
     item: &AgentTimelineItem,
@@ -1509,8 +1480,7 @@ fn render_finished_plan(
     let count = format!("{}/{}", plan.len(), plan.len());
     let item_id = item.id.clone();
     let chat = transcript.chat.clone();
-    let mut card = div()
-        .id(SharedString::from(format!("plan-toggle-{item_id}")))
+    let header = step::step_header(SharedString::from(format!("plan-toggle-{item_id}")))
         .debug_selector(|| "plan-row".to_string())
         .role(gpui::Role::DisclosureTriangle)
         .aria_label(
@@ -1519,61 +1489,46 @@ fn render_finished_plan(
                 .get("chat-plan-done", [("count", count.clone().into())]),
         )
         .aria_expanded(details)
-        .flex()
-        .flex_col()
-        .gap_1()
-        .px_3()
-        .py_2()
-        .rounded(theme::RADIUS_SM)
-        .bg(gpui::rgb(theme::bg_tool_card()))
-        .border_1()
-        .border_color(gpui::rgb(theme::border_subtle()))
-        .hover(|style| {
-            style
-                .border_color(gpui::rgb(theme::border()))
-                .cursor_pointer()
-        })
+        .cursor_pointer()
+        .font_weight(gpui::FontWeight::MEDIUM)
+        .text_color(gpui::rgb(StepState::Done.ink()))
+        .child(tr("chat-plan"))
+        .child(
+            div()
+                .font_weight(gpui::FontWeight::NORMAL)
+                .text_xs()
+                .text_color(gpui::rgb(theme::text_muted()))
+                .child(count),
+        )
+        .child(motion::chevron(
+            SharedString::from(format!("plan-chevron-{}", item.id)),
+            details,
+            px(14.),
+            theme::text_muted(),
+        ))
+        .hover_bg(theme::overlay_hover())
         .on_click(move |_event, _window, cx: &mut gpui::App| {
             chat.update(cx, |chat, cx| chat.toggle_tool(&item_id, cx))
                 .ok();
-        })
-        .child(
-            div()
-                .flex()
-                .gap_2()
-                .items_center()
-                .child(
-                    div()
-                        .flex_1()
-                        .text_sm()
-                        .font_weight(gpui::FontWeight::SEMIBOLD)
-                        .text_color(gpui::rgb(theme::text_primary()))
-                        .child(tr("chat-plan")),
-                )
-                .child(
-                    div()
-                        .text_xs()
-                        .text_color(gpui::rgb(theme::text_muted()))
-                        .child(count),
-                )
-                .child(motion::chevron(
-                    SharedString::from(format!("plan-chevron-{}", item.id)),
-                    details,
-                    px(14.),
-                    theme::text_muted(),
-                )),
-        );
-    if details {
-        card = card.child(revealed(
+        });
+    let rows = details.then(|| {
+        revealed(
             div()
                 .flex()
                 .flex_col()
                 .gap_1()
                 .children(plan.iter().map(render_plan_row)),
             transcript.reveal,
-        ));
-    }
-    Some(div().child(card))
+        )
+        .into_any_element()
+    });
+    Some(step::step(
+        "check",
+        StepState::Done,
+        transcript.rail,
+        header,
+        rows,
+    ))
 }
 
 /// One row of the subagent card: what the subagent was asked to do, the
@@ -1752,21 +1707,10 @@ pub(super) fn diff_lines_for(item: &AgentTimelineItem) -> Vec<(char, SharedStrin
     lines
 }
 
-/// Tool card whose payload renders as a colored diff when it carries
-/// edit/write replacements.
-fn render_tool_with_diff(
-    item: &AgentTimelineItem,
-    revision: u64,
-    details: bool,
-    transcript: &TranscriptCtx,
-) -> Div {
-    let card = render_tool(item, revision, details, transcript);
-    if !details {
-        return card;
-    }
-    let diff_lines = Arc::clone(&transcript.derived.get(item, revision).diff_lines);
-    if diff_lines.is_empty() {
-        return card;
+/// The +/- lines of an edit or write, coloured.
+fn render_diff(lines: &[(char, SharedString)]) -> Option<Div> {
+    if lines.is_empty() {
+        return None;
     }
     let mut diff = div()
         .flex()
@@ -1777,7 +1721,7 @@ fn render_tool_with_diff(
         .border_1()
         .border_color(gpui::rgb(theme::border_subtle()))
         .overflow_x_hidden();
-    for (sign, line) in diff_lines.iter() {
+    for (sign, line) in lines {
         let color = match sign {
             '+' => theme::status_success(),
             '-' => theme::status_error(),
@@ -1807,18 +1751,7 @@ fn render_tool_with_diff(
                 ),
         );
     }
-    // The diff is content: swallow clicks so selecting it does not toggle.
-    card.child(revealed(
-        div()
-            .id(gpui::SharedString::from(format!("tool-diff-{}", item.id)))
-            .on_click(
-                |_event: &gpui::ClickEvent, _window: &mut Window, cx: &mut gpui::App| {
-                    cx.stop_propagation();
-                },
-            )
-            .child(diff),
-        transcript.reveal,
-    ))
+    Some(diff)
 }
 
 /// Title shown before the model summary arrives: just the tool label from
@@ -1844,138 +1777,126 @@ pub(super) fn tool_label_title(title: &str) -> &str {
     }
 }
 
+/// A tool call as a step. `diff`: an edit or write, whose details also
+/// show its replacements as a coloured diff.
 fn render_tool(
     item: &AgentTimelineItem,
     revision: u64,
     details: bool,
+    diff: bool,
     transcript: &TranscriptCtx,
 ) -> Div {
-    let (label, status_color) = tool_status_style(item.status.as_deref());
-    let running = !matches!(
-        item.status.as_deref(),
-        Some("completed" | "failed" | "error" | "cancelled")
-    );
+    let state = StepState::of(item.status.as_deref());
     let item_id = item.id.clone();
-    let chat_header = transcript.chat.clone();
+    let chat = transcript.chat.clone();
+    let derived = transcript.derived.get(item, revision);
     // An external agent's row draws its own activity; a summary asked
     // when its call started would hide what it did.
     let summary = (!has_external_agent_activity(item))
         .then(|| transcript.tool_summaries.get(&item.id).cloned())
         .flatten();
-    // The model summary stands in for the title; until it lands, show just
-    // the tool label ("Terminal"), not the raw `tool: args` title.
-    let title = summary.clone().unwrap_or_else(|| {
-        if let Some(label) = crate::ui::timeline_labels::tool_label(item, transcript.messages)
-            .or_else(|| crate::ui::timeline_labels::title(item, transcript.messages))
-        {
-            return label;
+    // The model summary stands in for the title; until it lands, the
+    // tool's name does ("Terminal"). Either leaves what the call acts on
+    // to the chip beside it.
+    let named =
+        summary.or_else(|| crate::ui::timeline_labels::tool_name(item, transcript.messages));
+    let acted_on = named.as_ref().and(derived.acted_on.clone());
+    let title = named.unwrap_or_else(|| {
+        if let Some(title) = crate::ui::timeline_labels::title(item, transcript.messages) {
+            return title;
         }
         let raw = item.title.as_deref().unwrap_or(&item.item_type);
         SharedString::from(tool_label_title(raw).to_string())
     });
-    let card = div()
-        .id(gpui::SharedString::from(format!("tool-toggle-{item_id}")))
-        .debug_selector(|| "tool-card".to_string())
+    // Only the header toggles, so the details under it can be read and
+    // selected without folding them.
+    let header = step::step_header(SharedString::from(format!("tool-toggle-{item_id}")))
         .role(gpui::Role::DisclosureTriangle)
         .aria_label(title.clone())
         .aria_expanded(details)
-        .flex()
-        .flex_col()
-        .gap_1()
-        .px_3()
-        .py_2()
-        .rounded(theme::RADIUS_SM)
-        .bg(gpui::rgb(theme::bg_tool_card()))
-        .border_1()
-        .border_color(gpui::rgb(theme::border_subtle()))
-        .hover(|style| {
-            style
-                .border_color(gpui::rgb(theme::border()))
-                .cursor_pointer()
-        })
-        .on_click(move |_event, _window, cx: &mut gpui::App| {
-            chat_header
-                .update(cx, |chat, cx| {
-                    chat.toggle_tool(&item_id, cx);
-                })
-                .ok();
-        })
+        .cursor_pointer()
+        .font_weight(gpui::FontWeight::MEDIUM)
+        .text_color(gpui::rgb(state.ink()))
         .child(
             div()
-                .flex()
-                .gap_2()
-                .items_center()
-                .child(
-                    div()
-                        // The summary is prose: it grows to fill the row
-                        // and ellipsizes at the row's end. Without min_w_0
-                        // the flex item collapses to its longest word and
-                        // the old middle-ellipsis cut mid-sentence inside
-                        // a sliver while the row sat empty.
-                        .min_w_0()
-                        .flex_1()
-                        .text_sm()
-                        .font_weight(gpui::FontWeight::SEMIBOLD)
-                        .text_color(gpui::rgb(theme::text_primary()))
-                        .truncate()
-                        .debug_selector(|| "tool-title".to_string())
-                        .child(title),
-                )
-                .child(tool_status(&item.id, running, label, status_color))
-                .child(motion::chevron(
-                    SharedString::from(format!("tool-chevron-{}", item.id)),
-                    details,
-                    px(14.),
-                    theme::text_muted(),
-                )),
-        );
-    // Collapsed: the header alone; the summary takes over the title when it lands.
-    // Expanded cards also show the cached arguments and output.
-    if !details {
-        return div().child(card);
-    }
-    let derived = transcript.derived.get(item, revision);
-    if let Some(activity) = &derived.external_agent {
-        return div().child(card.child(revealed(
-            render_external_agent_activity(item, revision, activity, transcript),
-            transcript.reveal,
-        )));
-    }
-    // A click anywhere on the card, payload included, toggles it.
-    let mut payload = div().flex().flex_col().gap_1();
-    // Expanded: the call arguments and the raw output. The summary is
-    // made from the input alone, so it never stands in for the output.
-    if let Some(input) = &derived.input_line {
-        payload = payload.child(
-            div()
-                .text_xs()
-                .text_color(gpui::rgb(theme::text_muted()))
-                .font_family(crate::assets::FONT_MONO)
-                .overflow_x_hidden()
-                .child(gpui::text!(
-                    id = SharedString::from(format!("tool-input-{}", item.id)),
-                    input.clone()
-                )),
-        );
-    }
-    if let Some(output) = &derived.output_text {
-        payload = payload.child(
-            typography::chat_reading(div())
-                .mt_1()
-                .w_full()
-                .text_color(gpui::rgb(theme::text_secondary()))
-                .child(markdown::render_with(
-                    &transcript.markdown_cache.get(
-                        &item.id,
-                        MarkdownKind::ToolOutput,
-                        revision,
-                        output,
-                    ),
-                    &readable_ctx(transcript.render),
-                )),
-        );
-    }
-    div().child(card.child(revealed(payload, transcript.reveal)))
+                // The summary is prose: it takes the row's width before
+                // it ellipsizes at the row's end. Without min_w_0 the
+                // flex item would not shrink and would push the rest out.
+                .min_w_0()
+                .truncate()
+                .debug_selector(|| "tool-title".to_string())
+                .child(title),
+        )
+        .children(acted_on.map(step::chip))
+        // Counted from the call's input: true only once the edit landed.
+        .children(
+            derived
+                .changed
+                .as_ref()
+                .filter(|_| state == StepState::Done)
+                .map(step::changed),
+        )
+        .children(step_outcome(state))
+        .child(motion::chevron(
+            SharedString::from(format!("tool-chevron-{}", item.id)),
+            details,
+            px(14.),
+            theme::text_muted(),
+        ))
+        .hover_bg(theme::overlay_hover())
+        .on_click(move |_event, _window, cx: &mut gpui::App| {
+            chat.update(cx, |chat, cx| {
+                chat.toggle_tool(&item_id, cx);
+            })
+            .ok();
+        });
+    // Open: the call's arguments and its raw output. The summary is made
+    // from the input alone, so it never stands in for the output.
+    let body = details.then(|| {
+        if let Some(activity) = &derived.external_agent {
+            return render_external_agent_activity(item, revision, activity, transcript);
+        }
+        let mut payload = div().flex().flex_col().gap_1();
+        if let Some(input) = &derived.input_line {
+            payload = payload.child(
+                div()
+                    .text_xs()
+                    .text_color(gpui::rgb(theme::text_muted()))
+                    .font_family(crate::assets::FONT_MONO)
+                    .overflow_x_hidden()
+                    .child(gpui::text!(
+                        id = SharedString::from(format!("tool-input-{}", item.id)),
+                        input.clone()
+                    )),
+            );
+        }
+        if let Some(output) = &derived.output_text {
+            payload = payload.child(
+                typography::chat_reading(div())
+                    .mt_1()
+                    .w_full()
+                    .text_color(gpui::rgb(theme::text_secondary()))
+                    .child(markdown::render_with(
+                        &transcript.markdown_cache.get(
+                            &item.id,
+                            MarkdownKind::ToolOutput,
+                            revision,
+                            output,
+                        ),
+                        &readable_ctx(transcript.render),
+                    )),
+            );
+        }
+        payload.children(diff.then(|| render_diff(&derived.diff_lines)).flatten())
+    });
+    step::step(
+        step::tool_icon(item),
+        state,
+        transcript.rail,
+        header,
+        body.map(|body| revealed(body, transcript.reveal).into_any_element()),
+    )
+    .debug_selector(|| "tool-card".to_string())
 }
 
 /// Keep a card's output out of the shared selection, which would treat its

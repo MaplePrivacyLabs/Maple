@@ -1679,7 +1679,6 @@ chat-thinking-save-failed = Could not save the thinking level: { $error }
 chat-composer-placeholder = Ask Maple to work in this folder…
 chat-side-thread-placeholder = Ask a side question (Esc to leave the thread)…
 chat-queue-edit-placeholder = Edit the queued message, then send to keep its place. Escape discards.
-chat-status-completed = completed
 chat-status-failed = failed
 chat-status-stopped = stopped
 chat-status-running = running
