@@ -111,7 +111,7 @@ jobs:
       - name: Rust cache (restore everywhere, save only on master and in the lane's home store)
         id: rust-cache
         if: matrix.cache != ''
-        uses: Swatinem/rust-cache@e18b497796c12c097a38f9edb9d0641fb99eee32 # v2
+        uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
         with:
           prefix-key: ci-v2
           # Restore key: the prefix, the shared key (the lane and its toolchain pins,
@@ -161,7 +161,7 @@ jobs:
       - name: Rust cache (restore everywhere, save only on master and in the lane's home store)
         id: rust-cache
         if: matrix.cache != ''
-        uses: Swatinem/rust-cache@e18b497796c12c097a38f9edb9d0641fb99eee32 # v2
+        uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
         with:
           # Keys as in the nix job: a lockfile change restores by prefix.
           prefix-key: ci-v2
