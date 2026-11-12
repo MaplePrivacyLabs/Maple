@@ -10,7 +10,7 @@ use crate::model_config::{
     GLM_5_3_MODEL_ID, GPT_OSS_120B_MODEL_ID, KIMI_K3_1_PRO_MODEL_ID, KIMI_K3_MODEL_ID,
 };
 
-pub(crate) const SHADOW_ROUTING_POLICY_VERSION: &str = "routing-v2-weighted-v6";
+pub(crate) const SHADOW_ROUTING_POLICY_VERSION: &str = "routing-v2-weighted-v7";
 pub(crate) const MAPLE_ROUTING_POLICY_VERSION: &str = "routing-v2-maple-instances-v9";
 
 /// A backend-owned dedicated inference deployment. Its identity is internal to
@@ -208,21 +208,23 @@ const KIMI_K3_ROUTES: &[ModelRouteSpec] = &[ModelRouteSpec {
     enabled: true,
 }];
 
-// Combined with the provider weights, 30 * 700 : 70 * 100 allocates healthy
-// GLM 5.3 account buckets 75% to Continuum and 25% to Tinfoil.
+// Combined with the provider weights, 30 * 693 : 70 * 3 allocates healthy
+// GLM 5.3 account buckets 99% to Continuum and 1% to Tinfoil. The one Tinfoil
+// bucket keeps that route's health and circuit state exercised, so it stays a
+// proven fallback when Continuum is unavailable.
 const GLM_5_3_ROUTES: &[ModelRouteSpec] = &[
     ModelRouteSpec {
         provider: ProviderId::Continuum,
         provider_model_id: "glm-5.3",
         response_model_id: GLM_5_3_MODEL_ID,
-        weight: 700,
+        weight: 693,
         enabled: true,
     },
     ModelRouteSpec {
         provider: ProviderId::Tinfoil,
         provider_model_id: GLM_5_3_MODEL_ID,
         response_model_id: GLM_5_3_MODEL_ID,
-        weight: 100,
+        weight: 3,
         enabled: true,
     },
 ];
