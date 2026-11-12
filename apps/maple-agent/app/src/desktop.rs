@@ -5,8 +5,8 @@
 use std::{path::PathBuf, sync::Arc};
 
 use gpui::{
-    App, Bounds, Context, Entity, Render, Window, WindowBounds, WindowOptions, actions, div, point,
-    prelude::*, px, size,
+    App, Bounds, Context, Entity, Pixels, Render, Size, Window, WindowBounds, WindowOptions,
+    actions, div, point, prelude::*, px, size,
 };
 
 actions!(maple_app, [QuitApp, Hide, HideOthers, ShowAll]);
@@ -3840,6 +3840,8 @@ struct StartupError {
     stopping: bool,
     retry_backend: Option<Arc<AgentBackend>>,
     requires_completed_stop: bool,
+    /// Whether the one-shot growth for a status has already fired.
+    grown_for_status: bool,
     diagnostics: StartupDiagnostics,
     details_copied: bool,
 }
@@ -3881,6 +3883,22 @@ fn home_relative_path(path: &std::path::Path, home: Option<&std::path::Path>) ->
 #[cfg(target_os = "macos")]
 #[derive(Clone)]
 struct GuardedStartupFailure(Entity<StartupError>);
+
+/// The one-shot growth when a status first replaces the failure: only the
+/// status stack needs the taller window, the growth must fire exactly once
+/// when that status appears, and it must never fight the WM or a later user
+/// resize. The width is preserved so a user's widen survives.
+fn startup_error_status_target(
+    bounds: Size<Pixels>,
+    has_status: bool,
+    grown: bool,
+) -> Option<Size<Pixels>> {
+    if !has_status || grown || bounds.height >= px(480.) {
+        return None;
+    }
+    Some(size(bounds.width, px(480.)))
+}
+
 #[cfg(target_os = "macos")]
 impl gpui::Global for GuardedStartupFailure {}
 
@@ -3892,6 +3910,7 @@ impl StartupError {
             stopping: false,
             retry_backend: None,
             requires_completed_stop: false,
+            grown_for_status: false,
             diagnostics: StartupDiagnostics::collect(),
             details_copied: false,
         }
@@ -3978,6 +3997,9 @@ impl StartupError {
             return;
         };
         self.stopping = true;
+        // A fresh attempt must not keep the previous failure on screen.
+        self.localized_message = None;
+        cx.notify();
         let stop_backend = backend.clone();
         let stop =
             backend.spawn(async move { crate::host::request_stop(stop_backend.api_url()).await });
@@ -4014,6 +4036,9 @@ impl StartupError {
             ],
             cx,
         );
+        // A fresh attempt must not keep the previous failure on screen.
+        self.localized_message = None;
+        cx.notify();
         self.stopping = true;
         cx.spawn(async move |this, cx| {
             let result = if answer.await == Ok(1) {
@@ -4053,15 +4078,21 @@ impl StartupError {
 
 impl Render for StartupError {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        // This window never renders MapleApp, which is where the palette
+        // otherwise resolves; follow the OS appearance here, every frame.
+        ui::theme::resolve(window.appearance());
         // A status that replaces the failure adds its own sentence and a
         // details pane; the failure-only window is sized for neither.
-        // Grow once, when the status first appears, and never shrink: the
-        // guarded 520px window already fits the larger stack.
-        if self.localized_message.is_some() {
-            let bounds = window.bounds();
-            if bounds.size.height < px(480.) && bounds.size.width <= px(600.) {
-                window.resize(size(px(600.), px(480.)));
-            }
+        // Grow once, when the status first appears, and never again: the
+        // guarded 520px window already fits the larger stack, and a
+        // re-checked rule would fight a tiling WM or a user resize.
+        if let Some(target) = startup_error_status_target(
+            window.bounds().size,
+            self.localized_message.is_some(),
+            self.grown_for_status,
+        ) {
+            self.grown_for_status = true;
+            window.resize(target);
         }
         // The startup failure in the Quit prompt's language: a display
         // headline, the failure as one plain passage, quiet evidence
@@ -4096,8 +4127,13 @@ impl Render for StartupError {
             )
             .child(
                 div()
+                    .id("startup-error-passage")
                     .mt_4()
                     .max_w(px(480.))
+                    // A very long raw diagnostic must not push the actions
+                    // past the window edge; it scrolls within this cap.
+                    .max_h(px(120.))
+                    .overflow_y_scroll()
                     .text_size(px(15.))
                     .line_height(px(24.))
                     .text_color(gpui::rgb(ui::theme::text_secondary()))
@@ -4197,6 +4233,7 @@ impl Render for StartupError {
                 div()
                     .mt_4()
                     .flex()
+                    .flex_wrap()
                     .items_center()
                     .justify_end()
                     .gap_2()
@@ -4310,16 +4347,30 @@ fn fixture_startup_error(state: &str, error: String) -> StartupError {
 fn show_startup_error(error: String) {
     #[cfg(target_os = "linux")]
     let restart_path = crate::self_launch::executable().ok();
-    // The failure window follows the saved preferences: settings remain
-    // readable even when the host cannot start.
+    // The failure window follows the resolved preferences: the guarded
+    // variant picks up hydrated settings, and the standalone window falls
+    // back to the OS appearance and system locale rather than opening a
+    // store that a locked or older host may own.
     let settings = crate::settings::load_settings();
-    let (fixture_state, fixture_locale) = std::env::var("MAPLE_DEBUG_STARTUP_ERROR")
-        .ok()
-        .map(|spec| match spec.split_once('-') {
+    // Debug-only geometry fixtures; a no-op in release builds and tests,
+    // like the Quit prompt's debug loop.
+    let (fixture_state, fixture_locale) = if cfg!(debug_assertions)
+        && !cfg!(test)
+        && std::env::var_os("MAPLE_DEBUG_STARTUP_ERROR").is_some()
+    {
+        match std::env::var("MAPLE_DEBUG_STARTUP_ERROR")
+            .unwrap_or_default()
+            .split_once('-')
+        {
             Some((state, locale)) => (state.to_string(), Some(locale.to_string())),
-            None => (spec, None),
-        })
-        .unwrap_or_default();
+            None => (
+                std::env::var("MAPLE_DEBUG_STARTUP_ERROR").unwrap_or_default(),
+                None,
+            ),
+        }
+    } else {
+        Default::default()
+    };
     gpui_platform::application().run(move |cx| {
         cx.set_app_identity(crate::profile::BUNDLE_ID, crate::profile::DISPLAY_NAME);
         register_bundled_fonts(cx);
@@ -4353,6 +4404,11 @@ fn show_startup_error(error: String) {
                     finish_quit(cx);
                     true
                 });
+                // The window follows the OS appearance; redraw when it
+                // changes while the window is open.
+                window
+                    .observe_window_appearance(|_window, cx| cx.refresh_windows())
+                    .detach();
                 cx.new(|_| fixture_startup_error(&fixture_state, error))
             },
         );
@@ -4519,6 +4575,11 @@ pub fn run() {
                 // take the ordinary Quit path until request_stop proves EOF
                 // and owner-lock release. The drain stays off the UI thread.
                 log::error!("{error}");
+                // The main window hydrates the locale when its settings
+                // load; this window never does, so resolve it here.
+                ui::i18n::initialize_saved_preference(
+                    crate::settings::load_settings().locale.as_deref(),
+                );
                 let startup = cx.new(|_| StartupError::requiring_host_stop(error, backend.clone()));
                 cx.set_global(GuardedStartupFailure(startup.clone()));
                 let view = startup.clone();
@@ -4531,6 +4592,9 @@ pub fn run() {
                             closing.update(cx, |startup, cx| startup.request_close(cx));
                             false
                         });
+                        window
+                            .observe_window_appearance(|_window, cx| cx.refresh_windows())
+                            .detach();
                         view
                     },
                 );
@@ -5555,6 +5619,72 @@ mod tests {
         let startup = super::StartupError::new("Incompatible Maple host or profile".into());
         assert!(startup.close_is_allowed());
         assert!(startup.retry_backend.is_none());
+    }
+
+    #[test]
+    fn startup_error_status_target_grows_once_for_a_status_and_preserves_width() {
+        // A status replaces the failure: grow once, preserving the width.
+        let narrow = super::startup_error_status_target(
+            gpui::Size {
+                width: px(600.),
+                height: px(440.),
+            },
+            true,
+            false,
+        );
+        assert_eq!(
+            narrow,
+            Some(gpui::Size {
+                width: px(600.),
+                height: px(480.)
+            })
+        );
+        // A user's widen survives the growth.
+        let widened = super::startup_error_status_target(
+            gpui::Size {
+                width: px(700.),
+                height: px(440.),
+            },
+            true,
+            false,
+        );
+        assert_eq!(
+            widened,
+            Some(gpui::Size {
+                width: px(700.),
+                height: px(480.)
+            })
+        );
+        // No status, no growth: the failure-only window already fits.
+        let plain = super::startup_error_status_target(
+            gpui::Size {
+                width: px(600.),
+                height: px(440.),
+            },
+            false,
+            false,
+        );
+        assert_eq!(plain, None);
+        // Once grown, never again: a later shrink is the user's choice.
+        let regrown = super::startup_error_status_target(
+            gpui::Size {
+                width: px(600.),
+                height: px(300.),
+            },
+            true,
+            true,
+        );
+        assert_eq!(regrown, None);
+        // The guarded 520px window already fits the status stack.
+        let tall = super::startup_error_status_target(
+            gpui::Size {
+                width: px(640.),
+                height: px(520.),
+            },
+            true,
+            false,
+        );
+        assert_eq!(tall, None);
     }
 
     #[gpui::test]
