@@ -1398,12 +1398,12 @@ native-quit-item-requests = { $count } { $count ->
 # five), $a, $b, $c, $d and $e are those items, and $api is
 # ", including the local API," or empty when the local API is not running.
 native-quit-activity = { $count ->
-    [1] { $a }. Beim Beenden wird der Host{ $api } gestoppt; Maple wartet, bis alles ordnungsgemäß gestoppt ist, bevor es sich schließt.
-    [2] { $a } und { $b }. Beim Beenden wird der Host{ $api } gestoppt; Maple wartet, bis alles ordnungsgemäß gestoppt ist, bevor es sich schließt.
-    [3] { $a }, { $b } und { $c }. Beim Beenden wird der Host{ $api } gestoppt; Maple wartet, bis alles ordnungsgemäß gestoppt ist, bevor es sich schließt.
-    [4] { $a }, { $b }, { $c } und { $d }. Beim Beenden wird der Host{ $api } gestoppt; Maple wartet, bis alles ordnungsgemäß gestoppt ist, bevor es sich schließt.
-    [5] { $a }, { $b }, { $c }, { $d } und { $e }. Beim Beenden wird der Host{ $api } gestoppt; Maple wartet, bis alles ordnungsgemäß gestoppt ist, bevor es sich schließt.
-   *[0] Beim Beenden wird der Host{ $api } gestoppt; Maple wartet, bis alles ordnungsgemäß gestoppt ist, bevor es sich schließt.
+    [1] { $a }. Beim Beenden wird der Host{ $api } gestoppt, danach schließt sich Maple.
+    [2] { $a } und { $b }. Beim Beenden wird der Host{ $api } gestoppt, danach schließt sich Maple.
+    [3] { $a }, { $b } und { $c }. Beim Beenden wird der Host{ $api } gestoppt, danach schließt sich Maple.
+    [4] { $a }, { $b }, { $c } und { $d }. Beim Beenden wird der Host{ $api } gestoppt, danach schließt sich Maple.
+    [5] { $a }, { $b }, { $c }, { $d } und { $e }. Beim Beenden wird der Host{ $api } gestoppt, danach schließt sich Maple.
+   *[0] Beim Beenden wird der Host{ $api } gestoppt, danach schließt sich Maple.
 }
 # The $api clause of native-quit-activity.
 native-quit-api-clause = , einschließlich der lokalen API,
