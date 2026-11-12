@@ -1379,7 +1379,7 @@ fn step_outcome(state: StepState, allowed: bool) -> Option<Div> {
             .font_weight(gpui::FontWeight::NORMAL)
             .text_xs()
             .text_color(gpui::rgb(color))
-            .child(label),
+            .child(gpui::text!(label)),
     )
 }
 

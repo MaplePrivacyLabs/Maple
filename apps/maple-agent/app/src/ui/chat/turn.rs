@@ -618,19 +618,38 @@ impl ChatScreen {
             .find_map(|entry| entry.permission.as_ref())
     }
 
-    /// The tool call the permission request on screen is about: the
-    /// newest call of the turn that has not finished.
+    /// The tool call the permission request on screen is about. The
+    /// request names its tool and what the call would do, not the call,
+    /// and every call of a reply is on screen as running before the first
+    /// is asked about. So the call is the earliest unanswered one of the
+    /// turn with that tool and that action; requests come in call order.
+    /// A call whose input has no command, path, url or query to compare
+    /// is taken only when it is the one call of that tool left.
     pub(super) fn waiting_step(&self) -> Option<usize> {
-        self.current_permission()?;
-        self.timeline
-            .iter()
-            .enumerate()
-            .rev()
-            .take_while(|(_, item)| !starts_turn(item))
-            .find(|(_, item)| {
-                is_tool(item)
-                    && step::StepState::of(item.status.as_deref()) == step::StepState::Running
+        let prompt = self.current_permission()?;
+        let open = || {
+            self.timeline
+                .iter()
+                .enumerate()
+                .rev()
+                .take_while(|(_, item)| !starts_turn(item))
+                .filter(|(_, item)| {
+                    is_tool(item)
+                        && step::StepState::of(item.status.as_deref()) == step::StepState::Running
+                        && !self.step_permissions.contains_key(&item.id)
+                        && item.label.as_ref().and_then(|label| label.name.as_deref())
+                            == Some(prompt.tool.as_str())
+                })
+        };
+        // Newest first, so the last match is the earliest call.
+        let named = open()
+            .filter(|(_, item)| {
+                call_action(item).is_some_and(|action| same_action(&prompt.action, action))
             })
+            .last();
+        let mut unnamed = open().filter(|(_, item)| call_action(item).is_none());
+        named
+            .or_else(|| unnamed.next().filter(|_| unnamed.next().is_none()))
             .map(|(index, _)| index)
     }
 
@@ -679,6 +698,24 @@ impl ChatScreen {
         })
         .detach();
     }
+}
+
+/// What a call would do, as a permission request words it: the first of
+/// these fields its input has.
+fn call_action(item: &AgentTimelineItem) -> Option<&str> {
+    let input = item.input.as_ref()?;
+    ["command", "path", "url", "query"]
+        .into_iter()
+        .find_map(|field| input.get(field)?.as_str())
+}
+
+/// Whether the action a request shows is the call's. The request cuts the
+/// middle out of a long one and says so on a line of its own.
+fn same_action(shown: &str, full: &str) -> bool {
+    shown == full
+        || shown.split_once("\n[").is_some_and(|(start, _)| {
+            !start.is_empty() && full.len() > shown.len() && full.starts_with(start)
+        })
 }
 
 #[cfg(test)]
