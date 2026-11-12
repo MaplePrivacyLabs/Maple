@@ -224,7 +224,7 @@ jobs:
             ~/.cargo/git/db
             apps/maple-agent/target
       - name: Upload the unsigned package
-        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: maple-agent-dev-linux-x86_64-unsigned-${{ github.run_id }}
           path: apps/maple-agent/dist/dev/
@@ -287,7 +287,7 @@ jobs:
             ~/.cargo/git/db
             apps/maple-agent/target
       - name: Upload the unsigned package
-        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: maple-agent-dev-macos-aarch64-unsigned-${{ github.run_id }}
           path: apps/maple-agent/dist/dev/
@@ -335,7 +335,7 @@ jobs:
             ~/.cargo/git/db
             apps/maple-agent/target
       - name: Upload the unsigned package
-        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: maple-agent-dev-windows-x86_64-unsigned-${{ github.run_id }}
           path: apps/maple-agent/dist/dev/
@@ -386,7 +386,7 @@ jobs:
             ~/.cargo/git/db
             apps/maple-agent/target
       - name: Upload the unsigned native ARM64 installer
-        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: maple-agent-dev-windows-aarch64-unsigned-${{ github.run_id }}
           path: apps/maple-agent/dist/dev/
@@ -446,7 +446,7 @@ jobs:
       - name: Build the iOS simulator app
         run: python3 scripts/ci/plan.py run research-ios
       - name: Upload the simulator app
-        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: maple-ios-simulator-pr
           path: |
@@ -476,7 +476,7 @@ jobs:
       - name: Build the unsigned universal app and DMG
         run: python3 scripts/ci/plan.py run research-desktop-macos
       - name: Upload the unsigned app
-        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: maple-macos-universal-pr
           path: |
@@ -515,7 +515,7 @@ jobs:
       - name: Build unsigned packages with fake updater signatures
         run: python3 scripts/ci/plan.py run research-desktop-linux
       - name: Upload the packages
-        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: maple-linux-pr
           path: |
@@ -554,7 +554,7 @@ jobs:
       - name: Build the unsigned installer and verify its proofs
         run: python3 scripts/ci/plan.py run research-desktop-windows
       - name: Upload the installer and its proofs
-        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: maple-windows-x64-pr
           path: |
@@ -582,7 +582,7 @@ jobs:
       - name: Build the unsigned Research Dev app
         run: python3 scripts/ci/plan.py run research-dev-macos
       - name: Upload the Dev package and its identity proof
-        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: maple-research-dev-macos-pr
           path: |

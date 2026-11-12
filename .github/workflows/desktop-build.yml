@@ -84,7 +84,7 @@ jobs:
 
       - name: Upload macOS Build
         if: always()
-        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # was v4
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: maple-macos-universal
           path: |
@@ -174,7 +174,7 @@ jobs:
           subject-checksums: desktop-linux-artifacts.sha256
 
       - name: Upload Linux Builds
-        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # was v4
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: maple-linux
           path: |
@@ -338,7 +338,7 @@ jobs:
           subject-checksums: desktop-windows-artifacts.sha256
 
       - name: Upload Windows Build
-        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # was v4
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: maple-windows-x64
           path: |
