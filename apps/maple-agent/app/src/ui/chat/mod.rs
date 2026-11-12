@@ -810,6 +810,9 @@ pub struct ChatScreen {
     timeline_index: HashMap<String, (usize, u64)>,
     /// Guards against a slow session load overwriting a newer selection.
     selection_generation: u64,
+    /// Bumped when New Task is clicked, so the empty-state title plays
+    /// its glint again even if that screen never left.
+    empty_title_play: u64,
     /// Same guard for mid-run history reloads. Separate from the selection
     /// generation so a reload never cancels a task switch in flight.
     reload_generation: u64,
@@ -1647,6 +1650,7 @@ impl ChatScreen {
             branch_watcher: None,
             watched_git_dir: None,
             selection_generation: 0,
+            empty_title_play: 0,
             reload_generation: 0,
             attachment_images: HashMap::new(),
             attachment_requests: HashSet::new(),
@@ -2623,6 +2627,7 @@ impl ChatScreen {
         // The draft starts from this project's defaults.
         self.permission_mode = self.new_task_permission_mode;
         self.refresh_draft_mcp(cx);
+        self.empty_title_play += 1;
         cx.notify();
     }
 
@@ -8048,7 +8053,10 @@ impl ChatScreen {
                                 .text_size(px(36.))
                                 .line_height(px(48.))
                                 .text_color(gpui::rgb(theme::display_text()))
-                                .child(tr("chat-empty-title")),
+                                .child(crate::ui::empty_title::empty_title(
+                                    tr("chat-empty-title"),
+                                    self.empty_title_play,
+                                )),
                         )
                     })
                     .child(
