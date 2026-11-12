@@ -213,9 +213,12 @@ impl ChatScreen {
             handed_off |= showing && !preview.body_visible();
         }
         // The row takes the place of the message already on screen; it
-        // must not enter a second time.
+        // must not enter a second time. The transcript files a row under
+        // its view key, which a real host's rows have and which differs
+        // from the id the event names, so hand off under that key.
         if handed_off {
-            self.row_motion.hand_off(item.id.clone());
+            let key = crate::backend::timeline_view_key(item).unwrap_or_else(|| item.id.clone());
+            self.row_motion.hand_off(key);
         }
         self.sending_previews
             .retain(|_, preview| !preview.settled());

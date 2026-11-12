@@ -402,6 +402,9 @@ impl ChatScreen {
     ) -> Option<gpui::AnyElement> {
         let appeared = !self.row_motion.slot_on_screen;
         let snap = std::mem::take(&mut self.row_motion.slot_snap);
+        // Only the frame after a send may use the height the composer gave
+        // up; a slot that appears later opens from nothing.
+        let freed = std::mem::take(&mut self.row_motion.slot_from).as_f32();
         let preview = self.render_send_preview(window, cx);
         let dots = self.awaiting_first_token && self.is_run_active() && !self.has_send_feedback();
         let slot = &mut self.row_motion;
@@ -420,8 +423,9 @@ impl ChatScreen {
             slot.slot_open = None;
         } else if appeared {
             // A send opens it; a task switch or history load shows it at
-            // once.
-            slot.slot_open = (!snap).then(|| motion::Tween::pixels(0.));
+            // once. It opens from the height the composer gave up as it
+            // emptied, so the transcript above does not drop first.
+            slot.slot_open = (!snap).then(|| motion::Tween::pixels(freed));
             slot.slot_since = Some(now);
         }
         let cap = match (&mut slot.slot_open, natural) {
@@ -444,10 +448,7 @@ impl ChatScreen {
                 if natural < open.value(now) {
                     *open = motion::Tween::pixels(natural);
                 }
-                let start = match slot.slot_since.take() {
-                    Some(since) if open.target() == 0. => since,
-                    _ => now,
-                };
+                let start = slot.slot_since.take().unwrap_or(now);
                 open.set(natural, motion::ENTER, start, reduced);
                 if open.is_moving(now) {
                     window.request_animation_frame();
@@ -543,6 +544,9 @@ pub(super) struct RowMotion {
     slot_snap: bool,
     /// When the slot last appeared, for its first opening.
     slot_since: Option<Instant>,
+    /// The height the next slot to appear opens from: what the composer
+    /// gave up when a send emptied it.
+    slot_from: Pixels,
 }
 
 #[derive(Clone, Copy)]
@@ -609,6 +613,12 @@ impl RowMotion {
         {
             grow.from += height;
         }
+    }
+
+    /// A send emptied the composer, which gets `freed` shorter on the next
+    /// frame. The slot that send shows opens from that height.
+    pub(super) fn open_slot_from(&mut self, freed: Pixels) {
+        self.slot_from = freed;
     }
 
     /// The slot's height on screen last frame.
@@ -3221,6 +3231,63 @@ mod motion_tests {
             tops[2]
         );
         assert_glides(&tops[0], "the handed-off row");
+        assert_glides(&tops[1], "an older row");
+    }
+
+    /// A row from a real host carries a run-local identity, and the
+    /// transcript files it under a key made from that, not under the id the
+    /// event names. The bubble must still hand off to it: the row starts
+    /// where the bubble was, older rows hold still, and it does not fade in
+    /// a second time.
+    #[gpui::test]
+    fn a_row_keyed_by_its_live_identity_still_takes_over_from_the_bubble(cx: &mut TestAppContext) {
+        let clock = Clock::start();
+        let (chat, cx) = pane(cx, 30);
+        chat.update(cx, |chat, _| {
+            let preview = sending::SendPreview::new(Some("s1".into()), "hello", &[])
+                .capture_timeline(&chat.timeline);
+            chat.sending_previews.insert("send-1".into(), preview);
+        });
+        redraw(&chat, cx);
+        let start = motion::ENTER.settle * 2;
+        clock.at(start);
+        redraw(&chat, cx);
+        let bubble = bounds(cx, "pending-send-body");
+        let older = bounds(cx, "timeline-row-h29");
+
+        chat.update(cx, |chat, cx| {
+            let mut mine = user_item("event-id", "hello");
+            mine.live = Some(maple_agent::agent::AgentLiveRowIdentity {
+                run_id: "run-1".into(),
+                occurrence: 1,
+            });
+            chat.handle_service_event(
+                AgentServiceEvent::TimelineItem {
+                    session_id: "s1".into(),
+                    run_id: Some("run-1".into()),
+                    item: mine,
+                },
+                cx,
+            );
+        });
+        let tops = tops_through_entrance(
+            &chat,
+            &clock,
+            start,
+            &["timeline-row-live:run-1:1", "timeline-row-h29"],
+            cx,
+        );
+        assert!(cx.debug_bounds("pending-send-body").is_none(), "handed off");
+        assert!(
+            (tops[0][0] - bubble.origin.y).abs() <= px(1.),
+            "the row starts where the bubble was: {bubble:?} then {:?}",
+            tops[0]
+        );
+        assert!(
+            (tops[1][0] - older.origin.y).abs() <= px(1.),
+            "older rows hold still on the handoff frame: {older:?} then {:?}",
+            tops[1]
+        );
         assert_glides(&tops[1], "an older row");
     }
 
