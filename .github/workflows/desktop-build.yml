@@ -43,7 +43,7 @@ jobs:
         run: bash scripts/ci/verify-nix-runtime.sh
 
       - name: Cache sccache
-        uses: actions/cache@0057852bfaa89a56745cba8c7296529d2fc39830 # was v4
+        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
         with:
           path: ~/Library/Caches/Mozilla.sccache
           key: ${{ runner.os }}-sccache-macos-release-${{ hashFiles('apps/maple-research/frontend/src-tauri/Cargo.lock') }}
@@ -125,7 +125,7 @@ jobs:
         run: bash scripts/ci/verify-nix-runtime.sh
 
       - name: Cache sccache
-        uses: actions/cache@0057852bfaa89a56745cba8c7296529d2fc39830 # was v4
+        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
         with:
           path: ~/.cache/sccache
           key: ${{ runner.os }}-sccache-linux-release-${{ hashFiles('apps/maple-research/frontend/src-tauri/Cargo.lock') }}

@@ -56,7 +56,7 @@ jobs:
         run: bash scripts/ci/verify-nix-runtime.sh
 
       - name: Cache sccache and Cargo downloads
-        uses: actions/cache@0057852bfaa89a56745cba8c7296529d2fc39830 # was v4
+        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
         with:
           key: ci-v2-research-rust-${{ hashFiles('apps/maple-research/frontend/src-tauri/Cargo.lock', 'flake.lock') }}
           restore-keys: ci-v2-research-rust-

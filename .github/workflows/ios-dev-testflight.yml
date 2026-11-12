@@ -87,7 +87,7 @@ jobs:
             maple-dev-xcode${{ steps.select_xcode.outputs.version }}-${{ steps.select_xcode.outputs.build }}-
 
       - name: Cache ONNX Runtime iOS artifact
-        uses: actions/cache@0057852bfaa89a56745cba8c7296529d2fc39830 # v4
+        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
         with:
           path: apps/maple-research/frontend/src-tauri/onnxruntime-ios
           key: release-onnxruntime-ios-artifact-1.23.2-xcode${{ steps.select_xcode.outputs.version }}-${{ steps.select_xcode.outputs.build }}-${{ hashFiles('flake.lock', 'flake.nix', 'scripts/ci/apple-toolchain.json', 'scripts/ci/select-xcode.py', 'scripts/ci/_common.sh', 'scripts/ci/ios-onnxruntime.sh', 'apps/maple-research/frontend/src-tauri/scripts/build-ios-onnxruntime-all.sh', 'apps/maple-research/frontend/src-tauri/scripts/canonicalize-static-archive.py', 'apps/maple-research/frontend/src-tauri/scripts/onnxruntime-pins.sh') }}
