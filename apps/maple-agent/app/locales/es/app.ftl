@@ -1455,6 +1455,11 @@ chat-turn-worked = Trabajó
 chat-turn-worked-seconds = Trabajó { $seconds } s
 # $minutes is a whole number of minutes; $seconds is the rest, under 60.
 chat-turn-worked-minutes = Trabajó { $minutes } min { $seconds } s
+# $count is the number of files a turn changed.
+chat-turn-files-changed = { $count ->
+    [one] { $count } archivo modificado
+   *[other] { $count } archivos modificados
+    }
 chat-settings = Configuración
 chat-usage = Uso
 chat-usage-unavailable = Uso no disponible

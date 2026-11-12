@@ -34,6 +34,7 @@ use crate::ui::titlebar;
 use crate::ui::widgets;
 
 mod cache;
+mod changes;
 mod commands;
 mod composer;
 pub(crate) mod computers;
@@ -232,6 +233,8 @@ struct TranscriptCtx<'a> {
     rail: step::Rail,
     /// For a tool call the user was asked to allow: where that stands.
     asked: Option<step::Asked>,
+    /// For the reply that ends a turn: the files the turn changed.
+    changes: Option<changes::ReplyChanges<'a>>,
 }
 
 /// Text-to-speech progress for one message.
@@ -856,6 +859,14 @@ pub struct ChatScreen {
     /// What the user said to the permission requests answered in this
     /// view, by the id of the tool call each was about: allowed, or not.
     step_permissions: HashMap<String, bool>,
+    /// What each finished turn changed, built when its card first draws.
+    turn_changes: changes::ChangesCache,
+    /// The files whose changes show in a turn's card, by the turn's lead
+    /// item id.
+    open_changes: HashMap<String, BTreeSet<usize>>,
+    /// The reply of the turn at the end, once that turn is over and the
+    /// row was measured with its card.
+    settled_reply: Option<usize>,
     /// Clocks of the runs this window saw start, by session id.
     run_clocks: HashMap<String, turn::TimedRun>,
     /// A repaint for a running turn's time is on its way.
@@ -1694,6 +1705,9 @@ impl ChatScreen {
             toggled_turns: HashSet::new(),
             turn_worked: HashMap::new(),
             step_permissions: HashMap::new(),
+            turn_changes: changes::ChangesCache::default(),
+            open_changes: HashMap::new(),
+            settled_reply: None,
             run_clocks: HashMap::new(),
             run_tick_pending: std::cell::Cell::new(false),
             question_selected: HashMap::new(),
@@ -3482,6 +3496,7 @@ impl ChatScreen {
         self.pages.weights.clear();
         self.bound_transcript_window(true);
         self.turns.rebuild(&self.timeline);
+        self.turn_changes.clear();
         self.timeline_index = self
             .timeline
             .iter()
@@ -3772,6 +3787,8 @@ impl ChatScreen {
         self.toggled_turns.clear();
         self.turn_worked.clear();
         self.step_permissions.clear();
+        self.turn_changes.clear();
+        self.open_changes.clear();
         if let Some(composer) = self.composer.clone() {
             composer.update(cx, |input, cx| input.reset_vim_context(cx));
         }
@@ -6365,9 +6382,15 @@ impl ChatScreen {
                     motion::now(),
                     self.list_state.is_following_tail(),
                 );
+                // A message from the user ends the turn before it, whose
+                // reply may now carry the card of what the turn changed.
+                let settled = self.turns.tail_reply().filter(|_| turn::starts_turn(&item));
                 self.turns.push(&item);
                 self.timeline.push(item);
                 self.list_state.splice(index..index, 1);
+                if let Some(reply) = settled {
+                    self.list_state.remeasure_items(reply..reply + 1);
+                }
                 // The step before a new one loses the gap under it, so
                 // the rail joins them: its height changed too.
                 if index > 0
@@ -6384,6 +6407,15 @@ impl ChatScreen {
             .timeline_revisions
             .entry(session_id.to_string())
             .or_insert(0) += 1;
+        // A step that arrived or changed may change what its turn's card
+        // lists.
+        if let Some(lead) = match self.turns.row(index) {
+            turn::TurnRow::Lead => Some(index),
+            turn::TurnRow::Step(lead) => Some(lead),
+            turn::TurnRow::Plain => None,
+        } {
+            self.turn_changes.forget(&self.timeline[lead].id);
+        }
         let id = self.timeline[index].id.clone();
         let anchor = self.scroll_anchor();
         let count = self.timeline.len();

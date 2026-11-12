@@ -6,6 +6,7 @@
 //! steps stay folded under the line until it is clicked. Before a turn has
 //! a step, the same line waits in the slot under the transcript.
 
+use std::collections::HashMap;
 use std::time::{Duration, Instant};
 
 use gpui::{Context, Div, SharedString, div, prelude::*, px};
@@ -49,9 +50,14 @@ pub(super) struct Turns {
     /// The lead of the turn at the end of the loaded rows, once that turn
     /// has a step.
     tail: Option<usize>,
+    /// The reply that ends a turn, by its row, with the turn's lead: the
+    /// last message from Maple after the turn's last step.
+    replies: HashMap<usize, usize>,
+    /// The reply of the turn at the end, while no step has followed it.
+    tail_reply: Option<usize>,
 }
 
-fn starts_turn(item: &AgentTimelineItem) -> bool {
+pub(super) fn starts_turn(item: &AgentTimelineItem) -> bool {
     item.item_type == "message" && item.role.as_deref() == Some("user")
 }
 
@@ -80,6 +86,8 @@ impl Turns {
     pub(super) fn rebuild(&mut self, timeline: &[AgentTimelineItem]) {
         self.rows.clear();
         self.tail = None;
+        self.replies.clear();
+        self.tail_reply = None;
         for item in timeline {
             self.push(item);
         }
@@ -87,15 +95,30 @@ impl Turns {
 
     /// One row arrived at the end.
     pub(super) fn push(&mut self, item: &AgentTimelineItem) {
+        let index = self.rows.len();
         let row = if starts_turn(item) {
             self.tail = None;
+            self.tail_reply = None;
             TurnRow::Plain
         } else if !is_step(item) {
+            // What Maple says after the turn's steps is its reply, until
+            // it says more or takes another step.
+            if let Some(lead) = self.tail
+                && item.item_type == "message"
+            {
+                if let Some(earlier) = self.tail_reply.replace(index) {
+                    self.replies.remove(&earlier);
+                }
+                self.replies.insert(index, lead);
+            }
             TurnRow::Plain
         } else if let Some(lead) = self.tail {
+            if let Some(reply) = self.tail_reply.take() {
+                self.replies.remove(&reply);
+            }
             TurnRow::Step(lead)
         } else {
-            self.tail = Some(self.rows.len());
+            self.tail = Some(index);
             TurnRow::Lead
         };
         self.rows.push(row);
@@ -107,6 +130,16 @@ impl Turns {
 
     pub(super) fn tail(&self) -> Option<usize> {
         self.tail
+    }
+
+    /// The lead of the turn the row at `row` is the reply of.
+    pub(super) fn reply_of(&self, row: usize) -> Option<usize> {
+        self.replies.get(&row).copied()
+    }
+
+    /// The reply of the turn at the end, if it has one yet.
+    pub(super) fn tail_reply(&self) -> Option<usize> {
+        self.tail_reply
     }
 
     /// One past the last step of the turn led by the row at `lead`.
@@ -437,7 +470,7 @@ impl ChatScreen {
     /// earlier one, and the line waits in the slot instead. A window that
     /// is paged back in history, or still lacks the run's newest rows,
     /// does not hold the turn the run works on at all.
-    fn turn_runs(&self, lead: usize) -> bool {
+    pub(super) fn turn_runs(&self, lead: usize) -> bool {
         self.turns.tail() == Some(lead)
             && self.is_run_active()
             && !self.awaiting_first_token
@@ -575,6 +608,16 @@ impl ChatScreen {
     /// the turn it was working on keeps how long it worked. A run that
     /// waits on the user holds its time.
     pub(super) fn sync_run_clocks(&mut self) {
+        // Once its turn is over, a reply may carry the card of what the
+        // turn changed: that row is taller from then on, so measure it
+        // again the first time it is seen settled.
+        let running = self.turns.tail().is_some_and(|lead| self.turn_runs(lead));
+        let settled = self.turns.tail_reply().filter(|_| !running);
+        if std::mem::replace(&mut self.settled_reply, settled) != settled
+            && let Some(reply) = settled
+        {
+            self.list_state.remeasure_items(reply..reply + 1);
+        }
         if self.run_clocks.is_empty() {
             return;
         }
@@ -627,6 +670,10 @@ impl ChatScreen {
         }
         if let Some(allowed) = self.step_permissions.remove(old) {
             self.step_permissions.insert(new.to_owned(), allowed);
+        }
+        self.turn_changes.forget(old);
+        if let Some(open) = self.open_changes.remove(old) {
+            self.open_changes.insert(new.to_owned(), open);
         }
     }
 
@@ -806,11 +853,37 @@ mod tests {
         }
         assert_eq!(live.rows, snapshot.rows);
         assert_eq!(live.tail, snapshot.tail);
+        assert_eq!(live.replies, snapshot.replies);
         // A window that starts mid-turn leads with its first loaded step.
         assert_eq!(snapshot.row(0), TurnRow::Lead);
         // A new message from the user starts a turn with no line yet.
         live.push(&item("message", Some("user")));
         assert_eq!(live.tail(), None);
+    }
+
+    #[test]
+    fn a_turns_reply_is_what_maple_says_after_its_last_step() {
+        let mut turns = Turns::default();
+        turns.rebuild(&[
+            item("message", Some("user")),
+            // Said before any step: not a reply to carry what changed.
+            item("message", Some("assistant")),
+            item("tool", None),
+            item("message", Some("assistant")),
+        ]);
+        assert_eq!(turns.reply_of(1), None);
+        assert_eq!(turns.reply_of(3), Some(2));
+        // Another step: the turn is not over, and what was said is no
+        // longer its last word.
+        turns.push(&item("tool", None));
+        assert_eq!(turns.reply_of(3), None);
+        turns.push(&item("message", Some("assistant")));
+        assert_eq!(turns.reply_of(5), Some(2));
+        assert_eq!(turns.tail_reply(), Some(5));
+        // A plain turn has no steps, so nothing to list.
+        turns.push(&item("message", Some("user")));
+        turns.push(&item("message", Some("assistant")));
+        assert_eq!(turns.reply_of(7), None);
     }
 
     #[test]

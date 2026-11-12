@@ -266,6 +266,9 @@ impl ChatScreen {
             .retain(|id, _| self.timeline_index.contains_key(id));
         self.step_permissions
             .retain(|id, _| self.timeline_index.contains_key(id));
+        self.turn_changes.clear();
+        self.open_changes
+            .retain(|id, _| self.timeline_index.contains_key(id));
         self.markdown_cache.clear();
         self.derived.clear();
         self.messages = Default::default();
@@ -436,7 +439,11 @@ impl ChatScreen {
                             this.markdown_cache.clear();
                             this.derived.clear();
                             this.messages = Default::default();
-                            this.remeasure_item(index);
+                            // The whole input may change what its turn's
+                            // card lists, and so the height of the reply
+                            // that carries it.
+                            this.turn_changes.clear();
+                            this.list_state.remeasure_items(index..this.timeline.len());
                             this.warm_markdown(cx);
                         }
                     }
