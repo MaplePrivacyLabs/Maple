@@ -9,7 +9,7 @@ mod state_tests {
     use crate::ui::chat::composer::SideThreadTurn;
     use crate::ui::chat::computers::ProjectTarget;
     use crate::ui::chat::sidebar::{RenameTarget, SidebarEvent, TaskMove, root_display_name};
-    use crate::ui::chat::transcript::{diff_lines_for, tool_label_title};
+    use crate::ui::chat::transcript::{diff_counts, diff_lines_for, tool_label_title};
     use crate::ui::chat::*;
     use gpui::{Context, TestAppContext};
     use maple_agent::agent::{
@@ -2162,14 +2162,24 @@ mod state_tests {
         let screen = screen(cx);
         screen.update(cx, |this, cx| {
             this.selected_session = Some("s1".to_string());
-            let call = |id: &str, status: &str| AgentTimelineItem {
+            let call = |id: &str, status: &str, command: &str| AgentTimelineItem {
                 status: Some(status.to_string()),
+                label: Some(maple_agent::agent::AgentTimelineLabel {
+                    kind: "tool".to_string(),
+                    name: Some("bash".to_string()),
+                    detail: Some(command.to_string()),
+                }),
+                input: Some(serde_json::json!({ "command": command })),
                 ..item(id, "tool", None)
             };
+            // One reply made three calls. All are on screen as running
+            // before the first is asked about.
             this.replace_timeline(vec![
                 user_item("u1", "Push it"),
-                call("read", "completed"),
-                call("push", "running"),
+                call("read", "completed", "cat notes.txt"),
+                call("push", "running", "git push"),
+                call("list", "running", "ls"),
+                call("again", "running", "git push"),
             ]);
             assert_eq!(this.waiting_step(), None, "nothing waits before a request");
 
@@ -2177,17 +2187,20 @@ mod state_tests {
             assert_eq!(
                 this.waiting_step(),
                 Some(2),
-                "the request is about the call that has not finished"
+                "the request is about the earliest call that would do what it says, \
+                 not the newest call"
             );
             this.toggle_question_option(0, 0, cx);
             assert_eq!(this.step_permissions.get("push"), Some(&true));
 
-            // The next call is refused; the earlier answer stays.
-            this.apply_incoming_item("s1", call("force", "running"), cx);
+            // The same command again is the next call's; it is refused,
+            // and the earlier answer stays.
             this.handle_service_event(permission_event("p2"), cx);
+            assert_eq!(this.waiting_step(), Some(4));
             this.toggle_question_option(0, 1, cx);
-            assert_eq!(this.step_permissions.get("force"), Some(&false));
+            assert_eq!(this.step_permissions.get("again"), Some(&false));
             assert_eq!(this.step_permissions.get("push"), Some(&true));
+            assert_eq!(this.step_permissions.get("list"), None);
         });
     }
 
@@ -6178,6 +6191,31 @@ mod state_tests {
         assert_eq!(lines.len(), MAX_DIFF_LINES);
         assert_eq!(lines[0], (' ', SharedString::from("big.txt")));
         assert_eq!(lines[1], ('+', SharedString::from("0")));
+    }
+
+    /// The counts on a step come from the whole edit, not from the lines
+    /// the display keeps.
+    #[test]
+    fn test_changed_line_counts_are_not_cut_at_the_display_cap() {
+        let lines = |count: usize| {
+            (0..count)
+                .map(|n| n.to_string())
+                .collect::<Vec<_>>()
+                .join("\n")
+        };
+        let mut write = item("write", "tool", None);
+        write.input = Some(serde_json::json!({ "path": "big.txt", "content": lines(1000) }));
+        assert_eq!(diff_counts(&write), (1000, 0));
+
+        let mut edit = item("edit", "tool", None);
+        edit.input = Some(serde_json::json!({
+            "path": "big.txt",
+            "edits": [
+                { "oldText": lines(300), "newText": lines(2) },
+                { "oldText": "one", "newText": "one\ntwo" },
+            ],
+        }));
+        assert_eq!(diff_counts(&edit), (4, 301));
     }
 
     #[test]
