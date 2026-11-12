@@ -1,4 +1,4 @@
-import { useEffect, useLayoutEffect, useMemo, useState } from "react";
+import { useLayoutEffect, useMemo, useState } from "react";
 import type { UsageRange, UsageResponse } from "@/billing/usageApi";
 import { SettingsSection } from "@/components/settings/SettingsPage";
 import {
