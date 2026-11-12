@@ -107,7 +107,7 @@ jobs:
       - name: Attest iOS release artifacts
         # Keep uploads/verifiers running if GitHub token policy rejects artifact attestation.
         continue-on-error: true
-        uses: actions/attest@281a49d4cbb0a72c9575a50d18f6deb515a11deb # was v4
+        uses: actions/attest@1e69f48acb82d1966a394da916b4c1698aa569d6 # v4.2.2
         with:
           subject-checksums: ios-release-artifacts.sha256
 
