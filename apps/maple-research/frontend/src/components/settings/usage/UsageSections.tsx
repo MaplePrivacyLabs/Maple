@@ -44,12 +44,16 @@ export function RecentRequests({
   accountId,
   kind,
   tz,
-  highlights
+  highlights,
+  namedModels
 }: {
   accountId: string;
   kind: UsagePlanKind;
   tz: string;
   highlights?: ModelHighlights;
+  /** The chart's actual named models. Empty keeps every row gray; undefined
+   * retains catalog colors until a model chart is available. */
+  namedModels: readonly string[] | undefined;
 }) {
   const query = useUsageRequests(accountId);
   const free = kind === "free";
@@ -102,7 +106,7 @@ export function RecentRequests({
                     </td>
                     <td className="whitespace-nowrap px-3 py-2">
                       <span className="inline-flex items-center gap-2">
-                        <Swatch color={modelColor(r.model, undefined, highlights)} />
+                        <Swatch color={modelColor(r.model, namedModels, highlights)} />
                         {modelLabel(r.model, labels)}
                       </span>
                     </td>

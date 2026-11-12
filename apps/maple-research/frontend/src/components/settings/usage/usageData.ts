@@ -12,10 +12,11 @@ import {
   MAX_NAMED_MODELS,
   MORE_MODELS_COLOR,
   MORE_MODELS_KEY,
+  catalogIndex,
   highlightGroup,
-  highlightIndex,
   modelColor,
   modelHighlights,
+  seriesBefore,
   type ModelHighlights,
   ORIGIN_COLOR,
   ORIGIN_LABEL,
@@ -422,15 +423,6 @@ export type DayBucket = {
 
 export type DailyChart = { series: SeriesDef[]; days: DayBucket[] };
 
-function seriesBefore(left: string, right: string, highlights: ModelHighlights): number {
-  const l = highlightIndex(left, highlights);
-  const r = highlightIndex(right, highlights);
-  if (l !== undefined && r !== undefined) return l - r;
-  if (l !== undefined) return -1;
-  if (r !== undefined) return 1;
-  return left < right ? -1 : left > right ? 1 : 0;
-}
-
 /** Which models get their own series. Everything used, until the legend is full;
  * then the best models stay and the smallest of the rest fold. */
 function chooseNamed(
@@ -442,8 +434,8 @@ function chooseNamed(
   const ranked = [...totals]
     .filter(([, value]) => value > 0)
     .sort(([left, leftTotal], [right, rightTotal]) => {
-      const l = highlightIndex(left, highlights);
-      const r = highlightIndex(right, highlights);
+      const l = catalogIndex(left, highlights);
+      const r = catalogIndex(right, highlights);
       if (l !== undefined || r !== undefined) {
         if (l === undefined) return 1;
         if (r === undefined) return -1;

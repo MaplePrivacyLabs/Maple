@@ -37,6 +37,12 @@ const LEGACY_HIGHLIGHTS: ModelHighlights = {
   fromCatalog: false
 };
 
+// Catalog order is membership metadata, not a capped palette index. Cache it
+// since the chart and every row consult it repeatedly for the same catalog.
+const HIGHLIGHT_RANKS = new WeakMap<ModelHighlights, ReadonlyMap<string, number>>([
+  [LEGACY_HIGHLIGHTS, new Map(LEGACY_MODELS.map((model, index) => [model, index]))]
+]);
+
 /** Only the catalog fields that affect Usage. Full SDK catalog responses
  * satisfy this shape. `data` order is the picker's within-group order. */
 export type UsageModelCatalog = {
@@ -79,19 +85,49 @@ export function highlightGroup(
     ?.label;
 }
 
+/** Catalog membership order, including models beyond the palette capacity. */
+export function catalogIndex(
+  model: string,
+  highlights: ModelHighlights = LEGACY_HIGHLIGHTS
+): number | undefined {
+  let ranks = HIGHLIGHT_RANKS.get(highlights);
+  if (!ranks) {
+    const indexed = new Map<string, number>();
+    highlights.groups
+      .flatMap(({ models }) => models)
+      .forEach((id, index) => {
+        if (!indexed.has(id)) indexed.set(id, index);
+      });
+    ranks = indexed;
+    HIGHLIGHT_RANKS.set(highlights, ranks);
+  }
+  const index = ranks.get(model);
+  if (index !== undefined || highlights.fromCatalog) return index;
+  const legacy = LEGACY_MODELS.indexOf(model);
+  return legacy === -1 ? undefined : legacy;
+}
+
+/** A fixed palette slot. It is not a catalog membership test. */
 export function highlightIndex(
   model: string,
   highlights: ModelHighlights = LEGACY_HIGHLIGHTS
 ): number | undefined {
-  const served = highlights.groups.flatMap(({ models }) => models).indexOf(model);
-  if (served >= 0 && served < MAX_NAMED_MODELS) return served;
-  if (highlights.fromCatalog) return undefined;
-  const index = LEGACY_MODELS.indexOf(model);
-  return index === -1 ? undefined : index;
+  const index = catalogIndex(model, highlights);
+  return index !== undefined && index < MAX_NAMED_MODELS ? index : undefined;
 }
 
 export function seriesColor(slot: number): string {
   return `var(--series-${slot + 1})`;
+}
+
+/** Full model order: served catalog first, then historical IDs. */
+export function seriesBefore(left: string, right: string, highlights: ModelHighlights): number {
+  const l = catalogIndex(left, highlights);
+  const r = catalogIndex(right, highlights);
+  if (l !== undefined && r !== undefined) return l - r;
+  if (l !== undefined) return -1;
+  if (r !== undefined) return 1;
+  return left < right ? -1 : left > right ? 1 : 0;
 }
 
 /**
@@ -113,7 +149,8 @@ export function modelColorSlot(
     if (slot !== undefined) taken.add(slot);
   }
   const rank = peers.filter(
-    (peer) => highlightIndex(peer, highlights) === undefined && peer < model
+    (peer) =>
+      highlightIndex(peer, highlights) === undefined && seriesBefore(peer, model, highlights) < 0
   ).length;
   let free = 0;
   for (let slot = 0; slot < MAX_NAMED_MODELS; slot++) {

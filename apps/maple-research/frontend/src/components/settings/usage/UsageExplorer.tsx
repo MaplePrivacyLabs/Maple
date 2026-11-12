@@ -1,4 +1,4 @@
-import { useMemo, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import type { UsageRange, UsageResponse } from "@/billing/usageApi";
 import { SettingsSection } from "@/components/settings/SettingsPage";
 import {
@@ -264,7 +264,8 @@ function DailyChart({
   kind,
   summary,
   periodStartDate,
-  highlights
+  highlights,
+  onNamedModelsChange
 }: {
   usage: UsageResponse;
   dates: string[];
@@ -272,6 +273,7 @@ function DailyChart({
   summary: RangeSummary;
   periodStartDate: string | null;
   highlights: ModelHighlights;
+  onNamedModelsChange: (namedModels: readonly string[] | undefined) => void;
 }) {
   const free = kind === "free";
   const [metric, setMetric] = useState<Metric>(free ? "requests" : "credits");
@@ -329,10 +331,16 @@ function DailyChart({
     ...(metric === "tokens" ? [{ value: "token" as const, label: "Token type" }] : [])
   ];
   const unit = metricLabel(metric).toLowerCase();
-  const namedModels =
-    split === "model"
-      ? chart.series.filter(({ key }) => key !== MORE_MODELS_KEY).map(({ key }) => key)
-      : undefined;
+  const namedModels = useMemo(
+    () =>
+      split === "model"
+        ? chart.series.filter(({ key }) => key !== MORE_MODELS_KEY).map(({ key }) => key)
+        : undefined,
+    [chart.series, split]
+  );
+  useEffect(() => {
+    onNamedModelsChange(namedModels);
+  }, [namedModels, onNamedModelsChange]);
 
   return (
     <>
@@ -505,6 +513,7 @@ export function UsageExplorer({
   kind,
   range,
   onRangeChange,
+  onNamedModelsChange,
   usage,
   today,
   periodStartDate,
@@ -513,6 +522,7 @@ export function UsageExplorer({
   kind: UsagePlanKind;
   range: UsageRange;
   onRangeChange: (range: UsageRange) => void;
+  onNamedModelsChange: (namedModels: readonly string[] | undefined) => void;
   usage: UsageState;
   today: string;
   periodStartDate: string | null;
@@ -522,6 +532,9 @@ export function UsageExplorer({
   const data = usage.data;
   const summary = useMemo(() => (data ? summarizeDays(data.days, data.models) : null), [data]);
   const dates = useMemo(() => (data ? responseDates(data, today) : []), [data, today]);
+  useEffect(() => {
+    if (!data) onNamedModelsChange(undefined);
+  }, [data, onNamedModelsChange]);
 
   return (
     <>
@@ -549,6 +562,7 @@ export function UsageExplorer({
             summary={summary}
             periodStartDate={periodStartDate}
             highlights={highlights}
+            onNamedModelsChange={onNamedModelsChange}
           />
         </div>
       ) : usage.isError ? (

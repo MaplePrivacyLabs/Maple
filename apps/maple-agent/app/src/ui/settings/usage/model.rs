@@ -77,12 +77,17 @@ impl ModelRanking {
         }
     }
 
-    /// Only palette-sized ranks are pinned. Later catalog entries remain
-    /// candidates, but never wrap around to an earlier model's color.
-    pub(crate) fn model_slot(&self, model: &str) -> Option<usize> {
+    /// Position in the catalog's quality order, independent of palette size.
+    fn catalog_index(&self, model: &str) -> Option<usize> {
         self.models
             .iter()
             .position(|(candidate, _)| candidate == model)
+    }
+
+    /// Only palette-sized ranks are pinned. Later catalog entries borrow a
+    /// free color when selected; they never wrap around by catalog position.
+    pub(crate) fn model_slot(&self, model: &str) -> Option<usize> {
+        self.catalog_index(model)
             .filter(|slot| *slot < MAX_NAMED_MODELS)
     }
 
@@ -95,10 +100,7 @@ impl ModelRanking {
     }
 
     fn highlight_models(&self) -> impl Iterator<Item = &str> {
-        self.models
-            .iter()
-            .take(MAX_NAMED_MODELS)
-            .map(|(model, _)| model.as_str())
+        self.models.iter().map(|(model, _)| model.as_str())
     }
 }
 
@@ -367,7 +369,7 @@ pub(crate) fn model_label(model: &str, labels: &UsageModelLabels) -> String {
 
 impl ModelRanking {
     fn series_before(&self, left: &str, right: &str) -> std::cmp::Ordering {
-        match (self.model_slot(left), self.model_slot(right)) {
+        match (self.catalog_index(left), self.catalog_index(right)) {
             (Some(left), Some(right)) => left.cmp(&right),
             (Some(_), None) => std::cmp::Ordering::Less,
             (None, Some(_)) => std::cmp::Ordering::Greater,
@@ -376,17 +378,17 @@ impl ModelRanking {
     }
 
     /// Every model used in the range gets its own series until the chart runs
-    /// out of colors. Past that, highlights stay and the smallest other models
-    /// fold. Usage only chooses between unpinned candidates, as before.
+    /// out of colors. Catalog order chooses the best members; usage then
+    /// chooses among uncatalogued or ungrouped models, as before.
     fn choose_named<'a>(&'a self, totals: &[(&'a str, f64)]) -> (Vec<&'a str>, Vec<&'a str>) {
         let used = |id: &str| {
             totals
                 .iter()
                 .any(|(candidate, total)| *candidate == id && *total > 0.0)
         };
-        // Overflow still occupies one of the seven legend slots. If every
-        // pinned model is used, fold the lowest-ranked one rather than
-        // displace it with an uncatalogued model.
+        // Overflow still occupies one of the seven legend slots. Fold the
+        // lowest catalog-ranked member rather than displace it with an
+        // uncatalogued model, even if the member sits beyond palette capacity.
         let used_models = totals.iter().filter(|(_, total)| *total > 0.0).count();
         let limit = if used_models > MAX_NAMED_MODELS {
             MAX_NAMED_MODELS - 1
@@ -400,7 +402,7 @@ impl ModelRanking {
             .collect();
         let mut others: Vec<(&str, f64)> = totals
             .iter()
-            .filter(|(id, total)| *total > 0.0 && self.model_slot(id).is_none())
+            .filter(|(id, total)| *total > 0.0 && self.catalog_index(id).is_none())
             .map(|(id, total)| (*id, *total))
             .collect();
         others.sort_by(|left, right| right.1.total_cmp(&left.1).then_with(|| left.0.cmp(right.0)));
@@ -427,7 +429,9 @@ impl ModelRanking {
         }
         let rank = named
             .iter()
-            .filter(|peer| self.model_slot(peer).is_none() && **peer < model)
+            .filter(|peer| {
+                self.model_slot(peer).is_none() && self.series_before(peer, model).is_lt()
+            })
             .count();
         (0..MAX_NAMED_MODELS)
             .filter(|slot| {
@@ -1634,6 +1638,86 @@ mod tests {
             [("model-7".to_string(), 8.0), ("model-6".to_string(), 7.0)]
         );
         assert_eq!(chart.days[0].total, expected);
+
+        let mut priority_rows: Vec<UsageDayRow> = (0..5)
+            .map(|index| {
+                row(
+                    "2026-10-01",
+                    &format!("model-{index}"),
+                    "app",
+                    None,
+                    "plan",
+                    (index + 1) as f64,
+                )
+            })
+            .collect();
+        priority_rows.push(row("2026-10-01", "model-7", "app", None, "plan", 1.0));
+        priority_rows.push(row(
+            "2026-10-01",
+            "unlisted-heavy",
+            "app",
+            None,
+            "plan",
+            1_000.0,
+        ));
+        priority_rows.push(row(
+            "2026-10-01",
+            "gpt-oss-120b",
+            "app",
+            None,
+            "plan",
+            500.0,
+        ));
+        let priority = build_daily_chart(
+            &date_range(day("2026-10-01"), day("2026-10-01")),
+            &priority_rows,
+            Metric::Credits,
+            Split::Model,
+            &UsageModelLabels::default(),
+            &ranking,
+        );
+        // A late catalog member is still better than an uncatalogued model,
+        // regardless of usage or its position beyond the seven fixed slots.
+        assert_eq!(
+            priority
+                .series
+                .iter()
+                .filter_map(|series| series.model.as_deref())
+                .collect::<Vec<_>>(),
+            [
+                "model-0", "model-1", "model-2", "model-3", "model-4", "model-7"
+            ]
+        );
+        assert_eq!(priority.series[5].key, SeriesKey::Model(5));
+        assert_eq!(
+            priority.series.last().map(|series| series.key),
+            Some(SeriesKey::MoreModels)
+        );
+        assert_eq!(
+            priority.days[0].folded,
+            [
+                ("unlisted-heavy".to_string(), 1_000.0),
+                ("gpt-oss-120b".to_string(), 500.0)
+            ]
+        );
+
+        priority_rows.retain(|row| row.model != "unlisted-heavy");
+        let mixed = build_daily_chart(
+            &date_range(day("2026-10-01"), day("2026-10-01")),
+            &priority_rows,
+            Metric::Credits,
+            Split::Model,
+            &UsageModelLabels::default(),
+            &ranking,
+        );
+        assert_eq!(
+            (mixed.series[5].model.as_deref(), mixed.series[5].key),
+            (Some("model-7"), SeriesKey::Model(5))
+        );
+        assert_eq!(
+            (mixed.series[6].model.as_deref(), mixed.series[6].key),
+            (Some("gpt-oss-120b"), SeriesKey::Model(6))
+        );
     }
 
     #[test]

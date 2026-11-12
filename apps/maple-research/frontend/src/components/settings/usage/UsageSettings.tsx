@@ -51,6 +51,7 @@ export function UsageSettings() {
     staleTime: 5 * 60 * 1000
   });
   const highlights = useMemo(() => modelHighlights(catalog.data), [catalog.data]);
+  const [namedModels, setNamedModels] = useState<readonly string[] | undefined>();
   const kind = usagePlanKind(status);
   const planWindow = statusWindow(status);
 
@@ -158,6 +159,7 @@ export function UsageSettings() {
       <UsageExplorer
         kind={kind}
         highlights={highlights}
+        onNamedModelsChange={setNamedModels}
         range={range}
         onRangeChange={setRange}
         usage={{
@@ -172,7 +174,13 @@ export function UsageSettings() {
       {kind !== "free" && usage.data && (
         <LastTwelveMonths months={usage.data.months} currentMonth={today.slice(0, 7)} />
       )}
-      <RecentRequests accountId={accountId} kind={kind} tz={tz} highlights={highlights} />
+      <RecentRequests
+        accountId={accountId}
+        kind={kind}
+        tz={tz}
+        highlights={highlights}
+        namedModels={namedModels}
+      />
       <PricingTable usedModels={usedModels} />
       <AboutNumbers
         kind={kind}

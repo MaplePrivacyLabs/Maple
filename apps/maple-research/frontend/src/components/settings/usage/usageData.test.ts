@@ -501,6 +501,58 @@ describe("buildDailyChart", () => {
     expect(sparse.days[0].values[model]).toBe(1);
   });
 
+  test("catalog priority reaches past the palette before heavier unlisted usage", () => {
+    const late = growthCatalog.data.at(-1)!.id;
+    const priority = buildDailyChart({
+      dates: [dates[0]],
+      rows: [
+        ...growthCatalog.data
+          .slice(0, 5)
+          .map(({ id }, index) => row({ date: dates[0], model: id, credits: index + 1 })),
+        row({ date: dates[0], model: late, credits: 1 }),
+        row({ date: dates[0], model: "unlisted-heavy", credits: 1_000 }),
+        row({ date: dates[0], model: "gpt-oss-120b", credits: 500 })
+      ],
+      metric: "credits",
+      split: "model",
+      labels,
+      highlights
+    });
+    // Eight used models leave six named slots. A low-usage catalog member
+    // ranks before heavier uncatalogued usage, but borrows a valid free color.
+    expect(priority.series.map(({ key }) => key)).toEqual([
+      ...growthCatalog.data.slice(0, 5).map(({ id }) => id),
+      late,
+      MORE_MODELS_KEY
+    ]);
+    expect(priority.series[5].color).toBe("var(--series-6)");
+    expect(priority.days[0].folded.map(({ model }) => model)).toEqual([
+      "unlisted-heavy",
+      "gpt-oss-120b"
+    ]);
+  });
+
+  test("late catalog members and uncatalogued models borrow distinct colors", () => {
+    const late = growthCatalog.data.at(-1)!.id;
+    const chart = buildDailyChart({
+      dates: [dates[0]],
+      rows: [
+        ...growthCatalog.data
+          .slice(0, 5)
+          .map(({ id }, index) => row({ date: dates[0], model: id, credits: index + 1 })),
+        row({ date: dates[0], model: late, credits: 1 }),
+        row({ date: dates[0], model: "gpt-oss-120b", credits: 2 })
+      ],
+      metric: "credits",
+      split: "model",
+      labels,
+      highlights
+    });
+    const colors = new Map(chart.series.map(({ key, color }) => [key, color]));
+    expect(colors.get(late)).toBe("var(--series-6)");
+    expect(colors.get("gpt-oss-120b")).toBe("var(--series-7)");
+  });
+
   test("overflow reserves a legend series and folds every excess model", () => {
     const count = MAX_NAMED_MODELS;
     const fill = Array.from({ length: count }, (_, i) => `model-${i}`);

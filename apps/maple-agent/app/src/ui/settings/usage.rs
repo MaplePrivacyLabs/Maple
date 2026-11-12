@@ -80,6 +80,7 @@ pub(super) struct UsageState {
     summary: Option<UsageSummary>,
     /// Catalog grouping for highlights; an older response falls back in model.
     catalog: Option<maple_sdk::ModelCatalogResponse>,
+    catalog_loading: bool,
     /// The range `summary` answers.
     summary_range: Option<UsageRange>,
     /// The range whose last load failed, until a load succeeds.
@@ -107,6 +108,7 @@ impl UsageState {
             split: Split::Model,
             summary: None,
             catalog: None,
+            catalog_loading: false,
             summary_range: None,
             failed_range: None,
             summary_loading: false,
@@ -222,6 +224,42 @@ impl SettingsScreen {
         self.load_usage_prices(cx);
     }
 
+    /// Optional highlight metadata. Never hold billing for this request: a
+    /// stalled catalog leaves the history usable with cached or legacy colors.
+    fn load_usage_catalog(&mut self, cx: &mut Context<Self>) {
+        if self.usage.catalog.is_some() || self.usage.catalog_loading {
+            return;
+        }
+        self.usage.catalog_loading = true;
+        let backend = self.backend.clone();
+        let user_id = self.user_id.clone();
+        let request_user_id = user_id.clone();
+        self.call_presented(
+            async move {
+                backend
+                    .call_presented::<maple_sdk::ModelCatalogResponse>(
+                        "model_catalog",
+                        (&request_user_id,),
+                    )
+                    .await
+            },
+            cx,
+            move |this, result, cx| {
+                this.usage.catalog_loading = false;
+                if this.user_id != user_id {
+                    return;
+                }
+                if let Ok(catalog) = result {
+                    this.usage.catalog = Some(catalog);
+                    // Apply to the current selection; never resurrect an
+                    // old range's summary or loading state.
+                    this.rebuild_usage_data();
+                }
+                this.usage_changed(cx);
+            },
+        );
+    }
+
     /// Today's model prices; fetched once, or again after a failure.
     pub(super) fn load_usage_prices(&mut self, cx: &mut Context<Self>) {
         if self.usage.prices.is_some() || self.usage.prices_loading {
@@ -254,6 +292,7 @@ impl SettingsScreen {
             return;
         };
         let window = model::status_window(status);
+        self.load_usage_catalog(cx);
         let query = UsageQuery {
             range: self.usage.range.query(),
             tz: self.usage.tz.clone(),
@@ -268,13 +307,9 @@ impl SettingsScreen {
         let user_id = self.user_id.clone();
         self.call_presented(
             async move {
-                Ok(tokio::join!(
-                    backend.call_presented::<UsageSummary>("usage_summary", (&user_id, query)),
-                    backend.call_presented::<maple_sdk::ModelCatalogResponse>(
-                        "model_catalog",
-                        (&user_id,)
-                    )
-                ))
+                backend
+                    .call_presented::<UsageSummary>("usage_summary", (&user_id, query))
+                    .await
             },
             cx,
             move |this, result, cx| {
@@ -284,20 +319,10 @@ impl SettingsScreen {
                 }
                 this.usage.summary_loading = false;
                 match result {
-                    Ok((summary, catalog)) => {
-                        // Catalog failure is not a Usage failure: keep the
-                        // last good response, or use compatibility ranking.
-                        if let Ok(catalog) = catalog {
-                            this.usage.catalog = Some(catalog);
-                        }
-                        match summary {
-                            Ok(summary) => {
-                                this.usage.summary = Some(summary);
-                                this.usage.summary_range = Some(range);
-                                this.usage.failed_range = None;
-                            }
-                            Err(_) => this.usage.failed_range = Some(range),
-                        }
+                    Ok(summary) => {
+                        this.usage.summary = Some(summary);
+                        this.usage.summary_range = Some(range);
+                        this.usage.failed_range = None;
                     }
                     Err(_) => this.usage.failed_range = Some(range),
                 }
