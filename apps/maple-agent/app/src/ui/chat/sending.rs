@@ -244,6 +244,7 @@ impl ChatScreen {
                 self.acknowledge_send_preview(&send_id, &run_id);
                 // A short run can finish before admission returns.
                 if !self.finished_runs.contains(&run_id) {
+                    self.run_began(&session, &run_id, cx);
                     self.active_runs.insert(session, run_id);
                     self.sync_sidebar(cx);
                 }
@@ -305,7 +306,7 @@ impl ChatScreen {
 
     /// The message being sent, under the transcript. Its bubble rises in
     /// from the moment it shows; the status line under it fades in once,
-    /// in the slot the waiting dots use, so the real row that takes over
+    /// in the slot a turn's line waits in, so the real row that takes over
     /// lands where the bubble was.
     pub(super) fn render_send_preview(
         &self,

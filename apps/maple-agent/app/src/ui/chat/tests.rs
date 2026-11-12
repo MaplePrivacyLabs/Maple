@@ -10547,7 +10547,7 @@ mod state_tests {
     }
 
     #[gpui::test]
-    fn test_another_task_finishing_keeps_the_waiting_dots(cx: &mut TestAppContext) {
+    fn test_another_task_finishing_keeps_the_waiting_line(cx: &mut TestAppContext) {
         cx.executor().allow_parking();
         let screen = screen(cx);
         screen.update(cx, |this, cx| {
@@ -12010,6 +12010,83 @@ mod state_tests {
         });
     }
 
+    /// To the keyboard a folded turn is one row, its line. `l` shows the
+    /// steps, which then take the selection one by one, and `h` on the
+    /// line folds them again.
+    #[gpui::test]
+    fn test_application_vim_opens_a_turn_from_its_line(cx: &mut TestAppContext) {
+        struct ChatHost {
+            chat: Entity<ChatScreen>,
+        }
+        impl Render for ChatHost {
+            fn render(
+                &mut self,
+                _window: &mut Window,
+                _cx: &mut Context<Self>,
+            ) -> impl IntoElement {
+                div().w(px(1200.)).h(px(800.)).child(self.chat.clone())
+            }
+        }
+
+        cx.executor().allow_parking();
+        let chat = cx.new(|cx| {
+            let _guard = SETTINGS_LOCK.lock();
+            let backend = std::sync::Arc::new(
+                crate::backend::AgentBackend::for_test(
+                    "http://127.0.0.1:9".to_string(),
+                    String::new(),
+                )
+                .expect("backend"),
+            );
+            crate::desktop::register_key_bindings(cx);
+            let mut chat = ChatScreen::new_inner_for_test(backend, "user".to_string(), cx);
+            chat.selected_session = Some("s1".to_string());
+            chat.application_vim_enabled = true;
+            chat.application_focus = Some(cx.focus_handle());
+            chat.screen_focus_pending = true;
+            chat.booting = false;
+            chat.replace_timeline(vec![
+                user_item("u1", "question"),
+                item("call", "tool", None),
+                item("thought", "thinking", Some("reasoning")),
+                item("a1", "message", Some("answer")),
+            ]);
+            chat
+        });
+        let (_host, cx) = cx.add_window_view(|_window, _cx| ChatHost { chat: chat.clone() });
+        cx.simulate_resize(gpui::size(px(1200.), px(800.)));
+        let rows = |cx: &mut gpui::VisualTestContext| {
+            cx.update(|_window, app| chat.read(app).navigable_timeline_ids())
+        };
+        let selected = |cx: &mut gpui::VisualTestContext| {
+            cx.update(|_window, app| chat.read(app).selected_transcript_id().map(str::to_owned))
+        };
+
+        assert_eq!(rows(cx), ["u1", "call", "a1"], "folded steps are skipped");
+        cx.simulate_keystrokes("g g j l");
+        assert_eq!(rows(cx), ["u1", "call", "thought", "a1"]);
+        cx.simulate_keystrokes("j");
+        assert_eq!(selected(cx).as_deref(), Some("thought"));
+
+        // Folding from the pointer while a step is selected: the selection
+        // moves to the line rather than staying on a row that is gone.
+        chat.update(cx, |chat, cx| chat.toggle_turn("call", cx));
+        assert_eq!(selected(cx).as_deref(), Some("call"));
+
+        cx.simulate_keystrokes("l");
+        assert_eq!(
+            rows(cx).len(),
+            4,
+            "the line opens before its step's details"
+        );
+        cx.simulate_keystrokes("h");
+        assert_eq!(
+            rows(cx),
+            ["u1", "call", "a1"],
+            "h on the line folds the turn"
+        );
+    }
+
     #[gpui::test]
     fn test_application_vim_escape_assistant_focus_and_plain_command_count(
         cx: &mut TestAppContext,
@@ -12781,6 +12858,8 @@ mod state_tests {
                 .insert("tool-1".to_string(), SharedString::from(summary));
             chat.tool_summaries
                 .insert("think-1".to_string(), SharedString::from(summary));
+            // The rows under test are the turn's steps: show them.
+            chat.toggle_turn("tool-1", cx);
             chat
         });
 
