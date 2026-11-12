@@ -2172,14 +2172,13 @@ mod state_tests {
                 input: Some(serde_json::json!({ "command": command })),
                 ..item(id, "tool", None)
             };
-            // One reply made three calls. All are on screen as running
-            // before the first is asked about.
+            // One reply made these calls. All are on screen as running
+            // before any is asked about.
             this.replace_timeline(vec![
                 user_item("u1", "Push it"),
                 call("read", "completed", "cat notes.txt"),
                 call("push", "running", "git push"),
                 call("list", "running", "ls"),
-                call("again", "running", "git push"),
             ]);
             assert_eq!(this.waiting_step(), None, "nothing waits before a request");
 
@@ -2187,20 +2186,28 @@ mod state_tests {
             assert_eq!(
                 this.waiting_step(),
                 Some(2),
-                "the request is about the earliest call that would do what it says, \
-                 not the newest call"
+                "the request is about the call that would do what it says, not the newest"
             );
             this.toggle_question_option(0, 0, cx);
             assert_eq!(this.step_permissions.get("push"), Some(&true));
 
             // The same command again is the next call's; it is refused,
             // and the earlier answer stays.
+            this.apply_incoming_item("s1", call("again", "running", "git push"), cx);
             this.handle_service_event(permission_event("p2"), cx);
             assert_eq!(this.waiting_step(), Some(4));
             this.toggle_question_option(0, 1, cx);
             assert_eq!(this.step_permissions.get("again"), Some(&false));
             assert_eq!(this.step_permissions.get("push"), Some(&true));
-            assert_eq!(this.step_permissions.get("list"), None);
+
+            // Two calls the request could mean: neither is marked, and
+            // neither keeps the answer.
+            this.apply_incoming_item("s1", call("third", "running", "git push"), cx);
+            this.apply_incoming_item("s1", call("fourth", "running", "git push"), cx);
+            this.handle_service_event(permission_event("p3"), cx);
+            assert_eq!(this.waiting_step(), None);
+            this.toggle_question_option(0, 0, cx);
+            assert_eq!(this.step_permissions.len(), 2);
         });
     }
 

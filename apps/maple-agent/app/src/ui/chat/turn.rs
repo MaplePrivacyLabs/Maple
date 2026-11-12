@@ -622,37 +622,30 @@ impl ChatScreen {
 
     /// The tool call the permission request on screen is about. The
     /// request names its tool and what the call would do, not the call,
-    /// and every call of a reply is on screen as running before the first
-    /// is asked about. So the call is the earliest unanswered one of the
-    /// turn with that tool and that action; requests come in call order.
-    /// A call whose input has no command, path, url or query to compare
-    /// is taken only when it is the one call of that tool left.
+    /// and every call of a reply is on screen as running before any is
+    /// asked about. So the call is the turn's one unanswered call with
+    /// that tool and that action. Where two could be meant, none is
+    /// marked: a wrong step would keep an answer that was not its own.
     pub(super) fn waiting_step(&self) -> Option<usize> {
         let prompt = self.current_permission()?;
-        let open = || {
-            self.timeline
-                .iter()
-                .enumerate()
-                .rev()
-                .take_while(|(_, item)| !starts_turn(item))
-                .filter(|(_, item)| {
-                    is_tool(item)
-                        && step::StepState::of(item.status.as_deref()) == step::StepState::Running
-                        && !self.step_permissions.contains_key(&item.id)
-                        && item.label.as_ref().and_then(|label| label.name.as_deref())
-                            == Some(prompt.tool.as_str())
-                })
-        };
-        // Newest first, so the last match is the earliest call.
-        let named = open()
+        let mut meant = self
+            .timeline
+            .iter()
+            .enumerate()
+            .rev()
+            .take_while(|(_, item)| !starts_turn(item))
             .filter(|(_, item)| {
-                call_action(item).is_some_and(|action| same_action(&prompt.action, action))
-            })
-            .last();
-        let mut unnamed = open().filter(|(_, item)| call_action(item).is_none());
-        named
-            .or_else(|| unnamed.next().filter(|_| unnamed.next().is_none()))
-            .map(|(index, _)| index)
+                is_tool(item)
+                    && step::StepState::of(item.status.as_deref()) == step::StepState::Running
+                    && !self.step_permissions.contains_key(&item.id)
+                    && item.label.as_ref().and_then(|label| label.name.as_deref())
+                        == Some(prompt.tool.as_str())
+                    // An input with no command, path, url or query has
+                    // nothing to compare; the tool alone decides.
+                    && call_action(item).is_none_or(|action| same_action(&prompt.action, action))
+            });
+        let (index, _) = meant.next()?;
+        meant.next().is_none().then_some(index)
     }
 
     /// The user answered a permission request: the call it was about keeps
