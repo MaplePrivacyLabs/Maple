@@ -1707,6 +1707,26 @@ pub(super) fn diff_lines_for(item: &AgentTimelineItem) -> Vec<(char, SharedStrin
     lines
 }
 
+/// How many lines an edit or write adds and removes, counted from the
+/// whole input. `diff_lines_for` stops at the display cap; this does not.
+pub(super) fn diff_counts(item: &AgentTimelineItem) -> (usize, usize) {
+    let Some(serde_json::Value::Object(map)) = item.input.as_ref() else {
+        return (0, 0);
+    };
+    let lines = |text: Option<&serde_json::Value>| {
+        text.and_then(|text| text.as_str())
+            .map_or(0, |text| text.lines().count())
+    };
+    let (mut added, mut removed) = (lines(map.get("content")), 0);
+    if let Some(serde_json::Value::Array(edits)) = map.get("edits") {
+        for edit in edits {
+            removed += lines(edit.get("oldText"));
+            added += lines(edit.get("newText"));
+        }
+    }
+    (added, removed)
+}
+
 /// The +/- lines of an edit or write, coloured.
 fn render_diff(lines: &[(char, SharedString)]) -> Option<Div> {
     if lines.is_empty() {

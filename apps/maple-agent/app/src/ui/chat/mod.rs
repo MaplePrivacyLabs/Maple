@@ -6329,10 +6329,12 @@ impl ChatScreen {
                     existing.merge = incoming_merge;
                 }
                 // A row that became a step, or stopped being one, moves
-                // every row after it to another place in its turn.
+                // every row after it to another place in its turn, and
+                // changes whether the step before it runs the rail on.
                 if turn::part(&self.timeline[index]) != part {
                     self.turns.rebuild(&self.timeline);
-                    self.list_state.remeasure_items(index..self.timeline.len());
+                    self.list_state
+                        .remeasure_items(index.saturating_sub(1)..self.timeline.len());
                 }
                 index
             }
@@ -6347,6 +6349,14 @@ impl ChatScreen {
                 self.turns.push(&item);
                 self.timeline.push(item);
                 self.list_state.splice(index..index, 1);
+                // The step before a new one loses the gap under it, so
+                // the rail joins them: its height changed too.
+                if index > 0
+                    && matches!(self.turns.row(index), turn::TurnRow::Step(_))
+                    && self.turns.row(index - 1) != turn::TurnRow::Plain
+                {
+                    self.list_state.remeasure_items(index - 1..index);
+                }
                 self.time_arrival(session_id, index);
                 index
             }
