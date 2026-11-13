@@ -200,8 +200,6 @@ struct MapleApp {
     settings: crate::settings::AppSettings,
     updater: crate::update::Controller,
     restart_prompt_pending: bool,
-    #[cfg(target_os = "linux")]
-    restart_confirmation: Option<Entity<ui::update_confirmation::UpdateConfirmation>>,
     /// The complete live shortcut map. Settings mutations prepare a full
     /// replacement before this runtime clears GPUI's process-wide bindings.
     shortcuts: crate::shortcuts::ShortcutRuntime,
@@ -325,7 +323,7 @@ impl MapleApp {
         cx.notify();
     }
 
-    fn present_pending_store_attention(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+    fn present_pending_store_attention(&mut self, _window: &mut Window, cx: &mut Context<Self>) {
         if self.store_attention_open {
             return;
         }
@@ -344,19 +342,22 @@ impl MapleApp {
         });
         let buttons = if attention.retry {
             vec![
-                gpui::PromptButton::Other(tr("native-retry-saving")),
-                gpui::PromptButton::Other(tr("native-keep-viewing")),
+                NativeDialogButton::calm(
+                    "native-attention-keep-viewing",
+                    tr("native-keep-viewing"),
+                ),
+                NativeDialogButton::accent(
+                    "native-attention-retry-saving",
+                    tr("native-retry-saving"),
+                ),
             ]
         } else {
-            vec![gpui::PromptButton::Ok(tr("native-ok"))]
+            vec![NativeDialogButton::accent(
+                "native-attention-ok",
+                tr("native-ok"),
+            )]
         };
-        let prompt = window.prompt(
-            gpui::PromptLevel::Warning,
-            &title,
-            Some(&attention.message.resolve()),
-            &buttons,
-            cx,
-        );
+        let prompt = show_native_dialog(title, attention.message.resolve(), buttons, 300., cx);
         self.store_attention_open = true;
         cx.spawn(async move |this, cx| {
             let response = prompt.await;
@@ -369,10 +370,14 @@ impl MapleApp {
                             .iter()
                             .any(|pending| pending.kind == attention.kind)
                     {
-                        // Closing a window before delivery does not consume
+                        // Closing the dialog before delivery does not consume
                         // the warning. A later foreground render can retry it.
+                        // No notify here: it would also retry every frame when
+                        // opening the dialog window failed.
                         this.pending_store_attention.push_front(attention);
-                    } else if response == Ok(0) && attention.retry {
+                        return;
+                    }
+                    if response == Ok(1) && attention.retry {
                         this.retry_persistence(cx);
                     }
                 }
@@ -1090,7 +1095,7 @@ impl MapleApp {
         }
     }
 
-    fn show_about(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+    fn show_about(&mut self, _window: &mut Window, cx: &mut Context<Self>) {
         match &self.screen {
             Screen::Settings(settings) => {
                 settings.update(cx, |settings, cx| settings.show_about(cx))
@@ -1111,23 +1116,23 @@ impl MapleApp {
                         ),
                     ],
                 );
-                drop(window.prompt(
-                    gpui::PromptLevel::Info,
-                    crate::profile::DISPLAY_NAME,
-                    Some(&details),
-                    &[gpui::PromptButton::Ok(tr("native-ok"))],
+                // The answer is deliberately dropped: an informational
+                // dialog needs no response.
+                drop(show_native_dialog(
+                    crate::profile::DISPLAY_NAME.into(),
+                    details,
+                    vec![NativeDialogButton::accent(
+                        "native-about-ok",
+                        tr("native-ok"),
+                    )],
+                    300.,
                     cx,
                 ));
             }
         }
     }
 
-    fn update_action(
-        &mut self,
-        action: crate::update::UpdateAction,
-        window: &mut Window,
-        cx: &mut Context<Self>,
-    ) {
+    fn update_action(&mut self, action: crate::update::UpdateAction, cx: &mut Context<Self>) {
         use crate::update::UpdateAction;
         if self.updater.restart_path().is_some() && action != UpdateAction::Relaunch {
             return;
@@ -1154,7 +1159,6 @@ impl MapleApp {
                 return;
             }
             self.restart_prompt_pending = true;
-            #[cfg(not(target_os = "linux"))]
             let title = self.updater.snapshot().version.as_deref().map_or_else(
                 || tr("update-confirmation-title"),
                 |version| {
@@ -1164,26 +1168,20 @@ impl MapleApp {
                     )
                 },
             );
-            #[cfg(target_os = "linux")]
-            let answer = {
-                let (prompt, answer) = ui::update_confirmation::open(
-                    self.updater.snapshot().version.as_deref(),
-                    window,
-                    cx,
-                );
-                self.restart_confirmation = Some(prompt);
-                cx.notify();
-                answer
-            };
-            #[cfg(not(target_os = "linux"))]
-            let answer = window.prompt(
-                gpui::PromptLevel::Warning,
-                &title,
-                Some(&tr("update-confirmation-detail")),
-                &[
-                    tr("update-confirmation-later").as_ref(),
-                    tr("update-confirmation-restart").as_ref(),
+            let answer = show_native_dialog(
+                title,
+                tr("update-confirmation-detail"),
+                vec![
+                    NativeDialogButton::calm(
+                        "update-confirmation-later",
+                        tr("update-confirmation-later"),
+                    ),
+                    NativeDialogButton::accent(
+                        "update-confirmation-restart",
+                        tr("update-confirmation-restart"),
+                    ),
                 ],
+                300.,
                 cx,
             );
             let controller = self.updater.clone();
@@ -1193,11 +1191,6 @@ impl MapleApp {
                 let accepted = answer.await == Ok(1);
                 let confirmed = this
                     .update(cx, |this, cx| {
-                        #[cfg(target_os = "linux")]
-                        {
-                            this.restart_confirmation = None;
-                            cx.notify();
-                        }
                         if !accepted
                             || !this.store_ready
                             || this.backend.store_state() != maple_agent::store::StoreState::Open
@@ -2418,10 +2411,9 @@ impl Render for MapleApp {
                             .child(
                                 ui::widgets::primary_button("restart-installed-update")
                                     .child(gpui::text!(tr("native-restart")))
-                                    .on_click(cx.listener(|this, _, window, cx| {
+                                    .on_click(cx.listener(|this, _, _, cx| {
                                         this.update_action(
                                             crate::update::UpdateAction::Relaunch,
-                                            window,
                                             cx,
                                         );
                                     })),
@@ -2443,11 +2435,14 @@ impl Render for MapleApp {
                         }
                     }),
             );
-        // The Quit confirmation floats in its own OS window; dim this window
-        // behind it so the prompt reads as on top of the app, with the same
-        // scrim the in-app dialogs use.
-        let quit_prompt_open = cx.try_global::<QuitPromptOpen>().is_some_and(|open| open.0);
-        let root = root.when(quit_prompt_open, |root| {
+        // The Quit confirmation and the native dialogs float in their own OS
+        // windows; dim this window behind them so each reads as on top of
+        // the app, with the same scrim the in-app dialogs use.
+        let dialog_open = cx.try_global::<QuitPromptOpen>().is_some_and(|open| open.0)
+            || cx
+                .try_global::<NativeDialogsOpen>()
+                .is_some_and(|open| open.0 > 0);
+        root.when(dialog_open, |root| {
             root.child(
                 div()
                     .id("quit-scrim")
@@ -2458,10 +2453,7 @@ impl Render for MapleApp {
                     .occlude()
                     .bg(ui::theme::scrim()),
             )
-        });
-        #[cfg(target_os = "linux")]
-        let root = root.children(self.restart_confirmation.clone());
-        root
+        })
     }
 }
 
@@ -3093,6 +3085,341 @@ fn set_quit_prompt_open(open: bool, cx: &mut App) {
         }
     }
 }
+/// One action of a [`NativeDialog`]: the calm choice renders as a quiet
+/// ghost pill and the recovery as the single accent pill, as in the Quit
+/// prompt.
+pub(crate) struct NativeDialogButton {
+    id: &'static str,
+    label: gpui::SharedString,
+    accent: bool,
+}
+
+impl NativeDialogButton {
+    fn calm(id: &'static str, label: gpui::SharedString) -> Self {
+        Self {
+            id,
+            label,
+            accent: false,
+        }
+    }
+    fn accent(id: &'static str, label: gpui::SharedString) -> Self {
+        Self {
+            id,
+            label,
+            accent: true,
+        }
+    }
+}
+
+/// How many [`NativeDialog`] windows are on screen, so the main window dims
+/// behind them with the same scrim the Quit prompt uses.
+struct NativeDialogsOpen(u32);
+impl gpui::Global for NativeDialogsOpen {}
+
+fn set_native_dialogs_open(delta: i32, cx: &mut App) {
+    let open = cx.try_global::<NativeDialogsOpen>().map_or(0, |n| n.0);
+    let next = open.saturating_add_signed(delta);
+    if next != open {
+        if next == 0 {
+            cx.remove_global::<NativeDialogsOpen>();
+        } else {
+            cx.set_global(NativeDialogsOpen(next));
+        }
+        for handle in cx.windows() {
+            let _ = handle.update(cx, |_, window, cx| {
+                if let Some(app) = window.root::<MapleApp>().flatten() {
+                    app.update(cx, |_, cx| cx.notify());
+                }
+            });
+        }
+    }
+}
+
+/// The app's OS alerts, redrawn in the Quit prompt's language: an Array
+/// headline, one plain passage, and the actions as quiet pills in their own
+/// small window, with the main window dimmed behind it. A click answers its
+/// index; closing the window answers nothing, as dismissing the OS alert
+/// did; Escape answers the calm action.
+struct NativeDialog {
+    headline: gpui::SharedString,
+    body: gpui::SharedString,
+    buttons: Vec<NativeDialogButton>,
+    focus: Vec<gpui::FocusHandle>,
+    answer: Option<tokio::sync::oneshot::Sender<usize>>,
+    closing: bool,
+}
+
+impl NativeDialog {
+    fn view(
+        headline: gpui::SharedString,
+        body: gpui::SharedString,
+        buttons: Vec<NativeDialogButton>,
+        answer: Option<tokio::sync::oneshot::Sender<usize>>,
+        window: &mut Window,
+        cx: &mut App,
+    ) -> gpui::Entity<Self> {
+        let focus = buttons.iter().map(|_| cx.focus_handle()).collect();
+        let dialog = cx.new(|_| Self {
+            headline,
+            body,
+            buttons,
+            focus,
+            answer,
+            closing: false,
+        });
+        // Keyboard users land on the calm action, as the OS alert's default
+        // button was the safe one.
+        if let Some(first) = dialog.read(cx).focus.first().cloned() {
+            window.focus(&first, cx);
+        }
+        dialog
+    }
+
+    fn respond(&mut self, index: usize, cx: &mut Context<Self>) {
+        if let Some(answer) = self.answer.take() {
+            let _ = answer.send(index);
+        }
+        self.close(cx);
+    }
+
+    /// Draw one empty frame, then remove the window, the Quit prompt's
+    /// AccessKit-safe close.
+    fn close(&mut self, cx: &mut Context<Self>) {
+        set_native_dialogs_open(-1, cx);
+        self.closing = true;
+        cx.notify();
+    }
+}
+
+impl Render for NativeDialog {
+    fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        if self.closing {
+            window.on_next_frame(|window, _| window.remove_window());
+            return div()
+                .size_full()
+                .bg(gpui::rgb(ui::theme::bg_elevated()))
+                .into_any_element();
+        }
+        let mut actions = div()
+            .mt_4()
+            .flex()
+            .flex_wrap()
+            .items_center()
+            .justify_end()
+            .gap_2();
+        for (index, button) in self.buttons.iter().enumerate() {
+            let focus = self.focus[index].clone();
+            let pill = if button.accent {
+                ui::widgets::primary_button(button.id)
+            } else {
+                ui::widgets::ghost_button(button.id)
+            };
+            actions = actions.child(
+                pill.debug_selector(move || button.id.to_string())
+                    .track_focus(&focus)
+                    .focus_visible(ui::widgets::focus_ring)
+                    .child(gpui::text!(button.label.clone()))
+                    .on_click(cx.listener(move |dialog, _, _, cx| {
+                        dialog.respond(index, cx);
+                    })),
+            );
+        }
+        div()
+            .id("native-dialog")
+            .role(gpui::Role::Dialog)
+            .aria_label(self.headline.clone())
+            .size_full()
+            .flex()
+            .flex_col()
+            .px(px(36.))
+            .pt(px(20.))
+            .pb(px(28.))
+            .bg(gpui::rgb(ui::theme::bg_elevated()))
+            .font_family(crate::assets::FONT_BODY)
+            .text_color(gpui::rgb(ui::theme::text_primary()))
+            .on_key_down(
+                cx.listener(|dialog, event: &gpui::KeyDownEvent, window, cx| {
+                    let focused = dialog
+                        .focus
+                        .iter()
+                        .position(|handle| handle.is_focused(window));
+                    match (event.keystroke.key.as_str(), focused) {
+                        ("escape", _) => dialog.respond(0, cx),
+                        ("tab", Some(current)) => {
+                            let next = (current + 1) % dialog.focus.len();
+                            window.focus(&dialog.focus[next], cx);
+                        }
+                        ("enter" | "space" | " ", Some(current))
+                            if !event.keystroke.modifiers.modified() =>
+                        {
+                            dialog.respond(current, cx);
+                        }
+                        _ => {}
+                    }
+                    cx.stop_propagation();
+                }),
+            )
+            .child(
+                div()
+                    .font_family(crate::assets::FONT_DISPLAY)
+                    .text_size(px(40.))
+                    .line_height(px(42.))
+                    .text_color(gpui::rgb(ui::theme::text_heading()))
+                    .child(gpui::text!(self.headline.clone())),
+            )
+            .child(
+                div()
+                    .id("native-dialog-body")
+                    .mt_4()
+                    .max_w(px(360.))
+                    // A very long passage must not push the actions past the
+                    // window edge; it scrolls within this cap.
+                    .max_h(px(120.))
+                    .overflow_y_scroll()
+                    .text_size(px(15.))
+                    .line_height(px(24.))
+                    .text_color(gpui::rgb(ui::theme::text_secondary()))
+                    .child(gpui::text!(self.body.clone())),
+            )
+            .child(div().flex_1())
+            .child(actions)
+            .into_any_element()
+    }
+}
+
+/// Open a [`NativeDialog`] in its own window and hand back its answer.
+fn show_native_dialog(
+    headline: gpui::SharedString,
+    body: gpui::SharedString,
+    buttons: Vec<NativeDialogButton>,
+    height: f32,
+    cx: &mut App,
+) -> tokio::sync::oneshot::Receiver<usize> {
+    let (sender, receiver) = tokio::sync::oneshot::channel();
+    let bounds = Bounds::centered(None, size(px(520.), px(height)), cx);
+    let opened = cx.open_window(
+        WindowOptions {
+            window_bounds: Some(WindowBounds::Windowed(bounds)),
+            // X11 WM_CLASS and Wayland app_id must match the packaged
+            // desktop entry so this dialog groups with Maple's windows.
+            app_id: Some(crate::profile::BUNDLE_ID.to_string()),
+            titlebar: Some(gpui::TitlebarOptions {
+                title: Some(crate::profile::DISPLAY_NAME.into()),
+                ..Default::default()
+            }),
+            ..Default::default()
+        },
+        |window, cx| {
+            let dialog = NativeDialog::view(headline, body, buttons, Some(sender), window, cx);
+            let closing = dialog.downgrade();
+            window.on_window_should_close(cx, move |_, cx| {
+                // Closing answers nothing, as dismissing the OS alert did.
+                closing.update(cx, |dialog, cx| dialog.close(cx)).is_err()
+            });
+            dialog
+        },
+    );
+    match opened {
+        Ok(_) => set_native_dialogs_open(1, cx),
+        Err(error) => {
+            log::error!("Could not show a native dialog: {error}");
+        }
+    }
+    cx.activate(true);
+    receiver
+}
+
+/// Debug builds (never tests, never release) open one dialog fixture
+/// shortly after launch when MAPLE_DEBUG_NATIVE_DIALOG is set, so states a
+/// live run cannot reach on demand — a save failure, a ready update — can be
+/// captured.
+fn native_dialog_fixture() -> Option<String> {
+    if cfg!(debug_assertions) && !cfg!(test) {
+        std::env::var("MAPLE_DEBUG_NATIVE_DIALOG").ok()
+    } else {
+        None
+    }
+}
+
+fn show_native_dialog_fixture(kind: &str, cx: &mut App) {
+    let (headline, body, buttons): (
+        gpui::SharedString,
+        gpui::SharedString,
+        Vec<NativeDialogButton>,
+    ) = match kind {
+        "attention" => (
+            tr("native-store-attention"),
+            tr("native-save-failed-open"),
+            vec![NativeDialogButton::accent(
+                "native-attention-ok",
+                tr("native-ok"),
+            )],
+        ),
+        "attention-retry" => (
+            tr("native-save-failed"),
+            tr("native-save-failed-open"),
+            vec![
+                NativeDialogButton::calm(
+                    "native-attention-keep-viewing",
+                    tr("native-keep-viewing"),
+                ),
+                NativeDialogButton::accent(
+                    "native-attention-retry-saving",
+                    tr("native-retry-saving"),
+                ),
+            ],
+        ),
+        "about" => (
+            crate::profile::DISPLAY_NAME.into(),
+            tr_args(
+                "native-about-details",
+                [
+                    ("version", TitleBar::version().into()),
+                    (
+                        "status",
+                        ui::settings::presentation::update_label(
+                            &crate::update::Snapshot::initial(),
+                            &ui::i18n::MessageCache::default(),
+                        )
+                        .into(),
+                    ),
+                ],
+            ),
+            vec![NativeDialogButton::accent(
+                "native-about-ok",
+                tr("native-ok"),
+            )],
+        ),
+        "update" => (
+            tr_args(
+                "update-confirmation-title-version",
+                [("version", "0.0.25".into())],
+            ),
+            tr("update-confirmation-detail"),
+            vec![
+                NativeDialogButton::calm(
+                    "update-confirmation-later",
+                    tr("update-confirmation-later"),
+                ),
+                NativeDialogButton::accent(
+                    "update-confirmation-restart",
+                    tr("update-confirmation-restart"),
+                ),
+            ],
+        ),
+        "no-tray" => (
+            tr("native-keep-open-title"),
+            tr("native-no-tray"),
+            vec![
+                NativeDialogButton::calm("native-keep-open-keep", tr("native-keep-open")),
+                NativeDialogButton::accent("native-keep-open-quit", tr("native-quit-maple")),
+            ],
+        ),
+        _ => return,
+    };
+    drop(show_native_dialog(headline, body, buttons, 300., cx));
+}
+
 struct QuitPrompt {
     kind: QuitPromptKind,
     closing: bool,
@@ -3311,14 +3638,20 @@ pub(crate) fn close_window(window: &mut Window, cx: &mut App) {
                             window.remove_window();
                             None
                         } else {
-                            Some(window.prompt(
-                                gpui::PromptLevel::Warning,
-                                &tr("native-keep-open-title"),
-                                Some(&tr("native-no-tray")),
-                                &[
-                                    tr("native-keep-open").as_ref(),
-                                    tr("native-quit-maple").as_ref(),
+                            Some(show_native_dialog(
+                                tr("native-keep-open-title"),
+                                tr("native-no-tray"),
+                                vec![
+                                    NativeDialogButton::calm(
+                                        "native-keep-open-keep",
+                                        tr("native-keep-open"),
+                                    ),
+                                    NativeDialogButton::accent(
+                                        "native-keep-open-quit",
+                                        tr("native-quit-maple"),
+                                    ),
                                 ],
+                                300.,
                                 cx,
                             ))
                         }
@@ -3891,9 +4224,9 @@ fn show_startup_error(error: String) {
 
 fn dispatch_update_action(action: crate::update::UpdateAction, cx: &mut App) {
     for window in cx.windows() {
-        let _ = window.update(cx, |root, window, cx| {
+        let _ = window.update(cx, |root, _window, cx| {
             if let Ok(app) = root.downcast::<MapleApp>() {
-                app.update(cx, |app, cx| app.update_action(action, window, cx));
+                app.update(cx, |app, cx| app.update_action(action, cx));
             }
         });
     }
@@ -4162,8 +4495,6 @@ pub fn run() {
                         settings: root_settings,
                         updater: root_updater,
                         restart_prompt_pending: false,
-                        #[cfg(target_os = "linux")]
-                        restart_confirmation: None,
                         shortcuts: shortcut_runtime,
                         titlebar: cx.new(|_| TitleBar::new(ui::titlebar::WINDOW_TITLE)),
                         plan_check: PlanCheck::default(),
@@ -4211,6 +4542,16 @@ pub fn run() {
                     cx.entity()
                 })
                 .expect("root entity");
+
+            if let Some(kind) = native_dialog_fixture() {
+                cx.spawn(async move |cx| {
+                    cx.background_executor()
+                        .timer(std::time::Duration::from_millis(600))
+                        .await;
+                    cx.update(|cx| show_native_dialog_fixture(&kind, cx));
+                })
+                .detach();
+            }
 
             // Local status is cheap and does not contact the enrollment
             // service. This also notices changes made through the CLI.
@@ -5161,6 +5502,110 @@ mod tests {
 
     use super::*;
 
+    struct NativeDialogHost {
+        dialog: Option<Entity<NativeDialog>>,
+    }
+
+    impl Render for NativeDialogHost {
+        fn render(&mut self, _window: &mut Window, _cx: &mut Context<Self>) -> impl IntoElement {
+            match &self.dialog {
+                Some(dialog) => dialog.clone().into_any_element(),
+                None => div().into_any_element(),
+            }
+        }
+    }
+
+    fn native_dialog_in_window(
+        cx: &mut gpui::TestAppContext,
+    ) -> (
+        Entity<NativeDialogHost>,
+        tokio::sync::oneshot::Receiver<usize>,
+        &mut gpui::VisualTestContext,
+    ) {
+        let answer = std::rc::Rc::new(std::cell::RefCell::new(None));
+        let result = answer.clone();
+        let (host, cx) = cx.add_window_view(move |window, cx| {
+            let (sender, receiver) = tokio::sync::oneshot::channel();
+            let dialog = NativeDialog::view(
+                tr("native-keep-open-title"),
+                tr("native-no-tray"),
+                vec![
+                    NativeDialogButton::calm("native-keep-open-keep", tr("native-keep-open")),
+                    NativeDialogButton::accent("native-keep-open-quit", tr("native-quit-maple")),
+                ],
+                Some(sender),
+                window,
+                cx,
+            );
+            *result.borrow_mut() = Some(receiver);
+            NativeDialogHost {
+                dialog: Some(dialog),
+            }
+        });
+        let receiver = answer.borrow_mut().take().unwrap();
+        (host, receiver, cx)
+    }
+
+    fn native_dialog_window(cx: &mut gpui::TestAppContext) -> gpui::VisualTestContext {
+        let mut found = None;
+        for handle in cx.windows() {
+            let is_dialog = cx.update(|cx| {
+                handle
+                    .update(cx, |_, window, _| {
+                        window.root::<NativeDialog>().flatten().is_some()
+                    })
+                    .unwrap_or(false)
+            });
+            if is_dialog {
+                found = Some(handle);
+                break;
+            }
+        }
+        let handle = found.expect("a native dialog window");
+        gpui::VisualTestContext::from_window(handle, cx)
+    }
+
+    #[gpui::test]
+    fn native_dialog_keyboard_answers_calm_then_accent(cx: &mut gpui::TestAppContext) {
+        let _localization = ui::i18n::TestLocalizationGuard::enable();
+        // Escape and Enter both answer the calm action, which starts
+        // focused, as the OS alert's default button was the safe one.
+        for keystrokes in ["escape", "enter"] {
+            let (_host, mut answer, cx) = native_dialog_in_window(cx);
+            cx.simulate_keystrokes(keystrokes);
+            assert_eq!(answer.try_recv().unwrap(), 0, "{keystrokes}");
+        }
+        // Tab moves to the accent action and Enter answers it.
+        let (_host, mut answer, cx) = native_dialog_in_window(cx);
+        cx.simulate_keystrokes("tab enter");
+        assert_eq!(answer.try_recv().unwrap(), 1);
+    }
+
+    #[gpui::test]
+    fn native_dialog_click_answers_the_clicked_pill(cx: &mut gpui::TestAppContext) {
+        let _localization = ui::i18n::TestLocalizationGuard::enable();
+        let (_host, mut answer, cx) = native_dialog_in_window(cx);
+        let quit = cx.debug_bounds("native-keep-open-quit").unwrap();
+        let center = quit.center() - gpui::point(px(0.), px(0.));
+        cx.simulate_click(center, gpui::Modifiers::default());
+        assert_eq!(answer.try_recv().unwrap(), 1);
+    }
+
+    #[gpui::test]
+    fn closing_the_native_dialog_answers_nothing(cx: &mut gpui::TestAppContext) {
+        let _localization = ui::i18n::TestLocalizationGuard::enable();
+        let (host, mut answer, cx) = native_dialog_in_window(cx);
+        host.update(cx, |host, cx| {
+            let dialog = host.dialog.take().unwrap();
+            dialog.update(cx, |dialog, cx| dialog.close(cx));
+        });
+        cx.run_until_parked();
+        assert_eq!(
+            answer.try_recv(),
+            Err(tokio::sync::oneshot::error::TryRecvError::Closed)
+        );
+    }
+
     #[gpui::test]
     fn scratch_first_send_survives_same_computer_navigation_but_not_a_switch(
         cx: &mut gpui::TestAppContext,
@@ -5306,8 +5751,6 @@ mod tests {
                 settings,
                 updater: crate::update::Controller::new(true),
                 restart_prompt_pending: false,
-                #[cfg(target_os = "linux")]
-                restart_confirmation: None,
                 shortcuts,
                 titlebar: cx.new(|_| TitleBar::new(ui::titlebar::WINDOW_TITLE)),
                 plan_check: PlanCheck::default(),
@@ -5681,21 +6124,34 @@ mod tests {
             assert_eq!(app.pending_store_attention.len(), 2);
             assert!(!app.store_attention_open);
         });
-        assert!(!cx.has_pending_prompt());
+        // No window is open yet, so the queued warnings wait.
+        assert!(cx.windows().is_empty());
         let (_host, cx) = cx.add_window_view(|_, _| AppHost(app.clone()));
         cx.run_until_parked();
-        assert!(cx.has_pending_prompt());
-        let (title, detail) = cx.pending_prompt().expect("local-data dialog");
-        assert_eq!(title, "Local data needs attention");
-        assert!(detail.contains("both passwords"));
-        cx.simulate_prompt_answer("OK");
+        // The completion notice is a plain attention dialog: one OK pill.
+        let mut dialog = native_dialog_window(cx);
+        dialog.update(|window, cx| {
+            let dialog = window.root::<NativeDialog>().flatten().unwrap();
+            let dialog = dialog.read(cx);
+            assert_eq!(dialog.headline.as_ref(), "Local data needs attention");
+            assert!(dialog.body.as_ref().contains("both passwords"));
+        });
+        dialog.simulate_keystrokes("enter");
         cx.run_until_parked();
-        let (title, detail) = cx
-            .pending_prompt()
-            .expect("independent save-failure dialog");
-        assert_eq!(title, "Maple couldn't save local data");
-        assert!(detail.contains("disk is full"));
-        cx.simulate_prompt_answer("Keep viewing");
+        // The answered dialog empties a frame before its window goes.
+        let mut closing = native_dialog_window(cx);
+        closing.update(|window, cx| window.simulate_next_frame(cx));
+        cx.run_until_parked();
+        // The save failure is next, with calm-first pills.
+        let mut dialog = native_dialog_window(cx);
+        dialog.update(|window, cx| {
+            let dialog = window.root::<NativeDialog>().flatten().unwrap();
+            let dialog = dialog.read(cx);
+            assert_eq!(dialog.headline.as_ref(), "Maple couldn't save local data");
+            assert!(dialog.body.as_ref().contains("disk is full"));
+        });
+        // Enter answers the focused calm pill: keep viewing.
+        dialog.simulate_keystrokes("enter");
         cx.run_until_parked();
         app.update(cx, |app, _| {
             assert!(app.pending_store_attention.is_empty());
@@ -5737,8 +6193,10 @@ mod tests {
             );
         });
         cx.run_until_parked();
-        assert!(cx.has_pending_prompt());
-        cx.simulate_prompt_answer("Keep viewing");
+        // The failure opens a dialog; Enter answers the focused calm pill
+        // (keep viewing), which returns to the chat banner.
+        let mut dialog = native_dialog_window(cx);
+        dialog.simulate_keystrokes("enter");
         cx.run_until_parked();
         assert!(cx.debug_bounds("chat-persistence-feedback").is_some());
         assert!(cx.debug_bounds("retry-local-store-persistence").is_some());

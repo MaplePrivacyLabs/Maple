@@ -455,7 +455,6 @@ fn converted_modules_do_not_reintroduce_inline_labels() {
     let mut visitor = UiStrings::default();
     visitor.visit_file(&syn::parse_file(include_str!("../timeline_labels.rs")).unwrap());
     visitor.visit_file(&syn::parse_file(include_str!("../host_errors.rs")).unwrap());
-    visitor.visit_file(&syn::parse_file(include_str!("../update_confirmation.rs")).unwrap());
     visitor.visit_file(&syn::parse_file(include_str!("../settings/general.rs")).unwrap());
     visitor.visit_file(&syn::parse_file(include_str!("../settings.rs")).unwrap());
     visitor.visit_file(&syn::parse_file(include_str!("../settings/account.rs")).unwrap());
