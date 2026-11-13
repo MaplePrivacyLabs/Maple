@@ -3891,9 +3891,15 @@ struct GuardedStartupFailure(Entity<StartupError>);
 fn startup_error_status_target(
     bounds: Size<Pixels>,
     has_status: bool,
-    grown: bool,
+    handled: &mut bool,
 ) -> Option<Size<Pixels>> {
-    if !has_status || grown || bounds.height >= px(480.) {
+    if !has_status || *handled {
+        return None;
+    }
+    // Consume the first status even if the window is already tall enough.
+    // A later user resize must not turn it into a fresh growth request.
+    *handled = true;
+    if bounds.height >= px(480.) {
         return None;
     }
     Some(size(bounds.width, px(480.)))
@@ -4089,9 +4095,8 @@ impl Render for StartupError {
         if let Some(target) = startup_error_status_target(
             window.bounds().size,
             self.localized_message.is_some(),
-            self.grown_for_status,
+            &mut self.grown_for_status,
         ) {
-            self.grown_for_status = true;
             window.resize(target);
         }
         // The startup failure in the Quit prompt's language: a display
@@ -5623,6 +5628,7 @@ mod tests {
 
     #[test]
     fn startup_error_status_target_grows_once_for_a_status_and_preserves_width() {
+        let mut narrow_handled = false;
         // A status replaces the failure: grow once, preserving the width.
         let narrow = super::startup_error_status_target(
             gpui::Size {
@@ -5630,7 +5636,7 @@ mod tests {
                 height: px(440.),
             },
             true,
-            false,
+            &mut narrow_handled,
         );
         assert_eq!(
             narrow,
@@ -5640,13 +5646,14 @@ mod tests {
             })
         );
         // A user's widen survives the growth.
+        let mut widened_handled = false;
         let widened = super::startup_error_status_target(
             gpui::Size {
                 width: px(700.),
                 height: px(440.),
             },
             true,
-            false,
+            &mut widened_handled,
         );
         assert_eq!(
             widened,
@@ -5656,15 +5663,17 @@ mod tests {
             })
         );
         // No status, no growth: the failure-only window already fits.
+        let mut plain_handled = false;
         let plain = super::startup_error_status_target(
             gpui::Size {
                 width: px(600.),
                 height: px(440.),
             },
             false,
-            false,
+            &mut plain_handled,
         );
         assert_eq!(plain, None);
+        assert!(!plain_handled);
         // Once grown, never again: a later shrink is the user's choice.
         let regrown = super::startup_error_status_target(
             gpui::Size {
@@ -5672,19 +5681,32 @@ mod tests {
                 height: px(300.),
             },
             true,
-            true,
+            &mut narrow_handled,
         );
         assert_eq!(regrown, None);
         // The guarded 520px window already fits the status stack.
+        let mut tall_handled = false;
         let tall = super::startup_error_status_target(
             gpui::Size {
                 width: px(640.),
                 height: px(520.),
             },
             true,
-            false,
+            &mut tall_handled,
         );
         assert_eq!(tall, None);
+        // Its first status is consumed too: a later user shrink stays put.
+        assert_eq!(
+            super::startup_error_status_target(
+                gpui::Size {
+                    width: px(640.),
+                    height: px(300.),
+                },
+                true,
+                &mut tall_handled,
+            ),
+            None
+        );
     }
 
     #[gpui::test]
