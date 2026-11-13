@@ -658,7 +658,7 @@ ignored. See [build profiles](docs/release-profiles.md).
 | `MAPLE_DISABLE_UPDATE_CHECK` | `1` turns Agent update checks off. | unset |
 | `RUST_LOG` | Log filter. | `info` |
 
-Settings → General → Language offers System, English, Español and Deutsch.
+Settings → General → Language offers System, English, Español, Deutsch and 한국어.
 Language changes apply immediately and are saved locally. The system locale is
 used before the local store is unlocked. See [localization](docs/localization.md)
 for coverage and platform validation requirements.
