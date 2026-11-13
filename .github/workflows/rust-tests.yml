@@ -39,14 +39,14 @@ jobs:
     runs-on: blacksmith-8vcpu-ubuntu-2404
     timeout-minutes: 30
     steps:
-      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # was v4
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
 
       - name: Install Nix
-        uses: DeterminateSystems/determinate-nix-action@96c5ee93a9dddf2830d31e1da6ec719077336c28 # v3.23.3
+        uses: DeterminateSystems/determinate-nix-action@16f94ba7aae399b9f9077c254b6719ec6de7e3e3 # v3.24.2
         with:
-          source-tag: v3.23.3
+          source-tag: v3.24.2
           github-token: ""
           # HTTP/2 stream resets from cache.nixos.org make Nix resume past
           # the end of a NAR (HTTP 416); HTTP/1.1 avoids the resets.
@@ -56,7 +56,7 @@ jobs:
         run: bash scripts/ci/verify-nix-runtime.sh
 
       - name: Cache sccache and Cargo downloads
-        uses: actions/cache@0057852bfaa89a56745cba8c7296529d2fc39830 # was v4
+        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
         with:
           key: ci-v2-research-rust-${{ hashFiles('apps/maple-research/frontend/src-tauri/Cargo.lock', 'flake.lock') }}
           restore-keys: ci-v2-research-rust-

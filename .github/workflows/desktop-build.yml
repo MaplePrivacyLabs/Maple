@@ -23,7 +23,7 @@ jobs:
       attestations: write
       artifact-metadata: write
     steps:
-      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # was v4
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
 
@@ -31,9 +31,9 @@ jobs:
         run: python3 scripts/ci/select-xcode.py
 
       - name: Install Nix
-        uses: DeterminateSystems/determinate-nix-action@96c5ee93a9dddf2830d31e1da6ec719077336c28 # v3.23.3
+        uses: DeterminateSystems/determinate-nix-action@16f94ba7aae399b9f9077c254b6719ec6de7e3e3 # v3.24.2
         with:
-          source-tag: v3.23.3
+          source-tag: v3.24.2
           github-token: ""
           # HTTP/2 stream resets from cache.nixos.org make Nix resume past
           # the end of a NAR (HTTP 416); HTTP/1.1 avoids the resets.
@@ -43,7 +43,7 @@ jobs:
         run: bash scripts/ci/verify-nix-runtime.sh
 
       - name: Cache sccache
-        uses: actions/cache@0057852bfaa89a56745cba8c7296529d2fc39830 # was v4
+        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
         with:
           path: ~/Library/Caches/Mozilla.sccache
           key: ${{ runner.os }}-sccache-macos-release-${{ hashFiles('apps/maple-research/frontend/src-tauri/Cargo.lock') }}
@@ -78,13 +78,13 @@ jobs:
       - name: Attest macOS release artifacts
         # Keep uploads/verifiers running if GitHub token policy rejects artifact attestation.
         continue-on-error: true
-        uses: actions/attest@281a49d4cbb0a72c9575a50d18f6deb515a11deb # was v4
+        uses: actions/attest@1e69f48acb82d1966a394da916b4c1698aa569d6 # v4.2.2
         with:
           subject-checksums: desktop-macos-artifacts.sha256
 
       - name: Upload macOS Build
         if: always()
-        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # was v4
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: maple-macos-universal
           path: |
@@ -108,14 +108,14 @@ jobs:
       attestations: write
       artifact-metadata: write
     steps:
-      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # was v4
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
 
       - name: Install Nix
-        uses: DeterminateSystems/determinate-nix-action@96c5ee93a9dddf2830d31e1da6ec719077336c28 # v3.23.3
+        uses: DeterminateSystems/determinate-nix-action@16f94ba7aae399b9f9077c254b6719ec6de7e3e3 # v3.24.2
         with:
-          source-tag: v3.23.3
+          source-tag: v3.24.2
           github-token: ""
           # HTTP/2 stream resets from cache.nixos.org make Nix resume past
           # the end of a NAR (HTTP 416); HTTP/1.1 avoids the resets.
@@ -125,7 +125,7 @@ jobs:
         run: bash scripts/ci/verify-nix-runtime.sh
 
       - name: Cache sccache
-        uses: actions/cache@0057852bfaa89a56745cba8c7296529d2fc39830 # was v4
+        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
         with:
           path: ~/.cache/sccache
           key: ${{ runner.os }}-sccache-linux-release-${{ hashFiles('apps/maple-research/frontend/src-tauri/Cargo.lock') }}
@@ -169,12 +169,12 @@ jobs:
       - name: Attest Linux release artifacts
         # Keep uploads/verifiers running if GitHub token policy rejects artifact attestation.
         continue-on-error: true
-        uses: actions/attest@281a49d4cbb0a72c9575a50d18f6deb515a11deb # was v4
+        uses: actions/attest@1e69f48acb82d1966a394da916b4c1698aa569d6 # v4.2.2
         with:
           subject-checksums: desktop-linux-artifacts.sha256
 
       - name: Upload Linux Builds
-        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # was v4
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: maple-linux
           path: |
@@ -195,14 +195,14 @@ jobs:
     permissions:
       contents: read
     steps:
-      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # was v4
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
 
       - name: Install Nix
-        uses: DeterminateSystems/determinate-nix-action@96c5ee93a9dddf2830d31e1da6ec719077336c28 # v3.23.3
+        uses: DeterminateSystems/determinate-nix-action@16f94ba7aae399b9f9077c254b6719ec6de7e3e3 # v3.24.2
         with:
-          source-tag: v3.23.3
+          source-tag: v3.24.2
           github-token: ""
           # HTTP/2 stream resets from cache.nixos.org make Nix resume past
           # the end of a NAR (HTTP 416); HTTP/1.1 avoids the resets.
@@ -212,7 +212,7 @@ jobs:
         run: bash scripts/ci/verify-nix-runtime.sh
 
       - name: Download Linux desktop artifacts
-        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # was v4
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
         with:
           name: maple-linux
           path: artifacts
@@ -228,14 +228,14 @@ jobs:
     permissions:
       contents: read
     steps:
-      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # was v4
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
 
       - name: Install Nix
-        uses: DeterminateSystems/determinate-nix-action@96c5ee93a9dddf2830d31e1da6ec719077336c28 # v3.23.3
+        uses: DeterminateSystems/determinate-nix-action@16f94ba7aae399b9f9077c254b6719ec6de7e3e3 # v3.24.2
         with:
-          source-tag: v3.23.3
+          source-tag: v3.24.2
           github-token: ""
           # HTTP/2 stream resets from cache.nixos.org make Nix resume past
           # the end of a NAR (HTTP 416); HTTP/1.1 avoids the resets.
@@ -245,7 +245,7 @@ jobs:
         run: bash scripts/ci/verify-nix-runtime.sh
 
       - name: Download macOS desktop artifacts
-        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # was v4
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
         with:
           name: maple-macos-universal
           path: artifacts
@@ -269,12 +269,12 @@ jobs:
       MAPLE_WINDOWS_ARTIFACT_SIGNING_ACCOUNT_NAME: ${{ secrets.AZURE_ARTIFACT_SIGNING_ACCOUNT_NAME }}
       MAPLE_WINDOWS_ARTIFACT_SIGNING_CERTIFICATE_PROFILE_NAME: ${{ secrets.AZURE_ARTIFACT_SIGNING_CERTIFICATE_PROFILE_NAME }}
     steps:
-      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # was v4
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
 
       - name: Setup Bun
-        uses: oven-sh/setup-bun@f4d14e03ff726c06358e5557344e1da148b56cf7 # was v1
+        uses: oven-sh/setup-bun@0c5077e51419868618aeaa5fe8019c62421857d6 # v2.2.0
         with:
           bun-version: 1.3.5
 
@@ -297,7 +297,7 @@ jobs:
         run: ./scripts/ci/desktop-windows-release.sh unsigned-bundle
 
       - name: Azure login for Artifact Signing
-        uses: azure/login@2dd0bbf4064d5a1812889dc200bb8eed2597f82a # was v3
+        uses: azure/login@a641126d1b8aa4d1fa005f4f92df94a3a4c4c906 # v3.1.0
         with:
           client-id: ${{ secrets.AZURE_CLIENT_ID }}
           tenant-id: ${{ secrets.AZURE_TENANT_ID }}
@@ -333,12 +333,12 @@ jobs:
           cat desktop-windows-artifacts.sha256
 
       - name: Attest Windows release artifacts
-        uses: actions/attest@281a49d4cbb0a72c9575a50d18f6deb515a11deb # was v4
+        uses: actions/attest@1e69f48acb82d1966a394da916b4c1698aa569d6 # v4.2.2
         with:
           subject-checksums: desktop-windows-artifacts.sha256
 
       - name: Upload Windows Build
-        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # was v4
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: maple-windows-x64
           path: |
@@ -355,14 +355,14 @@ jobs:
     permissions:
       contents: read
     steps:
-      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # was v4
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
 
       - name: Install Nix
-        uses: DeterminateSystems/determinate-nix-action@96c5ee93a9dddf2830d31e1da6ec719077336c28 # v3.23.3
+        uses: DeterminateSystems/determinate-nix-action@16f94ba7aae399b9f9077c254b6719ec6de7e3e3 # v3.24.2
         with:
-          source-tag: v3.23.3
+          source-tag: v3.24.2
           github-token: ""
           # HTTP/2 stream resets from cache.nixos.org make Nix resume past
           # the end of a NAR (HTTP 416); HTTP/1.1 avoids the resets.
@@ -372,7 +372,7 @@ jobs:
         run: bash scripts/ci/verify-nix-runtime.sh
 
       - name: Download Windows desktop artifacts
-        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # was v4
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
         with:
           name: maple-windows-x64
           path: artifacts

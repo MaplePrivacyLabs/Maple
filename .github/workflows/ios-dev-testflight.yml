@@ -48,7 +48,7 @@ jobs:
       artifact_name: maple-ios-dev-${{ github.run_id }}-${{ steps.identity.outputs.build_number }}
     steps:
       - name: Checkout exact master event commit
-        uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4.3.1
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           ref: ${{ github.sha }}
           persist-credentials: false
@@ -68,9 +68,9 @@ jobs:
         run: python3 scripts/ci/select-xcode.py
 
       - name: Install Nix
-        uses: DeterminateSystems/determinate-nix-action@96c5ee93a9dddf2830d31e1da6ec719077336c28 # v3.23.3
+        uses: DeterminateSystems/determinate-nix-action@16f94ba7aae399b9f9077c254b6719ec6de7e3e3 # v3.24.2
         with:
-          source-tag: v3.23.3
+          source-tag: v3.24.2
           github-token: ""
           # HTTP/2 stream resets from cache.nixos.org make Nix resume past
           # the end of a NAR (HTTP 416); HTTP/1.1 avoids the resets.
@@ -87,7 +87,7 @@ jobs:
             maple-dev-xcode${{ steps.select_xcode.outputs.version }}-${{ steps.select_xcode.outputs.build }}-
 
       - name: Cache ONNX Runtime iOS artifact
-        uses: actions/cache@0057852bfaa89a56745cba8c7296529d2fc39830 # v4
+        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
         with:
           path: apps/maple-research/frontend/src-tauri/onnxruntime-ios
           key: release-onnxruntime-ios-artifact-1.23.2-xcode${{ steps.select_xcode.outputs.version }}-${{ steps.select_xcode.outputs.build }}-${{ hashFiles('flake.lock', 'flake.nix', 'scripts/ci/apple-toolchain.json', 'scripts/ci/select-xcode.py', 'scripts/ci/_common.sh', 'scripts/ci/ios-onnxruntime.sh', 'apps/maple-research/frontend/src-tauri/scripts/build-ios-onnxruntime-all.sh', 'apps/maple-research/frontend/src-tauri/scripts/canonicalize-static-archive.py', 'apps/maple-research/frontend/src-tauri/scripts/onnxruntime-pins.sh') }}
@@ -124,12 +124,12 @@ jobs:
         # As in the production lane, token-policy failures do not bypass the
         # independent artifact and profile verification before TestFlight upload.
         continue-on-error: true
-        uses: actions/attest@281a49d4cbb0a72c9575a50d18f6deb515a11deb # v4
+        uses: actions/attest@1e69f48acb82d1966a394da916b4c1698aa569d6 # v4.2.2
         with:
           subject-checksums: ios-dev-artifacts.sha256
 
       - name: Upload Maple Dev artifact and proofs
-        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: maple-ios-dev-${{ github.run_id }}-${{ steps.identity.outputs.build_number }}
           path: |
@@ -156,7 +156,7 @@ jobs:
       MAPLE_IOS_DEV_AUTH_ORIGIN: ${{ vars.MAPLE_IOS_DEV_AUTH_ORIGIN }}
     steps:
       - name: Checkout exact verifier commit
-        uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4.3.1
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           ref: ${{ github.sha }}
           persist-credentials: false
@@ -165,9 +165,9 @@ jobs:
         run: python3 scripts/ci/select-xcode.py
 
       - name: Install Nix
-        uses: DeterminateSystems/determinate-nix-action@96c5ee93a9dddf2830d31e1da6ec719077336c28 # v3.23.3
+        uses: DeterminateSystems/determinate-nix-action@16f94ba7aae399b9f9077c254b6719ec6de7e3e3 # v3.24.2
         with:
-          source-tag: v3.23.3
+          source-tag: v3.24.2
           github-token: ""
           # HTTP/2 stream resets from cache.nixos.org make Nix resume past
           # the end of a NAR (HTTP 416); HTTP/1.1 avoids the resets.
@@ -177,7 +177,7 @@ jobs:
         run: bash scripts/ci/verify-nix-runtime.sh
 
       - name: Download this build's Maple Dev artifact
-        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
         with:
           name: ${{ needs.build-ios-dev.outputs.artifact_name }}
           path: artifacts

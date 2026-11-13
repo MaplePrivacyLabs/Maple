@@ -225,8 +225,8 @@ and the [cache policy](../services/opensecret/docs/nitro-deploy.md#binary-caches
 
 ## Nix runtime
 
-Jobs install Determinate Nix 3.23.3 through an immutable
-`DeterminateSystems/determinate-nix-action` commit with `source-tag: v3.23.3`
+Jobs install Determinate Nix 3.24.2 through an immutable
+`DeterminateSystems/determinate-nix-action` commit with `source-tag: v3.24.2`
 (`.github/actions/setup-nix`, or inline in the sacred workflows), then run
 `scripts/ci/verify-nix-runtime.sh`. Keep the revision and tag in step when
 upgrading. No GitHub token reaches the installer; FlakeHub authentication is

@@ -54,7 +54,7 @@ jobs:
       nix: ${{ steps.plan.outputs.nix }}
       windows: ${{ steps.plan.outputs.windows }}
     steps:
-      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           fetch-depth: 0
           filter: blob:none
@@ -82,7 +82,7 @@ jobs:
     runs-on: ${{ matrix.runner }}
     timeout-minutes: ${{ matrix.timeout }}
     steps:
-      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
           # OpenSecret's flake reads its submodule, which Nix fetches only with full history.
@@ -97,7 +97,7 @@ jobs:
         run: python3 scripts/ci/select-xcode.py
       - name: Restore master's Research Rust cache (read-only)
         if: matrix.restore == 'research-rust'
-        uses: actions/cache/restore@0057852bfaa89a56745cba8c7296529d2fc39830 # v4
+        uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
         with:
           # Exactly rust-tests.yml's key and paths; it is the only writer. Its Cargo git
           # database spares the PDFOxide fetch Cargo makes for every target.
@@ -111,7 +111,7 @@ jobs:
       - name: Rust cache (restore everywhere, save only on master and in the lane's home store)
         id: rust-cache
         if: matrix.cache != ''
-        uses: Swatinem/rust-cache@e18b497796c12c097a38f9edb9d0641fb99eee32 # v2
+        uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
         with:
           prefix-key: ci-v2
           # Restore key: the prefix, the shared key (the lane and its toolchain pins,
@@ -154,14 +154,14 @@ jobs:
       run:
         shell: bash
     steps:
-      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
       - uses: ./.github/actions/setup-agent-windows
       - name: Rust cache (restore everywhere, save only on master and in the lane's home store)
         id: rust-cache
         if: matrix.cache != ''
-        uses: Swatinem/rust-cache@e18b497796c12c097a38f9edb9d0641fb99eee32 # v2
+        uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
         with:
           # Keys as in the nix job: a lockfile change restores by prefix.
           prefix-key: ci-v2
@@ -195,13 +195,13 @@ jobs:
     runs-on: ${{ vars.CI_LINUX_RUNNER || 'blacksmith-8vcpu-ubuntu-2404' }}
     timeout-minutes: 60
     steps:
-      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
       - uses: ./.github/actions/setup-nix
       - name: Restore the packaging rehearsal cache
         id: package-cache
-        uses: actions/cache/restore@0057852bfaa89a56745cba8c7296529d2fc39830 # v4
+        uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
         with:
           # Thin-LTO release artifacts; master's fat-LTO cache cannot serve them.
           key: ci-v1-agent-package-${{ runner.os }}-${{ hashFiles('apps/maple-agent/flake.lock', 'apps/maple-agent/Cargo.lock') }}
@@ -215,7 +215,7 @@ jobs:
         run: python3 scripts/ci/plan.py run agent-package-linux
       - name: Save the packaging rehearsal cache (nightly, Blacksmith only)
         if: ${{ github.ref == 'refs/heads/master' && github.event_name == 'schedule' && startsWith(runner.name, 'blacksmith') && steps.package-cache.outputs.cache-hit != 'true' }}
-        uses: actions/cache/save@0057852bfaa89a56745cba8c7296529d2fc39830 # v4
+        uses: actions/cache/save@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
         with:
           key: ${{ steps.package-cache.outputs.cache-primary-key }}
           path: |
@@ -224,7 +224,7 @@ jobs:
             ~/.cargo/git/db
             apps/maple-agent/target
       - name: Upload the unsigned package
-        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: maple-agent-dev-linux-x86_64-unsigned-${{ github.run_id }}
           path: apps/maple-agent/dist/dev/
@@ -240,7 +240,7 @@ jobs:
     runs-on: xcode-27
     timeout-minutes: 15
     steps:
-      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
       - name: Select pinned Xcode
@@ -254,7 +254,7 @@ jobs:
     runs-on: ${{ vars.CI_MACOS_RUNNER || 'blacksmith-6vcpu-macos-27' }}
     timeout-minutes: 60
     steps:
-      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
       - uses: ./.github/actions/setup-nix
@@ -263,7 +263,7 @@ jobs:
       - uses: ./.github/actions/import-metal-toolchain
       - name: Restore the packaging rehearsal cache
         id: package-cache
-        uses: actions/cache/restore@0057852bfaa89a56745cba8c7296529d2fc39830 # v4
+        uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
         with:
           # Thin-LTO release artifacts; master's fat-LTO cache cannot serve them.
           # The Xcode pin leads, so a prefix restore never brings back another SDK's objects.
@@ -278,7 +278,7 @@ jobs:
         run: python3 scripts/ci/plan.py run agent-package-macos
       - name: Save the packaging rehearsal cache (nightly, Blacksmith only)
         if: ${{ github.ref == 'refs/heads/master' && github.event_name == 'schedule' && startsWith(runner.name, 'blacksmith') && steps.package-cache.outputs.cache-hit != 'true' }}
-        uses: actions/cache/save@0057852bfaa89a56745cba8c7296529d2fc39830 # v4
+        uses: actions/cache/save@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
         with:
           key: ${{ steps.package-cache.outputs.cache-primary-key }}
           path: |
@@ -287,7 +287,7 @@ jobs:
             ~/.cargo/git/db
             apps/maple-agent/target
       - name: Upload the unsigned package
-        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: maple-agent-dev-macos-aarch64-unsigned-${{ github.run_id }}
           path: apps/maple-agent/dist/dev/
@@ -304,7 +304,7 @@ jobs:
       run:
         shell: bash
     steps:
-      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
       - uses: ./.github/actions/setup-agent-windows
@@ -312,7 +312,7 @@ jobs:
           release: "true"
       - name: Restore the packaging rehearsal cache
         id: package-cache
-        uses: actions/cache/restore@0057852bfaa89a56745cba8c7296529d2fc39830 # v4
+        uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
         with:
           # Thin-LTO release artifacts; master's fat-LTO cache cannot serve them.
           key: ci-v1-agent-package-${{ runner.os }}-${{ hashFiles('apps/maple-agent/flake.lock', 'apps/maple-agent/Cargo.lock') }}
@@ -326,7 +326,7 @@ jobs:
         run: python3 scripts/ci/plan.py run agent-package-windows
       - name: Save the packaging rehearsal cache (nightly, GitHub's runners only)
         if: ${{ github.ref == 'refs/heads/master' && github.event_name == 'schedule' && !startsWith(runner.name, 'blacksmith') && steps.package-cache.outputs.cache-hit != 'true' }}
-        uses: actions/cache/save@0057852bfaa89a56745cba8c7296529d2fc39830 # v4
+        uses: actions/cache/save@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
         with:
           key: ${{ steps.package-cache.outputs.cache-primary-key }}
           path: |
@@ -335,7 +335,7 @@ jobs:
             ~/.cargo/git/db
             apps/maple-agent/target
       - name: Upload the unsigned package
-        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: maple-agent-dev-windows-x86_64-unsigned-${{ github.run_id }}
           path: apps/maple-agent/dist/dev/
@@ -353,7 +353,7 @@ jobs:
       run:
         shell: bash
     steps:
-      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
       - uses: ./.github/actions/setup-agent-windows
@@ -362,7 +362,7 @@ jobs:
           architecture: aarch64
       - name: Restore the packaging rehearsal cache
         id: package-cache
-        uses: actions/cache/restore@0057852bfaa89a56745cba8c7296529d2fc39830 # v4
+        uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
         with:
           # ARM64 leads, so neither this family nor the x64 Windows one
           # (ci-v1-agent-package-Windows-) restores the other's objects by prefix.
@@ -377,7 +377,7 @@ jobs:
         run: python3 scripts/ci/plan.py run agent-package-windows-arm64
       - name: Save the packaging rehearsal cache (nightly)
         if: ${{ github.ref == 'refs/heads/master' && github.event_name == 'schedule' && steps.package-cache.outputs.cache-hit != 'true' }}
-        uses: actions/cache/save@0057852bfaa89a56745cba8c7296529d2fc39830 # v4
+        uses: actions/cache/save@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
         with:
           key: ${{ steps.package-cache.outputs.cache-primary-key }}
           path: |
@@ -386,7 +386,7 @@ jobs:
             ~/.cargo/git/db
             apps/maple-agent/target
       - name: Upload the unsigned native ARM64 installer
-        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: maple-agent-dev-windows-aarch64-unsigned-${{ github.run_id }}
           path: apps/maple-agent/dist/dev/
@@ -401,12 +401,12 @@ jobs:
     runs-on: ${{ vars.CI_LINUX_RUNNER || 'blacksmith-8vcpu-ubuntu-2404' }}
     timeout-minutes: 45
     steps:
-      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
       - uses: ./.github/actions/setup-nix
       - name: Restore master's Research Rust cache (read-only)
-        uses: actions/cache/restore@0057852bfaa89a56745cba8c7296529d2fc39830 # v4
+        uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
         with:
           # Exactly rust-tests.yml's key and paths; it is the only writer.
           key: ci-v2-research-rust-${{ hashFiles('apps/maple-research/frontend/src-tauri/Cargo.lock', 'flake.lock') }}
@@ -428,7 +428,7 @@ jobs:
     runs-on: ${{ vars.CI_MACOS_RUNNER || 'blacksmith-6vcpu-macos-27' }}
     timeout-minutes: 120 # a missed ONNX Runtime cache builds it from source
     steps:
-      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
       - name: Select pinned Xcode
@@ -436,7 +436,7 @@ jobs:
         run: python3 scripts/ci/select-xcode.py
       - uses: ./.github/actions/setup-nix
       - name: Restore master's ONNX Runtime iOS artifact (read-only)
-        uses: actions/cache/restore@0057852bfaa89a56745cba8c7296529d2fc39830 # v4
+        uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
         with:
           path: |
             apps/maple-research/frontend/src-tauri/onnxruntime-ios
@@ -446,7 +446,7 @@ jobs:
       - name: Build the iOS simulator app
         run: python3 scripts/ci/plan.py run research-ios
       - name: Upload the simulator app
-        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: maple-ios-simulator-pr
           path: |
@@ -461,14 +461,14 @@ jobs:
     runs-on: ${{ vars.CI_MACOS_RUNNER || 'blacksmith-6vcpu-macos-27' }}
     timeout-minutes: 45
     steps:
-      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
       - name: Select pinned Xcode
         run: python3 scripts/ci/select-xcode.py
       - uses: ./.github/actions/setup-nix
       - name: Restore master's macOS sccache (read-only)
-        uses: actions/cache/restore@0057852bfaa89a56745cba8c7296529d2fc39830 # v4
+        uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
         with:
           path: ~/Library/Caches/Mozilla.sccache
           key: ${{ runner.os }}-sccache-macos-release-${{ hashFiles('apps/maple-research/frontend/src-tauri/Cargo.lock') }}
@@ -476,7 +476,7 @@ jobs:
       - name: Build the unsigned universal app and DMG
         run: python3 scripts/ci/plan.py run research-desktop-macos
       - name: Upload the unsigned app
-        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: maple-macos-universal-pr
           path: |
@@ -493,12 +493,12 @@ jobs:
     runs-on: ${{ vars.CI_LINUX_RUNNER || 'blacksmith-8vcpu-ubuntu-2404' }}
     timeout-minutes: 45
     steps:
-      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
       - uses: ./.github/actions/setup-nix
       - name: Restore master's Linux sccache (read-only)
-        uses: actions/cache/restore@0057852bfaa89a56745cba8c7296529d2fc39830 # v4
+        uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
         with:
           path: ~/.cache/sccache
           key: ${{ runner.os }}-sccache-linux-release-${{ hashFiles('apps/maple-research/frontend/src-tauri/Cargo.lock') }}
@@ -515,7 +515,7 @@ jobs:
       - name: Build unsigned packages with fake updater signatures
         run: python3 scripts/ci/plan.py run research-desktop-linux
       - name: Upload the packages
-        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: maple-linux-pr
           path: |
@@ -541,10 +541,10 @@ jobs:
       run:
         shell: bash
     steps:
-      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
-      - uses: oven-sh/setup-bun@f4d14e03ff726c06358e5557344e1da148b56cf7 # v1
+      - uses: oven-sh/setup-bun@0c5077e51419868618aeaa5fe8019c62421857d6 # v2.2.0
         with:
           bun-version: 1.3.5
           no-cache: true # its post step would save the binary from a pull request
@@ -554,7 +554,7 @@ jobs:
       - name: Build the unsigned installer and verify its proofs
         run: python3 scripts/ci/plan.py run research-desktop-windows
       - name: Upload the installer and its proofs
-        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: maple-windows-x64-pr
           path: |
@@ -571,7 +571,7 @@ jobs:
     runs-on: ${{ vars.CI_MACOS_RUNNER || 'blacksmith-6vcpu-macos-27' }}
     timeout-minutes: 45
     steps:
-      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           # The package's evidence names the exact PR head, not the merge commit.
           ref: ${{ github.event.pull_request.head.sha || github.sha }}
@@ -582,7 +582,7 @@ jobs:
       - name: Build the unsigned Research Dev app
         run: python3 scripts/ci/plan.py run research-dev-macos
       - name: Upload the Dev package and its identity proof
-        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: maple-research-dev-macos-pr
           path: |
@@ -613,7 +613,7 @@ jobs:
           --health-timeout 5s
           --health-retries 12
     steps:
-      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
           submodules: recursive
@@ -640,7 +640,7 @@ jobs:
     env:
       HELPER: ${{ matrix.helper }}
     steps:
-      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
       - name: Build the Linux ARM64 image and run its tests offline
@@ -688,7 +688,7 @@ jobs:
       OPENSECRET_DEV_ENV: "0"
       OPENSECRET_DEV_CONTAINERS: "0"
     steps:
-      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
           submodules: recursive
@@ -697,16 +697,16 @@ jobs:
           filter: blob:none
 
       - name: Install pinned Determinate Nix for FlakeHub authentication
-        uses: DeterminateSystems/determinate-nix-action@96c5ee93a9dddf2830d31e1da6ec719077336c28 # v3.23.3
+        uses: DeterminateSystems/determinate-nix-action@16f94ba7aae399b9f9077c254b6719ec6de7e3e3 # v3.24.2
         with:
-          source-tag: v3.23.3
+          source-tag: v3.24.2
           github-token: ""
 
       - name: Verify pinned Nix runtime
         run: bash scripts/ci/verify-nix-runtime.sh
 
       - name: Reuse FlakeHub with an Actions cache fallback
-        uses: DeterminateSystems/flakehub-cache-action@1f9a51a2959d3e26c7838c6f3bf9f48acae525ea # v3
+        uses: DeterminateSystems/flakehub-cache-action@f00fba8dc0949d63cbbb7d33da7912417d588d75 # v3.24.2
         with:
           diff-store: true
 
@@ -734,7 +734,7 @@ jobs:
       contents: read
       actions: read # the run's job results, read only to attribute a quarantined lane's failure
     steps:
-      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
           sparse-checkout: scripts/ci
