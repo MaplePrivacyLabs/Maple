@@ -4661,6 +4661,7 @@ fn localized_placeholder_follows_language_without_replacing_text(cx: &mut gpui::
         ("en", "Current password"),
         ("es", "Contraseña actual"),
         ("de", "Aktuelles Passwort"),
+        ("ko", "현재 비밀번호"),
         ("en", "Current password"),
     ] {
         super::i18n::apply_preference(Some(locale));
@@ -4682,7 +4683,7 @@ fn native_edit_menu_locale_switch_keeps_selection_and_clipboard_actions(
         input.set_text("user-owned text", cx);
         input.selected_range = 0..10;
     });
-    for locale in ["es", "de", "en", "es"] {
+    for locale in ["es", "de", "ko", "en", "es"] {
         super::i18n::apply_preference(Some(locale));
         cx.update(|window, app| {
             input.update(app, |input, cx| {

@@ -28,6 +28,9 @@ fn locale_resolution_accepts_os_spellings_and_falls_back_safely() {
     for locale in ["de", "de-DE", "de-AT", "de-CH", "de_DE.UTF-8", "de_DE@euro"] {
         assert_eq!(resolve(Some(locale)), langid!("de"));
     }
+    for locale in ["ko", "ko-KR", "ko-KP", "ko_KR.UTF-8", "ko-Kore-KR"] {
+        assert_eq!(resolve(Some(locale)), langid!("ko"));
+    }
     for locale in ["es", "es-ES", "es-MX", "es_ES.UTF-8"] {
         assert_eq!(resolve(Some(locale)), langid!("es"));
     }
@@ -573,6 +576,12 @@ fn cached_messages_and_notices_follow_locale_without_translating_raw_text() {
             "Passwort geändert.",
         ),
         (
+            "ko",
+            "활성 요청 1개",
+            "활성 요청 2개",
+            "비밀번호를 변경했어요.",
+        ),
+        (
             "en",
             "active request",
             "active requests",
@@ -602,7 +611,8 @@ fn parameterized_catalogs_format_all_messages_without_missing_arguments() {
     let english = include_str!("../../../locales/en/app.ftl");
     let spanish = include_str!("../../../locales/es/app.ftl");
     let german = include_str!("../../../locales/de/app.ftl");
-    let names: BTreeSet<_> = [english, spanish, german]
+    let korean = include_str!("../../../locales/ko/app.ftl");
+    let names: BTreeSet<_> = [english, spanish, german, korean]
         .into_iter()
         .flat_map(|source| {
             source
@@ -620,6 +630,7 @@ fn parameterized_catalogs_format_all_messages_without_missing_arguments() {
         (langid!("en"), english),
         (langid!("es"), spanish),
         (langid!("de"), german),
+        (langid!("ko"), korean),
     ] {
         let mut bundle = FluentBundle::new(vec![locale]);
         bundle
@@ -1297,6 +1308,47 @@ fn german_saved_preference_formats_native_labels_and_arguments() {
     );
     initialize_saved_preference(Some("en"));
     assert_eq!(current_locale(), langid!("de"));
+    apply_preference(Some("en"));
+    assert_eq!(tr("settings-language").as_ref(), "Language");
+}
+
+#[test]
+fn korean_saved_preference_formats_native_labels_and_arguments() {
+    let _locale = TestLocalizationGuard::enable();
+    initialize_saved_preference(Some("ko-KR"));
+    assert_eq!(current_locale(), langid!("ko"));
+    assert_eq!(preference_label(Some("ko")).as_ref(), "한국어");
+    assert_eq!(tr("settings-language").as_ref(), "언어");
+    let title = tr_args(
+        "update-confirmation-title-version",
+        [("version", "1.2.3".into())],
+    );
+    assert_eq!(
+        title.as_ref(),
+        "v1.2.3 설치를 위해 Maple을 다시 시작할까요?"
+    );
+    assert!(!title.contains(['\u{2068}', '\u{2069}']));
+    assert_eq!(
+        tr_args(
+            "settings-date",
+            [
+                ("day", "9".into()),
+                ("month", tr("settings-month-march").to_string().into()),
+                ("year", "2026".into())
+            ]
+        )
+        .as_ref(),
+        "2026년 3월 9일"
+    );
+    // Korean has one plural category, so a count never changes the wording.
+    for count in [1, 2] {
+        assert_eq!(
+            tr_args("settings-local-api-requests", [("count", count.into())]).as_ref(),
+            format!("활성 요청 {count}개")
+        );
+    }
+    initialize_saved_preference(Some("en"));
+    assert_eq!(current_locale(), langid!("ko"));
     apply_preference(Some("en"));
     assert_eq!(tr("settings-language").as_ref(), "Language");
 }

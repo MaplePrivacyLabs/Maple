@@ -1,0 +1,14 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+	<key>NSAppleEventsUsageDescription</key>
+	<string>Maple은 컴퓨터 사용 동작이 다른 앱과 통신해야 할 때만 자동화를 사용해요.</string>
+	<key>NSMicrophoneUsageDescription</key>
+	<string>메시지 받아쓰기를 선택하면 Maple이 마이크로 음성을 녹음해요.</string>
+	<key>NSDocumentsFolderUsageDescription</key>
+	<string>Maple은 작업 공간과 새 프로젝트에 Documents/Maple을 사용해요. 에이전트가 이 폴더에서 작업 파일을 다뤄요.</string>
+	<key>NSScreenCaptureUsageDescription</key>
+	<string>컴퓨터 사용을 명시적으로 켜면 Maple이 화면을 캡처하여, 제어를 요청한 앱을 에이전트가 보고 조작할 수 있게 해요.</string>
+</dict>
+</plist>

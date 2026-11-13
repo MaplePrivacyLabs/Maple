@@ -12,7 +12,7 @@ User content, provider diagnostics and machine-facing text remain unchanged.
 ## Locale and live switching
 
 Localization is enabled by default. Settings → General → Language offers System,
-English, Español and Deutsch. Changes are saved through the host and apply immediately;
+English, Español, Deutsch and 한국어. Changes are saved through the host and apply immediately;
 no environment variable or restart is needed.
 
 The OS locale supplies the initial default. The first host settings snapshot
@@ -105,8 +105,8 @@ catalog and native `language-name`, register it in `i18n::LANGUAGES`, then run
 Validate layout, font fallback, bidi marks, and platform-native language
 metadata before production enablement. Spanish currently has Linux preview
 evidence only; macOS/Windows runtime checks remain separate. The macOS bundle
-declares English, Spanish and German, and the existing debug/release bundle generators
-include Spanish and German permission-description resources. Generator tests do not prove
+declares English, Spanish, German and Korean, and the existing debug/release bundle generators
+include Spanish, German and Korean permission-description resources. Generator tests do not prove
 native permission-dialog behavior on macOS.
 
 ## Compatibility and remaining coverage
@@ -186,3 +186,31 @@ The English-only spell checker is disabled for German, as for Spanish.
 German macOS permission resources accompany the embedded catalog. Native macOS
 and Windows layout, font and permission-dialog checks remain required before
 release; generator and catalog tests do not establish those runtime results.
+
+## Korean terminology
+
+The `ko` catalog is written in Hangul with friendly polite **해요체** for
+sentences (`~해요`, `~했어요`, `~하세요`, `~할까요?`), matching the informal voice
+of the Spanish and German catalogs, and short noun forms for buttons, menus and
+labels (`저장`, `다시 시도`). Do not use formal `~합니다` endings or casual 반말. Regional OS locales such as `ko-KR` resolve to this
+shared catalog. Use **작업** for task, **로컬 저장소** for the local store,
+**메시지 입력창** for composer, **도구** for tool, **연동** for integration,
+**원격 컴퓨터** for remote computer and **요금제** for plan. Keep product names,
+external editor controls, commands and confirmation words (`DELETE`, `ERASE`)
+exact. Korean has a single plural category, so counted messages are plain
+sentences with a counter (`{ $count }개`) instead of plural selectors. Avoid a
+particle whose form depends on the preceding sound directly after a variable;
+restructure the sentence, or write both forms (`을(를)`, `이(가)`). Month names
+are `1월` to `12월` in both long and short forms, and dates read year, month, day.
+The English-only spell checker is disabled for Korean, as for Spanish and German.
+Menu type-ahead compares one typed key with the first character of a label and
+has no IME composition, so it cannot match Hangul labels typed on a Korean
+keyboard; arrow keys and Enter still work. Composed type-ahead is future work.
+
+The bundled Geist, Manrope and Array fonts have no Hangul glyphs, so Korean text
+is drawn with the platform's fallback font and its weights and metrics differ
+from Latin text. Linux needs an installed Korean font such as Noto Sans CJK KR;
+without one the text renders as missing-glyph boxes. Korean macOS permission
+resources accompany the embedded catalog. Native macOS and Windows layout,
+font-fallback and permission-dialog checks remain required before release;
+generator and catalog tests do not establish those runtime results.
