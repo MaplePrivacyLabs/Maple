@@ -48,10 +48,22 @@ pub struct BillingStatus {
     pub usage_period_start: Option<String>,
     #[serde(default)]
     pub api_credit_balance: Option<i64>,
+    /// The plan as billing describes it: a stable key, `free`, `individual`
+    /// or `team`, an order among Free and the individual plans, and the name
+    /// to show. All absent from an older billing server and for a product
+    /// billing does not recognize; `product_name` is then the only guide.
+    #[serde(default)]
+    pub plan_key: Option<String>,
+    #[serde(default)]
+    pub plan_group: Option<String>,
+    #[serde(default)]
+    pub plan_rank: Option<f64>,
+    #[serde(default)]
+    pub plan_display_name: Option<String>,
 }
 
 /// One purchasable plan from `GET /v1/maple/products` (public).
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq)]
 pub struct Product {
     pub id: String,
     pub name: String,
@@ -64,6 +76,18 @@ pub struct Product {
     /// `Some(false)` when the store build may not sell it.
     #[serde(default)]
     pub is_available: Option<bool>,
+    /// The product's plan as billing describes it; see [`BillingStatus`].
+    #[serde(default)]
+    pub plan_key: Option<String>,
+    #[serde(default)]
+    pub plan_group: Option<String>,
+    #[serde(default)]
+    pub plan_rank: Option<f64>,
+    #[serde(default)]
+    pub display_name: Option<String>,
+    /// Plan credits each month; per seat for Team.
+    #[serde(default)]
+    pub monthly_credits: Option<i64>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
@@ -348,6 +372,36 @@ mod tests {
             2000
         );
         assert_eq!(products[0].is_available, None);
+        // An older billing server describes no plans.
+        assert_eq!(status.plan_group, None);
+        assert_eq!(products[0].plan_key, None);
+    }
+
+    #[test]
+    fn decodes_plan_descriptions() {
+        let status: BillingStatus = serde_json::from_str(
+            r#"{"is_subscribed":true,"product_id":"prod_3","product_name":"Max Studio",
+                "plan_key":"studio","plan_group":"individual","plan_rank":3,
+                "plan_display_name":"Studio"}"#,
+        )
+        .unwrap();
+        assert_eq!(status.plan_key.as_deref(), Some("studio"));
+        assert_eq!(status.plan_group.as_deref(), Some("individual"));
+        assert_eq!(status.plan_rank, Some(3.0));
+        assert_eq!(status.plan_display_name.as_deref(), Some("Studio"));
+
+        let products: Vec<Product> = serde_json::from_str(
+            r#"[{"id":"prod_3","name":"Max Studio","active":true,"plan_key":"studio",
+                 "plan_group":"individual","plan_rank":3,"display_name":"Studio",
+                 "monthly_credits":60000},
+                {"id":"prod_team","name":"Team","active":true,"plan_key":"team",
+                 "plan_group":"team","plan_rank":null,"display_name":"Team",
+                 "monthly_credits":40000}]"#,
+        )
+        .unwrap();
+        assert_eq!(products[0].display_name.as_deref(), Some("Studio"));
+        assert_eq!(products[0].monthly_credits, Some(60_000));
+        assert_eq!(products[1].plan_rank, None);
     }
 
     #[test]
