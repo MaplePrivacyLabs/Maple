@@ -169,7 +169,7 @@ impl Stage {
     }
 }
 
-const OUTCOME_COUNT: usize = 12;
+const OUTCOME_COUNT: usize = 13;
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(crate) enum Outcome {
@@ -180,6 +180,7 @@ pub(crate) enum Outcome {
     Success,
     ClientError,
     ServerError,
+    Fallback,
     Started,
     StartFailed,
     Ended,
@@ -196,6 +197,7 @@ impl Outcome {
         Outcome::Success,
         Outcome::ClientError,
         Outcome::ServerError,
+        Outcome::Fallback,
         Outcome::Started,
         Outcome::StartFailed,
         Outcome::Ended,
@@ -212,6 +214,7 @@ impl Outcome {
             Outcome::Success => "success",
             Outcome::ClientError => "client_error",
             Outcome::ServerError => "server_error",
+            Outcome::Fallback => "fallback",
             Outcome::Started => "started",
             Outcome::StartFailed => "start_failed",
             Outcome::Ended => "ended",
@@ -233,6 +236,7 @@ impl Outcome {
             Outcome::Rejected
                 | Outcome::ClientError
                 | Outcome::ServerError
+                | Outcome::Fallback
                 | Outcome::StartFailed
                 | Outcome::Failed
                 | Outcome::Disconnected
@@ -242,6 +246,7 @@ impl Outcome {
     const fn level(self) -> tracing::Level {
         match self {
             Outcome::ServerError
+            | Outcome::Fallback
             | Outcome::StartFailed
             | Outcome::Failed
             | Outcome::Disconnected => tracing::Level::WARN,

@@ -476,18 +476,28 @@ fn encrypted_response(
         response.status().as_u16(),
         logical_response_headers(response.headers()),
     );
-    let (start, mut body) = match response_start {
-        Ok(start) => (start, std::mem::replace(response.body_mut(), Body::empty())),
+    let (start, mut body, request) = match response_start {
+        Ok(start) => (
+            start,
+            std::mem::replace(response.body_mut(), Body::empty()),
+            request,
+        ),
         Err(_) => {
             // Once a request has authenticated and claimed replay state, every
             // representable application failure stays inside the encrypted
             // channel. An oversized or invalid internal response head therefore
             // becomes a minimal encrypted 500 rather than a plaintext outer 503.
-            (
-                ResponseStart::new(StatusCode::INTERNAL_SERVER_ERROR.as_u16(), Vec::new())
-                    .expect("a headerless 500 is a valid transport response start"),
-                Body::empty(),
-            )
+            let start = ResponseStart::new(StatusCode::INTERNAL_SERVER_ERROR.as_u16(), Vec::new())
+                .expect("a headerless 500 is a valid transport response start");
+            let request = request.with_inner_status(start.status());
+            diagnostics.record(
+                Stage::EncryptedResponse,
+                request,
+                Outcome::Fallback,
+                Some("invalid_response_head"),
+                None,
+            );
+            (start, Body::empty(), request)
         }
     };
     let start = ResponseRecord::Start(start);
@@ -2014,6 +2024,8 @@ mod tests {
 
     #[tokio::test]
     async fn bounded_body_read_uses_actual_bytes_and_invalid_response_heads_stay_encrypted() {
+        use crate::transport_v2::diagnostics::Route;
+
         assert_eq!(
             read_bounded_body(Body::from(Bytes::from_static(b"four")), 4)
                 .await
@@ -2042,7 +2054,9 @@ mod tests {
                 response
             }),
         );
-        let router = request_router(application, sessions);
+        let diagnostics = Arc::new(Diagnostics::for_test());
+        let router =
+            request_router_with_diagnostics(application, sessions, Arc::clone(&diagnostics));
         let request_id = RequestId::from_bytes([0x71; 16]);
         let records = decrypt_records(
             &test.client,
@@ -2060,6 +2074,18 @@ mod tests {
         assert!(matches!(&records[0], ResponseRecord::Start(start) if start.status() == 500));
         assert_eq!(records.len(), 2);
         assert!(matches!(&records[1], ResponseRecord::End));
+        assert_eq!(
+            diagnostics.count(Stage::LogicalResponse, Route::OTHER, Outcome::Success),
+            1
+        );
+        assert_eq!(
+            diagnostics.count(Stage::EncryptedResponse, Route::OTHER, Outcome::Fallback),
+            1
+        );
+        assert_eq!(
+            diagnostics.count(Stage::EncryptedResponse, Route::OTHER, Outcome::Started),
+            1
+        );
     }
 
     #[tokio::test]

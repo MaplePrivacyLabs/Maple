@@ -4,8 +4,9 @@ Transport V2 carries every logical operation through one outer
 `POST /v2/request`. That makes an outer edge failure ambiguous on its own: the
 edge can observe a 5xx without knowing whether the record reached decryption,
 which logical route ran, or whether the application returned a logical error
-inside an outer `200`. These diagnostics answer that question with a bounded,
-privacy-preserving event vocabulary.
+inside an outer `200`. These diagnostics provide bounded gateway-side evidence
+when a request reaches the gateway. They cannot identify the inner route of a
+particular edge 5xx without a trusted edge-to-enclave correlation key.
 
 Source: `src/transport_v2/diagnostics.rs`, wired from
 `src/transport_v2/gateway.rs`.
@@ -21,16 +22,25 @@ Every per-request and aggregate event uses the dedicated target
 | `stage` | `admission`, `envelope_decode`, `inner_dispatch`, `logical_response`, `encrypted_response`, `stream_terminal` |
 | `route` | allowlisted route class, `unknown` before decryption, or `other` when no class matches |
 | `method` | allowlisted HTTP method, or `other` |
-| `outcome` | `admitted`, `rejected`, `decoded`, `dispatched`, `success`, `client_error`, `server_error`, `started`, `start_failed`, `ended`, `failed`, `disconnected` |
+| `outcome` | `admitted`, `rejected`, `decoded`, `dispatched`, `success`, `client_error`, `server_error`, `fallback`, `started`, `start_failed`, `ended`, `failed`, `disconnected` |
 | `reason` | bounded failure reason, when one applies |
-| `inner_status` | logical HTTP status, present only after the application answers |
+| `inner_status` | application HTTP status at `logical_response`; selected response-head status at later stages when known, including fallback 500 (not proof of delivery) |
 | `outer_status` | outer transport status, present only on an outer rejection |
 | `window`, `total`, `suppressed` | aggregate counts (aggregate events only) |
 
 `inner_status` and `outer_status` are deliberately separate fields. A logical
 502 is `stage=logical_response outcome=server_error inner_status=502` inside an
-outer `200`; an outer 502 is `stage=admission outcome=rejected outer_status=502`.
-Neither is evidence of the other.
+outer `200`. The `/v2/request` gateway's outer rejections currently use HTTP
+400, 413, 415, or 503; it does not generate an outer 502. An edge-generated
+502 appears in edge telemetry, and may have no gateway diagnostic event.
+Neither a logical 502 nor a gateway rejection establishes the cause of an edge
+502.
+
+If an application response head cannot be encoded, `logical_response` retains
+the application's original status. An `encrypted_response` event records
+`outcome=fallback`, `reason=invalid_response_head`, and `inner_status=500` for
+the selected encrypted response. Later `started` and stream-terminal events
+carry that selected 500 status when those stages are reached.
 
 ## Stages
 
@@ -39,12 +49,13 @@ Neither is evidence of the other.
 | `admission` | a record is admitted, or rejected before decryption (content type, forbidden headers, query, oversize, session lookup, session store) |
 | `envelope_decode` | the record fails incoming authentication, or the decrypted envelope is invalid, or a decrypted envelope classifies to a route |
 | `inner_dispatch` | the logical request is handed to the application router |
-| `logical_response` | the application returns, before encryption |
-| `encrypted_response` | the encrypted response head is sealed, or sealing it fails |
+| `logical_response` | the application returns, before response-head validation and encryption |
+| `encrypted_response` | an invalid response head falls back to encrypted 500, the encrypted response head is sealed, or sealing it fails |
 | `stream_terminal` | the encrypted body ends, fails, or is dropped before terminal |
 
 Before the envelope decrypts there is no trustworthy `method` or `route`, so
-those events carry `route=unknown`. They never acquire an inner-route label.
+those events carry `method=other route=unknown`. They never acquire an
+inner-route label.
 
 ## Route classes
 
@@ -70,7 +81,8 @@ Aggregate counts advance for every event and are emitted once per 60 seconds
 from the gateway maintenance loop, one line per non-zero
 `(stage, route, outcome)`. Cardinality is fixed by the enums, so nothing is
 dropped; suppressed events are counted, not hidden. A per-key line is written
-only when its outcome survives sampling or the token bucket.
+only when its outcome survives sampling or the token bucket. The exceptional
+budget is per key; there is no separate global log-line cap across keys.
 
 The deployed filter is separate from this policy. Confirm the running
 enclave's `RUST_LOG` includes the target at `info` (for example
@@ -85,8 +97,9 @@ the client-chosen request ID — are client-controlled or transport material, an
 the issue forbids trusting a client-supplied header or exposing raw transport
 identifiers. Inventing a join from them would be spoofable. An edge event and a
 gateway event therefore cannot be joined by key; use the time window, stage and
-route class instead, and treat the absence of a gateway event as unknown rather
-than proof the request never reached the host.
+route class to compare aggregates, not to attribute an individual edge 502 to
+an inner route. Treat the absence of a gateway event as unknown rather than
+proof the request never reached the host.
 
 ## Operator query
 
@@ -110,8 +123,14 @@ To separate an outer failure from a logical one in the same window:
 fields @timestamp, @message
 | filter @message like /opensecret.transport_v2.diagnostics/
 | filter @message like /outcome=server_error/ or @message like /outer_status=5/
+| parse @message /stage=(?<stage>\S+) route=(?<route>\S+) method=(?<method>\S+) outcome=(?<outcome>\S+)/
 | stats count() as events by stage, route, outcome
 ```
+
+For encrypted 500 fallbacks caused by response-head validation,
+filter this target for `stage=encrypted_response outcome=fallback`; the preceding
+`logical_response` event may show a different application status. Use aggregate
+counts to include fallback events suppressed by the per-key token bucket.
 
 Then inspect `stage=aggregate` lines for the outcomes that sampling or the
 token bucket suppressed:
@@ -124,6 +143,11 @@ fields @timestamp, @message
 
 ## Privacy and retention
 
+- These host-visible diagnostics intentionally disclose an allowlisted method,
+  coarse route class, stage, outcome, bounded reason, numeric HTTP status, and
+  aggregate counts. Someone with access to the logs can infer the operation
+  class and result. This exception is part of the
+  [V2 security boundary](transport-v2-protocol.md#security-boundary).
 - Only the bounded vocabulary above is recorded. The raw target, query string,
   path parameters, headers, body, prompt, response, credentials, provider
   payload, user identifier, session identifier and transport request ID are
