@@ -212,6 +212,7 @@ struct TranscriptCtx<'a> {
     markdown_cache: &'a MarkdownCache,
     derived: &'a DerivedCache,
     attachment_images: &'a HashMap<String, Arc<gpui::Image>>,
+    attachment_previews: &'a HashMap<String, Arc<gpui::Image>>,
     attachment_failures: &'a HashSet<String>,
     chat: &'a gpui::WeakEntity<ChatScreen>,
     tool_summaries: &'a HashMap<String, SharedString>,
@@ -815,6 +816,10 @@ pub struct ChatScreen {
     /// Decoded images for sent attachments, keyed by attachment id, so the
     /// transcript shows the picture instead of only its file name.
     attachment_images: HashMap<String, Arc<gpui::Image>>,
+    /// The small picture a draft had, for the attachments of a message that
+    /// was just sent, until the stored picture loads: the row that takes
+    /// over from the message being sent shows what that message showed.
+    attachment_previews: HashMap<String, Arc<gpui::Image>>,
     /// Attachment ids with a read in flight or already failed; never asked
     /// for twice.
     attachment_requests: HashSet<String>,
@@ -851,6 +856,12 @@ pub struct ChatScreen {
     question_collapsed: bool,
     /// Full-size image shown over the chat until dismissed.
     lightbox: Option<Arc<gpui::Image>>,
+    /// The attachment the open image belongs to, so a stand-in picture is
+    /// replaced when the stored one loads.
+    lightbox_attachment: Option<String>,
+    lightbox_focus: gpui::FocusHandle,
+    lightbox_previous_focus: Option<gpui::FocusHandle>,
+    lightbox_focus_pending: bool,
     /// Sent prompts, oldest first, for Up/Down recall in the composer.
     prompt_history: Vec<String>,
     /// Position in `prompt_history` while browsing; `None` when typing.
@@ -1655,6 +1666,7 @@ impl ChatScreen {
             selection_generation: 0,
             reload_generation: 0,
             attachment_images: HashMap::new(),
+            attachment_previews: HashMap::new(),
             attachment_requests: HashSet::new(),
             attachment_failures: HashSet::new(),
             attachment_queue: std::collections::VecDeque::new(),
@@ -1672,6 +1684,10 @@ impl ChatScreen {
             question_step_answers: HashMap::new(),
             question_collapsed: false,
             lightbox: None,
+            lightbox_attachment: None,
+            lightbox_focus: cx.focus_handle(),
+            lightbox_previous_focus: None,
+            lightbox_focus_pending: false,
             prompt_history: Vec::new(),
             history_index: None,
             history_draft: String::new(),
@@ -3734,6 +3750,7 @@ impl ChatScreen {
         self.subagents.clear();
         self.tool_summaries.clear();
         self.attachment_images.clear();
+        self.attachment_previews.clear();
         self.attachment_requests.clear();
         self.attachment_failures.clear();
         self.attachment_queue.clear();
@@ -3778,7 +3795,12 @@ impl ChatScreen {
         self.output_summaries.clear();
         self.list_state.scroll_to_end();
         self.awaiting_first_token = false;
-        self.lightbox = None;
+        if self.lightbox.take().is_some() {
+            self.screen_focus_pending = true;
+        }
+        self.lightbox_attachment = None;
+        self.lightbox_previous_focus = None;
+        self.lightbox_focus_pending = false;
         self.popup.close(cx);
     }
 
@@ -4685,6 +4707,10 @@ impl ChatScreen {
     }
 
     fn escape(&mut self, cx: &mut Context<Self>) {
+        if self.lightbox.is_some() {
+            self.close_lightbox(cx);
+            return;
+        }
         if self.feedback.is_some() {
             self.close_feedback(cx);
             return;
@@ -4731,11 +4757,6 @@ impl ChatScreen {
             cx.notify();
             return;
         }
-        if self.lightbox.is_some() {
-            self.lightbox = None;
-            cx.notify();
-            return;
-        }
         if self.current_question().is_some() {
             self.skip_question(cx);
             return;
@@ -4769,7 +4790,10 @@ impl ChatScreen {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
-        if self.project_folder_dialog.is_some() || self.feedback.is_some() {
+        if self.project_folder_dialog.is_some()
+            || self.feedback.is_some()
+            || self.lightbox.is_some()
+        {
             return;
         }
         let Some(composer) = self.composer.clone() else {
@@ -4938,7 +4962,43 @@ impl ChatScreen {
     /// Show a clicked attachment image full size.
     fn open_lightbox(&mut self, image: Arc<gpui::Image>, cx: &mut Context<Self>) {
         self.lightbox = Some(image);
+        self.lightbox_focus_pending = true;
         cx.notify();
+    }
+
+    /// Show the picture of the attachment `id`. `shown` is what its
+    /// thumbnail drew: right after a send that can be the draft's small
+    /// picture, which the stored one replaces as soon as it loads.
+    fn open_attachment(&mut self, id: &str, shown: Arc<gpui::Image>, cx: &mut Context<Self>) {
+        let stored = self.attachment_images.get(id).cloned();
+        if stored.is_none() && !self.attachment_requests.contains(id) {
+            self.request_attachments(vec![id.to_owned()], cx);
+        }
+        self.open_lightbox(stored.unwrap_or(shown), cx);
+        self.lightbox_attachment = Some(id.to_owned());
+    }
+
+    fn close_lightbox(&mut self, cx: &mut Context<Self>) {
+        self.lightbox = None;
+        self.lightbox_attachment = None;
+        self.lightbox_focus_pending = false;
+        cx.notify();
+    }
+
+    /// Restore focus before the screen's fallback focus handling. The preview
+    /// remembers its opener, including a keyboard-focused attachment.
+    fn sync_lightbox_focus(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        if self.lightbox.is_none() {
+            if let Some(previous) = self.lightbox_previous_focus.take()
+                && (self.lightbox_focus.contains_focused(window, cx)
+                    || window.focused(cx).is_none())
+            {
+                window.focus(&previous, cx);
+            }
+        } else if std::mem::take(&mut self.lightbox_focus_pending) {
+            self.lightbox_previous_focus = window.focused(cx);
+            window.focus(&self.lightbox_focus, cx);
+        }
     }
     /// Send without a Window, callable from the composer's Enter hook and
     /// from the Send button.
@@ -7356,6 +7416,20 @@ impl ChatScreen {
     }
 }
 
+/// The largest size at which a picture of `natural` pixels shows whole
+/// inside `bounds`; `bounds` itself while the picture's size is unknown.
+fn fit_within(
+    natural: Option<gpui::Size<gpui::DevicePixels>>,
+    bounds: gpui::Size<gpui::Pixels>,
+) -> gpui::Size<gpui::Pixels> {
+    let Some(natural) = natural.filter(|size| size.width.0 > 0 && size.height.0 > 0) else {
+        return bounds;
+    };
+    let (width, height) = (natural.width.0 as f32, natural.height.0 as f32);
+    let scale = (bounds.width.as_f32() / width).min(bounds.height.as_f32() / height);
+    gpui::size(px(width * scale), px(height * scale))
+}
+
 impl Render for ChatScreen {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         self.refresh_locale(cx);
@@ -7369,12 +7443,20 @@ impl Render for ChatScreen {
         // First, so a dialog's focus request below wins over a menu handing
         // focus back.
         self.popup.sync_focus(window, cx);
-        if let Some(dialog) = self.project_folder_dialog.clone() {
+        self.sync_lightbox_focus(window, cx);
+        if let Some(dialog) = self
+            .project_folder_dialog
+            .clone()
+            .filter(|_| self.lightbox.is_none())
+        {
             self.sidebar
                 .update(cx, |sidebar, cx| sidebar.sync_popup_focus(window, cx));
             dialog.update(cx, |dialog, cx| dialog.sync_focus(window, cx));
         }
-        if self.dialog_focus_pending && self.project_folder_dialog.is_none() {
+        if self.dialog_focus_pending
+            && self.project_folder_dialog.is_none()
+            && self.lightbox.is_none()
+        {
             self.dialog_focus_pending = false;
             if let Some(handle) = self.dialog_focus.clone() {
                 window.focus(&handle, cx);
@@ -7387,7 +7469,10 @@ impl Render for ChatScreen {
         if window.focused(cx).is_none() {
             self.screen_focus_pending = true;
         }
-        if self.screen_focus_pending && self.project_folder_dialog.is_none() {
+        if self.screen_focus_pending
+            && self.project_folder_dialog.is_none()
+            && self.lightbox.is_none()
+        {
             self.screen_focus_pending = false;
             if self.application_vim_enabled {
                 if let Some(handle) = self.application_focus.clone() {
@@ -7398,7 +7483,10 @@ impl Render for ChatScreen {
                 window.focus(&handle, cx);
             }
         }
-        if self.question_focus_pending && self.project_folder_dialog.is_none() {
+        if self.question_focus_pending
+            && self.project_folder_dialog.is_none()
+            && self.lightbox.is_none()
+        {
             self.question_focus_pending = false;
             if self.application_vim_enabled {
                 if let Some(handle) = self.application_focus.clone() {
@@ -7411,16 +7499,29 @@ impl Render for ChatScreen {
                 window.focus(&handle, cx);
             }
         }
-        self.focus_feedback(window, cx);
-        let feedback = self.render_feedback(cx);
+        if self.lightbox.is_none() {
+            self.focus_feedback(window, cx);
+        }
+        // A trust response can arrive while an image is open. Keep other
+        // dialogs pending until the image releases its modal focus.
+        let feedback = self
+            .lightbox
+            .is_none()
+            .then(|| self.render_feedback(cx))
+            .flatten();
         let confirm = self
             .confirm
             .clone()
+            .filter(|_| self.lightbox.is_none())
             .map(|dialog| self.render_confirm(&dialog, cx));
         let trust_prompt = self
             .trust_prompt
             .clone()
-            .map(|status| self.render_trust_prompt(&status, cx));
+            .filter(|_| self.lightbox.is_none())
+            .map(|status| {
+                self.render_trust_prompt(&status, cx)
+                    .debug_selector(|| "trust-backdrop".to_string())
+            });
         let empty = self.shows_empty_state();
         let sidebar_expansion = self.sidebar_expansion(window, cx);
         let rise = gpui::point(px(0.), motion::RISE);
@@ -7615,65 +7716,107 @@ impl Render for ChatScreen {
                     ),
             )
             .when_some(self.lightbox.clone(), |root, image| {
-                root.child(motion::fade_in(
+                // The card is the picture and nothing more, so a click
+                // beside it lands on the backdrop and closes the preview.
+                // Until the picture has decoded its shape is unknown and
+                // the card takes all the room it may.
+                let viewport = window.viewport_size();
+                let card = fit_within(
+                    Arc::clone(&image)
+                        .use_render_image(window, cx)
+                        .filter(|picture| picture.frame_count() > 0)
+                        .map(|picture| picture.size(0)),
+                    gpui::size(viewport.width * 0.9, viewport.height * 0.9),
+                );
+                root.child(
                     div()
                         .id("lightbox")
-                        // Covers the screen: the pointer, wheel included,
-                        // reaches nothing underneath.
+                        .debug_selector(|| "lightbox".to_string())
+                        .role(gpui::Role::Dialog)
+                        .aria_label(tr("chat-attachment-image"))
+                        .track_focus(&self.lightbox_focus)
+                        .key_context("Dialog")
+                        // Covers the screen: pointer and keyboard input reach
+                        // nothing underneath, including during its entrance.
                         .occlude()
                         .absolute()
                         .size_full()
                         .top_0()
                         .left_0()
-                        .bg(theme::scrim())
                         .flex()
                         .items_center()
                         .justify_center()
-                        .hover(|style| style.cursor_pointer())
+                        .on_key_down(cx.listener(
+                            |this, event: &gpui::KeyDownEvent, _window, cx| {
+                                if event.keystroke.key == "escape" {
+                                    this.close_lightbox(cx);
+                                }
+                                cx.stop_propagation();
+                            },
+                        ))
                         .on_click(cx.listener(|this, _event, _window, cx| {
-                            this.lightbox = None;
-                            cx.notify();
+                            this.close_lightbox(cx);
                         }))
-                        .child(
-                            gpui::img(gpui::ImageSource::Image(image))
-                                .max_w(gpui::relative(0.9))
-                                .max_h(gpui::relative(0.9))
-                                .rounded(theme::RADIUS_MD)
-                                .border_1()
-                                .border_color(gpui::rgb(theme::border()))
-                                .shadow_lg(),
-                        )
+                        .child(widgets::dialog_scrim())
+                        .child(widgets::dialog_card(
+                            div()
+                                .id("lightbox-card")
+                                .relative()
+                                // Explicit dimensions keep intrinsic screenshot
+                                // sizes out of layout. Contain preserves the
+                                // whole image at every window size.
+                                .w(card.width)
+                                .h(card.height)
+                                .on_click(|_, _, cx| cx.stop_propagation())
+                                .child(
+                                    gpui::img(gpui::ImageSource::Image(image))
+                                        .debug_selector(|| "lightbox-image".to_string())
+                                        .size_full()
+                                        .aspect_ratio(card.width / card.height)
+                                        .object_fit(gpui::ObjectFit::Contain),
+                                ),
+                        ))
                         .child(
                             div().absolute().top_3().right_3().child(
-                                widgets::icon_button_for_action(
+                                widgets::icon_button(
                                     "lightbox-close",
                                     "x",
                                     tr("chat-close"),
                                     px(16.),
                                     theme::on_accent(),
-                                    &ChatEscape,
                                 )
+                                .debug_selector(|| "lightbox-close".to_string())
                                 .size_8()
                                 .rounded_full()
-                                .bg(theme::overlay_hover()),
+                                .bg(theme::overlay_hover())
+                                .on_click(cx.listener(
+                                    |this, _event, _window, cx| {
+                                        this.close_lightbox(cx);
+                                        cx.stop_propagation();
+                                    },
+                                )),
                             ),
                         ),
-                    "lightbox-reveal",
-                ))
+                )
             })
             .children(confirm)
             .children(feedback)
             .children(trust_prompt)
-            .children(self.project_folder_dialog.clone().map(|dialog| {
-                embed_cached_view(
-                    dialog,
-                    gpui::StyleRefinement::default()
-                        .absolute()
-                        .inset_0()
-                        .size_full(),
-                    window.is_a11y_active(),
-                )
-            }))
+            .children(
+                self.project_folder_dialog
+                    .clone()
+                    .filter(|_| self.lightbox.is_none())
+                    .map(|dialog| {
+                        embed_cached_view(
+                            dialog,
+                            gpui::StyleRefinement::default()
+                                .absolute()
+                                .inset_0()
+                                .size_full(),
+                            window.is_a11y_active(),
+                        )
+                    }),
+            )
     }
 }
 

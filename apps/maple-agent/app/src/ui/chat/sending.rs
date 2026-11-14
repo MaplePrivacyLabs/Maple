@@ -21,6 +21,7 @@ struct PreviewAttachment {
     name: SharedString,
     mime: String,
     size: u64,
+    /// The whole picture, as the sent message's thumbnail shows it.
     image: Option<Arc<gpui::Image>>,
 }
 
@@ -45,7 +46,7 @@ impl SendPreview {
                     name: attachment.name.clone().into(),
                     mime: attachment.mime_type.clone(),
                     size: attachment.size,
-                    image: attachment.thumbnail.clone(),
+                    image: attachment.picture.clone(),
                 })
                 .collect(),
             show_body: true,
@@ -188,6 +189,7 @@ impl ChatScreen {
             return;
         };
         let mut handed_off = false;
+        let mut pictures = Vec::new();
         for preview in self
             .sending_previews
             .values_mut()
@@ -210,7 +212,14 @@ impl ChatScreen {
             {
                 preview.projected_runs.insert(run.to_owned());
             }
-            handed_off |= showing && !preview.body_visible();
+            if showing && !preview.body_visible() {
+                handed_off = true;
+                pictures = preview
+                    .attachments
+                    .iter()
+                    .filter_map(|attachment| attachment.image.clone())
+                    .collect();
+            }
         }
         // The row takes the place of the message already on screen; it
         // must not enter a second time. The transcript files a row under
@@ -219,9 +228,30 @@ impl ChatScreen {
         if handed_off {
             let key = crate::backend::timeline_view_key(item).unwrap_or_else(|| item.id.clone());
             self.row_motion.hand_off(key);
+            if self.is_selected(session) {
+                self.keep_sent_pictures(item, pictures);
+            }
         }
         self.sending_previews
             .retain(|_, preview| !preview.settled());
+    }
+
+    /// The row that takes over from the message being sent shows the same
+    /// pictures from its first frame, instead of file names until the
+    /// stored pictures load. Its image attachments are the drafts' in
+    /// order; if they do not line up, the row loads its pictures as usual.
+    fn keep_sent_pictures(&mut self, item: &AgentTimelineItem, pictures: Vec<Arc<gpui::Image>>) {
+        let sent: Vec<&str> = transcript::image_attachment_refs(item)
+            .map(|(id, _)| id)
+            .collect();
+        if sent.len() != pictures.len() {
+            return;
+        }
+        for (id, picture) in sent.into_iter().zip(pictures) {
+            if !self.attachment_images.contains_key(id) {
+                self.attachment_previews.insert(id.to_owned(), picture);
+            }
+        }
     }
 
     pub(super) fn finish_send_preview(&mut self, session: &str, run: &str) {
@@ -347,51 +377,60 @@ impl ChatScreen {
             .items_end()
             .gap(transcript::PREVIEW_GAP)
             .when(body_visible, |row| {
-                let body = crate::ui::typography::chat_reading(div())
-                    .id("pending-send-body")
-                    .debug_selector(|| "pending-send-body".to_string())
-                    .max_w(gpui::relative(0.75))
-                    .max_h(px(180.))
-                    .overflow_y_scroll()
-                    // A long message scrolls inside its bubble; the
-                    // pane must not scroll the transcript as well.
-                    .on_scroll(|_, _, cx| cx.stop_propagation())
-                    .px_4()
-                    .py_2()
-                    .rounded(theme::RADIUS_MD)
-                    .bg(gpui::rgb(theme::bg_user_bubble()))
-                    .border_1()
-                    .border_color(gpui::rgb(theme::user_bubble_border()))
-                    .text_color(gpui::rgb(theme::text_primary()))
+                // The same pieces in the same places as the row that takes
+                // over: the attachments in their own row, the text in a
+                // bubble under it, and no bubble without text.
+                let bubble = (!preview.text.trim().is_empty()).then(|| {
+                    crate::ui::typography::chat_reading(div())
+                        .id("pending-send-body")
+                        .debug_selector(|| "pending-send-body".to_string())
+                        .max_w(gpui::relative(0.75))
+                        .max_h(px(180.))
+                        .overflow_y_scroll()
+                        // A long message scrolls inside its bubble; the
+                        // pane must not scroll the transcript as well.
+                        .on_scroll(|_, _, cx| cx.stop_propagation())
+                        .px_4()
+                        .py_2()
+                        .rounded(theme::RADIUS_MD)
+                        .bg(gpui::rgb(theme::bg_user_bubble()))
+                        .border_1()
+                        .border_color(gpui::rgb(theme::user_bubble_border()))
+                        .text_color(gpui::rgb(theme::text_primary()))
+                        .child(preview.text.clone())
+                });
+                let body = div()
+                    .debug_selector(|| "pending-send-message".to_string())
+                    .w_full()
+                    .flex()
+                    .flex_col()
+                    .items_end()
+                    .gap_0p5()
                     .when(!preview.attachments.is_empty(), |body| {
-                        body.child(div().flex().flex_wrap().gap_2().mb_1().children(
-                            preview.attachments.iter().map(|attachment| {
-                                match &attachment.image {
-                                    Some(image) => div().child(
-                                        gpui::img(gpui::ImageSource::Image(image.clone()))
-                                            .size_16()
-                                            .rounded(theme::RADIUS_SM),
-                                    ),
-                                    None => div()
-                                        .flex()
-                                        .flex_col()
-                                        .text_xs()
-                                        .gap_1()
-                                        .child(attachment.name.clone())
-                                        .child(
-                                            div().text_color(gpui::rgb(theme::text_muted())).child(
-                                                attachments::cached_attachment_detail(
-                                                    &attachment.mime,
-                                                    attachment.size,
-                                                    &self.messages,
-                                                ),
+                        body.child(
+                            transcript::attachment_row().children(
+                                preview.attachments.iter().enumerate().map(
+                                    |(index, attachment)| match &attachment.image {
+                                        Some(image) => {
+                                            transcript::attachment_thumbnail(image.clone())
+                                                .debug_selector(move || {
+                                                    format!("pending-send-thumbnail-{index}")
+                                                })
+                                        }
+                                        None => transcript::attachment_chip(
+                                            attachment.name.clone(),
+                                            attachments::cached_attachment_detail(
+                                                &attachment.mime,
+                                                attachment.size,
+                                                &self.messages,
                                             ),
                                         ),
-                                }
-                            }),
-                        ))
+                                    },
+                                ),
+                            ),
+                        )
                     })
-                    .child(preview.text.clone());
+                    .children(bubble);
                 row.child(if entrance < 1. {
                     motion::arrive(body, entrance).into_any_element()
                 } else {

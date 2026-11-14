@@ -90,6 +90,7 @@ impl ChatScreen {
                         markdown_cache: &chat.markdown_cache,
                         derived: &chat.derived,
                         attachment_images: &chat.attachment_images,
+                        attachment_previews: &chat.attachment_previews,
                         attachment_failures: &chat.attachment_failures,
                         chat: &entity,
                         tool_summaries: &chat.tool_summaries,
@@ -132,6 +133,11 @@ impl ChatScreen {
                         let application_entity = entity.clone();
                         div()
                             .on_mouse_down(gpui::MouseButton::Left, move |_event, window, cx| {
+                                // A focusable control inside the row owns this
+                                // press; keep its keyboard focus.
+                                if window.default_prevented() {
+                                    return;
+                                }
                                 let Some(chat_entity) = application_entity.upgrade() else {
                                     return;
                                 };
@@ -975,9 +981,131 @@ fn timestamp_label(item: &AgentTimelineItem, group: &SharedString, messages: &Me
         .child(text)
 }
 
+// Fix both the layout box and the painted image size: max constraints alone
+// let an image's intrinsic dimensions escape the transcript's measured row.
+pub(super) const ATTACHMENT_THUMBNAIL_SIZE: Pixels = px(72.);
+
+/// The row of a user message's attachments, above its text. The message
+/// being sent draws the same row with the same pieces, so the real row
+/// changes nothing on screen when it takes over.
+pub(super) fn attachment_row() -> Div {
+    div()
+        .max_w(gpui::relative(0.75))
+        .flex()
+        .flex_wrap()
+        .justify_end()
+        .gap_2()
+        .mb_1()
+}
+
+/// An image attachment in a message: the whole picture inside a fixed box.
+pub(super) fn attachment_thumbnail(image: Arc<gpui::Image>) -> Div {
+    div()
+        .flex_none()
+        .size(ATTACHMENT_THUMBNAIL_SIZE)
+        .rounded(theme::RADIUS_SM)
+        .overflow_hidden()
+        .bg(gpui::rgb(theme::bg_elevated()))
+        .border_1()
+        .border_color(gpui::rgb(theme::border()))
+        .child(
+            gpui::img(gpui::ImageSource::Image(image))
+                .size_full()
+                .aspect_square()
+                .object_fit(gpui::ObjectFit::Contain)
+                // gpui clips to rectangles, so the picture rounds its own
+                // corners: one that fills the box would poke past the
+                // box's.
+                .rounded(theme::RADIUS_SM),
+        )
+}
+
+/// An attachment with no picture to show: its name and what it is. Long
+/// file names stay within the message.
+pub(super) fn attachment_chip(name: SharedString, detail: SharedString) -> Div {
+    div()
+        .min_w_0()
+        .max_w_full()
+        .flex()
+        .items_center()
+        .gap_1()
+        .px_2()
+        .py_0p5()
+        .rounded(theme::RADIUS_SM)
+        .bg(gpui::rgb(theme::bg_elevated()))
+        .text_xs()
+        .text_color(gpui::rgb(theme::text_secondary()))
+        .child(icon("paperclip", px(12.), theme::text_secondary()))
+        .child(
+            div()
+                .min_w_0()
+                .flex()
+                .flex_col()
+                .gap_0p5()
+                .child(div().truncate().child(gpui::text!(name)))
+                .child(
+                    div()
+                        .text_color(gpui::rgb(theme::text_muted()))
+                        .child(gpui::text!(detail)),
+                ),
+        )
+}
+
+fn render_attachment(
+    attachment: &super::cache::AttachmentDisplay,
+    transcript: &TranscriptCtx,
+) -> gpui::AnyElement {
+    let id = attachment.id.as_str();
+    // A message that was just sent shows the picture its draft had until
+    // the stored one arrives, so the thumbnail never gives way to a name.
+    let image = transcript
+        .attachment_images
+        .get(id)
+        .or_else(|| transcript.attachment_previews.get(id));
+    if let Some(image) = image {
+        let shown = Arc::clone(image);
+        let attachment_id = attachment.id.clone();
+        let chat = transcript.chat.clone();
+        attachment_thumbnail(Arc::clone(image))
+            .id(SharedString::from(format!("attachment-{id}")))
+            .debug_selector({
+                let id = attachment.id.clone();
+                move || format!("attachment-thumbnail-{id}")
+            })
+            .role(gpui::Role::Button)
+            .aria_label(attachment.name.clone())
+            .key_context("Button")
+            .tab_index(0)
+            .focus_visible(widgets::focus_ring)
+            .hover_bg(theme::overlay_hover())
+            .hover(|style| style.cursor_pointer())
+            .on_click(move |_event, _window, cx| {
+                chat.update(cx, |chat, cx| {
+                    chat.open_attachment(&attachment_id, Arc::clone(&shown), cx);
+                })
+                .ok();
+            })
+            .on_key_down(ChatScreen::sidebar_button_key_down)
+            .into_any_element()
+    } else {
+        let unavailable = attachment.unavailable || transcript.attachment_failures.contains(id);
+        // Retain the name and availability while the bytes load, or if the
+        // attachment was removed.
+        attachment_chip(
+            attachment.name.clone(),
+            if unavailable {
+                tr("chat-image-unavailable")
+            } else {
+                attachment.detail.clone()
+            },
+        )
+        .id(SharedString::from(format!("attachment-{id}")))
+        .into_any_element()
+    }
+}
+
 fn render_message(item: &AgentTimelineItem, revision: u64, transcript: &TranscriptCtx) -> Div {
     let ctx = transcript.render;
-    let attachment_images = transcript.attachment_images;
     let chat = transcript.chat;
     let is_user = item.role.as_deref() == Some("user");
     let text = item.text.as_deref().unwrap_or("");
@@ -1007,101 +1135,38 @@ fn render_message(item: &AgentTimelineItem, revision: u64, transcript: &Transcri
             .flex_col()
             .items_end()
             .gap_0p5()
-            .child(
-                typography::chat_reading(div())
-                    .max_w(gpui::relative(0.75))
-                    .px_4()
-                    .py_2()
-                    .rounded(theme::RADIUS_MD)
-                    .bg(gpui::rgb(theme::bg_user_bubble()))
-                    .border_1()
-                    .border_color(gpui::rgb(theme::user_bubble_border()))
-                    .text_color(gpui::rgb(theme::text_primary()))
-                    .when(has_attachments, |bubble| {
-                        bubble.child(div().flex().flex_wrap().gap_2().mb_1().children(
-                            derived.attachments.iter().map(|attachment| {
-                                let id = attachment.id.as_str();
-                                let unavailable = attachment.unavailable
-                                    || transcript.attachment_failures.contains(id);
-                                match attachment_images.get(id) {
-                                    // The picture itself, scaled to fit; click
-                                    // opens it full size. gpui keeps the aspect
-                                    // ratio from the decoded size.
-                                    Some(image) => {
-                                        let click_image = Arc::clone(image);
-                                        let chat = chat.clone();
-                                        div().child(
-                                            div()
-                                                .id(gpui::SharedString::from(format!(
-                                                    "attachment-{id}"
-                                                )))
-                                                .hover(|style| style.cursor_pointer())
-                                                .on_click(
-                                                    move |_event, _window, cx: &mut gpui::App| {
-                                                        chat.update(cx, |chat, cx| {
-                                                            chat.open_lightbox(
-                                                                Arc::clone(&click_image),
-                                                                cx,
-                                                            );
-                                                        })
-                                                        .ok();
-                                                    },
-                                                )
-                                                .child(
-                                                    gpui::img(gpui::ImageSource::Image(
-                                                        Arc::clone(image),
-                                                    ))
-                                                    .max_w(px(320.))
-                                                    .max_h(px(240.))
-                                                    .rounded(theme::RADIUS_SM)
-                                                    .overflow_hidden()
-                                                    .object_fit(gpui::ObjectFit::Contain)
-                                                    .border_1()
-                                                    .border_color(gpui::rgb(theme::border())),
-                                                ),
-                                        )
-                                    }
-                                    // Name chip until the bytes arrive (or if they
-                                    // never do, such as a deleted attachment).
-                                    None => div()
-                                        .flex()
-                                        .items_center()
-                                        .gap_1()
-                                        .px_2()
-                                        .py_0p5()
-                                        .rounded(theme::RADIUS_SM)
-                                        .bg(gpui::rgb(theme::bg_elevated()))
-                                        .text_xs()
-                                        .text_color(gpui::rgb(theme::text_secondary()))
-                                        .child(icon("paperclip", px(12.), theme::text_secondary()))
-                                        .child(
-                                            div()
-                                                .flex()
-                                                .flex_col()
-                                                .gap_0p5()
-                                                .child(attachment.name.clone())
-                                                .child(
-                                                    div()
-                                                        .text_color(gpui::rgb(theme::text_muted()))
-                                                        .child(if unavailable {
-                                                            tr("chat-image-unavailable")
-                                                        } else {
-                                                            attachment.detail.clone()
-                                                        }),
-                                                ),
-                                        ),
-                                }
-                            }),
-                        ))
-                    })
-                    .when(!text.trim().is_empty(), |bubble| {
-                        bubble.child(rich_text::plain_paragraph(
-                            transcript.derived.get(item, revision).text.clone(),
+            .when(has_attachments, |message| {
+                message.child(
+                    attachment_row().children(
+                        derived
+                            .attachments
+                            .iter()
+                            .map(|attachment| render_attachment(attachment, transcript)),
+                    ),
+                )
+            })
+            .when(!text.trim().is_empty(), |message| {
+                message.child(
+                    typography::chat_reading(div())
+                        .debug_selector({
+                            let id = item.id.clone();
+                            move || format!("message-bubble-{id}")
+                        })
+                        .max_w(gpui::relative(0.75))
+                        .px_4()
+                        .py_2()
+                        .rounded(theme::RADIUS_MD)
+                        .bg(gpui::rgb(theme::bg_user_bubble()))
+                        .border_1()
+                        .border_color(gpui::rgb(theme::user_bubble_border()))
+                        .text_color(gpui::rgb(theme::text_primary()))
+                        .child(rich_text::plain_paragraph(
+                            display.clone(),
                             ordinal,
                             &user_ctx,
-                        ))
-                    }),
-            )
+                        )),
+                )
+            })
             .child(
                 div()
                     .flex()
