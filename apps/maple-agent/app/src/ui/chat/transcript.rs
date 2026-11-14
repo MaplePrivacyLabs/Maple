@@ -132,6 +132,11 @@ impl ChatScreen {
                         let application_entity = entity.clone();
                         div()
                             .on_mouse_down(gpui::MouseButton::Left, move |_event, window, cx| {
+                                // A focusable control inside the row owns this
+                                // press; keep its keyboard focus.
+                                if window.default_prevented() {
+                                    return;
+                                }
                                 let Some(chat_entity) = application_entity.upgrade() else {
                                     return;
                                 };
@@ -975,9 +980,93 @@ fn timestamp_label(item: &AgentTimelineItem, group: &SharedString, messages: &Me
         .child(text)
 }
 
+// Fix both the layout box and the painted image size: max constraints alone
+// let an image's intrinsic dimensions escape the transcript's measured row.
+const ATTACHMENT_THUMBNAIL_SIZE: Pixels = px(72.);
+
+fn render_attachment(
+    attachment: &super::cache::AttachmentDisplay,
+    transcript: &TranscriptCtx,
+) -> gpui::AnyElement {
+    let id = attachment.id.as_str();
+    if let Some(image) = transcript.attachment_images.get(id) {
+        let click_image = Arc::clone(image);
+        let chat = transcript.chat.clone();
+        div()
+            .id(SharedString::from(format!("attachment-{id}")))
+            .debug_selector({
+                let id = attachment.id.clone();
+                move || format!("attachment-thumbnail-{id}")
+            })
+            .role(gpui::Role::Button)
+            .aria_label(attachment.name.clone())
+            .key_context("Button")
+            .tab_index(0)
+            .flex_none()
+            .size(ATTACHMENT_THUMBNAIL_SIZE)
+            .rounded(theme::RADIUS_SM)
+            .overflow_hidden()
+            .bg(gpui::rgb(theme::bg_elevated()))
+            .border_1()
+            .border_color(gpui::rgb(theme::border()))
+            .focus_visible(widgets::focus_ring)
+            .hover_bg(theme::overlay_hover())
+            .hover(|style| style.cursor_pointer())
+            .on_click(move |_event, _window, cx| {
+                chat.update(cx, |chat, cx| {
+                    chat.open_lightbox(Arc::clone(&click_image), cx);
+                })
+                .ok();
+            })
+            .on_key_down(ChatScreen::sidebar_button_key_down)
+            .child(
+                gpui::img(gpui::ImageSource::Image(Arc::clone(image)))
+                    .size_full()
+                    .aspect_square()
+                    .object_fit(gpui::ObjectFit::Contain),
+            )
+            .into_any_element()
+    } else {
+        let unavailable = attachment.unavailable || transcript.attachment_failures.contains(id);
+        // Retain the name and availability while the bytes load, or if the
+        // attachment was removed. Long filenames stay within the message.
+        div()
+            .id(SharedString::from(format!("attachment-{id}")))
+            .min_w_0()
+            .max_w_full()
+            .flex()
+            .items_center()
+            .gap_1()
+            .px_2()
+            .py_0p5()
+            .rounded(theme::RADIUS_SM)
+            .bg(gpui::rgb(theme::bg_elevated()))
+            .text_xs()
+            .text_color(gpui::rgb(theme::text_secondary()))
+            .child(icon("paperclip", px(12.), theme::text_secondary()))
+            .child(
+                div()
+                    .min_w_0()
+                    .flex()
+                    .flex_col()
+                    .gap_0p5()
+                    .child(div().truncate().child(gpui::text!(attachment.name.clone())))
+                    .child(
+                        div()
+                            .text_color(gpui::rgb(theme::text_muted()))
+                            .child(gpui::text!(if unavailable {
+                                tr("chat-image-unavailable")
+                            } else {
+                                attachment.detail.clone()
+                            })),
+                    ),
+            )
+            .into_any_element()
+    }
+}
+
 fn render_message(item: &AgentTimelineItem, revision: u64, transcript: &TranscriptCtx) -> Div {
     let ctx = transcript.render;
-    let attachment_images = transcript.attachment_images;
     let chat = transcript.chat;
     let is_user = item.role.as_deref() == Some("user");
     let text = item.text.as_deref().unwrap_or("");
@@ -1007,101 +1096,45 @@ fn render_message(item: &AgentTimelineItem, revision: u64, transcript: &Transcri
             .flex_col()
             .items_end()
             .gap_0p5()
-            .child(
-                typography::chat_reading(div())
-                    .max_w(gpui::relative(0.75))
-                    .px_4()
-                    .py_2()
-                    .rounded(theme::RADIUS_MD)
-                    .bg(gpui::rgb(theme::bg_user_bubble()))
-                    .border_1()
-                    .border_color(gpui::rgb(theme::user_bubble_border()))
-                    .text_color(gpui::rgb(theme::text_primary()))
-                    .when(has_attachments, |bubble| {
-                        bubble.child(div().flex().flex_wrap().gap_2().mb_1().children(
-                            derived.attachments.iter().map(|attachment| {
-                                let id = attachment.id.as_str();
-                                let unavailable = attachment.unavailable
-                                    || transcript.attachment_failures.contains(id);
-                                match attachment_images.get(id) {
-                                    // The picture itself, scaled to fit; click
-                                    // opens it full size. gpui keeps the aspect
-                                    // ratio from the decoded size.
-                                    Some(image) => {
-                                        let click_image = Arc::clone(image);
-                                        let chat = chat.clone();
-                                        div().child(
-                                            div()
-                                                .id(gpui::SharedString::from(format!(
-                                                    "attachment-{id}"
-                                                )))
-                                                .hover(|style| style.cursor_pointer())
-                                                .on_click(
-                                                    move |_event, _window, cx: &mut gpui::App| {
-                                                        chat.update(cx, |chat, cx| {
-                                                            chat.open_lightbox(
-                                                                Arc::clone(&click_image),
-                                                                cx,
-                                                            );
-                                                        })
-                                                        .ok();
-                                                    },
-                                                )
-                                                .child(
-                                                    gpui::img(gpui::ImageSource::Image(
-                                                        Arc::clone(image),
-                                                    ))
-                                                    .max_w(px(320.))
-                                                    .max_h(px(240.))
-                                                    .rounded(theme::RADIUS_SM)
-                                                    .overflow_hidden()
-                                                    .object_fit(gpui::ObjectFit::Contain)
-                                                    .border_1()
-                                                    .border_color(gpui::rgb(theme::border())),
-                                                ),
-                                        )
-                                    }
-                                    // Name chip until the bytes arrive (or if they
-                                    // never do, such as a deleted attachment).
-                                    None => div()
-                                        .flex()
-                                        .items_center()
-                                        .gap_1()
-                                        .px_2()
-                                        .py_0p5()
-                                        .rounded(theme::RADIUS_SM)
-                                        .bg(gpui::rgb(theme::bg_elevated()))
-                                        .text_xs()
-                                        .text_color(gpui::rgb(theme::text_secondary()))
-                                        .child(icon("paperclip", px(12.), theme::text_secondary()))
-                                        .child(
-                                            div()
-                                                .flex()
-                                                .flex_col()
-                                                .gap_0p5()
-                                                .child(attachment.name.clone())
-                                                .child(
-                                                    div()
-                                                        .text_color(gpui::rgb(theme::text_muted()))
-                                                        .child(if unavailable {
-                                                            tr("chat-image-unavailable")
-                                                        } else {
-                                                            attachment.detail.clone()
-                                                        }),
-                                                ),
-                                        ),
-                                }
-                            }),
-                        ))
-                    })
-                    .when(!text.trim().is_empty(), |bubble| {
-                        bubble.child(rich_text::plain_paragraph(
-                            transcript.derived.get(item, revision).text.clone(),
+            .when(has_attachments, |message| {
+                message.child(
+                    div()
+                        .max_w(gpui::relative(0.75))
+                        .flex()
+                        .flex_wrap()
+                        .justify_end()
+                        .gap_2()
+                        .mb_1()
+                        .children(
+                            derived
+                                .attachments
+                                .iter()
+                                .map(|attachment| render_attachment(attachment, transcript)),
+                        ),
+                )
+            })
+            .when(!text.trim().is_empty(), |message| {
+                message.child(
+                    typography::chat_reading(div())
+                        .debug_selector({
+                            let id = item.id.clone();
+                            move || format!("message-bubble-{id}")
+                        })
+                        .max_w(gpui::relative(0.75))
+                        .px_4()
+                        .py_2()
+                        .rounded(theme::RADIUS_MD)
+                        .bg(gpui::rgb(theme::bg_user_bubble()))
+                        .border_1()
+                        .border_color(gpui::rgb(theme::user_bubble_border()))
+                        .text_color(gpui::rgb(theme::text_primary()))
+                        .child(rich_text::plain_paragraph(
+                            display.clone(),
                             ordinal,
                             &user_ctx,
-                        ))
-                    }),
-            )
+                        )),
+                )
+            })
             .child(
                 div()
                     .flex()

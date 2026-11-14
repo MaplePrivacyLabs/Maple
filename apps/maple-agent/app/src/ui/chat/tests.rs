@@ -11194,6 +11194,371 @@ mod state_tests {
         bytes
     }
 
+    fn sized_image(width: u32, height: u32) -> Arc<gpui::Image> {
+        // Rendering regressions need decodable pixels: the signature-only
+        // draft fixture never gives gpui an intrinsic image size.
+        let mut bytes = std::io::Cursor::new(Vec::new());
+        image::DynamicImage::new_rgba8(width, height)
+            .write_to(&mut bytes, image::ImageFormat::Png)
+            .expect("encode fixture image");
+        Arc::new(gpui::Image::from_bytes(
+            gpui::ImageFormat::Png,
+            bytes.into_inner(),
+        ))
+    }
+
+    fn image_message(id: &str, text: &str, attachments: &[&str]) -> AgentTimelineItem {
+        let mut message = user_item(id, text);
+        message.input = Some(serde_json::json!({
+            "attachments": attachments.iter().map(|id| serde_json::json!({
+                "id": id,
+                "name": format!("{id}.png"),
+                "mimeType": "image/png",
+                "size": 1024,
+                "executionPath": format!("/uploads/{id}.png"),
+            })).collect::<Vec<_>>()
+        }));
+        message
+    }
+
+    #[gpui::test]
+    fn message_images_stay_thumbnail_sized_above_the_text(cx: &mut TestAppContext) {
+        cx.update(|cx| cx.set_reduce_motion(true));
+        let landscape = sized_image(2000, 300);
+        let portrait = sized_image(300, 2000);
+        let (_chat, cx) = chat_window(cx, |this, _| {
+            this.sidebar_collapsed = true;
+            this.replace_timeline(vec![
+                image_message(
+                    "screenshots",
+                    "Please check these screenshots.",
+                    &["wide", "tall"],
+                ),
+                image_message("image-only", "", &["only"]),
+            ]);
+            this.attachment_images
+                .insert("wide".into(), landscape.clone());
+            this.attachment_images
+                .insert("tall".into(), portrait.clone());
+            this.attachment_images.insert("only".into(), landscape);
+        });
+
+        for width in [1200., 480.] {
+            cx.simulate_resize(gpui::size(px(width), px(800.)));
+            cx.run_until_parked();
+            let row = cx
+                .debug_bounds("timeline-row-screenshots")
+                .expect("message row");
+            let bubble = cx
+                .debug_bounds("message-bubble-screenshots")
+                .expect("message text");
+            for selector in ["attachment-thumbnail-wide", "attachment-thumbnail-tall"] {
+                let thumbnail = cx.debug_bounds(selector).expect("image thumbnail");
+                assert_eq!(thumbnail.size, gpui::size(px(72.), px(72.)));
+                assert!(thumbnail.left() >= row.left(), "{selector} left the row");
+                assert!(thumbnail.right() <= row.right(), "{selector} left the row");
+                assert!(
+                    thumbnail.bottom() <= bubble.top(),
+                    "images belong above the text"
+                );
+            }
+            let image_only_row = cx
+                .debug_bounds("timeline-row-image-only")
+                .expect("image-only message");
+            let image_only = cx
+                .debug_bounds("attachment-thumbnail-only")
+                .expect("image-only thumbnail");
+            assert_eq!(image_only.size, gpui::size(px(72.), px(72.)));
+            assert!(image_only.left() >= image_only_row.left());
+            assert!(image_only.right() <= image_only_row.right());
+            assert!(
+                cx.debug_bounds("message-bubble-image-only").is_none(),
+                "an image-only message has no empty text bubble"
+            );
+        }
+    }
+
+    #[gpui::test]
+    fn message_thumbnail_opens_a_fitted_image_and_dismisses_without_clicking_through(
+        cx: &mut TestAppContext,
+    ) {
+        cx.update(|cx| cx.set_reduce_motion(true));
+        let landscape = sized_image(2000, 300);
+        let portrait = sized_image(300, 2000);
+        let (chat, cx) = chat_window(cx, |this, _| {
+            this.sidebar_collapsed = true;
+            this.replace_timeline(vec![image_message(
+                "screenshots",
+                "Images",
+                &["wide", "tall"],
+            )]);
+            this.attachment_images
+                .insert("wide".into(), landscape.clone());
+            this.attachment_images
+                .insert("tall".into(), portrait.clone());
+        });
+
+        for (width, height) in [(1200., 800.), (480., 440.)] {
+            cx.simulate_resize(gpui::size(px(width), px(height)));
+            cx.run_until_parked();
+            for (selector, expected_image) in [
+                ("attachment-thumbnail-wide", &landscape),
+                ("attachment-thumbnail-tall", &portrait),
+            ] {
+                press(cx, selector);
+                cx.run_until_parked();
+                chat.read_with(cx, |this, _| {
+                    assert!(Arc::ptr_eq(
+                        this.lightbox.as_ref().expect("opened image"),
+                        expected_image
+                    ));
+                });
+                let image = cx.debug_bounds("lightbox-image").expect("expanded image");
+                assert!(image.size.width > px(72.) && image.size.height > px(72.));
+                assert!(image.size.width <= px(width * 0.9 + 2.));
+                assert!(image.size.height <= px(height * 0.9 + 2.));
+                assert!(image.left() >= px(0.) && image.right() <= px(width));
+                assert!(image.top() >= px(0.) && image.bottom() <= px(height));
+
+                cx.simulate_click(image.center(), gpui::Modifiers::default());
+                cx.run_until_parked();
+                assert!(
+                    chat.read_with(cx, |this, _| this.lightbox.is_some()),
+                    "clicking the image keeps it open"
+                );
+                cx.simulate_click(gpui::point(px(2.), px(2.)), gpui::Modifiers::default());
+                cx.run_until_parked();
+                assert!(
+                    chat.read_with(cx, |this, _| this.lightbox.is_none()),
+                    "clicking the scrim closes the image"
+                );
+
+                press(cx, selector);
+                press(cx, "lightbox-close");
+                cx.run_until_parked();
+                assert!(chat.read_with(cx, |this, _| this.lightbox.is_none()));
+            }
+        }
+    }
+
+    #[gpui::test]
+    fn lightbox_owns_keyboard_input_and_restores_its_opener(cx: &mut TestAppContext) {
+        cx.update(|cx| cx.set_reduce_motion(true));
+        let (chat, cx) = chat_window(cx, |this, cx| {
+            this.set_application_vim_enabled(false, cx);
+            this.composer_vim_enabled = false;
+            this.replace_timeline(vec![image_message("screenshot", "Screenshot", &["shot"])]);
+            this.attachment_images
+                .insert("shot".into(), sized_image(300, 2000));
+            this.composer.as_ref().unwrap().update(cx, |input, cx| {
+                input.set_vim_enabled(false, cx);
+                input.set_text("Unsent draft", cx);
+            });
+        });
+        press(cx, "attachment-thumbnail-shot");
+        cx.run_until_parked();
+        let opener = chat.read_with(cx, |this, _| {
+            this.lightbox_previous_focus
+                .clone()
+                .expect("focused thumbnail opener")
+        });
+        assert_ne!(
+            cx.update(|window, app| window.focused(app)),
+            Some(opener.clone())
+        );
+        cx.simulate_keystrokes("i j k l enter");
+        cx.run_until_parked();
+        chat.read_with(cx, |this, app| {
+            assert!(this.lightbox.is_some());
+            assert_eq!(
+                this.composer.as_ref().unwrap().read(app).text(),
+                "Unsent draft"
+            );
+            assert!(this.sending_previews.is_empty());
+        });
+        cx.simulate_keystrokes("escape");
+        cx.run_until_parked();
+        assert!(chat.read_with(cx, |this, _| this.lightbox.is_none()));
+        assert_eq!(
+            cx.update(|window, app| window.focused(app)),
+            Some(opener.clone())
+        );
+        cx.simulate_keystrokes("tab");
+        cx.run_until_parked();
+        let after_tab = cx.update(|window, app| window.focused(app));
+        assert!(
+            after_tab.is_some(),
+            "Tab reaches a live control after dismissal"
+        );
+        assert_ne!(after_tab, Some(opener));
+    }
+
+    #[gpui::test]
+    fn image_thumbnails_support_keyboard_activation_and_modal_tab_navigation(
+        cx: &mut TestAppContext,
+    ) {
+        cx.update(|cx| cx.set_reduce_motion(true));
+        for application_vim in [false, true] {
+            let (chat, cx) = chat_window(cx, |this, cx| {
+                this.set_application_vim_enabled(application_vim, cx);
+                this.replace_timeline(vec![image_message("screenshot", "Screenshot", &["shot"])]);
+                this.attachment_images
+                    .insert("shot".into(), sized_image(300, 2000));
+            });
+            // Pointer activation gives the thumbnail its own focus handle. Closing
+            // restores that handle, so these keys exercise the real opener rather
+            // than directly calling open_lightbox or dispatching its action.
+            press(cx, "attachment-thumbnail-shot");
+            cx.run_until_parked();
+            let opener = chat.read_with(cx, |this, _| {
+                this.lightbox_previous_focus
+                    .clone()
+                    .expect("focused thumbnail opener")
+            });
+            cx.simulate_keystrokes("escape");
+            cx.run_until_parked();
+            assert_eq!(
+                cx.update(|window, app| window.focused(app)),
+                Some(opener.clone())
+            );
+
+            for activation in ["enter", "space"] {
+                cx.simulate_keystrokes(activation);
+                // GPUI's native button activation completes on key-up. The
+                // keystroke helper sends only key-down, so dispatch the release
+                // as well, just as the window receives a physical key press.
+                cx.update(|window, app| {
+                    window.dispatch_event(
+                        gpui::PlatformInput::KeyUp(gpui::KeyUpEvent {
+                            keystroke: gpui::Keystroke::parse(activation).unwrap(),
+                        }),
+                        app,
+                    );
+                });
+                cx.run_until_parked();
+                assert!(
+                    chat.read_with(cx, |this, _| this.lightbox.is_some()),
+                    "{activation} opens the focused thumbnail (Application Vim: {application_vim})"
+                );
+                for navigation in ["tab", "tab", "shift-tab", "shift-tab"] {
+                    cx.simulate_keystrokes(navigation);
+                    cx.run_until_parked();
+                    cx.update(|window, app| {
+                        assert!(
+                            chat.read(app).lightbox_focus.contains_focused(window, app),
+                            "{navigation} stays inside the image dialog"
+                        );
+                    });
+                }
+                cx.simulate_keystrokes("escape");
+                cx.run_until_parked();
+                assert!(chat.read_with(cx, |this, _| this.lightbox.is_none()));
+                assert_eq!(
+                    cx.update(|window, app| window.focused(app)),
+                    Some(opener.clone())
+                );
+            }
+
+            cx.simulate_keystrokes("tab");
+            cx.run_until_parked();
+            assert_ne!(
+                cx.update(|window, app| window.focused(app)),
+                Some(opener.clone())
+            );
+            cx.simulate_keystrokes("shift-tab");
+            cx.run_until_parked();
+            assert_eq!(cx.update(|window, app| window.focused(app)), Some(opener));
+        }
+    }
+
+    #[gpui::test]
+    fn leaving_a_task_closes_its_image_and_discards_stale_focus(cx: &mut TestAppContext) {
+        cx.update(|cx| cx.set_reduce_motion(true));
+        for application_vim in [false, true] {
+            let (chat, cx) = chat_window(cx, |this, cx| {
+                this.set_application_vim_enabled(application_vim, cx);
+                this.replace_timeline(vec![image_message("screenshot", "Screenshot", &["shot"])]);
+                this.attachment_images
+                    .insert("shot".into(), sized_image(300, 2000));
+            });
+            press(cx, "attachment-thumbnail-shot");
+            cx.run_until_parked();
+            chat.read_with(cx, |this, _| {
+                assert!(this.lightbox.is_some());
+                assert!(this.lightbox_previous_focus.is_some());
+            });
+            chat.update(cx, |this, cx| {
+                this.clear_selected_session_presentation(cx);
+                cx.notify();
+            });
+            cx.run_until_parked();
+            assert!(cx.debug_bounds("lightbox").is_none());
+            cx.update(|window, app| {
+                let this = chat.read(app);
+                assert!(this.lightbox.is_none());
+                assert!(!this.lightbox_focus_pending);
+                assert!(this.lightbox_previous_focus.is_none());
+                let expected = if application_vim {
+                    this.application_focus.clone()
+                } else {
+                    Some(this.composer.as_ref().unwrap().read(app).focus_handle(app))
+                };
+                assert_eq!(
+                    window.focused(app),
+                    expected,
+                    "navigation restores the new screen's live focus"
+                );
+            });
+        }
+    }
+
+    #[gpui::test]
+    fn late_project_trust_waits_until_the_image_preview_closes(cx: &mut TestAppContext) {
+        cx.update(|cx| cx.set_reduce_motion(true));
+        let (chat, cx) = chat_window(cx, |this, _| {
+            this.replace_timeline(vec![image_message("screenshot", "Screenshot", &["shot"])]);
+            this.attachment_images
+                .insert("shot".into(), sized_image(300, 2000));
+        });
+        press(cx, "attachment-thumbnail-shot");
+        cx.run_until_parked();
+        let trust = AgentProjectTrustStatus {
+            path: absolute_fixture_root("late-trust"),
+            decision: None,
+            available: true,
+            protected_features: vec![maple_agent::agent::AgentProjectTrustFeature::SystemPrompt],
+        };
+        // Mirror a project-trust response arriving asynchronously after the
+        // preview took the keyboard. Its decision remains pending underneath.
+        chat.update(cx, |this, cx| {
+            this.trust_prompt = Some(trust.clone());
+            this.dialog_focus.get_or_insert_with(|| cx.focus_handle());
+            this.dialog_focus_pending = true;
+            cx.notify();
+        });
+        cx.run_until_parked();
+        assert!(cx.debug_bounds("lightbox").is_some());
+        assert!(cx.debug_bounds("trust-backdrop").is_none());
+        cx.update(|window, app| {
+            let this = chat.read(app);
+            assert!(this.lightbox_focus.contains_focused(window, app));
+            assert!(this.dialog_focus_pending);
+            assert_eq!(this.trust_prompt.as_ref(), Some(&trust));
+        });
+
+        cx.simulate_keystrokes("escape");
+        cx.run_until_parked();
+        assert!(cx.debug_bounds("lightbox").is_none());
+        assert!(cx.debug_bounds("trust-backdrop").is_some());
+        cx.update(|window, app| {
+            let this = chat.read(app);
+            assert!(this.lightbox.is_none());
+            assert_eq!(this.trust_prompt.as_ref(), Some(&trust));
+            assert!(!this.dialog_focus_pending);
+            assert_eq!(window.focused(app), this.dialog_focus.clone());
+        });
+    }
+
     /// The lightbox draws in a debug build, where gpui asserts each
     /// element has at most one tooltip, and Escape closes it.
     #[gpui::test]
