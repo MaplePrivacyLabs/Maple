@@ -19,7 +19,7 @@ use gpui::{
 };
 
 use super::icons::icon;
-use super::motion::{self, HoverBackground, hover_background};
+use super::motion::{self, HoverBackground, HoverBg as _};
 use super::theme;
 
 /// How long an icon-only control waits before showing its tooltip. Icons
@@ -106,42 +106,33 @@ pub fn navigate_mark(color: u32) -> gpui::Svg {
 
 /// Accessible default/primary action button: high-contrast neutral inverted pill.
 pub fn default_button(id: impl Into<ElementId>) -> HoverBackground {
-    hover_background(
-        pill(id)
-            .bg(gpui::rgb(theme::bg_default_button()))
-            .text_color(gpui::rgb(theme::text_on_default_button()))
-            .hover(|style| style.cursor_pointer())
-            .active(|style| press_depth(style.bg(gpui::rgb(theme::bg_default_button_active())))),
-        gpui::rgb(theme::bg_default_button()),
-        gpui::rgb(theme::bg_default_button_hover()),
-    )
+    pill(id)
+        .bg(gpui::rgb(theme::bg_default_button()))
+        .text_color(gpui::rgb(theme::text_on_default_button()))
+        .hover(|style| style.cursor_pointer())
+        .active(|style| press_depth(style.bg(gpui::rgb(theme::bg_default_button_active()))))
+        .hover_bg(gpui::rgb(theme::bg_default_button_hover()))
 }
 
 /// Legacy accent-filled action button; new and Settings surfaces use
 /// [`default_button`] for WCAG contrast until legacy callers migrate globally.
 pub fn primary_button(id: impl Into<ElementId>) -> HoverBackground {
-    hover_background(
-        pill(id)
-            .bg(gpui::rgb(theme::accent()))
-            .text_color(gpui::rgb(theme::on_accent()))
-            .hover(|style| style.cursor_pointer())
-            .active(|style| press_depth(style.bg(gpui::rgb(theme::send_bottom())))),
-        gpui::rgb(theme::accent()),
-        gpui::rgb(theme::accent_hover()),
-    )
+    pill(id)
+        .bg(gpui::rgb(theme::accent()))
+        .text_color(gpui::rgb(theme::on_accent()))
+        .hover(|style| style.cursor_pointer())
+        .active(|style| press_depth(style.bg(gpui::rgb(theme::send_bottom()))))
+        .hover_bg(gpui::rgb(theme::accent_hover()))
 }
 /// Neutral pill for the second action beside a [`primary_button`]
 /// (Cancel, Back, alternate sign-in): a pebble fill that darkens on hover.
 pub fn secondary_button(id: impl Into<ElementId>) -> HoverBackground {
-    hover_background(
-        pill(id)
-            .bg(gpui::rgb(theme::bg_sidebar_pill()))
-            .text_color(gpui::rgb(theme::text_primary()))
-            .hover(|style| style.cursor_pointer())
-            .active(|style| press_depth(style.bg(gpui::rgb(theme::border())))),
-        gpui::rgb(theme::bg_sidebar_pill()),
-        gpui::rgb(theme::bg_sidebar_row_selected()),
-    )
+    pill(id)
+        .bg(gpui::rgb(theme::bg_sidebar_pill()))
+        .text_color(gpui::rgb(theme::text_primary()))
+        .hover(|style| style.cursor_pointer())
+        .active(|style| press_depth(style.bg(gpui::rgb(theme::border()))))
+        .hover_bg(gpui::rgb(theme::bg_sidebar_row_selected()))
 }
 
 /// A key named beside the control it works: one fixed height, so a row of
@@ -170,31 +161,26 @@ pub fn keycap(label: impl Into<gpui::SharedString>) -> Div {
 /// Text-only button for low-emphasis actions: no fill, no border, and
 /// the label brightens on hover.
 pub fn ghost_button(id: impl Into<ElementId>) -> HoverBackground {
-    hover_background(
-        pill(id)
-            .text_color(gpui::rgb(theme::text_secondary()))
-            .hover(|style| {
-                style
-                    .text_color(gpui::rgb(theme::text_primary()))
-                    .cursor_pointer()
-            })
-            .active(|style| style.bg(gpui::rgb(theme::bg_sidebar_pill()))),
-        gpui::transparent_black(),
-        theme::overlay_hover(),
-    )
+    pill(id)
+        .text_color(gpui::rgb(theme::text_secondary()))
+        .hover(|style| {
+            style
+                .text_color(gpui::rgb(theme::text_primary()))
+                .cursor_pointer()
+        })
+        .active(|style| style.bg(gpui::rgb(theme::bg_sidebar_pill())))
+        .hover_bg(theme::overlay_hover())
 }
 
 /// Destructive pill (Remove, Deny): error fill with a light label.
 pub fn danger_button(id: impl Into<ElementId>) -> HoverBackground {
     let error: Hsla = gpui::rgb(theme::status_error()).into();
-    hover_background(
-        pill(id)
-            .text_color(gpui::rgb(theme::on_accent()))
-            .hover(|style| style.cursor_pointer())
-            .active(|style| press_depth(style.opacity(0.85))),
-        error,
-        gpui::hsla(error.h, error.s, error.l, 0.9),
-    )
+    pill(id)
+        .bg(error)
+        .text_color(gpui::rgb(theme::on_accent()))
+        .hover(|style| style.cursor_pointer())
+        .active(|style| press_depth(style.opacity(0.85)))
+        .hover_bg(gpui::hsla(error.h, error.s, error.l, 0.9))
 }
 
 /// A destructive action at rest: outlined in the error color, filled only
@@ -248,25 +234,22 @@ fn icon_button_base(
     size: Pixels,
     color: u32,
 ) -> HoverBackground {
-    hover_background(
-        div()
-            .id(id)
-            .role(Role::Button)
-            .aria_label(label)
-            .flex_none()
-            .size_7()
-            .flex()
-            .items_center()
-            .justify_center()
-            .rounded(theme::RADIUS_SM)
-            .focus_visible(focus_ring)
-            .hover(|style| style.cursor_pointer())
-            .active(|style| style.bg(gpui::rgb(theme::bg_sidebar_row_selected())))
-            .tooltip_show_delay(ICON_TOOLTIP_DELAY)
-            .child(icon(name, size, color)),
-        gpui::transparent_black(),
-        gpui::rgb(theme::bg_sidebar_row_hover()),
-    )
+    div()
+        .id(id)
+        .role(Role::Button)
+        .aria_label(label)
+        .flex_none()
+        .size_7()
+        .flex()
+        .items_center()
+        .justify_center()
+        .rounded(theme::RADIUS_SM)
+        .focus_visible(focus_ring)
+        .hover(|style| style.cursor_pointer())
+        .active(|style| style.bg(gpui::rgb(theme::bg_sidebar_row_selected())))
+        .tooltip_show_delay(ICON_TOOLTIP_DELAY)
+        .child(icon(name, size, color))
+        .hover_bg(gpui::rgb(theme::bg_sidebar_row_hover()))
 }
 
 /// On/off switch: a pill track with a knob that sits right when `on`.
@@ -322,7 +305,6 @@ pub fn checkbox(
             "checkbox-mark",
             if checked { 1. } else { 0. },
             motion::TOGGLE,
-            motion::ease_out_cubic,
             move |checked| {
                 let scale = 0.6 + 0.4 * checked;
                 div()
@@ -370,7 +352,6 @@ pub fn switch_track(on: bool) -> Div {
             "switch-knob",
             if on { 1. } else { 0. },
             motion::TOGGLE,
-            motion::ease_out_cubic,
             move |on| {
                 div()
                     .size_full()
@@ -603,11 +584,9 @@ pub fn dialog_scrim() -> impl IntoElement {
         .absolute()
         .inset_0()
         .bg(theme::scrim())
-        .with_animation(
-            "dialog-scrim",
-            gpui::Animation::new(motion::ENTER).with_easing(motion::ease_out_quint),
-            |scrim, shown| scrim.opacity(shown),
-        )
+        .with_animation("dialog-scrim", motion::ENTER.animation(), |scrim, shown| {
+            scrim.opacity(shown)
+        })
 }
 
 /// A modal card arriving: it fades in and rises from 8 px below over
@@ -899,13 +878,7 @@ pub fn copy_button(
         } else {
             "common-copy"
         }))
-        .map(|button| {
-            super::motion::hover_background(
-                button,
-                gpui::transparent_black(),
-                theme::overlay_hover(),
-            )
-        })
+        .hover_bg(theme::overlay_hover())
 }
 
 #[cfg(test)]
@@ -1084,7 +1057,7 @@ mod tests {
 
         turn(true, cx);
         assert_eq!(knob(cx), off, "the knob sets out from where it is");
-        frame_at(start + motion::TOGGLE / 3, cx);
+        frame_at(start + motion::TOGGLE.settle / 3, cx);
         let partway = knob(cx);
         assert!(
             off < partway && partway < off + KNOB_TRAVEL,
@@ -1093,13 +1066,16 @@ mod tests {
 
         turn(false, cx);
         assert_eq!(knob(cx), partway, "turning back starts from the knob");
-        frame_at(start + motion::TOGGLE / 3 + motion::TOGGLE / 4, cx);
+        frame_at(
+            start + motion::TOGGLE.settle / 3 + motion::TOGGLE.settle / 4,
+            cx,
+        );
         let returning = knob(cx);
         assert!(
             off < returning && returning < partway,
             "the knob {returning:?} heads back from {partway:?}"
         );
-        frame_at(start + motion::TOGGLE * 2, cx);
+        frame_at(start + motion::TOGGLE.settle * 2, cx);
         assert_eq!(knob(cx), off);
         assert_eq!(frames(cx), 0, "a settled switch asks for no frames");
 

@@ -1,6 +1,7 @@
 //! Host-owned folder chooser for paired computers. Paths stay opaque here:
 //! only the selected daemon resolves them or touches disk.
 
+use crate::ui::motion::HoverBg as _;
 use std::{cell::RefCell, sync::Arc};
 
 use gpui::{
@@ -591,14 +592,7 @@ impl ProjectFolderDialog {
             .when(self.highlighted == Some(index), |row| {
                 row.bg(gpui::rgb(theme::bg_sidebar_row_selected()))
             })
-            .map(|element| {
-                let rest: gpui::Hsla = if self.highlighted == Some(index) {
-                    gpui::rgb(theme::bg_sidebar_row_selected()).into()
-                } else {
-                    gpui::transparent_black()
-                };
-                crate::ui::motion::hover_background(element, rest, theme::overlay_hover())
-            })
+            .hover_bg(theme::overlay_hover())
             .hover(|row| row.cursor_pointer())
             .on_click(cx.listener(move |this, _, window, cx| {
                 window.focus(&this.focus(Control::List, cx), cx);

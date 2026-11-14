@@ -2,6 +2,7 @@
 //! calls, questions, and the composer. Pure consumer of the backend
 //! facade + event stream.
 
+use crate::ui::motion::HoverBg as _;
 use crate::ui::task::Failure as UiFailure;
 use std::collections::{BTreeSet, HashMap, HashSet};
 use std::sync::Arc;
@@ -753,12 +754,6 @@ pub struct ChatScreen {
     composer_resize: Option<motion::Tween>,
     /// Heights that transition eases between, measured last frame.
     composer_frame: std::rc::Rc<std::cell::Cell<self::composer::ComposerFrame>>,
-    /// Whether the last frame drew the empty state; `None` before the
-    /// first frame, which never glides.
-    composer_was_empty: Option<bool>,
-    /// The window y the composer region glides from, and since when, after
-    /// the empty state gives way to a conversation or back.
-    composer_glide: Option<(gpui::Pixels, std::time::Instant)>,
     /// Send (0) or Stop (1) on the composer's main control.
     send_stop: motion::Tween,
     /// The send fill, disabled (0) or ready (1).
@@ -1200,25 +1195,18 @@ impl ChatScreen {
             return;
         }
         let now = crate::ui::motion::now();
-        let from = self
-            .sidebar_transition
-            .as_ref()
-            .map(|transition| transition.value(now))
-            .unwrap_or(if self.sidebar_collapsed { 0. } else { 1. });
+        let rest = if self.sidebar_collapsed { 0. } else { 1. };
         let to = if collapsed { 0. } else { 1. };
         self.sidebar_collapsed = collapsed;
-        let distance = (to - from).abs();
-        self.sidebar_transition = (!cx.reduce_motion() && distance > f32::EPSILON).then(|| {
-            let mut transition = crate::ui::motion::Tween::new(from);
-            transition.set(
-                to,
-                crate::ui::motion::PANEL.mul_f32(distance),
-                crate::ui::motion::ease_out_cubic,
-                now,
-                false,
-            );
-            transition
-        });
+        // Retarget the transition under way rather than starting another,
+        // so a second press turns back from where the sidebar is, at the
+        // speed it has.
+        let mut transition = self
+            .sidebar_transition
+            .take()
+            .unwrap_or(crate::ui::motion::Tween::new(rest));
+        transition.set(to, crate::ui::motion::PANEL, now, cx.reduce_motion());
+        self.sidebar_transition = transition.is_moving(now).then_some(transition);
         if self.popup.is_open(&ChatPopup::Settings) {
             self.popup.close(cx);
         }
@@ -1646,8 +1634,6 @@ impl ChatScreen {
             composer_expanded: false,
             composer_resize: None,
             composer_frame: std::rc::Rc::default(),
-            composer_was_empty: None,
-            composer_glide: None,
             send_stop: motion::Tween::new(0.),
             send_ready: motion::Tween::new(0.),
             permission_mode: settings.new_task_permission_mode.unwrap_or_default(),
@@ -4309,30 +4295,21 @@ impl ChatScreen {
 
     fn toggle_composer_expanded(&mut self, cx: &mut Context<Self>) {
         let now = motion::now();
-        let from = self
-            .composer_resize
-            .map(|transition| transition.value(now))
-            .unwrap_or(if self.composer_expanded { 1. } else { 0. });
+        let rest = if self.composer_expanded { 1. } else { 0. };
         self.composer_expanded = !self.composer_expanded;
         let expanded = self.composer_expanded;
         let to = if expanded { 1. } else { 0. };
-        let distance = (to - from).abs();
-        // Eases between heights measured on screen, so it needs a frame
-        // drawn first; reduced motion switches at once.
+        // Moves between heights measured on screen, so it needs a frame
+        // drawn first; reduced motion switches at once. A transition under
+        // way is retargeted, so it turns back at the speed it has.
         let frame = self.composer_frame.get();
         let measured = frame.region.is_some() && frame.room.is_some();
-        self.composer_resize =
-            (!cx.reduce_motion() && measured && distance > f32::EPSILON).then(|| {
-                let mut transition = motion::Tween::new(from);
-                transition.set(
-                    to,
-                    motion::PANEL.mul_f32(distance),
-                    motion::ease_out_cubic,
-                    now,
-                    false,
-                );
-                transition
-            });
+        let mut transition = self
+            .composer_resize
+            .take()
+            .unwrap_or(motion::Tween::new(rest));
+        transition.set(to, motion::PANEL, now, cx.reduce_motion() || !measured);
+        self.composer_resize = transition.is_moving(now).then_some(transition);
         // The field fills the box while it moves, so typed text stays put
         // and the box's text height can be read off the field.
         let fill = self.composer_fills();
@@ -5429,9 +5406,7 @@ impl ChatScreen {
             self.remember_prompt(&text);
             // Clear the composer at dispatch so no entry path can leave the
             // sent text behind; a failed send restores it below.
-            if let Some(composer) = self.composer.clone() {
-                composer.update(cx, |input, cx| input.clear(cx));
-            }
+            self.clear_composer_for_send(cx);
         }
         if editing {
             // The edit is on its way; give the stashed draft back.
@@ -6389,6 +6364,19 @@ impl ChatScreen {
         }
         self.sync_sidebar(cx);
         true
+    }
+
+    /// Empty the composer as its message goes out. The box gets shorter by
+    /// the rows it held beyond the first, on the frame this runs; the slot
+    /// the sent message then shows in opens from that height, so the
+    /// transcript between them holds still instead of dropping.
+    fn clear_composer_for_send(&mut self, cx: &mut Context<Self>) {
+        let Some(composer) = self.composer.clone() else {
+            return;
+        };
+        let freed = composer.read(cx).height_beyond_one_row();
+        composer.update(cx, |input, cx| input.clear(cx));
+        self.row_motion.open_slot_from(freed);
     }
 
     /// Whether the slot under the transcript shows something: the message
@@ -7434,7 +7422,6 @@ impl Render for ChatScreen {
             .clone()
             .map(|status| self.render_trust_prompt(&status, cx));
         let empty = self.shows_empty_state();
-        let composer_glide = self.composer_glide_frame(empty, window, cx);
         let sidebar_expansion = self.sidebar_expansion(window, cx);
         let rise = gpui::point(px(0.), motion::RISE);
         let composer_resize = self.composer_resize_frame(window, cx);
@@ -7442,7 +7429,7 @@ impl Render for ChatScreen {
             // No slot under a transcript here; rows opening from it start at
             // 0, and the next slot to appear comes with a send.
             self.row_motion.show_empty_state();
-            self.render_empty_state(composer_resize, composer_glide, window, cx)
+            self.render_empty_state(composer_resize, window, cx)
         } else {
             div()
                 .flex()
@@ -7494,7 +7481,7 @@ impl Render for ChatScreen {
                         rise,
                     ))
                 })
-                .child(composer::glide(
+                .child(
                     div()
                         .relative()
                         .w_full()
@@ -7509,7 +7496,7 @@ impl Render for ChatScreen {
                             }
                             None if self.composer_expanded => wrap
                                 .flex_none()
-                                .h(gpui::relative(0.7))
+                                .h(gpui::relative(composer::EXPANDED_SHARE))
                                 .min_h_0()
                                 .flex()
                                 .flex_col(),
@@ -7537,16 +7524,15 @@ impl Render for ChatScreen {
                             &self.composer_frame,
                             |frame, bounds, _| {
                                 frame.region = Some(bounds.size.height);
-                                frame.top = Some(bounds.origin.y);
                             },
                         )),
-                    composer_glide,
-                ))
-                // Expanded, the composer region takes 70% of this column.
+                )
+                // Expanded, the composer region takes `EXPANDED_SHARE` of this
+                // column.
                 .child(composer::measure(
                     &self.composer_frame,
                     |frame, bounds, _| {
-                        frame.room = Some(bounds.size.height * 0.7);
+                        frame.room = Some(bounds.size.height * composer::EXPANDED_SHARE);
                     },
                 ))
         };
@@ -7822,7 +7808,6 @@ impl ChatScreen {
                         "settings-menu-chevron",
                         if open { 1. } else { 0. },
                         motion::TOGGLE,
-                        motion::ease_out_cubic,
                         |open| {
                             // Points up at the menu above while closed, and
                             // turns down once it is open.
@@ -8149,14 +8134,7 @@ impl ChatScreen {
                 .pl(mark_padding)
                 .rounded(theme::RADIUS_SM)
                 .focus_visible(widgets::focus_ring)
-                .map(|element| {
-                    let rest: gpui::Hsla = gpui::transparent_black();
-                    crate::ui::motion::hover_background(
-                        element,
-                        rest,
-                        gpui::rgb(theme::bg_sidebar_row_hover()),
-                    )
-                })
+                .hover_bg(gpui::rgb(theme::bg_sidebar_row_hover()))
                 .hover(|style| style.cursor_pointer())
                 .active(|style| style.bg(gpui::rgb(theme::bg_sidebar_row_selected())))
                 // Inside a drag region: a press here is a click, not a drag.
@@ -8199,12 +8177,10 @@ impl ChatScreen {
     /// and privacy note centered in the pane (mirrors EmptyAgentState).
     /// Expanded, the composer fills the pane; while it eases there and
     /// back (`composer_resize`), the heading and the note fold away and
-    /// fade with it so the column never jumps. `composer_glide` carries
-    /// the composer up from the foot of a conversation.
+    /// fade with it so the column never jumps.
     fn render_empty_state(
         &mut self,
         composer_resize: Option<(f32, gpui::Pixels)>,
-        composer_glide: Option<(gpui::Pixels, f32)>,
         window: &mut Window,
         cx: &mut Context<Self>,
     ) -> Div {
@@ -8293,7 +8269,9 @@ impl ChatScreen {
             .items_center()
             .justify_center()
             .px_6()
-            .when(fills, |pane| pane.py_6())
+            .when(fills, |pane| {
+                pane.py(gpui::rems(composer::EMPTY_PANE_PADDING_REMS))
+            })
             // The folding heading rides above its shrinking box; in a short
             // pane it would reach past the pane's top edge and draw faintly
             // over the title bar, so the pane clips while the composer moves.
@@ -8302,7 +8280,10 @@ impl ChatScreen {
             .child(composer::measure(
                 &self.composer_frame,
                 |frame, bounds, window| {
-                    frame.room = Some(bounds.size.height - window.rem_size() * 3.);
+                    frame.room = Some(
+                        bounds.size.height
+                            - window.rem_size() * composer::EMPTY_PANE_PADDING_REMS * 2.,
+                    );
                 },
             ))
             .child(
@@ -8315,7 +8296,7 @@ impl ChatScreen {
                     .items_center()
                     .when(fills, |column| column.h_full().min_h_0().justify_center())
                     .children(title)
-                    .child(composer::glide(
+                    .child(
                         div()
                             .relative()
                             .w_full()
@@ -8334,11 +8315,9 @@ impl ChatScreen {
                                 &self.composer_frame,
                                 |frame, bounds, _| {
                                     frame.region = Some(bounds.size.height);
-                                    frame.top = Some(bounds.origin.y);
                                 },
                             )),
-                        composer_glide,
-                    ))
+                    )
                     .when(
                         self.awaiting_first_token && self.is_run_active(),
                         |column| column.child(div().mt_6().child(render_waiting_indicator())),

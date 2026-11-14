@@ -3,6 +3,7 @@
 
 use crate::ui::host_errors::failure_text;
 use crate::ui::i18n::{UiText, tr};
+use crate::ui::motion::HoverBg as _;
 use crate::ui::task::Failure;
 use gpui::{App, Context, Div, Entity, Focusable, Window, div, prelude::*, px};
 use maple_agent::agent::{
@@ -635,6 +636,11 @@ impl SettingsScreen {
             (None, None) => (summary(entry).to_string(), theme::text_secondary()),
         };
         let card = div()
+            // The eased hover keeps its state under this id.
+            .id(gpui::SharedString::from(format!(
+                "{prefix}-card-{}",
+                entry.id
+            )))
             .debug_selector(move || format!("{prefix}-card-{}", entry.id))
             .flex()
             .items_center()
@@ -642,7 +648,7 @@ impl SettingsScreen {
             .px_2()
             .py_1p5()
             .rounded(theme::RADIUS_MD)
-            .hover(|style| style.bg(gpui::rgb(theme::bg_sidebar_row_hover())))
+            .hover_bg(gpui::rgb(theme::bg_sidebar_row_hover()))
             .child(
                 div()
                     .size(px(32.))
@@ -804,7 +810,6 @@ impl SettingsScreen {
             .when(busy, |tile| tile.opacity(0.5))
             .when(!busy, |tile| {
                 tile.cursor_pointer()
-                    .hover(|style| style.bg(gpui::rgb(theme::bg_sidebar_row_hover())))
                     .on_click(cx.listener(move |this, _event, _window, cx| {
                         if this.mcp_signing_in.as_deref() == Some(entry.name.as_str()) {
                             this.cancel_mcp_sign_in(cx);
@@ -822,6 +827,8 @@ impl SettingsScreen {
                         }
                     }))
             })
+            .hover_bg(gpui::rgb(theme::bg_sidebar_row_hover()))
+            .when(busy, |tile| tile.highlighted(false))
             .child(
                 div()
                     .size(px(32.))

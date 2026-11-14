@@ -1,6 +1,7 @@
 //! The Usage page's charts: bars and segments are plain elements, so gpui
 //! gives them hit testing, hover and tooltips.
 
+use crate::ui::motion::HoverBg as _;
 use std::rc::Rc;
 
 use gpui::{
@@ -310,7 +311,7 @@ pub(super) fn bars(chart: Bars, tip: Rc<dyn Fn(usize) -> Tip>) -> gpui::Stateful
                 .justify_end()
                 .items_center()
                 .rounded(px(4.))
-                .hover(|style| style.bg(theme::overlay_hover()))
+                .hover_bg(theme::overlay_hover())
                 .tooltip(tooltip(move || tip(index)))
                 .child(stack)
         }),

@@ -2,6 +2,7 @@
 //! shared `TranscriptCtx` caches; nothing here parses or derives on a
 //! frame.
 
+use crate::ui::motion::HoverBg as _;
 use std::cell::{Cell, RefCell};
 use std::collections::HashMap;
 use std::rc::Rc;
@@ -401,6 +402,9 @@ impl ChatScreen {
     ) -> Option<gpui::AnyElement> {
         let appeared = !self.row_motion.slot_on_screen;
         let snap = std::mem::take(&mut self.row_motion.slot_snap);
+        // Only the frame after a send may use the height the composer gave
+        // up; a slot that appears later opens from nothing.
+        let freed = std::mem::take(&mut self.row_motion.slot_from).as_f32();
         let preview = self.render_send_preview(window, cx);
         let dots = self.awaiting_first_token && self.is_run_active() && !self.has_send_feedback();
         let slot = &mut self.row_motion;
@@ -417,17 +421,21 @@ impl ChatScreen {
         let natural = slot.slot_natural.get().map(f32::from);
         if reduced {
             slot.slot_open = None;
+            slot.slot_since = None;
         } else if appeared {
             // A send opens it; a task switch or history load shows it at
-            // once.
-            slot.slot_open = (!snap).then(|| motion::Tween::new(0.));
-            slot.slot_since = Some(now);
+            // once. It opens from the height the composer gave up as it
+            // emptied, so the transcript above does not drop first. Only
+            // an opening slot is timed from its appearance: one shown at
+            // once is at rest, and whatever grows it later starts then.
+            slot.slot_open = (!snap).then(|| motion::Tween::pixels(freed));
+            slot.slot_since = (!snap).then_some(now);
         }
         let cap = match (&mut slot.slot_open, natural) {
             (None, None) => None,
             (None, Some(natural)) => {
                 if !reduced {
-                    slot.slot_open = Some(motion::Tween::new(natural));
+                    slot.slot_open = Some(motion::Tween::pixels(natural));
                 }
                 None
             }
@@ -436,24 +444,25 @@ impl ChatScreen {
                 window.request_animation_frame();
                 Some(px(open.value(now)))
             }
+            // A send while the slot already shows (the waiting dots): the
+            // composer gives up `freed` on this frame and the message is
+            // not measured yet, so the slot takes that height at once and
+            // opens the rest from here, as a slot that appears does.
+            (Some(open), Some(_)) if freed > 0. => {
+                *open = motion::Tween::pixels(open.value(now) + freed);
+                slot.slot_since = Some(now);
+                window.request_animation_frame();
+                Some(px(open.value(now)))
+            }
             (Some(open), Some(natural)) => {
                 // Shrinking follows the content at once; growing opens.
                 // The first opening runs from when the slot appeared, not
                 // from the frame its content was first measured.
                 if natural < open.value(now) {
-                    *open = motion::Tween::new(natural);
+                    *open = motion::Tween::pixels(natural);
                 }
-                let start = match slot.slot_since.take() {
-                    Some(since) if open.target() == 0. => since,
-                    _ => now,
-                };
-                open.set(
-                    natural,
-                    motion::ENTER,
-                    motion::ease_out_cubic,
-                    start,
-                    reduced,
-                );
+                let start = slot.slot_since.take().unwrap_or(now);
+                open.set(natural, motion::ENTER, start, reduced);
                 if open.is_moving(now) {
                     window.request_animation_frame();
                 }
@@ -548,6 +557,9 @@ pub(super) struct RowMotion {
     slot_snap: bool,
     /// When the slot last appeared, for its first opening.
     slot_since: Option<Instant>,
+    /// The height the next slot to appear opens from: what the composer
+    /// gave up when a send emptied it.
+    slot_from: Pixels,
 }
 
 #[derive(Clone, Copy)]
@@ -614,6 +626,12 @@ impl RowMotion {
         {
             grow.from += height;
         }
+    }
+
+    /// A send emptied the composer, which gets `freed` shorter on the next
+    /// frame. The slot that send shows opens from that height.
+    pub(super) fn open_slot_from(&mut self, freed: Pixels) {
+        self.slot_from = freed;
     }
 
     /// The slot's height on screen last frame.
@@ -721,12 +739,15 @@ impl RowMotion {
         }
         let running = |at: &Instant, duration| now.saturating_duration_since(*at) < duration;
         self.arrived
-            .retain(|_, arrival| running(&arrival.at, motion::ENTER));
+            .retain(|_, arrival| running(&arrival.at, motion::ENTER.duration));
         self.heights
             .borrow_mut()
             .retain(|id, _| self.arrived.contains_key(id));
-        self.disclosed.retain(|_, at| running(at, motion::REVEAL));
-        self.switched = self.switched.filter(|at| running(at, motion::REVEAL));
+        self.disclosed
+            .retain(|_, at| running(at, motion::REVEAL.duration));
+        self.switched = self
+            .switched
+            .filter(|at| running(at, motion::REVEAL.duration));
         !self.arrived.is_empty() || !self.disclosed.is_empty() || self.switched.is_some()
     }
 }
@@ -1246,7 +1267,6 @@ fn tool_status(item_id: &str, running: bool, label: SharedString, color: u32) ->
         SharedString::from(format!("tool-status-{item_id}")),
         if running { 0. } else { 1. },
         motion::TOGGLE,
-        motion::ease_out_cubic,
         move |done| {
             div()
                 .flex()
@@ -2301,7 +2321,7 @@ pub(super) fn render_question_card(
         .py_1()
         .rounded(theme::RADIUS_SM)
         .cursor_pointer()
-        .hover(|style| style.bg(theme::overlay_hover()))
+        .hover_bg(theme::overlay_hover())
         .on_click(cx.listener(|this, _event, _window, cx| {
             this.toggle_question_collapsed(cx);
         }))
@@ -2453,18 +2473,7 @@ pub(super) fn render_question_card(
                 .when(marked, |row| {
                     row.bg(gpui::rgb(theme::bg_sidebar_row_hover()))
                 })
-                .map(|element| {
-                    let rest: gpui::Hsla = if marked {
-                        gpui::rgb(theme::bg_sidebar_row_hover()).into()
-                    } else {
-                        gpui::transparent_black()
-                    };
-                    crate::ui::motion::hover_background(
-                        element,
-                        rest,
-                        gpui::rgb(theme::bg_sidebar_row_hover()),
-                    )
-                })
+                .hover_bg(gpui::rgb(theme::bg_sidebar_row_hover()))
                 .hover(|style| style.cursor_pointer())
                 .on_click({
                     cx.listener(move |this, _event, _window, cx| {
@@ -2589,9 +2598,9 @@ pub(super) fn render_question_card(
                 .hover(|style| {
                     style
                         .text_color(gpui::rgb(theme::text_secondary()))
-                        .bg(theme::overlay_hover())
                         .cursor_pointer()
                 })
+                .hover_bg(theme::overlay_hover())
                 .on_click(cx.listener(|this, _event, _window, cx| {
                     this.skip_question(cx);
                 }))
@@ -2819,7 +2828,7 @@ mod motion_tests {
     ) -> Vec<Vec<Pixels>> {
         let mut tops = vec![Vec::new(); selectors.len()];
         let mut at = Duration::ZERO;
-        while at <= motion::ENTER + Duration::from_millis(16) {
+        while at <= motion::ENTER.settle + Duration::from_millis(16) {
             clock.at(start + at);
             redraw(chat, cx);
             for (selector, tops) in selectors.iter().zip(&mut tops) {
@@ -2858,7 +2867,7 @@ mod motion_tests {
         redraw(&chat, cx);
         let entering = bounds(cx, "timeline-row-live");
 
-        let midway = clock.at(motion::ENTER / 2);
+        let midway = clock.at(motion::ENTER.settle / 2);
         let progress = chat.update(cx, |chat, _| chat.row_motion.arrival("live", midway, false));
         assert!(
             progress > 0. && progress < 1.,
@@ -2866,7 +2875,7 @@ mod motion_tests {
         );
         assert!(in_flight(&chat, midway, cx), "frames continue mid-entrance");
 
-        let done = clock.at(motion::ENTER);
+        let done = clock.at(motion::ENTER.settle);
         redraw(&chat, cx);
         let settled = bounds(cx, "timeline-row-live");
         assert_eq!(entering.size, settled.size, "the rise never changes layout");
@@ -2914,7 +2923,7 @@ mod motion_tests {
             "older rows only rise: {tops:?}"
         );
         assert_glides(&tops, "an older row");
-        assert!(!in_flight(&chat, clock.at(motion::ENTER), cx));
+        assert!(!in_flight(&chat, clock.at(motion::ENTER.settle), cx));
 
         // The settled layout is the one without motion.
         let older = bounds(cx, "timeline-row-h29");
@@ -2936,7 +2945,7 @@ mod motion_tests {
             chat.apply_incoming_item("s1", item("reply", "message", Some("Answer:")), cx);
         });
         redraw(&chat, cx);
-        clock.at(motion::ENTER / 3);
+        clock.at(motion::ENTER.settle / 3);
         redraw(&chat, cx);
         chat.update(cx, |chat, cx| {
             chat.apply_incoming_item(
@@ -2949,7 +2958,11 @@ mod motion_tests {
                 cx,
             );
         });
-        for step in [motion::ENTER / 2, motion::ENTER * 3 / 4, motion::ENTER] {
+        for step in [
+            motion::ENTER.settle / 2,
+            motion::ENTER.settle * 3 / 4,
+            motion::ENTER.settle,
+        ] {
             clock.at(step);
             redraw(&chat, cx);
         }
@@ -2976,7 +2989,7 @@ mod motion_tests {
         redraw(&chat, cx);
         let entering = bounds(cx, "pending-send-body");
         let status = bounds(cx, "pending-send-status");
-        clock.at(motion::ENTER);
+        clock.at(motion::ENTER.settle);
         redraw(&chat, cx);
         let settled = bounds(cx, "pending-send-body");
         assert_eq!(entering.origin.y - settled.origin.y, motion::RISE);
@@ -3053,7 +3066,7 @@ mod motion_tests {
             chat.read_with(cx, |chat, _| chat.row_motion.slot_shown.get())
         };
         let sent = shown(&chat, cx);
-        clock.at(motion::ENTER * 2);
+        clock.at(motion::ENTER.settle * 2);
         redraw(&chat, cx);
         let open = shown(&chat, cx);
         assert!(open > px(0.), "the slot shows its status");
@@ -3073,7 +3086,7 @@ mod motion_tests {
     ) -> (Pixels, Vec<Pixels>) {
         // The slot appears, then opens over ENTER.
         redraw(chat, cx);
-        let start = motion::ENTER * 2;
+        let start = motion::ENTER.settle * 2;
         clock.at(start);
         redraw(chat, cx);
         assert!(
@@ -3186,7 +3199,7 @@ mod motion_tests {
             chat.sending_previews.insert("send-1".into(), preview);
         });
         redraw(&chat, cx);
-        let start = motion::ENTER * 2;
+        let start = motion::ENTER.settle * 2;
         clock.at(start);
         redraw(&chat, cx);
         let bubble = bounds(cx, "pending-send-body");
@@ -3231,6 +3244,63 @@ mod motion_tests {
             tops[2]
         );
         assert_glides(&tops[0], "the handed-off row");
+        assert_glides(&tops[1], "an older row");
+    }
+
+    /// A row from a real host carries a run-local identity, and the
+    /// transcript files it under a key made from that, not under the id the
+    /// event names. The bubble must still hand off to it: the row starts
+    /// where the bubble was, older rows hold still, and it does not fade in
+    /// a second time.
+    #[gpui::test]
+    fn a_row_keyed_by_its_live_identity_still_takes_over_from_the_bubble(cx: &mut TestAppContext) {
+        let clock = Clock::start();
+        let (chat, cx) = pane(cx, 30);
+        chat.update(cx, |chat, _| {
+            let preview = sending::SendPreview::new(Some("s1".into()), "hello", &[])
+                .capture_timeline(&chat.timeline);
+            chat.sending_previews.insert("send-1".into(), preview);
+        });
+        redraw(&chat, cx);
+        let start = motion::ENTER.settle * 2;
+        clock.at(start);
+        redraw(&chat, cx);
+        let bubble = bounds(cx, "pending-send-body");
+        let older = bounds(cx, "timeline-row-h29");
+
+        chat.update(cx, |chat, cx| {
+            let mut mine = user_item("event-id", "hello");
+            mine.live = Some(maple_agent::agent::AgentLiveRowIdentity {
+                run_id: "run-1".into(),
+                occurrence: 1,
+            });
+            chat.handle_service_event(
+                AgentServiceEvent::TimelineItem {
+                    session_id: "s1".into(),
+                    run_id: Some("run-1".into()),
+                    item: mine,
+                },
+                cx,
+            );
+        });
+        let tops = tops_through_entrance(
+            &chat,
+            &clock,
+            start,
+            &["timeline-row-live:run-1:1", "timeline-row-h29"],
+            cx,
+        );
+        assert!(cx.debug_bounds("pending-send-body").is_none(), "handed off");
+        assert!(
+            (tops[0][0] - bubble.origin.y).abs() <= px(1.),
+            "the row starts where the bubble was: {bubble:?} then {:?}",
+            tops[0]
+        );
+        assert!(
+            (tops[1][0] - older.origin.y).abs() <= px(1.),
+            "older rows hold still on the handoff frame: {older:?} then {:?}",
+            tops[1]
+        );
         assert_glides(&tops[1], "an older row");
     }
 
@@ -3311,11 +3381,11 @@ mod motion_tests {
         };
         chat.update(cx, |chat, cx| {
             chat.apply_incoming_item("s1", item("reply", "message", Some("Hi")), cx);
-            let midway = clock.at(motion::ENTER / 2);
+            let midway = clock.at(motion::ENTER.settle / 2);
             let before = chat.row_motion.arrival("reply", midway, false);
             chat.apply_incoming_item("s1", chunk(), cx);
             assert_eq!(chat.row_motion.arrival("reply", midway, false), before);
-            let done = clock.at(motion::ENTER);
+            let done = clock.at(motion::ENTER.settle);
             assert!(!chat.row_motion.settle(done, false));
             chat.apply_incoming_item("s1", chunk(), cx);
             assert_eq!(chat.timeline[0].text.as_deref(), Some("Hi more more"));

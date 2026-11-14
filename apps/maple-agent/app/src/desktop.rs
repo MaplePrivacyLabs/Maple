@@ -2395,6 +2395,10 @@ impl Render for MapleApp {
             .size_full()
             .flex()
             .flex_col()
+            // What shows while a screen fades in. Without it the fade starts
+            // from the window's own backdrop, which is black: a dark flash
+            // on every screen change.
+            .bg(gpui::rgb(ui::theme::bg_app()))
             .font_family(crate::assets::FONT_BODY)
             // The default for any text that sets no color of its own.
             // GPUI's own default is black, which vanishes on the dark
@@ -2450,7 +2454,6 @@ impl Render for MapleApp {
                     }),
                 "maple-screen",
                 screen_kind,
-                gpui::rgb(ui::theme::bg_app()),
             ));
         // The Quit confirmation and the native dialogs float in their own OS
         // windows; dim this window behind them so each reads as on top of
@@ -6347,7 +6350,7 @@ mod tests {
         cx.run_until_parked();
         // Let the screen fade and anything the sidebar eases settle.
         for step in 1..=4 {
-            ui::motion::set_test_now(Some(start + ui::motion::PANEL * step));
+            ui::motion::set_test_now(Some(start + ui::motion::PANEL.settle * step));
             cx.update(|window, cx| {
                 window.simulate_next_frame(cx);
             });

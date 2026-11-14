@@ -3,6 +3,7 @@
 //! Integrations, Tools, Keyboard Shortcuts, Usage, About.
 
 use crate::ui::i18n::{UiText, tr};
+use crate::ui::motion::HoverBg as _;
 use std::collections::HashSet;
 use std::sync::Arc;
 
@@ -1990,7 +1991,6 @@ impl Render for SettingsScreen {
                                 self.render_pane(window, cx),
                                 "settings-pane-swap",
                                 self.section.id(),
-                                gpui::rgb(theme::bg_app()),
                             ))
                             .child(crate::ui::scrollbar::scrollbar(
                                 "settings-scrollbar",
@@ -2083,12 +2083,7 @@ impl SettingsScreen {
                     )
                 });
         }
-        let rest = gpui::rgb(if selected {
-            theme::bg_elevated()
-        } else {
-            theme::bg_sidebar()
-        });
-        crate::ui::motion::hover_background(row, rest, gpui::rgb(theme::bg_elevated()))
+        row.hover_bg(gpui::rgb(theme::bg_elevated()))
     }
 
     /// The task sidebar's column, from the window's top edge. Back sits
@@ -3392,13 +3387,7 @@ impl SettingsScreen {
                 } else {
                     theme::text_secondary()
                 }))
-                .map(|element| {
-                    crate::ui::motion::hover_background(
-                        element,
-                        gpui::transparent_black(),
-                        selected,
-                    )
-                })
+                .hover_bg(selected)
                 .hover(|style| style.cursor_pointer())
                 // The selected fill, over the hover plate, eases between
                 // segments.
@@ -3406,7 +3395,6 @@ impl SettingsScreen {
                     "selected",
                     if active { 1. } else { 0. },
                     crate::ui::motion::TOGGLE,
-                    crate::ui::motion::ease_out_cubic,
                     move |active| {
                         div()
                             .absolute()
@@ -3961,7 +3949,6 @@ fn pill_button(
             "pill-fill",
             target,
             motion::TOGGLE,
-            motion::ease_out_cubic,
             move |on| {
                 div()
                     .absolute()
@@ -3975,7 +3962,6 @@ fn pill_button(
             "pill-label",
             target,
             motion::TOGGLE,
-            motion::ease_out_cubic,
             move |on| {
                 div()
                     .relative()
