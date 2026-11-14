@@ -90,6 +90,7 @@ impl ChatScreen {
                         markdown_cache: &chat.markdown_cache,
                         derived: &chat.derived,
                         attachment_images: &chat.attachment_images,
+                        attachment_previews: &chat.attachment_previews,
                         attachment_failures: &chat.attachment_failures,
                         chat: &entity,
                         tool_summaries: &chat.tool_summaries,
@@ -982,17 +983,90 @@ fn timestamp_label(item: &AgentTimelineItem, group: &SharedString, messages: &Me
 
 // Fix both the layout box and the painted image size: max constraints alone
 // let an image's intrinsic dimensions escape the transcript's measured row.
-const ATTACHMENT_THUMBNAIL_SIZE: Pixels = px(72.);
+pub(super) const ATTACHMENT_THUMBNAIL_SIZE: Pixels = px(72.);
+
+/// The row of a user message's attachments, above its text. The message
+/// being sent draws the same row with the same pieces, so the real row
+/// changes nothing on screen when it takes over.
+pub(super) fn attachment_row() -> Div {
+    div()
+        .max_w(gpui::relative(0.75))
+        .flex()
+        .flex_wrap()
+        .justify_end()
+        .gap_2()
+        .mb_1()
+}
+
+/// An image attachment in a message: the whole picture inside a fixed box.
+pub(super) fn attachment_thumbnail(image: Arc<gpui::Image>) -> Div {
+    div()
+        .flex_none()
+        .size(ATTACHMENT_THUMBNAIL_SIZE)
+        .rounded(theme::RADIUS_SM)
+        .overflow_hidden()
+        .bg(gpui::rgb(theme::bg_elevated()))
+        .border_1()
+        .border_color(gpui::rgb(theme::border()))
+        .child(
+            gpui::img(gpui::ImageSource::Image(image))
+                .size_full()
+                .aspect_square()
+                .object_fit(gpui::ObjectFit::Contain)
+                // gpui clips to rectangles, so the picture rounds its own
+                // corners: one that fills the box would poke past the
+                // box's.
+                .rounded(theme::RADIUS_SM),
+        )
+}
+
+/// An attachment with no picture to show: its name and what it is. Long
+/// file names stay within the message.
+pub(super) fn attachment_chip(name: SharedString, detail: SharedString) -> Div {
+    div()
+        .min_w_0()
+        .max_w_full()
+        .flex()
+        .items_center()
+        .gap_1()
+        .px_2()
+        .py_0p5()
+        .rounded(theme::RADIUS_SM)
+        .bg(gpui::rgb(theme::bg_elevated()))
+        .text_xs()
+        .text_color(gpui::rgb(theme::text_secondary()))
+        .child(icon("paperclip", px(12.), theme::text_secondary()))
+        .child(
+            div()
+                .min_w_0()
+                .flex()
+                .flex_col()
+                .gap_0p5()
+                .child(div().truncate().child(gpui::text!(name)))
+                .child(
+                    div()
+                        .text_color(gpui::rgb(theme::text_muted()))
+                        .child(gpui::text!(detail)),
+                ),
+        )
+}
 
 fn render_attachment(
     attachment: &super::cache::AttachmentDisplay,
     transcript: &TranscriptCtx,
 ) -> gpui::AnyElement {
     let id = attachment.id.as_str();
-    if let Some(image) = transcript.attachment_images.get(id) {
-        let click_image = Arc::clone(image);
+    // A message that was just sent shows the picture its draft had until
+    // the stored one arrives, so the thumbnail never gives way to a name.
+    let image = transcript
+        .attachment_images
+        .get(id)
+        .or_else(|| transcript.attachment_previews.get(id));
+    if let Some(image) = image {
+        let shown = Arc::clone(image);
+        let attachment_id = attachment.id.clone();
         let chat = transcript.chat.clone();
-        div()
+        attachment_thumbnail(Arc::clone(image))
             .id(SharedString::from(format!("attachment-{id}")))
             .debug_selector({
                 let id = attachment.id.clone();
@@ -1002,66 +1076,31 @@ fn render_attachment(
             .aria_label(attachment.name.clone())
             .key_context("Button")
             .tab_index(0)
-            .flex_none()
-            .size(ATTACHMENT_THUMBNAIL_SIZE)
-            .rounded(theme::RADIUS_SM)
-            .overflow_hidden()
-            .bg(gpui::rgb(theme::bg_elevated()))
-            .border_1()
-            .border_color(gpui::rgb(theme::border()))
             .focus_visible(widgets::focus_ring)
             .hover_bg(theme::overlay_hover())
             .hover(|style| style.cursor_pointer())
             .on_click(move |_event, _window, cx| {
                 chat.update(cx, |chat, cx| {
-                    chat.open_lightbox(Arc::clone(&click_image), cx);
+                    chat.open_attachment(&attachment_id, Arc::clone(&shown), cx);
                 })
                 .ok();
             })
             .on_key_down(ChatScreen::sidebar_button_key_down)
-            .child(
-                gpui::img(gpui::ImageSource::Image(Arc::clone(image)))
-                    .size_full()
-                    .aspect_square()
-                    .object_fit(gpui::ObjectFit::Contain),
-            )
             .into_any_element()
     } else {
         let unavailable = attachment.unavailable || transcript.attachment_failures.contains(id);
         // Retain the name and availability while the bytes load, or if the
-        // attachment was removed. Long filenames stay within the message.
-        div()
-            .id(SharedString::from(format!("attachment-{id}")))
-            .min_w_0()
-            .max_w_full()
-            .flex()
-            .items_center()
-            .gap_1()
-            .px_2()
-            .py_0p5()
-            .rounded(theme::RADIUS_SM)
-            .bg(gpui::rgb(theme::bg_elevated()))
-            .text_xs()
-            .text_color(gpui::rgb(theme::text_secondary()))
-            .child(icon("paperclip", px(12.), theme::text_secondary()))
-            .child(
-                div()
-                    .min_w_0()
-                    .flex()
-                    .flex_col()
-                    .gap_0p5()
-                    .child(div().truncate().child(gpui::text!(attachment.name.clone())))
-                    .child(
-                        div()
-                            .text_color(gpui::rgb(theme::text_muted()))
-                            .child(gpui::text!(if unavailable {
-                                tr("chat-image-unavailable")
-                            } else {
-                                attachment.detail.clone()
-                            })),
-                    ),
-            )
-            .into_any_element()
+        // attachment was removed.
+        attachment_chip(
+            attachment.name.clone(),
+            if unavailable {
+                tr("chat-image-unavailable")
+            } else {
+                attachment.detail.clone()
+            },
+        )
+        .id(SharedString::from(format!("attachment-{id}")))
+        .into_any_element()
     }
 }
 
@@ -1098,19 +1137,12 @@ fn render_message(item: &AgentTimelineItem, revision: u64, transcript: &Transcri
             .gap_0p5()
             .when(has_attachments, |message| {
                 message.child(
-                    div()
-                        .max_w(gpui::relative(0.75))
-                        .flex()
-                        .flex_wrap()
-                        .justify_end()
-                        .gap_2()
-                        .mb_1()
-                        .children(
-                            derived
-                                .attachments
-                                .iter()
-                                .map(|attachment| render_attachment(attachment, transcript)),
-                        ),
+                    attachment_row().children(
+                        derived
+                            .attachments
+                            .iter()
+                            .map(|attachment| render_attachment(attachment, transcript)),
+                    ),
                 )
             })
             .when(!text.trim().is_empty(), |message| {

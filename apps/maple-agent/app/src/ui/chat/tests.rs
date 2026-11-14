@@ -11301,9 +11301,9 @@ mod state_tests {
         for (width, height) in [(1200., 800.), (480., 440.)] {
             cx.simulate_resize(gpui::size(px(width), px(height)));
             cx.run_until_parked();
-            for (selector, expected_image) in [
-                ("attachment-thumbnail-wide", &landscape),
-                ("attachment-thumbnail-tall", &portrait),
+            for (selector, expected_image, shape) in [
+                ("attachment-thumbnail-wide", &landscape, 2000. / 300.),
+                ("attachment-thumbnail-tall", &portrait, 300. / 2000.),
             ] {
                 press(cx, selector);
                 cx.run_until_parked();
@@ -11313,10 +11313,22 @@ mod state_tests {
                         expected_image
                     ));
                 });
+                // The picture is as large as the window allows, whole and
+                // in its own shape; the card is no larger than the picture.
                 let image = cx.debug_bounds("lightbox-image").expect("expanded image");
-                assert!(image.size.width > px(72.) && image.size.height > px(72.));
-                assert!(image.size.width <= px(width * 0.9 + 2.));
-                assert!(image.size.height <= px(height * 0.9 + 2.));
+                let (room_width, room_height) = (width * 0.9, height * 0.9);
+                let (image_width, image_height) =
+                    (image.size.width.as_f32(), image.size.height.as_f32());
+                assert!(image_width <= room_width + 1. && image_height <= room_height + 1.);
+                assert!(
+                    (image_width - room_width).abs() < 1.
+                        || (image_height - room_height).abs() < 1.,
+                    "the picture fills the room in one direction: {image:?}"
+                );
+                assert!(
+                    (image_width / image_height / shape - 1.).abs() < 0.02,
+                    "the card keeps the picture's shape: {image:?}"
+                );
                 assert!(image.left() >= px(0.) && image.right() <= px(width));
                 assert!(image.top() >= px(0.) && image.bottom() <= px(height));
 
@@ -11326,6 +11338,22 @@ mod state_tests {
                     chat.read_with(cx, |this, _| this.lightbox.is_some()),
                     "clicking the image keeps it open"
                 );
+                // Beside the picture, well inside the window: the dimmed
+                // backdrop, wherever it shows, closes the preview.
+                let beside = if shape > 1. {
+                    gpui::point(image.center().x, image.top() - px(12.))
+                } else {
+                    gpui::point(image.left() - px(12.), image.center().y)
+                };
+                cx.simulate_click(beside, gpui::Modifiers::default());
+                cx.run_until_parked();
+                assert!(
+                    chat.read_with(cx, |this, _| this.lightbox.is_none()),
+                    "clicking beside the picture closes it"
+                );
+
+                press(cx, selector);
+                cx.run_until_parked();
                 cx.simulate_click(gpui::point(px(2.), px(2.)), gpui::Modifiers::default());
                 cx.run_until_parked();
                 assert!(
@@ -11339,6 +11367,191 @@ mod state_tests {
                 assert!(chat.read_with(cx, |this, _| this.lightbox.is_none()));
             }
         }
+    }
+
+    /// The message being sent draws its attachments as the sent message
+    /// does: the same thumbnail above the same bubble. When the host's row
+    /// takes over, nothing changes shape or place within the message, and
+    /// the row shows the picture at once though its stored copy has not
+    /// loaded.
+    #[gpui::test]
+    fn a_sent_picture_keeps_its_place_when_its_row_takes_over(cx: &mut TestAppContext) {
+        cx.update(|cx| cx.set_reduce_motion(true));
+        let picture = sized_image(144, 81);
+        let (chat, cx) = chat_window(cx, |this, _| {
+            this.sidebar_collapsed = true;
+            this.replace_timeline(vec![user_item("earlier", "An earlier message")]);
+            // The stored pictures are being read and do not arrive here; a
+            // read that fails would rightly show the file as unavailable.
+            this.attachment_requests
+                .extend(["shot".to_string(), "only".to_string()]);
+        });
+        let send = |text: &'static str, send_id: &'static str| {
+            let picture = picture.clone();
+            move |this: &mut ChatScreen, cx: &mut Context<ChatScreen>| {
+                let mut draft = DraftAttachment::for_test(1, "shot.png", true);
+                draft.mime_type = "image/png".into();
+                draft.picture = Some(picture);
+                let preview = sending::SendPreview::new(Some("s1".into()), text, &[draft])
+                    .capture_timeline(&this.timeline);
+                this.sending_previews.insert(send_id.into(), preview);
+                cx.notify();
+            }
+        };
+        let arrive = |id: &'static str, text: &'static str, attachment: &'static str| {
+            move |this: &mut ChatScreen, cx: &mut Context<ChatScreen>| {
+                this.handle_service_event(
+                    AgentServiceEvent::TimelineItem {
+                        session_id: "s1".into(),
+                        run_id: Some(format!("run-{id}")),
+                        item: image_message(id, text, &[attachment]),
+                    },
+                    cx,
+                );
+                assert!(
+                    this.attachment_images.is_empty(),
+                    "the stored picture has not loaded"
+                );
+            }
+        };
+        let thumbnail = gpui::size(px(72.), px(72.));
+
+        chat.update(cx, send("Look at this", "send-1"));
+        cx.run_until_parked();
+        let sending_picture = cx
+            .debug_bounds("pending-send-thumbnail-0")
+            .expect("the picture while sending");
+        let sending_text = cx
+            .debug_bounds("pending-send-body")
+            .expect("the text while sending");
+        assert_eq!(sending_picture.size, thumbnail);
+        assert!(
+            sending_picture.bottom() <= sending_text.top(),
+            "the picture sits above the text, outside its bubble"
+        );
+
+        chat.update(cx, arrive("first", "Look at this", "shot"));
+        cx.run_until_parked();
+        assert!(
+            cx.debug_bounds("pending-send-body").is_none(),
+            "the row took over"
+        );
+        let sent_picture = cx
+            .debug_bounds("attachment-thumbnail-shot")
+            .expect("the row shows the picture at once");
+        let sent_text = cx
+            .debug_bounds("message-bubble-first")
+            .expect("the sent text");
+        assert_eq!(sent_picture.size, sending_picture.size);
+        assert_eq!(sent_text.size, sending_text.size);
+        assert_eq!(sent_picture.left(), sending_picture.left());
+        assert_eq!(sent_text.left(), sending_text.left());
+        assert_eq!(
+            sent_text.top() - sent_picture.bottom(),
+            sending_text.top() - sending_picture.bottom(),
+            "the picture and the text keep their distance"
+        );
+
+        // A message of pictures only: no bubble, before or after.
+        chat.update(cx, send("", "send-2"));
+        cx.run_until_parked();
+        let sending_picture = cx
+            .debug_bounds("pending-send-thumbnail-0")
+            .expect("the picture while sending");
+        assert_eq!(sending_picture.size, thumbnail);
+        assert!(
+            cx.debug_bounds("pending-send-body").is_none(),
+            "no empty bubble while sending"
+        );
+        chat.update(cx, arrive("second", "", "only"));
+        cx.run_until_parked();
+        let sent_picture = cx
+            .debug_bounds("attachment-thumbnail-only")
+            .expect("the row shows the picture at once");
+        assert_eq!(sent_picture.size, sending_picture.size);
+        assert_eq!(sent_picture.left(), sending_picture.left());
+        assert!(cx.debug_bounds("message-bubble-second").is_none());
+
+        // The stored picture replaces the stand-in when it loads.
+        let stored = sized_image(1600, 900);
+        chat.update(cx, |this, cx| {
+            assert!(this.attachment_previews.contains_key("only"));
+            this.insert_attachment_image("only", stored.clone(), cx);
+            assert!(!this.attachment_previews.contains_key("only"));
+            assert!(Arc::ptr_eq(&this.attachment_images["only"], &stored));
+        });
+    }
+
+    /// With motion on, the frame on which the row takes over draws its
+    /// picture and its text where the message being sent had them. From
+    /// there the row only eases to its own place.
+    #[gpui::test]
+    fn a_sent_picture_does_not_jump_on_the_frame_its_row_takes_over(cx: &mut TestAppContext) {
+        let start = std::time::Instant::now();
+        motion::set_test_now(Some(start));
+        cx.update(|cx| cx.set_reduce_motion(false));
+        let picture = sized_image(144, 81);
+        let (chat, cx) = chat_window(cx, |this, _| {
+            this.sidebar_collapsed = true;
+            this.replace_timeline(vec![user_item("earlier", "An earlier message")]);
+            this.attachment_requests.insert("shot".to_string());
+        });
+        let frame_at = |at: std::time::Instant, cx: &mut gpui::VisualTestContext| {
+            motion::set_test_now(Some(at));
+            cx.update(|window, app| window.simulate_next_frame(app));
+            cx.run_until_parked();
+        };
+        chat.update(cx, |this, cx| {
+            let mut draft = DraftAttachment::for_test(1, "shot.png", true);
+            draft.mime_type = "image/png".into();
+            draft.picture = Some(picture.clone());
+            let preview = sending::SendPreview::new(Some("s1".into()), "Look at this", &[draft])
+                .capture_timeline(&this.timeline);
+            this.sending_previews.insert("send-1".into(), preview);
+            cx.notify();
+        });
+        cx.run_until_parked();
+        // The message being sent has risen in and its slot has opened.
+        let settled = start + motion::PANEL.settle * 4;
+        frame_at(settled, cx);
+        frame_at(settled, cx);
+        let sending_picture = cx
+            .debug_bounds("pending-send-thumbnail-0")
+            .expect("the picture while sending");
+        let sending_text = cx
+            .debug_bounds("pending-send-body")
+            .expect("the text while sending");
+
+        chat.update(cx, |this, cx| {
+            this.handle_service_event(
+                AgentServiceEvent::TimelineItem {
+                    session_id: "s1".into(),
+                    run_id: Some("run-1".into()),
+                    item: image_message("sent", "Look at this", &["shot"]),
+                },
+                cx,
+            );
+        });
+        cx.run_until_parked();
+        let sent_picture = cx
+            .debug_bounds("attachment-thumbnail-shot")
+            .expect("the row shows the picture at once");
+        let sent_text = cx
+            .debug_bounds("message-bubble-sent")
+            .expect("the sent text");
+        assert_eq!(sent_picture.size, sending_picture.size);
+        assert_eq!(sent_text.size, sending_text.size);
+        assert_eq!(sent_picture.left(), sending_picture.left());
+        assert_eq!(sent_text.left(), sending_text.left());
+        assert!(
+            (sent_picture.top() - sending_picture.top()).abs() <= px(1.),
+            "the picture holds still on the hand-off frame: {sending_picture:?} then {sent_picture:?}"
+        );
+        assert!(
+            (sent_text.top() - sending_text.top()).abs() <= px(1.),
+            "the text holds still on the hand-off frame: {sending_text:?} then {sent_text:?}"
+        );
+        motion::set_test_now(None);
     }
 
     #[gpui::test]

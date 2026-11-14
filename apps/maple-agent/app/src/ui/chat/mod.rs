@@ -212,6 +212,7 @@ struct TranscriptCtx<'a> {
     markdown_cache: &'a MarkdownCache,
     derived: &'a DerivedCache,
     attachment_images: &'a HashMap<String, Arc<gpui::Image>>,
+    attachment_previews: &'a HashMap<String, Arc<gpui::Image>>,
     attachment_failures: &'a HashSet<String>,
     chat: &'a gpui::WeakEntity<ChatScreen>,
     tool_summaries: &'a HashMap<String, SharedString>,
@@ -815,6 +816,10 @@ pub struct ChatScreen {
     /// Decoded images for sent attachments, keyed by attachment id, so the
     /// transcript shows the picture instead of only its file name.
     attachment_images: HashMap<String, Arc<gpui::Image>>,
+    /// The small picture a draft had, for the attachments of a message that
+    /// was just sent, until the stored picture loads: the row that takes
+    /// over from the message being sent shows what that message showed.
+    attachment_previews: HashMap<String, Arc<gpui::Image>>,
     /// Attachment ids with a read in flight or already failed; never asked
     /// for twice.
     attachment_requests: HashSet<String>,
@@ -851,6 +856,9 @@ pub struct ChatScreen {
     question_collapsed: bool,
     /// Full-size image shown over the chat until dismissed.
     lightbox: Option<Arc<gpui::Image>>,
+    /// The attachment the open image belongs to, so a stand-in picture is
+    /// replaced when the stored one loads.
+    lightbox_attachment: Option<String>,
     lightbox_focus: gpui::FocusHandle,
     lightbox_previous_focus: Option<gpui::FocusHandle>,
     lightbox_focus_pending: bool,
@@ -1658,6 +1666,7 @@ impl ChatScreen {
             selection_generation: 0,
             reload_generation: 0,
             attachment_images: HashMap::new(),
+            attachment_previews: HashMap::new(),
             attachment_requests: HashSet::new(),
             attachment_failures: HashSet::new(),
             attachment_queue: std::collections::VecDeque::new(),
@@ -1675,6 +1684,7 @@ impl ChatScreen {
             question_step_answers: HashMap::new(),
             question_collapsed: false,
             lightbox: None,
+            lightbox_attachment: None,
             lightbox_focus: cx.focus_handle(),
             lightbox_previous_focus: None,
             lightbox_focus_pending: false,
@@ -3740,6 +3750,7 @@ impl ChatScreen {
         self.subagents.clear();
         self.tool_summaries.clear();
         self.attachment_images.clear();
+        self.attachment_previews.clear();
         self.attachment_requests.clear();
         self.attachment_failures.clear();
         self.attachment_queue.clear();
@@ -3787,6 +3798,7 @@ impl ChatScreen {
         if self.lightbox.take().is_some() {
             self.screen_focus_pending = true;
         }
+        self.lightbox_attachment = None;
         self.lightbox_previous_focus = None;
         self.lightbox_focus_pending = false;
         self.popup.close(cx);
@@ -4954,8 +4966,21 @@ impl ChatScreen {
         cx.notify();
     }
 
+    /// Show the picture of the attachment `id`. `shown` is what its
+    /// thumbnail drew: right after a send that can be the draft's small
+    /// picture, which the stored one replaces as soon as it loads.
+    fn open_attachment(&mut self, id: &str, shown: Arc<gpui::Image>, cx: &mut Context<Self>) {
+        let stored = self.attachment_images.get(id).cloned();
+        if stored.is_none() && !self.attachment_requests.contains(id) {
+            self.request_attachments(vec![id.to_owned()], cx);
+        }
+        self.open_lightbox(stored.unwrap_or(shown), cx);
+        self.lightbox_attachment = Some(id.to_owned());
+    }
+
     fn close_lightbox(&mut self, cx: &mut Context<Self>) {
         self.lightbox = None;
+        self.lightbox_attachment = None;
         self.lightbox_focus_pending = false;
         cx.notify();
     }
@@ -7391,6 +7416,20 @@ impl ChatScreen {
     }
 }
 
+/// The largest size at which a picture of `natural` pixels shows whole
+/// inside `bounds`; `bounds` itself while the picture's size is unknown.
+fn fit_within(
+    natural: Option<gpui::Size<gpui::DevicePixels>>,
+    bounds: gpui::Size<gpui::Pixels>,
+) -> gpui::Size<gpui::Pixels> {
+    let Some(natural) = natural.filter(|size| size.width.0 > 0 && size.height.0 > 0) else {
+        return bounds;
+    };
+    let (width, height) = (natural.width.0 as f32, natural.height.0 as f32);
+    let scale = (bounds.width.as_f32() / width).min(bounds.height.as_f32() / height);
+    gpui::size(px(width * scale), px(height * scale))
+}
+
 impl Render for ChatScreen {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         self.refresh_locale(cx);
@@ -7677,6 +7716,18 @@ impl Render for ChatScreen {
                     ),
             )
             .when_some(self.lightbox.clone(), |root, image| {
+                // The card is the picture and nothing more, so a click
+                // beside it lands on the backdrop and closes the preview.
+                // Until the picture has decoded its shape is unknown and
+                // the card takes all the room it may.
+                let viewport = window.viewport_size();
+                let card = fit_within(
+                    Arc::clone(&image)
+                        .use_render_image(window, cx)
+                        .filter(|picture| picture.frame_count() > 0)
+                        .map(|picture| picture.size(0)),
+                    gpui::size(viewport.width * 0.9, viewport.height * 0.9),
+                );
                 root.child(
                     div()
                         .id("lightbox")
@@ -7714,17 +7765,14 @@ impl Render for ChatScreen {
                                 // Explicit dimensions keep intrinsic screenshot
                                 // sizes out of layout. Contain preserves the
                                 // whole image at every window size.
-                                .w(window.viewport_size().width * 0.9)
-                                .h(window.viewport_size().height * 0.9)
+                                .w(card.width)
+                                .h(card.height)
                                 .on_click(|_, _, cx| cx.stop_propagation())
                                 .child(
                                     gpui::img(gpui::ImageSource::Image(image))
                                         .debug_selector(|| "lightbox-image".to_string())
                                         .size_full()
-                                        .aspect_ratio(
-                                            window.viewport_size().width
-                                                / window.viewport_size().height,
-                                        )
+                                        .aspect_ratio(card.width / card.height)
                                         .object_fit(gpui::ObjectFit::Contain),
                                 ),
                         ))
