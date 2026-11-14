@@ -5,8 +5,8 @@
 use std::{path::PathBuf, sync::Arc};
 
 use gpui::{
-    App, Bounds, Context, Entity, Render, Window, WindowBounds, WindowOptions, actions, div, point,
-    prelude::*, px, size,
+    App, Bounds, Context, Entity, Pixels, Render, Size, Window, WindowBounds, WindowOptions,
+    actions, div, point, prelude::*, px, size,
 };
 
 actions!(maple_app, [QuitApp, Hide, HideOthers, ShowAll]);
@@ -3840,6 +3840,8 @@ struct StartupError {
     stopping: bool,
     retry_backend: Option<Arc<AgentBackend>>,
     requires_completed_stop: bool,
+    /// Whether the one-shot growth for a status has already fired.
+    grown_for_status: bool,
     diagnostics: StartupDiagnostics,
     details_copied: bool,
 }
@@ -3881,6 +3883,28 @@ fn home_relative_path(path: &std::path::Path, home: Option<&std::path::Path>) ->
 #[cfg(target_os = "macos")]
 #[derive(Clone)]
 struct GuardedStartupFailure(Entity<StartupError>);
+
+/// The one-shot growth when a status first replaces the failure: only the
+/// status stack needs the taller window, the growth must fire exactly once
+/// when that status appears, and it must never fight the WM or a later user
+/// resize. The width is preserved so a user's widen survives.
+fn startup_error_status_target(
+    bounds: Size<Pixels>,
+    has_status: bool,
+    handled: &mut bool,
+) -> Option<Size<Pixels>> {
+    if !has_status || *handled {
+        return None;
+    }
+    // Consume the first status even if the window is already tall enough.
+    // A later user resize must not turn it into a fresh growth request.
+    *handled = true;
+    if bounds.height >= px(480.) {
+        return None;
+    }
+    Some(size(bounds.width, px(480.)))
+}
+
 #[cfg(target_os = "macos")]
 impl gpui::Global for GuardedStartupFailure {}
 
@@ -3892,6 +3916,7 @@ impl StartupError {
             stopping: false,
             retry_backend: None,
             requires_completed_stop: false,
+            grown_for_status: false,
             diagnostics: StartupDiagnostics::collect(),
             details_copied: false,
         }
@@ -3978,6 +4003,9 @@ impl StartupError {
             return;
         };
         self.stopping = true;
+        // A fresh attempt must not keep the previous failure on screen.
+        self.localized_message = None;
+        cx.notify();
         let stop_backend = backend.clone();
         let stop =
             backend.spawn(async move { crate::host::request_stop(stop_backend.api_url()).await });
@@ -4014,6 +4042,9 @@ impl StartupError {
             ],
             cx,
         );
+        // A fresh attempt must not keep the previous failure on screen.
+        self.localized_message = None;
+        cx.notify();
         self.stopping = true;
         cx.spawn(async move |this, cx| {
             let result = if answer.await == Ok(1) {
@@ -4052,31 +4083,96 @@ impl StartupError {
 }
 
 impl Render for StartupError {
-    fn render(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+    fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        // This window never renders MapleApp, which is where the palette
+        // otherwise resolves; follow the OS appearance here, every frame.
+        ui::theme::resolve(window.appearance());
+        // A status that replaces the failure adds its own sentence and a
+        // details pane; the failure-only window is sized for neither.
+        // Grow once, when the status first appears, and never again: the
+        // guarded 520px window already fits the larger stack, and a
+        // re-checked rule would fight a tiling WM or a user resize.
+        if let Some(target) = startup_error_status_target(
+            window.bounds().size,
+            self.localized_message.is_some(),
+            &mut self.grown_for_status,
+        ) {
+            window.resize(target);
+        }
+        // The startup failure in the Quit prompt's language: a display
+        // headline, the failure as one plain passage, quiet evidence
+        // (details, log path), and one accent recovery pill beside a
+        // quiet Close. The window sets its own body font: nothing else
+        // in this OS window inherits MapleApp's root style, and the
+        // platform default's metrics differ on Linux.
+        let incompatible = !self.requires_completed_stop
+            && self.message.contains("Incompatible Maple host or profile");
+        let recovery = incompatible || self.requires_completed_stop;
+        let close_allowed = self.close_is_allowed();
         div()
+            .id("startup-error")
+            .role(gpui::Role::Dialog)
+            .aria_label(tr("native-startup-title"))
             .size_full()
             .flex()
             .flex_col()
-            .gap_4()
-            .p_6()
-            .bg(gpui::rgb(ui::theme::bg_app()))
+            .px(px(36.))
+            .pt(px(20.))
+            .pb(px(28.))
+            .bg(gpui::rgb(ui::theme::bg_elevated()))
+            .font_family(crate::assets::FONT_BODY)
             .text_color(gpui::rgb(ui::theme::text_primary()))
             .child(
                 div()
-                    .text_lg()
+                    .font_family(crate::assets::FONT_DISPLAY)
+                    .text_size(px(40.))
+                    .line_height(px(42.))
+                    .text_color(gpui::rgb(ui::theme::text_heading()))
                     .child(gpui::text!(tr("native-startup-title"))),
             )
-            .child(gpui::text!(
-                self.localized_message
-                    .as_ref()
-                    .map(UiText::resolve)
-                    .unwrap_or_else(|| self.message.clone().into())
-            ))
+            .child(
+                div()
+                    .id("startup-error-passage")
+                    .mt_4()
+                    .max_w(px(480.))
+                    // A very long raw diagnostic must not push the actions
+                    // past the window edge; it scrolls within this cap.
+                    .max_h(px(120.))
+                    .overflow_y_scroll()
+                    .text_size(px(15.))
+                    .line_height(px(24.))
+                    .text_color(gpui::rgb(ui::theme::text_secondary()))
+                    .child(gpui::text!(
+                        self.localized_message
+                            .as_ref()
+                            .map(UiText::resolve)
+                            .unwrap_or_else(|| self.message.clone().into())
+                    )),
+            )
+            // A guarded start must stay open until the host stop is
+            // proven; the wait sentence sits with the failure, and a
+            // status that replaces the failure already carries its own
+            // keep-open instruction.
+            .when(
+                self.requires_completed_stop && self.localized_message.is_none(),
+                |view| {
+                    view.child(
+                        div()
+                            .mt_2()
+                            .max_w(px(480.))
+                            .text_size(px(15.))
+                            .line_height(px(24.))
+                            .text_color(gpui::rgb(ui::theme::text_secondary()))
+                            .child(gpui::text!(tr("native-wait-stop"))),
+                    )
+                },
+            )
             // Once a status replaces the original error, keep the error as
             // details: it is the only evidence of why startup failed.
             .when(self.localized_message.is_some(), |view| {
                 view.child(
                     div()
+                        .mt_3()
                         .flex()
                         .flex_col()
                         .gap_1()
@@ -4089,50 +4185,19 @@ impl Render for StartupError {
                         .child(
                             div()
                                 .id("startup-error-details")
-                                .max_h(px(120.))
+                                .max_h(px(88.))
                                 .overflow_y_scroll()
                                 .px_3()
                                 .py_2()
                                 .rounded_md()
-                                .bg(gpui::rgb(ui::theme::bg_elevated()))
+                                .bg(gpui::rgb(ui::theme::bg_app()))
                                 .child(gpui::text!(self.message.clone())),
                         ),
                 )
             })
-            .when(
-                !self.requires_completed_stop
-                    && self.message.contains("Incompatible Maple host or profile"),
-                |view| {
-                    view.child(
-                        ui::widgets::secondary_button("stop-incompatible-host")
-                            .child(gpui::text!(if self.stopping {
-                                tr("native-stopping")
-                            } else {
-                                tr("native-stop-existing")
-                            }))
-                            .on_click(
-                                cx.listener(|this, _, window, cx| this.stop_old_host(window, cx)),
-                            ),
-                    )
-                },
-            )
-            .when(self.requires_completed_stop, |view| {
-                view.child(div().text_sm().child(gpui::text!(tr("native-wait-stop"))))
-                    .child(
-                        ui::widgets::secondary_button("retry-startup-host-stop")
-                            .child(gpui::text!(if self.stopping {
-                                tr("native-stopping-host")
-                            } else {
-                                tr("native-retry-stop")
-                            }))
-                            .when(self.stopping, |button| button.opacity(0.5))
-                            .on_click(
-                                cx.listener(|this, _, _, cx| this.retry_required_stop(false, cx)),
-                            ),
-                    )
-            })
             .child(
                 div()
+                    .mt_4()
                     .flex()
                     .flex_col()
                     .gap_1()
@@ -4146,12 +4211,13 @@ impl Render for StartupError {
             )
             .child(
                 div()
+                    .mt_4()
                     .flex()
                     .flex_row()
                     .flex_wrap()
                     .gap_2()
                     .child(
-                        ui::widgets::secondary_button("copy-startup-details")
+                        ui::widgets::ghost_button("copy-startup-details")
                             .child(gpui::text!(if self.details_copied {
                                 tr("native-startup-details-copied")
                             } else {
@@ -4161,40 +4227,173 @@ impl Render for StartupError {
                     )
                     .when(self.diagnostics.log_exists, |row| {
                         row.child(
-                            ui::widgets::secondary_button("show-startup-log")
+                            ui::widgets::ghost_button("show-startup-log")
                                 .child(gpui::text!(tr("native-startup-show-log")))
                                 .on_click(cx.listener(|this, _, _, cx| this.show_log(cx))),
                         )
                     }),
             )
-            .when(self.close_is_allowed(), |view| {
-                view.child(
-                    div()
-                        .id("close-startup-error")
-                        .cursor_pointer()
-                        .px_4()
-                        .py_2()
-                        .rounded_md()
-                        .bg(gpui::rgb(ui::theme::bg_elevated()))
-                        .child(gpui::text!(tr("native-close")))
-                        .on_click(cx.listener(|this, _, _, cx| this.request_close(cx))),
-                )
-            })
+            .child(div().flex_1())
+            .child(
+                div()
+                    .mt_4()
+                    .flex()
+                    .flex_wrap()
+                    .items_center()
+                    .justify_end()
+                    .gap_2()
+                    .when(close_allowed && recovery, |row| {
+                        row.child(
+                            ui::widgets::ghost_button("close-startup-error")
+                                .child(gpui::text!(tr("native-close")))
+                                .on_click(cx.listener(|this, _, _, cx| this.request_close(cx))),
+                        )
+                    })
+                    .when(incompatible, |row| {
+                        row.child(
+                            ui::widgets::primary_button("stop-incompatible-host")
+                                .child(gpui::text!(if self.stopping {
+                                    tr("native-stopping")
+                                } else {
+                                    tr("native-stop-existing")
+                                }))
+                                .when(self.stopping, |button| button.opacity(0.5))
+                                .on_click(cx.listener(|this, _, window, cx| {
+                                    this.stop_old_host(window, cx)
+                                })),
+                        )
+                    })
+                    .when(self.requires_completed_stop, |row| {
+                        row.child(
+                            ui::widgets::primary_button("retry-startup-host-stop")
+                                .child(gpui::text!(if self.stopping {
+                                    tr("native-stopping-host")
+                                } else {
+                                    tr("native-retry-stop")
+                                }))
+                                .when(self.stopping, |button| button.opacity(0.5))
+                                .on_click(cx.listener(|this, _, _, cx| {
+                                    this.retry_required_stop(false, cx)
+                                })),
+                        )
+                    })
+                    // With no recovery to offer, Close is the one accent action.
+                    .when(close_allowed && !recovery, |row| {
+                        row.child(
+                            ui::widgets::primary_button("close-startup-error")
+                                .child(gpui::text!(tr("native-close")))
+                                .on_click(cx.listener(|this, _, _, cx| this.request_close(cx))),
+                        )
+                    }),
+            )
+    }
+}
+
+/// Both startup paths build GPUI windows outside any bundle context:
+/// the standalone error window renders the same display and body fonts
+/// as the main app, so font registration is shared, not repeated.
+fn register_bundled_fonts(cx: &mut App) {
+    if let Err(error) = cx.text_system().add_fonts(
+        crate::assets::FONTS
+            .iter()
+            .map(|bytes| std::borrow::Cow::Borrowed(*bytes))
+            .collect(),
+    ) {
+        log::warn!("failed to register bundled fonts: {error}");
+    }
+}
+
+/// Deterministic geometry fixtures for the startup-failure states a live
+/// start cannot reach on demand: the guarded stop and the restart-failure
+/// status. `MAPLE_DEBUG_STARTUP_ERROR=incompatible|guarded|restart`,
+/// optionally suffixed with a locale, as in `guarded-de`.
+fn fixture_startup_error(state: &str, error: String) -> StartupError {
+    match state {
+        "guarded" => {
+            let mut startup = StartupError::new(
+                "Maple's termination coordinator requires the main thread; the \
+                 native application delegate is FixtureDelegate, not derived from \
+                 the reviewed GPUIApplicationDelegate"
+                    .into(),
+            );
+            startup.requires_completed_stop = true;
+            // The worst stack: a failed retry has replaced the failure with
+            // a status, keeping the original error as details.
+            startup.localized_message = Some(UiText::message(
+                "native-stop-failed",
+                [(
+                    "error",
+                    "the fixture host did not release its ownership lock".into(),
+                )],
+            ));
+            startup
+        }
+        "restart" => {
+            let mut startup = StartupError::new(
+                "Incompatible Maple host or profile. Close the existing host or \
+                 run `maple-agent host stop` for this profile, then reopen Maple."
+                    .into(),
+            );
+            startup.localized_message = Some(UiText::message(
+                "native-restart-failed",
+                [("error", "the fixture exit status was FixtureStatus".into())],
+            ));
+            startup
+        }
+        "incompatible" => StartupError::new(
+            "Incompatible Maple host or profile. Close the existing host or run \
+             `maple-agent host stop` for this profile, then reopen Maple."
+                .into(),
+        ),
+        _ => StartupError::new(error),
     }
 }
 
 fn show_startup_error(error: String) {
     #[cfg(target_os = "linux")]
     let restart_path = crate::self_launch::executable().ok();
+    // The failure window follows the resolved preferences: the guarded
+    // variant picks up hydrated settings, and the standalone window falls
+    // back to the OS appearance and system locale rather than opening a
+    // store that a locked or older host may own.
+    let settings = crate::settings::load_settings();
+    // Debug-only geometry fixtures; a no-op in release builds and tests,
+    // like the Quit prompt's debug loop.
+    let (fixture_state, fixture_locale) = if cfg!(debug_assertions)
+        && !cfg!(test)
+        && std::env::var_os("MAPLE_DEBUG_STARTUP_ERROR").is_some()
+    {
+        match std::env::var("MAPLE_DEBUG_STARTUP_ERROR")
+            .unwrap_or_default()
+            .split_once('-')
+        {
+            Some((state, locale)) => (state.to_string(), Some(locale.to_string())),
+            None => (
+                std::env::var("MAPLE_DEBUG_STARTUP_ERROR").unwrap_or_default(),
+                None,
+            ),
+        }
+    } else {
+        Default::default()
+    };
     gpui_platform::application().run(move |cx| {
         cx.set_app_identity(crate::profile::BUNDLE_ID, crate::profile::DISPLAY_NAME);
+        register_bundled_fonts(cx);
+        ui::i18n::initialize_saved_preference(
+            fixture_locale.as_deref().or(settings.locale.as_deref()),
+        );
+        ui::theme::apply_preference(ui::theme::Preference::parse(&settings.theme), cx);
         #[cfg(target_os = "linux")]
         if let Some(path) = restart_path {
             cx.set_restart_path(path);
         }
         cx.on_action(|_: &QuitApp, cx| quit_app(cx));
         ui::menus::install(cx);
-        let bounds = Bounds::centered(None, size(px(600.), px(440.)), cx);
+        let bounds = if fixture_state == "guarded" {
+            Bounds::centered(None, size(px(640.), px(520.)), cx)
+        } else {
+            Bounds::centered(None, size(px(600.), px(440.)), cx)
+        };
         let result = cx.open_window(
             WindowOptions {
                 window_bounds: Some(WindowBounds::Windowed(bounds)),
@@ -4210,7 +4409,12 @@ fn show_startup_error(error: String) {
                     finish_quit(cx);
                     true
                 });
-                cx.new(|_| StartupError::new(error))
+                // The window follows the OS appearance; redraw when it
+                // changes while the window is open.
+                window
+                    .observe_window_appearance(|_window, cx| cx.refresh_windows())
+                    .detach();
+                cx.new(|_| fixture_startup_error(&fixture_state, error))
             },
         );
         if let Err(error) = result {
@@ -4280,14 +4484,7 @@ pub fn run() {
             cx.set_restart_path(restart_path);
             cx.set_quit_mode(gpui::QuitMode::Explicit);
             log::debug!("startup: gpui app ready at {} ms", crate::startup_elapsed());
-            if let Err(error) = cx.text_system().add_fonts(
-                crate::assets::FONTS
-                    .iter()
-                    .map(|bytes| std::borrow::Cow::Borrowed(*bytes))
-                    .collect(),
-            ) {
-                log::warn!("failed to register bundled fonts: {error}");
-            }
+            register_bundled_fonts(cx);
             ui::spell::preload();
             cx.on_action(|_: &QuitApp, cx| quit_app(cx));
             // Menu actions dispatch while the active window is borrowed.
@@ -4383,6 +4580,11 @@ pub fn run() {
                 // take the ordinary Quit path until request_stop proves EOF
                 // and owner-lock release. The drain stays off the UI thread.
                 log::error!("{error}");
+                // The main window hydrates the locale when its settings
+                // load; this window never does, so resolve it here.
+                ui::i18n::initialize_saved_preference(
+                    crate::settings::load_settings().locale.as_deref(),
+                );
                 let startup = cx.new(|_| StartupError::requiring_host_stop(error, backend.clone()));
                 cx.set_global(GuardedStartupFailure(startup.clone()));
                 let view = startup.clone();
@@ -4395,6 +4597,9 @@ pub fn run() {
                             closing.update(cx, |startup, cx| startup.request_close(cx));
                             false
                         });
+                        window
+                            .observe_window_appearance(|_window, cx| cx.refresh_windows())
+                            .detach();
                         view
                     },
                 );
@@ -5419,6 +5624,89 @@ mod tests {
         let startup = super::StartupError::new("Incompatible Maple host or profile".into());
         assert!(startup.close_is_allowed());
         assert!(startup.retry_backend.is_none());
+    }
+
+    #[test]
+    fn startup_error_status_target_grows_once_for_a_status_and_preserves_width() {
+        let mut narrow_handled = false;
+        // A status replaces the failure: grow once, preserving the width.
+        let narrow = super::startup_error_status_target(
+            gpui::Size {
+                width: px(600.),
+                height: px(440.),
+            },
+            true,
+            &mut narrow_handled,
+        );
+        assert_eq!(
+            narrow,
+            Some(gpui::Size {
+                width: px(600.),
+                height: px(480.)
+            })
+        );
+        // A user's widen survives the growth.
+        let mut widened_handled = false;
+        let widened = super::startup_error_status_target(
+            gpui::Size {
+                width: px(700.),
+                height: px(440.),
+            },
+            true,
+            &mut widened_handled,
+        );
+        assert_eq!(
+            widened,
+            Some(gpui::Size {
+                width: px(700.),
+                height: px(480.)
+            })
+        );
+        // No status, no growth: the failure-only window already fits.
+        let mut plain_handled = false;
+        let plain = super::startup_error_status_target(
+            gpui::Size {
+                width: px(600.),
+                height: px(440.),
+            },
+            false,
+            &mut plain_handled,
+        );
+        assert_eq!(plain, None);
+        assert!(!plain_handled);
+        // Once grown, never again: a later shrink is the user's choice.
+        let regrown = super::startup_error_status_target(
+            gpui::Size {
+                width: px(600.),
+                height: px(300.),
+            },
+            true,
+            &mut narrow_handled,
+        );
+        assert_eq!(regrown, None);
+        // The guarded 520px window already fits the status stack.
+        let mut tall_handled = false;
+        let tall = super::startup_error_status_target(
+            gpui::Size {
+                width: px(640.),
+                height: px(520.),
+            },
+            true,
+            &mut tall_handled,
+        );
+        assert_eq!(tall, None);
+        // Its first status is consumed too: a later user shrink stays put.
+        assert_eq!(
+            super::startup_error_status_target(
+                gpui::Size {
+                    width: px(640.),
+                    height: px(300.),
+                },
+                true,
+                &mut tall_handled,
+            ),
+            None
+        );
     }
 
     #[gpui::test]
