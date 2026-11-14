@@ -4,6 +4,7 @@ import { useOpenSecret } from "@mapleai/sdk";
 import { TopNav } from "@/components/TopNav";
 import { FullPageMain } from "@/components/FullPageMain";
 import { getBillingService } from "@/billing/billingService";
+import { planDisplayName } from "@/billing/plan";
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import { MarketingHeader } from "@/components/MarketingHeader";
 import { Loader2, Check, AlertTriangle, X } from "lucide-react";
@@ -268,11 +269,11 @@ function RedeemPage() {
               </div>
               <div className="flex-1">
                 <p className="font-semibold text-lg">
-                  Active {billingStatus?.product_name} Subscription Detected
+                  Active {planDisplayName(billingStatus)} Subscription Detected
                 </p>
                 <p className="text-sm mt-2">
-                  You're currently subscribed to the {billingStatus?.product_name} plan. Pass codes
-                  can only be redeemed on free accounts.
+                  You're currently subscribed to the {planDisplayName(billingStatus)} plan. Pass
+                  codes can only be redeemed on free accounts.
                 </p>
                 <p className="text-sm mt-2">
                   To redeem this pass code, you'll need to cancel your current subscription and wait

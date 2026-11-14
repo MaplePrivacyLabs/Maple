@@ -34,6 +34,36 @@ test("eligible Zaprite Pro renders upgrade CTA rather than support email", () =>
   );
 });
 
+test("any higher individual plan billing describes is an upgrade target", () => {
+  const studio = {
+    id: "local-studio",
+    name: "Max Studio",
+    plan_group: "individual",
+    plan_rank: 3,
+    display_name: "Studio"
+  };
+  const zapriteMax: BillingStatus = { ...zapritePro, product_id: "local-max", product_name: "Max" };
+  for (const subscriber of [zapritePro, zapriteMax]) {
+    expect(zapriteUpgradeTarget(subscriber, studio)).toBe(true);
+    expect(zapritePaidPlanButtonText(subscriber, studio, false)).toBe("Upgrade to Studio");
+  }
+
+  // Never a lower or equal plan, a Team plan, or a Free subscriber.
+  expect(zapritePaidPlanButtonText(zapriteMax, { id: "local-pro", name: "Pro" }, false)).toBe(
+    "Contact Us"
+  );
+  expect(zapriteUpgradeTarget(zapriteMax, { id: "local-max", name: "Max" })).toBe(false);
+  expect(zapriteUpgradeTarget(zapritePro, { ...studio, plan_group: "team", plan_rank: null })).toBe(
+    false
+  );
+  expect(zapriteUpgradeTarget({ ...zapritePro, product_name: "Free" }, studio)).toBe(false);
+
+  // Other payment providers change plans elsewhere.
+  expect(
+    zapritePaidPlanButtonText({ ...zapritePro, payment_provider: "stripe" }, studio, false)
+  ).toBe(null);
+});
+
 test("checkout URL allowlist accepts Zaprite and local mock hosts", () => {
   expect(isAllowedZapriteCheckoutUrl("https://checkout.zaprite.com/abc")).toBe(true);
   expect(isAllowedZapriteCheckoutUrl("http://checkout.zaprite.com/abc")).toBe(false);

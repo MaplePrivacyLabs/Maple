@@ -25,6 +25,12 @@ import { VerificationModal } from "@/components/VerificationModal";
 import { TeamSeatDialog } from "@/components/TeamSeatDialog";
 import { ZapriteUpgradeDialog } from "@/components/ZapriteUpgradeDialog";
 import { zapritePaidPlanButtonText, zapriteUpgradeTarget } from "@/billing/zapriteUpgrade";
+import {
+  isCurrentProduct,
+  monthlyCreditsText,
+  productDisplayName,
+  productsByCard
+} from "@/billing/plan";
 import { isIOS, isAndroid, isMobile, isTauri } from "@/utils/platform";
 import { billingReturnOrigin } from "@/billing/returnOrigin";
 import { cn } from "@/utils/utils";
@@ -60,6 +66,11 @@ interface Product {
   description?: string;
   active?: boolean;
   is_available?: boolean;
+  plan_key?: string;
+  plan_group?: string;
+  plan_rank?: number | null;
+  display_name?: string;
+  monthly_credits?: number;
 }
 
 function PricingSkeletonCard() {
@@ -260,6 +271,8 @@ function LegacyPricingPage() {
   const [portalError, setPortalError] = useState<string | null>(null);
   const [loadingProductId, setLoadingProductId] = useState<string | null>(null);
   const [useBitcoin, setUseBitcoin] = useState(false);
+  // The size picked on a card that offers more than one, by card name.
+  const [selectedSizes, setSelectedSizes] = useState<Record<string, string>>({});
   const [showTeamSeatDialog, setShowTeamSeatDialog] = useState(false);
   const [pendingTeamProductId, setPendingTeamProductId] = useState<string | null>(null);
   const [zapriteUpgradeProductId, setZapriteUpgradeProductId] = useState<string | null>(null);
@@ -956,6 +969,10 @@ function LegacyPricingPage() {
 
         {(() => {
           const filteredPlans = PRICING_PLANS;
+          const cardProducts = productsByCard<Product>(PRICING_PLANS, products ?? []);
+          const proCredits = products?.find(
+            (product: Product) => product.plan_key === "pro"
+          )?.monthly_credits;
 
           const gridColumns = filteredPlans.length === 4 ? "lg:grid-cols-4" : "lg:grid-cols-3";
 
@@ -964,17 +981,32 @@ function LegacyPricingPage() {
               className={`mx-auto grid w-full max-w-7xl grid-cols-1 ${gridColumns} gap-5 px-4 pt-6 sm:px-6 lg:px-8`}
             >
               {filteredPlans.map((plan) => {
-                // Find the matching product from server data
-                const product = products?.find(
-                  (p) => p.name.toLowerCase() === plan.name.toLowerCase() && p.active
-                );
+                // The card's own plan comes first; billing can list larger sizes of it.
+                const sizes = cardProducts.get(plan.name) ?? [];
+                const product =
+                  sizes.find((size) => size.id === selectedSizes[plan.name]) ??
+                  sizes.find((size) => isLoggedIn && isCurrentProduct(freshBillingStatus, size)) ??
+                  sizes[0];
 
                 // If no product found from server, use plan data
                 if (!product && plan.name !== "Free") return null;
 
+                const isLargerSize = !!product && product !== sizes[0];
                 const isCurrentPlan =
                   isLoggedIn &&
-                  freshBillingStatus?.product_name?.toLowerCase() === plan.name.toLowerCase();
+                  (product
+                    ? isCurrentProduct(freshBillingStatus, product)
+                    : freshBillingStatus?.product_name?.toLowerCase() === plan.name.toLowerCase());
+                const planTitle = isLargerSize ? productDisplayName(product) : plan.name;
+                const planDescription = (isLargerSize && product.description) || plan.description;
+                const sizeCredits = isLargerSize ? monthlyCreditsText(product, proCredits) : null;
+                const planFeatures = sizeCredits
+                  ? plan.features.map((feature) =>
+                      /monthly credits/i.test(feature.text)
+                        ? { ...feature, text: sizeCredits }
+                        : feature
+                    )
+                  : plan.features;
                 const isTeamPlan = plan.name.toLowerCase().includes("team");
                 const isFreeplan = plan.name.toLowerCase().includes("free");
 
@@ -1071,7 +1103,7 @@ function LegacyPricingPage() {
 
                       <div className="space-y-3">
                         <h3 className="flex items-center gap-2 font-display text-3xl font-normal leading-none">
-                          {plan.name}
+                          {planTitle}
                           {useBitcoin && !isFreeplan && !isTeamPlan ? " (Yearly)" : ""}
                           {isCurrentPlan && <Check className="w-5 h-5 text-maple-success" />}
                         </h3>
@@ -1079,13 +1111,43 @@ function LegacyPricingPage() {
                         <p className="text-sm leading-6 text-[#747474] dark:text-muted-foreground">
                           {isTeamPlan && useBitcoin
                             ? "Team plan is not available with Bitcoin payment."
-                            : plan.description}
+                            : planDescription}
                         </p>
                       </div>
 
+                      {sizes.length > 1 && (
+                        <div
+                          role="group"
+                          aria-label={`${plan.name} sizes`}
+                          className="flex gap-1 rounded-lg border border-neutral-900/10 p-1 dark:border-white/10"
+                        >
+                          {sizes.map((size) => (
+                            <button
+                              key={size.id}
+                              type="button"
+                              aria-pressed={size.id === product?.id}
+                              onClick={() =>
+                                setSelectedSizes((current) => ({
+                                  ...current,
+                                  [plan.name]: size.id
+                                }))
+                              }
+                              className={cn(
+                                "flex-1 rounded-md px-2 py-2 text-sm font-semibold outline-none transition-colors focus-visible:ring-2 focus-visible:ring-ring",
+                                size.id === product?.id
+                                  ? "bg-[hsl(var(--maple-primary-container))] text-[hsl(var(--maple-primary-strong))] dark:bg-[hsl(var(--maple-primary))]/20 dark:text-[hsl(var(--maple-primary))]"
+                                  : "text-[#747474] hover:text-[#221a18] dark:text-muted-foreground dark:hover:text-foreground"
+                              )}
+                            >
+                              ${(size.default_price.unit_amount / 100).toFixed(0)}
+                            </button>
+                          ))}
+                        </div>
+                      )}
+
                       {/* Features List */}
                       <div className="flex flex-1 flex-col gap-2.5">
-                        {plan.features.map((feature, index) => (
+                        {planFeatures.map((feature, index) => (
                           <div key={index} className="flex items-start gap-2 text-sm leading-5">
                             {feature.text !== "" &&
                               (feature.icon ||

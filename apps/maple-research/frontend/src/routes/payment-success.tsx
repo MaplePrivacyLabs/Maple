@@ -1,6 +1,7 @@
 import { createFileRoute, Navigate } from "@tanstack/react-router";
 import { useQuery } from "@tanstack/react-query";
 import { getBillingService } from "@/billing/billingService";
+import { isTeamPlan } from "@/billing/plan";
 import { useOpenSecret } from "@mapleai/sdk";
 import { Loader2 } from "lucide-react";
 
@@ -45,7 +46,7 @@ function PaymentSuccessPage() {
   }
 
   // Check if user has a team plan
-  const hasTeamPlan = billingStatus?.product_name?.toLowerCase().includes("team");
+  const hasTeamPlan = isTeamPlan(billingStatus);
 
   // If team plan, redirect to home with team_setup param
   if (hasTeamPlan) {
