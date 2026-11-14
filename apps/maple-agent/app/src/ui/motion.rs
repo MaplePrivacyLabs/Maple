@@ -1345,7 +1345,9 @@ impl Element for HoverBackground {
 /// first paint is never held back. `id` must be stable across frames.
 ///
 /// The fade sets the content's own opacity, so pass the container that
-/// holds it, not an element that already has an opacity of its own.
+/// holds it, not an element that already has an opacity of its own. At the
+/// start of the fade only what is behind the content shows, so the parent
+/// must paint an opaque background: the window's own backdrop is black.
 pub fn swap_in<E>(element: E, id: impl Into<ElementId>, key: impl Into<ElementId>) -> Swap<E>
 where
     E: IntoElement + Styled + 'static,

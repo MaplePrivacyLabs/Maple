@@ -135,7 +135,9 @@ appear only after 300 ms, so fast loads never flash a spinner.
   id; a new id replays them. `swap_in(element, id, key)` fades content in
   whenever `key` changes but draws its first appearance at once, for
   content that replaces other content in one place (the window's screen, a
-  Settings section).
+  Settings section). At the start of the fade only what is behind the
+  content shows, so its parent must paint an opaque background; the
+  window's own backdrop is black.
 - Fading an ancestor of a cached view (`Entity::cached`, the sidebar) is
   safe: gpui paints a cached view afresh when the opacity it inherits
   changes. A cached view under a fade therefore re-renders on every frame
