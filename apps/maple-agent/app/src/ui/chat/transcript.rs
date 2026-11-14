@@ -421,12 +421,15 @@ impl ChatScreen {
         let natural = slot.slot_natural.get().map(f32::from);
         if reduced {
             slot.slot_open = None;
+            slot.slot_since = None;
         } else if appeared {
             // A send opens it; a task switch or history load shows it at
             // once. It opens from the height the composer gave up as it
-            // emptied, so the transcript above does not drop first.
+            // emptied, so the transcript above does not drop first. Only
+            // an opening slot is timed from its appearance: one shown at
+            // once is at rest, and whatever grows it later starts then.
             slot.slot_open = (!snap).then(|| motion::Tween::pixels(freed));
-            slot.slot_since = Some(now);
+            slot.slot_since = (!snap).then_some(now);
         }
         let cap = match (&mut slot.slot_open, natural) {
             (None, None) => None,
@@ -438,6 +441,16 @@ impl ChatScreen {
             }
             // Closed on its first frame while its content is measured.
             (Some(open), None) => {
+                window.request_animation_frame();
+                Some(px(open.value(now)))
+            }
+            // A send while the slot already shows (the waiting dots): the
+            // composer gives up `freed` on this frame and the message is
+            // not measured yet, so the slot takes that height at once and
+            // opens the rest from here, as a slot that appears does.
+            (Some(open), Some(_)) if freed > 0. => {
+                *open = motion::Tween::pixels(open.value(now) + freed);
+                slot.slot_since = Some(now);
                 window.request_animation_frame();
                 Some(px(open.value(now)))
             }

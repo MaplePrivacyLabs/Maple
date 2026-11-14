@@ -1242,8 +1242,16 @@ impl Element for HoverBackground {
         window: &mut Window,
         cx: &mut App,
     ) -> Self::PrepaintState {
-        self.element
-            .prepaint(id, inspector, bounds, layout, window, cx)
+        let hitbox = self
+            .element
+            .prepaint(id, inspector, bounds, layout, window, cx);
+        // gpui gives a div a hitbox only when something else on it is
+        // hit-tested (a click, a cursor, a tooltip, a native hover style).
+        // A plain card has none of those, so the hover brings its own.
+        if hitbox.is_none() && self.highlighted.is_none() {
+            return Some(window.insert_hitbox(bounds, gpui::HitboxBehavior::Normal));
+        }
+        hitbox
     }
     fn paint(
         &mut self,
@@ -1766,6 +1774,52 @@ mod hover_tests {
             gpui::Fill::from(gpui::rgb(super::super::theme::bg_sidebar_pill()))
         );
         assert_eq!(cx.update(|window, cx| window.simulate_next_frame(cx)), 0);
+    }
+
+    /// A card with nothing on it but an id still highlights under the
+    /// pointer: gpui gives such a div no hitbox, so the hover brings one.
+    #[gpui::test]
+    fn a_plain_card_with_no_other_interaction_still_hovers(cx: &mut gpui::TestAppContext) {
+        use gpui::{Modifiers, div, prelude::*, px};
+        use std::rc::Rc;
+        struct Host {
+            observed: Rc<RefCell<gpui::Fill>>,
+        }
+        impl gpui::Render for Host {
+            fn render(&mut self, _: &mut Window, _: &mut gpui::Context<Self>) -> impl IntoElement {
+                let mut card = div()
+                    .id("plain-card")
+                    .debug_selector(|| "plain-card".into())
+                    .w(px(120.))
+                    .h(px(40.))
+                    .hover_bg(gpui::rgb(super::super::theme::bg_sidebar_row_hover()));
+                card.observed = Some(self.observed.clone());
+                div().size_full().child(card)
+            }
+        }
+        let observed = Rc::new(RefCell::new(gpui::Fill::default()));
+        cx.update(|cx| cx.set_reduce_motion(true));
+        let (_, cx) = cx.add_window_view(|_, _| Host {
+            observed: observed.clone(),
+        });
+        cx.run_until_parked();
+        let bounds = cx.debug_bounds("plain-card").unwrap();
+        cx.simulate_mouse_move(bounds.center(), None, Modifiers::default());
+        assert_eq!(
+            *observed.borrow(),
+            gpui::Fill::from(gpui::rgb(super::super::theme::bg_sidebar_row_hover())),
+            "the card takes its hover colour under the pointer"
+        );
+        cx.simulate_mouse_move(
+            gpui::point(bounds.right() + px(20.), bounds.bottom() + px(20.)),
+            None,
+            Modifiers::default(),
+        );
+        assert_eq!(
+            *observed.borrow(),
+            gpui::Fill::from(gpui::transparent_black()),
+            "and returns to no fill when the pointer leaves"
+        );
     }
 
     #[gpui::test]

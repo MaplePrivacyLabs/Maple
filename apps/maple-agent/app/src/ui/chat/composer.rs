@@ -2458,6 +2458,71 @@ mod resize_tests {
         motion::set_test_now(None);
     }
 
+    /// The same send while the waiting dots already show under the thread
+    /// (a second message before the first reply): the slot is on screen at
+    /// rest, so it takes the height the composer gives up on that frame and
+    /// opens the rest over the following frames. The newest row never
+    /// drops, and the slot does not pop to its full height in one frame.
+    #[gpui::test]
+    fn a_send_while_the_dots_show_neither_drops_nor_pops(cx: &mut TestAppContext) {
+        let start = Instant::now();
+        motion::set_test_now(Some(start));
+        cx.update(|cx| cx.set_reduce_motion(false));
+        let (chat, cx) = chat_window(cx, 40);
+        let text = "one\ntwo\nthree\nfour\nfive";
+        chat.update(cx, |chat, cx| {
+            chat.active_runs.insert("s1".into(), "run-1".into());
+            chat.awaiting_first_token = true;
+            let composer = chat.composer.clone().expect("composer");
+            composer.update(cx, |input, cx| input.set_text(text, cx));
+            cx.notify();
+        });
+        cx.run_until_parked();
+        // Long after the dots appeared: a stale start time must not count.
+        let typed = start + Duration::from_secs(5);
+        frame_at(typed, cx);
+        frame_at(typed, cx);
+        let newest = |cx: &mut VisualTestContext| {
+            cx.debug_bounds("timeline-row-m39")
+                .expect("the newest row is on screen")
+                .bottom()
+        };
+        let before = newest(cx);
+
+        chat.update(cx, |chat, cx| {
+            chat.clear_composer_for_send(cx);
+            let preview = crate::ui::chat::sending::SendPreview::new(Some("s1".into()), text, &[])
+                .capture_timeline(&chat.timeline);
+            chat.sending_previews.insert("send-2".into(), preview);
+            cx.notify();
+        });
+        cx.run_until_parked();
+        let first = newest(cx);
+        assert!(
+            first <= before + px(1.),
+            "the newest row does not drop on the send frame: {before:?} then {first:?}"
+        );
+        let mut last = first;
+        let mut steps = 0;
+        for step in 1..=12 {
+            frame_at(typed + motion::ENTER.settle * step / 6, cx);
+            let now = newest(cx);
+            assert!(
+                now <= last + px(0.5),
+                "it only ever moves up: {last:?} then {now:?}"
+            );
+            if now < last - px(0.5) {
+                steps += 1;
+            }
+            last = now;
+        }
+        assert!(
+            steps >= 3,
+            "the slot opens over several frames, not in one: {steps} moves from {first:?} to {last:?}"
+        );
+        motion::set_test_now(None);
+    }
+
     /// The composer changes place at once between the empty state and a
     /// conversation: on the first message it is at the foot of the thread
     /// on the next frame and asks for no more, and New Task puts it straight
