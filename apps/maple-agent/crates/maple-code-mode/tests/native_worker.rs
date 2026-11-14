@@ -115,10 +115,15 @@ async fn continuous_loop_runs_between_cells_and_does_not_autoawait_values() {
     let task = bind(&runtime, "async", root.path());
     let first = cell(
         &task,
-        "import asyncio, pathlib\nloop = asyncio.get_running_loop()\nqueue = asyncio.Queue()\nasync def background():\n    await asyncio.sleep(0.05)\n    print('late output')\n    pathlib.Path('background-finished').write_text('done')\n    await queue.put(42)\njob = asyncio.create_task(background())",
+        "import asyncio, pathlib\nloop = asyncio.get_running_loop()\nqueue = asyncio.Queue()\nasync def background():\n    while not pathlib.Path('first-cell-returned').exists():\n        await asyncio.sleep(0.01)\n    print('late output')\n    pathlib.Path('background-finished').write_text('done')\n    await queue.put(42)\njob = asyncio.create_task(background())",
     )
     .await;
     assert_eq!(first.status, OutcomeStatus::Ok);
+    assert!(!all_output(&first).contains("late output"));
+    // Output printed while the first cell is still draining belongs to that
+    // cell, and a drain has no time bound. The task therefore prints only
+    // after the host has the first outcome, so its output is always late.
+    std::fs::write(root.path().join("first-cell-returned"), "").unwrap();
     tokio::time::timeout(Duration::from_secs(5), async {
         while !root.path().join("background-finished").exists() {
             tokio::time::sleep(Duration::from_millis(10)).await;
