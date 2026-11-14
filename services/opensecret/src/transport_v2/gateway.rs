@@ -40,6 +40,7 @@ use super::{
         HANDSHAKE_CHALLENGE_BYTES, MIN_REQUEST_RECORD_BYTES, RECORD_TAG_BYTES,
         X25519_PUBLIC_KEY_BYTES,
     },
+    diagnostics::{Diagnostics, Outcome, RequestDiagnostics, Stage, TerminalGuard},
     envelope::{
         EnvelopeError, LogicalHeader, RequestEnvelope, RequestId, MAX_ENCODED_REQUEST_BYTES,
         REQUEST_ID_BYTES, VERSION,
@@ -79,6 +80,7 @@ struct SessionGatewayState {
 struct RequestGatewayState {
     application: Router<()>,
     sessions: Arc<SessionStore>,
+    diagnostics: Arc<Diagnostics>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -105,18 +107,45 @@ enum OuterError {
     PayloadTooLarge,
     UnsupportedMediaType,
     Unavailable,
+    ResponseStartFailed,
 }
 
-impl IntoResponse for OuterError {
-    fn into_response(self) -> Response {
-        let status = match self {
+impl OuterError {
+    const fn status(self) -> StatusCode {
+        match self {
             Self::BadRequest | Self::SessionNotFound | Self::RequestDecryptionFailed => {
                 StatusCode::BAD_REQUEST
             }
             Self::PayloadTooLarge => StatusCode::PAYLOAD_TOO_LARGE,
             Self::UnsupportedMediaType => StatusCode::UNSUPPORTED_MEDIA_TYPE,
-            Self::Unavailable => StatusCode::SERVICE_UNAVAILABLE,
-        };
+            Self::Unavailable | Self::ResponseStartFailed => StatusCode::SERVICE_UNAVAILABLE,
+        }
+    }
+
+    const fn stage(self) -> Stage {
+        match self {
+            Self::RequestDecryptionFailed => Stage::EnvelopeDecode,
+            Self::ResponseStartFailed => Stage::EncryptedResponse,
+            _ => Stage::Admission,
+        }
+    }
+
+    const fn diagnostic_reason(self) -> &'static str {
+        match self {
+            Self::BadRequest => "bad_request",
+            Self::SessionNotFound => "session_not_found",
+            Self::RequestDecryptionFailed => "request_decryption_failed",
+            Self::PayloadTooLarge => "payload_too_large",
+            Self::UnsupportedMediaType => "unsupported_media_type",
+            Self::Unavailable => "unavailable",
+            Self::ResponseStartFailed => "response_start_failed",
+        }
+    }
+}
+
+impl IntoResponse for OuterError {
+    fn into_response(self) -> Response {
+        let status = self.status();
         let mut response = (status, "transport request rejected").into_response();
         let recovery_code = match self {
             Self::SessionNotFound => Some(crate::SESSION_NOT_FOUND_ERROR_CODE),
@@ -156,6 +185,7 @@ impl TransportV2Gateway {
             request_state: Arc::new(RequestGatewayState {
                 application,
                 sessions,
+                diagnostics: Arc::new(Diagnostics::from_env()),
             }),
         }
     }
@@ -188,6 +218,7 @@ impl TransportV2Gateway {
                     tracing::error!(?error, "failed to purge expired transport-v2 sessions");
                 }
             }
+            self.request_state.diagnostics.emit_aggregate();
         }
     }
 }
@@ -263,6 +294,23 @@ async fn dispatch_request(
     State(state): State<Arc<RequestGatewayState>>,
     request: Request<Body>,
 ) -> Result<Response, OuterError> {
+    let result = dispatch_request_inner(&state, request).await;
+    if let Err(error) = result.as_ref() {
+        state.diagnostics.record(
+            error.stage(),
+            RequestDiagnostics::unknown(),
+            Outcome::Rejected,
+            Some(error.diagnostic_reason()),
+            Some(error.status().as_u16()),
+        );
+    }
+    result
+}
+
+async fn dispatch_request_inner(
+    state: &RequestGatewayState,
+    request: Request<Body>,
+) -> Result<Response, OuterError> {
     require_content_type(request.headers(), "application/octet-stream")?;
     reject_forbidden_outer_headers(request.headers())?;
     if request.uri().query().is_some() {
@@ -294,24 +342,94 @@ async fn dispatch_request(
         .open_and_admit(&record)
         .map_err(map_admission_error)?;
     drop(record);
+    state.diagnostics.record(
+        Stage::Admission,
+        RequestDiagnostics::unknown(),
+        Outcome::Admitted,
+        None,
+        None,
+    );
 
     let envelope = match RequestEnvelope::decode_owned(admitted.request_id(), plaintext) {
         Ok(envelope) => envelope,
-        Err(_) => return encrypted_response(admitted, ApiError::BadRequest.into_response()),
+        Err(_) => {
+            state.diagnostics.record(
+                Stage::EnvelopeDecode,
+                RequestDiagnostics::unknown(),
+                Outcome::Rejected,
+                Some("invalid_envelope"),
+                None,
+            );
+            return encrypted_response(
+                admitted,
+                ApiError::BadRequest.into_response(),
+                Arc::clone(&state.diagnostics),
+                RequestDiagnostics::unknown(),
+            );
+        }
     };
-    let request =
+    let request_diagnostics =
+        RequestDiagnostics::from_envelope(envelope.method(), envelope.target());
+    state.diagnostics.record(
+        Stage::EnvelopeDecode,
+        request_diagnostics,
+        Outcome::Decoded,
+        None,
+        None,
+    );
+    let application_request =
         match build_application_request(envelope, admitted.session_id(), admitted.request_id()) {
             Ok(request) => request,
-            Err(_) => return encrypted_response(admitted, ApiError::BadRequest.into_response()),
+            Err(_) => {
+                state.diagnostics.record(
+                    Stage::EnvelopeDecode,
+                    request_diagnostics,
+                    Outcome::Rejected,
+                    Some("invalid_logical_request"),
+                    None,
+                );
+                return encrypted_response(
+                    admitted,
+                    ApiError::BadRequest.into_response(),
+                    Arc::clone(&state.diagnostics),
+                    request_diagnostics,
+                );
+            }
         };
 
+    state.diagnostics.record(
+        Stage::InnerDispatch,
+        request_diagnostics,
+        Outcome::Dispatched,
+        None,
+        None,
+    );
     let response = state
         .application
         .clone()
-        .oneshot(request)
+        .oneshot(application_request)
         .await
         .expect("Axum Router has an infallible service error");
-    encrypted_response(admitted, response)
+    let inner_status = response.status().as_u16();
+    let outcome = match inner_status {
+        200..=299 => Outcome::Success,
+        400..=499 => Outcome::ClientError,
+        _ => Outcome::ServerError,
+    };
+    let request_diagnostics = request_diagnostics.with_inner_status(inner_status);
+    state.diagnostics.record(
+        Stage::LogicalResponse,
+        request_diagnostics,
+        outcome,
+        None,
+        None,
+    );
+    encrypted_response(
+        admitted,
+        response,
+        Arc::clone(&state.diagnostics),
+        request_diagnostics,
+    )
 }
 
 fn build_application_request(
@@ -351,6 +469,8 @@ fn build_application_request(
 fn encrypted_response(
     admitted: super::session::AdmittedRequest,
     mut response: Response,
+    diagnostics: Arc<Diagnostics>,
+    request: RequestDiagnostics,
 ) -> Result<Response, OuterError> {
     let response_start = ResponseStart::new(
         response.status().as_u16(),
@@ -371,22 +491,59 @@ fn encrypted_response(
         }
     };
     let start = ResponseRecord::Start(start);
-    let mut writer = admitted
-        .begin_response()
-        .map_err(|_| OuterError::Unavailable)?;
-    let start = seal_framed(&mut writer, start).map_err(|_| OuterError::Unavailable)?;
+    let mut writer = match admitted.begin_response() {
+        Ok(writer) => writer,
+        Err(_) => {
+            diagnostics.record(
+                Stage::EncryptedResponse,
+                request,
+                Outcome::StartFailed,
+                Some("sealer_unavailable"),
+                None,
+            );
+            return Err(OuterError::ResponseStartFailed);
+        }
+    };
+    let start = match seal_framed(&mut writer, start) {
+        Ok(start) => start,
+        Err(_) => {
+            diagnostics.record(
+                Stage::EncryptedResponse,
+                request,
+                Outcome::StartFailed,
+                Some("seal_failed"),
+                None,
+            );
+            return Err(OuterError::ResponseStartFailed);
+        }
+    };
+    diagnostics.record(
+        Stage::EncryptedResponse,
+        request,
+        Outcome::Started,
+        None,
+        None,
+    );
+    let mut terminal = TerminalGuard::new(Arc::clone(&diagnostics), request);
     let stream = try_stream! {
         yield Bytes::from(start);
         while let Some(frame) = poll_fn(|context| Pin::new(&mut body).poll_frame(context)).await {
             let frame = match frame {
                 Ok(frame) => frame,
                 Err(_) => {
-                    let error = seal_framed(
+                    let error = match seal_framed(
                         &mut writer,
                         ResponseRecord::Error {
                             code: "application_body_failed".to_string(),
                         },
-                    ).map_err(io_error)?;
+                    ) {
+                        Ok(error) => error,
+                        Err(seal) => {
+                            terminal.finish(Outcome::Failed, Some("application_body_failed"));
+                            Err(io_error(seal))?
+                        }
+                    };
+                    terminal.finish(Outcome::Failed, Some("application_body_failed"));
                     yield Bytes::from(error);
                     return;
                 }
@@ -394,10 +551,16 @@ fn encrypted_response(
             match frame.into_data() {
                 Ok(bytes) => {
                     for chunk in bytes.chunks(MAX_RESPONSE_CHUNK_BYTES) {
-                        let encrypted = seal_framed(
+                        let encrypted = match seal_framed(
                             &mut writer,
                             ResponseRecord::Chunk(Bytes::copy_from_slice(chunk)),
-                        ).map_err(io_error)?;
+                        ) {
+                            Ok(encrypted) => encrypted,
+                            Err(seal) => {
+                                terminal.finish(Outcome::Failed, Some("seal_failed"));
+                                Err(io_error(seal))?
+                            }
+                        };
                         yield Bytes::from(encrypted);
                     }
                 }
@@ -407,18 +570,32 @@ fn encrypted_response(
                     } else {
                         "application_frame_unsupported"
                     };
-                    let error = seal_framed(
+                    let error = match seal_framed(
                         &mut writer,
                         ResponseRecord::Error {
                             code: code.to_string(),
                         },
-                    ).map_err(io_error)?;
+                    ) {
+                        Ok(error) => error,
+                        Err(seal) => {
+                            terminal.finish(Outcome::Failed, Some(code));
+                            Err(io_error(seal))?
+                        }
+                    };
+                    terminal.finish(Outcome::Failed, Some(code));
                     yield Bytes::from(error);
                     return;
                 }
             }
         }
-        let end = seal_framed(&mut writer, ResponseRecord::End).map_err(io_error)?;
+        let end = match seal_framed(&mut writer, ResponseRecord::End) {
+            Ok(end) => end,
+            Err(seal) => {
+                terminal.finish(Outcome::Failed, Some("seal_failed"));
+                Err(io_error(seal))?
+            }
+        };
+        terminal.finish(Outcome::Ended, None);
         yield Bytes::from(end);
     };
 
@@ -673,11 +850,20 @@ mod tests {
     }
 
     fn request_router(application: Router<()>, sessions: Arc<SessionStore>) -> Router<()> {
+        request_router_with_diagnostics(application, sessions, Arc::new(Diagnostics::for_test()))
+    }
+
+    fn request_router_with_diagnostics(
+        application: Router<()>,
+        sessions: Arc<SessionStore>,
+        diagnostics: Arc<Diagnostics>,
+    ) -> Router<()> {
         Router::new()
             .route("/v2/request", post(dispatch_request))
             .with_state(Arc::new(RequestGatewayState {
                 application,
                 sessions,
+                diagnostics,
             }))
     }
 
@@ -1285,7 +1471,9 @@ mod tests {
                 crate::web::responses::handlers::responses_sse_body_failure_for_test()
             }),
         );
-        let router = request_router(application, sessions);
+        let diagnostics = Arc::new(Diagnostics::for_test());
+        let router =
+            request_router_with_diagnostics(application, sessions, Arc::clone(&diagnostics));
         let request_id = RequestId::from_bytes([0xa3; 16]);
         let response = router
             .oneshot(outer_request(
@@ -1326,6 +1514,15 @@ mod tests {
         assert!(!records
             .iter()
             .any(|record| matches!(record, ResponseRecord::End)));
+        let route = crate::transport_v2::diagnostics::classify_target("/v1/responses");
+        assert_eq!(
+            diagnostics.count(Stage::StreamTerminal, route, Outcome::Failed),
+            1
+        );
+        assert_eq!(
+            diagnostics.count(Stage::StreamTerminal, route, Outcome::Ended),
+            0
+        );
     }
 
     #[tokio::test]
@@ -1863,5 +2060,79 @@ mod tests {
         assert!(matches!(&records[0], ResponseRecord::Start(start) if start.status() == 500));
         assert_eq!(records.len(), 2);
         assert!(matches!(&records[1], ResponseRecord::End));
+    }
+
+    #[tokio::test]
+    async fn rejected_request_never_acquires_an_inner_route() {
+        use crate::transport_v2::diagnostics::{classify_target, Route};
+
+        let test = test_session(21);
+        let sessions = Arc::new(SessionStore::new(NonZeroUsize::new(2).unwrap()));
+        sessions.insert(Arc::clone(&test.server)).unwrap();
+        let diagnostics = Arc::new(Diagnostics::for_test());
+        let router =
+            request_router_with_diagnostics(Router::new(), sessions, Arc::clone(&diagnostics));
+
+        let short_record = outer_request(test.server.id(), &test.routing_key, vec![0u8; 4]);
+        let response = router.clone().oneshot(short_record).await.unwrap();
+        assert_eq!(response.status(), StatusCode::BAD_REQUEST);
+        let request_id = RequestId::from_bytes([0x61; 16]);
+        let wrong_routing_key = outer_request(
+            test.server.id(),
+            &[0xff; HANDSHAKE_CHALLENGE_BYTES],
+            seal_request(&test.client, request_id, "/v1/models", None),
+        );
+        let response = router.oneshot(wrong_routing_key).await.unwrap();
+        assert_eq!(response.status(), StatusCode::BAD_REQUEST);
+
+        assert_eq!(
+            diagnostics.count(Stage::Admission, Route::UNKNOWN, Outcome::Rejected),
+            2
+        );
+        for target in ["/v1/models", "/v1/responses", "/protected/user"] {
+            let route = classify_target(target);
+            for outcome in [Outcome::Decoded, Outcome::Dispatched, Outcome::Success] {
+                assert_eq!(diagnostics.count(Stage::EnvelopeDecode, route, outcome), 0);
+                assert_eq!(diagnostics.count(Stage::InnerDispatch, route, outcome), 0);
+            }
+        }
+    }
+
+    #[tokio::test]
+    async fn logical_502_stays_distinct_from_an_outer_502() {
+        use crate::transport_v2::diagnostics::{classify_target, Route};
+
+        let test = test_session(22);
+        let sessions = Arc::new(SessionStore::new(NonZeroUsize::new(2).unwrap()));
+        sessions.insert(Arc::clone(&test.server)).unwrap();
+        let application = Router::new().route("/boom", any(|| async { StatusCode::BAD_GATEWAY }));
+        let diagnostics = Arc::new(Diagnostics::for_test());
+        let router =
+            request_router_with_diagnostics(application, sessions, Arc::clone(&diagnostics));
+        let request_id = RequestId::from_bytes([0x52; 16]);
+        let records = decrypt_records(
+            &test.client,
+            request_id,
+            router
+                .oneshot(outer_request(
+                    test.server.id(),
+                    &test.routing_key,
+                    seal_request(&test.client, request_id, "/boom", None),
+                ))
+                .await
+                .unwrap(),
+        )
+        .await;
+        assert!(matches!(&records[0], ResponseRecord::Start(start) if start.status() == 502));
+
+        let route = classify_target("/boom");
+        assert_eq!(
+            diagnostics.count(Stage::LogicalResponse, route, Outcome::ServerError),
+            1
+        );
+        assert_eq!(
+            diagnostics.count(Stage::Admission, Route::UNKNOWN, Outcome::Rejected),
+            0
+        );
     }
 }

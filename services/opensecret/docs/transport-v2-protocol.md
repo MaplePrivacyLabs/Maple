@@ -776,3 +776,10 @@ Before enabling V2 clients in production:
 9. Retain a coordinated rollback plan. Rolling the backend back below V2 after
    publishing V2-only clients strands those clients; they intentionally do not
    downgrade or transmit credentials over V1.
+
+## Diagnostics
+
+Bounded route and outcome diagnostics, their volume controls, and the operator
+query are documented in
+[transport-v2-diagnostics.md](transport-v2-diagnostics.md). They deliberately
+carry no correlation key across the edge and the enclave.
