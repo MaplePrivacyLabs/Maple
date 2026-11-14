@@ -361,4 +361,102 @@ describe("Apple pricing interactions", () => {
     expect(text(renderer!.root)).not.toContain("awaiting Apple's approval");
     expect(button("Subscribe to Pro").props.disabled).toBe(false);
   });
+
+  // "Studio" is a fixture: the paywall learns a larger size only from billing.
+  const maxId = "cloud.opensecret.maple.dev.max.monthly";
+  const studioId = "app.example.studio.monthly";
+  function withSize(): Props {
+    const input = props();
+    const max = { ...input.products.Pro!, productId: maxId, formattedPrice: "$114.99" };
+    input.products = { ...input.products, Max: max };
+    input.sizes = {
+      Max: [
+        {
+          productId: studioId,
+          planKey: "studio",
+          catalogName: "Max Studio",
+          displayName: "Studio",
+          credits: "20× Pro's monthly credits",
+          product: { ...max, productId: studioId, formattedPrice: "$229.99" }
+        }
+      ]
+    };
+    return input;
+  }
+  function sizeButtons() {
+    const group = renderer!.root.findAll(
+      (node) => node.props.role === "group" && node.props["aria-label"] === "Max sizes"
+    )[0];
+    return group.findAllByType("button");
+  }
+  test("a plan's larger size is one pick away and buys its own App Store product", async () => {
+    const input = withSize();
+    mount(input);
+    expect(sizeButtons().map((node) => [text(node), node.props["aria-pressed"]])).toEqual([
+      ["$114.99", true],
+      ["$229.99", false]
+    ]);
+    expect(text(renderer!.root)).toContain("10× Pro's monthly credits");
+    expect(button("Subscribe to Max").props.disabled).toBe(false);
+    // The Pro card has no sizes and no switch.
+    expect(
+      renderer!.root.findAll((node) => node.props.role === "group" && !!node.props["aria-label"])
+    ).toHaveLength(1);
+
+    await act(async () => {
+      sizeButtons()[1].props.onClick();
+    });
+    expect(sizeButtons().map((node) => node.props["aria-pressed"])).toEqual([false, true]);
+    expect(text(renderer!.root)).toContain("Maple Studio");
+    expect(text(renderer!.root)).toContain("20× Pro's monthly credits");
+    expect(text(renderer!.root)).not.toContain("10× Pro's monthly credits");
+    await click("Subscribe to Studio");
+    expect(input.purchase).toHaveBeenCalledWith(studioId);
+
+    await act(async () => {
+      sizeButtons()[0].props.onClick();
+    });
+    await click("Subscribe to Max");
+    expect(input.purchase).toHaveBeenLastCalledWith(maxId);
+  });
+  test("a subscriber on the larger size sees it selected and manages it; the plan itself stays buyable", async () => {
+    const input = withSize();
+    input.status = {
+      ...input.status!,
+      payment_provider: "apple",
+      product_name: "Max Studio",
+      plan_key: "studio"
+    };
+    mount(input);
+    expect(sizeButtons().map((node) => node.props["aria-pressed"])).toEqual([false, true]);
+    expect(text(renderer!.root)).toContain("Maple Studio");
+    await click("Manage Apple subscription");
+    expect(input.manageApple).toHaveBeenCalledTimes(1);
+    expect(input.purchase).not.toHaveBeenCalled();
+    await act(async () => {
+      sizeButtons()[0].props.onClick();
+    });
+    expect(button("Subscribe to Max").props.disabled).toBe(false);
+  });
+  test("a size is not offered while its plan has no App Store price, and a purchase awaiting approval blocks both", async () => {
+    const unpriced = withSize();
+    unpriced.products = { Pro: unpriced.products.Pro };
+    mount(unpriced);
+    expect(
+      renderer!.root.findAll((node) => node.props.role === "group" && !!node.props["aria-label"])
+    ).toHaveLength(0);
+    expect(button("Subscribe to Max").props.disabled).toBe(true);
+    act(() => renderer?.unmount());
+
+    const input = withSize();
+    input.purchase = mock(async () => ({ status: "pending" as const }));
+    mount(input);
+    await act(async () => {
+      sizeButtons()[1].props.onClick();
+    });
+    await click("Subscribe to Studio");
+    expect(text(renderer!.root)).toContain("awaiting Apple's approval");
+    expect(button("Subscribe to Studio").props.disabled).toBe(true);
+    expect(button("Subscribe to Pro").props.disabled).toBe(true);
+  });
 });
