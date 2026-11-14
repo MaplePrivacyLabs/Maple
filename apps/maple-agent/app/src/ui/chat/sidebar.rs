@@ -3106,7 +3106,7 @@ impl Sidebar {
                 }
                 this.search_pointer_dismissal_pending = true;
                 if this.search_input_focused(window, cx) {
-                    window.blur();
+                    window.blur(cx);
                 }
             }))
             .flex()
@@ -3560,6 +3560,19 @@ impl Sidebar {
     #[cfg(test)]
     pub(super) fn section_hover_is_clear_for_test(&self) -> bool {
         self.hovered_entry.is_none() && self.hovered_section.is_none()
+    }
+
+    /// Hover is never left on a row the pointer is no longer over: it is
+    /// clear, or it names the row drawn under `pointer`.
+    #[cfg(test)]
+    pub(super) fn hover_is_current_for_test(&self, pointer: gpui::Point<gpui::Pixels>) -> bool {
+        match self.hovered_entry {
+            None => self.hovered_section.is_none(),
+            Some(entry) => self
+                .list
+                .bounds_for_item(entry)
+                .is_some_and(|bounds| bounds.contains(&pointer)),
+        }
     }
 
     fn section_hovered(&self, section: SidebarHoverSection) -> bool {

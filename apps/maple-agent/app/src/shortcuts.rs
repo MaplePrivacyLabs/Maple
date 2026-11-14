@@ -9,7 +9,7 @@ use gpui::{App, KeyBinding, Keystroke};
 
 use crate::ui::{application_vim, text_input::vim_actions};
 
-use crate::keymap::{RENAMED_SLOT_IDS, RETIRED_SLOT_IDS, build_binding, catalog, install};
+use crate::keymap::{RENAMED_SLOT_IDS, RETIRED_SLOT_IDS, build_binding, catalog, host_os, install};
 
 pub(crate) type ShortcutOverrides = BTreeMap<String, Option<String>>;
 
@@ -92,10 +92,10 @@ impl ShortcutRuntime {
     /// if a hand-edited/old setting is invalid. Startup must always retain a
     /// complete map, including ordinary TextInput bindings.
     pub(crate) fn bootstrap(overrides: &ShortcutOverrides, cx: &mut App) -> Self {
-        let (prepared, last_error) = match prepare(overrides) {
+        let (prepared, last_error) = match prepare(overrides, cx) {
             Ok(prepared) => (prepared, None),
             Err(error) => (
-                prepare(&ShortcutOverrides::new())
+                prepare(&ShortcutOverrides::new(), cx)
                     .expect("the compiled-in shortcut catalog must always be valid"),
                 Some(error),
             ),
@@ -128,7 +128,7 @@ impl ShortcutRuntime {
         overrides: &ShortcutOverrides,
         cx: &mut App,
     ) -> Result<(), String> {
-        let prepared = match prepare(overrides) {
+        let prepared = match prepare(overrides, cx) {
             Ok(prepared) => prepared,
             Err(error) => {
                 self.snapshot.last_error = Some(error.clone());
@@ -179,7 +179,10 @@ pub(super) struct PreparedShortcuts {
     pub(super) compatibility_warning: Option<String>,
 }
 
-pub(super) fn prepare(overrides: &ShortcutOverrides) -> Result<PreparedShortcuts, String> {
+pub(super) fn prepare(
+    overrides: &ShortcutOverrides,
+    cx: &App,
+) -> Result<PreparedShortcuts, String> {
     let catalog = catalog();
     let known_ids = catalog.iter().map(|slot| slot.id).collect::<BTreeSet<_>>();
     let unknown = overrides
@@ -219,7 +222,7 @@ pub(super) fn prepare(overrides: &ShortcutOverrides) -> Result<PreparedShortcuts
         if let Some(sequence) = &current_sequence {
             let parsed = parse_sequence(sequence)?;
             validate_sequence_for_context(slot.id, slot.context, &parsed)?;
-            bindings.push(build_binding(&slot, sequence)?);
+            bindings.push(build_binding(&slot, sequence, cx)?);
         }
         rows.push(ShortcutRow {
             slot_id: slot.id.to_owned(),
@@ -249,7 +252,7 @@ fn display_sequence(sequence: &str) -> Result<String, String> {
 pub(super) fn parse_sequence(sequence: &str) -> Result<Vec<Keystroke>, String> {
     let strokes = sequence
         .split_whitespace()
-        .map(Keystroke::parse)
+        .map(|stroke| Keystroke::parse_with_os(stroke, host_os()))
         .collect::<Result<Vec<_>, _>>()
         .map_err(|error| error.to_string())?;
     if strokes.is_empty() {
@@ -272,7 +275,7 @@ pub(super) fn validate_sequence_for_context(
     if captures_ancestor_text_entry && strokes.first().is_some_and(Keystroke::is_ime_in_progress) {
         return Err(format!(
             "shortcut '{slot_id}' starts with the text-producing key '{}', which would intercept typing in text fields",
-            strokes[0].unparse()
+            strokes[0].unparse(host_os())
         ));
     }
     Ok(())
@@ -529,7 +532,7 @@ mod tests {
 
     use gpui::{
         Action, AppContext, Context, Entity, Focusable, IntoElement, KeyBindingContextPredicate,
-        Keystroke, ParentElement, Render, Styled, Window, div, px,
+        ParentElement, Render, Styled, Window, div, px,
     };
 
     struct InputHost {
@@ -542,9 +545,11 @@ mod tests {
         }
     }
 
-    #[test]
-    fn shipped_catalog_prepares_without_customization_conflicts() {
-        let prepared = prepare(&ShortcutOverrides::new()).unwrap();
+    #[gpui::test]
+    fn shipped_catalog_prepares_without_customization_conflicts(cx: &mut gpui::TestAppContext) {
+        let prepared = cx
+            .update(|cx| prepare(&ShortcutOverrides::new(), cx))
+            .unwrap();
         assert_eq!(prepared.bindings.len(), crate::keymap::catalog().len());
         assert!(
             prepared.rows.iter().all(|row| row.conflicts.is_empty()),
@@ -552,11 +557,11 @@ mod tests {
         );
     }
 
-    #[test]
-    fn overrides_saved_under_a_renamed_slot_still_apply() {
+    #[gpui::test]
+    fn overrides_saved_under_a_renamed_slot_still_apply(cx: &mut gpui::TestAppContext) {
         let mut overrides = ShortcutOverrides::new();
         overrides.insert("project_menu.next".into(), Some("ctrl-n".into()));
-        let prepared = prepare(&overrides).unwrap();
+        let prepared = cx.update(|cx| prepare(&overrides, cx)).unwrap();
         assert_eq!(prepared.compatibility_warning, None);
         let row = prepared
             .rows
@@ -576,12 +581,12 @@ mod tests {
 
     /// A build that removed a slot must not warn about the override a user
     /// saved for it; the next edit drops the stale key.
-    #[test]
-    fn an_override_for_a_retired_slot_is_dropped_quietly() {
+    #[gpui::test]
+    fn an_override_for_a_retired_slot_is_dropped_quietly(cx: &mut gpui::TestAppContext) {
         let mut overrides = ShortcutOverrides::new();
         overrides.insert("chat.allow_permission".into(), None);
         overrides.insert("chat.new_task".into(), Some("secondary-shift-n".into()));
-        let prepared = prepare(&overrides).unwrap();
+        let prepared = cx.update(|cx| prepare(&overrides, cx)).unwrap();
         assert_eq!(prepared.compatibility_warning, None);
         assert!(
             prepared
@@ -647,9 +652,13 @@ mod tests {
         );
     }
 
-    #[test]
-    fn user_shadowing_is_reported_without_flagging_shipped_context_layers() {
-        let defaults = prepare(&ShortcutOverrides::new()).unwrap();
+    #[gpui::test]
+    fn user_shadowing_is_reported_without_flagging_shipped_context_layers(
+        cx: &mut gpui::TestAppContext,
+    ) {
+        let defaults = cx
+            .update(|cx| prepare(&ShortcutOverrides::new(), cx))
+            .unwrap();
         assert!(defaults.rows.iter().all(|row| row.conflicts.is_empty()));
 
         assert_eq!(
@@ -670,7 +679,7 @@ mod tests {
 
         let mut overrides = ShortcutOverrides::new();
         overrides.insert("chat.new_task".into(), Some("secondary-q".into()));
-        let prepared = prepare(&overrides).unwrap();
+        let prepared = cx.update(|cx| prepare(&overrides, cx)).unwrap();
         let modified = prepared
             .rows
             .iter()
@@ -896,9 +905,11 @@ mod tests {
         });
     }
 
-    #[test]
-    fn ancestor_shortcuts_reject_text_producing_first_strokes() {
-        let defaults = prepare(&ShortcutOverrides::new()).unwrap();
+    #[gpui::test]
+    fn ancestor_shortcuts_reject_text_producing_first_strokes(cx: &mut gpui::TestAppContext) {
+        let defaults = cx
+            .update(|cx| prepare(&ShortcutOverrides::new(), cx))
+            .unwrap();
         let snapshot = ShortcutSnapshot {
             generation: 1,
             rows: defaults.rows,
@@ -922,7 +933,7 @@ mod tests {
 
         let mut unsafe_override = ShortcutOverrides::new();
         unsafe_override.insert("chat.toggle_sidebar".into(), Some("g s".into()));
-        assert!(prepare(&unsafe_override).is_err());
+        assert!(cx.update(|cx| prepare(&unsafe_override, cx)).is_err());
 
         // Focus-owned contexts may intentionally consume bare keys. Keep this
         // open-ended so later contexts that explicitly exclude TextInput, such
@@ -998,7 +1009,7 @@ mod tests {
                 binding
                     .keystrokes()
                     .iter()
-                    .map(|stroke| stroke.inner().unparse())
+                    .map(|stroke| stroke.inner().unparse(host_os()))
                     .collect::<Vec<_>>()
                     .join(" ")
             })
@@ -1009,7 +1020,7 @@ mod tests {
         parse_sequence(sequence)
             .unwrap()
             .iter()
-            .map(Keystroke::unparse)
+            .map(|stroke| stroke.unparse(host_os()))
             .collect::<Vec<_>>()
             .join(" ")
     }

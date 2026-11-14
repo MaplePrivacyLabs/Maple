@@ -7429,7 +7429,7 @@ mod state_tests {
         cx.simulate_mouse_move(wheel_at, None, gpui::Modifiers::default());
         cx.run_until_parked();
         let before = sidebar.update(cx, |sidebar, _| sidebar.list().logical_scroll_top());
-        cx.simulate_event(gpui::ScrollWheelEvent {
+        cx.simulate_event(gpui::ScrollEvent {
             // Outside the panel so the wheel event reaches the list.
             position: wheel_at,
             delta: gpui::ScrollDelta::Pixels(gpui::point(px(0.), px(0.))),
@@ -7545,8 +7545,10 @@ mod state_tests {
         }
     }
 
-    /// Wheel scroll and programmatic reveals clear hover without relying
-    /// on a pointer move to repair the virtualized list's old hover.
+    /// Wheel scroll and programmatic reveals never leave hover on a row
+    /// that moved away from the pointer, without a pointer move to repair
+    /// it: hover is clear, or gpui has moved it to the row now under the
+    /// pointer.
     #[gpui::test]
     fn test_section_chevrons_clear_on_stationary_scrolls(cx: &mut TestAppContext) {
         use crate::ui::chat::navigation::SidebarTarget;
@@ -7579,7 +7581,7 @@ mod state_tests {
                 sidebar.list().logical_scroll_top()
             });
             match scroll {
-                "wheel" => cx.simulate_event(gpui::ScrollWheelEvent {
+                "wheel" => cx.simulate_event(gpui::ScrollEvent {
                     position: pointer,
                     delta: gpui::ScrollDelta::Pixels(gpui::point(px(0.), px(-20.))),
                     ..Default::default()
@@ -7604,8 +7606,8 @@ mod state_tests {
                     "{scroll} moved the list"
                 );
                 assert!(
-                    sidebar.section_hover_is_clear_for_test(),
-                    "{scroll} clears both fields"
+                    sidebar.hover_is_current_for_test(pointer),
+                    "{scroll} leaves no stale hover"
                 );
             });
         }
@@ -11314,7 +11316,7 @@ mod state_tests {
         });
         // The list scrolls: a wheel moves the logical top down the rows.
         let center = cx.update(|window, _cx| window.bounds().center());
-        cx.simulate_event(gpui::ScrollWheelEvent {
+        cx.simulate_event(gpui::ScrollEvent {
             position: center,
             delta: gpui::ScrollDelta::Pixels(gpui::point(px(0.), px(-300.))),
             ..Default::default()
@@ -11377,7 +11379,7 @@ mod state_tests {
     }
 
     fn wheel_at(cx: &mut gpui::VisualTestContext, x: f32, y: f32, delta: gpui::ScrollDelta) {
-        cx.simulate_event(gpui::ScrollWheelEvent {
+        cx.simulate_event(gpui::ScrollEvent {
             position: gpui::point(px(x), px(y)),
             delta,
             ..Default::default()
@@ -11738,7 +11740,7 @@ mod state_tests {
         );
 
         let wheel_up = |cx: &mut gpui::VisualTestContext| {
-            cx.simulate_event(gpui::ScrollWheelEvent {
+            cx.simulate_event(gpui::ScrollEvent {
                 position: center,
                 delta: gpui::ScrollDelta::Pixels(gpui::point(px(0.), px(100.))),
                 ..Default::default()

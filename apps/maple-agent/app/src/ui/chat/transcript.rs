@@ -220,7 +220,7 @@ impl ChatScreen {
                         // not scroll it a second time.
                         div()
                             .size_full()
-                            .on_scroll_wheel(|_, _, cx| cx.stop_propagation())
+                            .on_scroll(|_, _, cx| cx.stop_propagation())
                             .child(list),
                     ),
             )
@@ -276,7 +276,7 @@ impl ChatScreen {
     /// the bottom, and the rows on screen reported for paging and images.
     pub(super) fn scroll_transcript_from_pane(
         &mut self,
-        event: &gpui::ScrollWheelEvent,
+        event: &gpui::ScrollEvent,
         _window: &mut Window,
         cx: &mut Context<Self>,
     ) {
@@ -1800,7 +1800,7 @@ pub(super) fn render_question_card(
         .debug_selector(|| "question-card".to_string())
         // Like the composer, the card keeps its own wheel; the space
         // beside it scrolls the transcript.
-        .on_scroll_wheel(|_, _, cx| cx.stop_propagation())
+        .on_scroll(|_, _, cx| cx.stop_propagation())
         .my_3()
         .w_full()
         .rounded(theme::RADIUS_MD)

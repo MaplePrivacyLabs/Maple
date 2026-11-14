@@ -3420,6 +3420,19 @@ fn show_native_dialog_fixture(kind: &str, cx: &mut App) {
     drop(show_native_dialog(headline, body, buttons, 300., cx));
 }
 
+/// Draw gpui's frame-time overlay over `window` when `MAPLE_FRAME_STATS` is
+/// set: `full` for the detailed panel, any other value for frame time
+/// alone. A developer aid for judging what a change costs per frame; it
+/// paints straight into the scene, so showing it asks for no extra frames.
+fn show_frame_stats(window: &mut Window) {
+    let mode = match std::env::var("MAPLE_FRAME_STATS").as_deref() {
+        Err(_) | Ok("" | "0") => return,
+        Ok("full") => gpui::DebugFrameOverlayMode::Full,
+        Ok(_) => gpui::DebugFrameOverlayMode::Minimal,
+    };
+    window.set_debug_frame_overlay_mode(mode);
+}
+
 struct QuitPrompt {
     kind: QuitPromptKind,
     closing: bool,
@@ -4654,7 +4667,8 @@ pub fn run() {
             let root_settings = startup_settings.clone();
             let root_updater = updater.clone();
             let window = cx
-                .open_window(main_window_options(window_placement), move |_, cx| {
+                .open_window(main_window_options(window_placement), move |window, cx| {
+                    show_frame_stats(window);
                     cx.new(move |cx| MapleApp {
                         backend: root_backend,
                         screen: Screen::Restoring,

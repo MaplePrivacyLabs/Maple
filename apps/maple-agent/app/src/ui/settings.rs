@@ -4141,7 +4141,14 @@ fn shortcut_conflict_label(conflict: &ShortcutConflict) -> String {
 
 fn portable_keystroke_token(keystroke: &gpui::Keystroke) -> String {
     let mut parts = Vec::with_capacity(6);
-    if keystroke.modifiers.secondary() {
+    // The secondary key of this build's host: Command on macOS, Control
+    // elsewhere. gpui's own `secondary` now needs the running app to ask.
+    let secondary = if cfg!(target_os = "macos") {
+        keystroke.modifiers.platform
+    } else {
+        keystroke.modifiers.control
+    };
+    if secondary {
         parts.push("secondary".to_string());
     }
     if keystroke.modifiers.control && cfg!(target_os = "macos") {
