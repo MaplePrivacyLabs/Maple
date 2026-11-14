@@ -100,6 +100,8 @@ export type BillingProduct = {
   display_name?: string;
   /** Plan credits each month; per seat for Team. */
   monthly_credits?: number;
+  /** The App Store product that sells this plan monthly, when billing maps one. */
+  apple_product_id?: string;
 };
 
 // Discount Types
