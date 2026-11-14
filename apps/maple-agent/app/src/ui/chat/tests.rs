@@ -11207,6 +11207,48 @@ mod state_tests {
         ))
     }
 
+    /// A message with one picture whose file is stored and whose send has
+    /// gone out: the state between the upload finishing and the reply that
+    /// names the run.
+    fn picture_send_awaiting_reply(
+        chat: &ChatScreen,
+        text: &str,
+        picture: Arc<gpui::Image>,
+        stored: &str,
+    ) -> sending::SendPreview {
+        let mut draft = DraftAttachment::for_test(1, "shot.png", true);
+        draft.mime_type = "image/png".into();
+        draft.picture = Some(picture);
+        let drafts = vec![draft];
+        let mut preview = sending::SendPreview::new(Some("s1".into()), text, &drafts)
+            .capture_timeline(&chat.timeline)
+            .uploading();
+        preview.prepare(uploads::PreparedSend {
+            request: AgentSendMessageRequest {
+                session_id: "s1".into(),
+                text: text.into(),
+                model: None,
+                context_limit: None,
+                vision_capable: true,
+                steer: false,
+                queue_id: None,
+                attachments: vec![stored.into()],
+            },
+            send: UnresolvedSend {
+                backend: chat.backend.clone(),
+                outcome: None,
+                session: "s1".into(),
+                text: text.into(),
+                attachments: drafts,
+                from_composer: true,
+            },
+            fence: uploads::UploadFence::default(),
+        });
+        // Dispatch takes the prepared send with it.
+        assert!(preview.take_prepared().is_some());
+        preview
+    }
+
     fn image_message(id: &str, text: &str, attachments: &[&str]) -> AgentTimelineItem {
         let mut message = user_item(id, text);
         message.input = Some(serde_json::json!({
@@ -11386,14 +11428,10 @@ mod state_tests {
             this.attachment_requests
                 .extend(["shot".to_string(), "only".to_string()]);
         });
-        let send = |text: &'static str, send_id: &'static str| {
+        let send = |text: &'static str, send_id: &'static str, stored: &'static str| {
             let picture = picture.clone();
             move |this: &mut ChatScreen, cx: &mut Context<ChatScreen>| {
-                let mut draft = DraftAttachment::for_test(1, "shot.png", true);
-                draft.mime_type = "image/png".into();
-                draft.picture = Some(picture);
-                let preview = sending::SendPreview::new(Some("s1".into()), text, &[draft])
-                    .capture_timeline(&this.timeline);
+                let preview = picture_send_awaiting_reply(this, text, picture, stored);
                 this.sending_previews.insert(send_id.into(), preview);
                 cx.notify();
             }
@@ -11416,7 +11454,7 @@ mod state_tests {
         };
         let thumbnail = gpui::size(px(72.), px(72.));
 
-        chat.update(cx, send("Look at this", "send-1"));
+        chat.update(cx, send("Look at this", "send-1", "shot"));
         cx.run_until_parked();
         let sending_picture = cx
             .debug_bounds("pending-send-thumbnail-0")
@@ -11453,7 +11491,7 @@ mod state_tests {
         );
 
         // A message of pictures only: no bubble, before or after.
-        chat.update(cx, send("", "send-2"));
+        chat.update(cx, send("", "send-2", "only"));
         cx.run_until_parked();
         let sending_picture = cx
             .debug_bounds("pending-send-thumbnail-0")
@@ -11502,11 +11540,8 @@ mod state_tests {
             cx.run_until_parked();
         };
         chat.update(cx, |this, cx| {
-            let mut draft = DraftAttachment::for_test(1, "shot.png", true);
-            draft.mime_type = "image/png".into();
-            draft.picture = Some(picture.clone());
-            let preview = sending::SendPreview::new(Some("s1".into()), "Look at this", &[draft])
-                .capture_timeline(&this.timeline);
+            let preview =
+                picture_send_awaiting_reply(this, "Look at this", picture.clone(), "shot");
             this.sending_previews.insert("send-1".into(), preview);
             cx.notify();
         });
@@ -11552,6 +11587,97 @@ mod state_tests {
             "the text holds still on the hand-off frame: {sending_text:?} then {sent_text:?}"
         );
         motion::set_test_now(None);
+    }
+
+    #[gpui::test]
+    fn another_controllers_message_never_shows_this_drafts_picture(cx: &mut TestAppContext) {
+        cx.update(|cx| cx.set_reduce_motion(true));
+        let picture = sized_image(144, 81);
+        let (chat, cx) = chat_window(cx, |this, _| {
+            this.sidebar_collapsed = true;
+            this.replace_timeline(vec![user_item("earlier", "An earlier message")]);
+            // Neither stored picture arrives here.
+            this.attachment_requests
+                .extend(["theirs".to_string(), "shot".to_string()]);
+        });
+        chat.update(cx, |this, cx| {
+            let preview =
+                picture_send_awaiting_reply(this, "Look at this", picture.clone(), "shot");
+            this.sending_previews.insert("send-1".into(), preview);
+            cx.notify();
+        });
+        cx.run_until_parked();
+        assert!(cx.debug_bounds("pending-send-thumbnail-0").is_some());
+
+        // Before this send is acknowledged, a message from another controller
+        // lands in the same task, also with one picture.
+        let arrive = |id: &'static str, run: &'static str, attachment: &'static str| {
+            move |this: &mut ChatScreen, cx: &mut Context<ChatScreen>| {
+                this.handle_service_event(
+                    AgentServiceEvent::TimelineItem {
+                        session_id: "s1".into(),
+                        run_id: Some(run.into()),
+                        item: image_message(id, "A message with a picture", &[attachment]),
+                    },
+                    cx,
+                );
+            }
+        };
+        chat.update(cx, arrive("their-row", "run-theirs", "theirs"));
+        chat.read_with(cx, |this, _| {
+            assert!(
+                this.attachment_previews.is_empty(),
+                "their file is not one this send stored"
+            );
+        });
+        cx.run_until_parked();
+        assert!(
+            cx.debug_bounds("attachment-thumbnail-theirs").is_none(),
+            "their row waits for its own picture"
+        );
+
+        // This send's own row still shows its picture from the first frame.
+        chat.update(cx, arrive("our-row", "run-ours", "shot"));
+        chat.read_with(cx, |this, _| {
+            assert_eq!(
+                this.attachment_previews.keys().collect::<Vec<_>>(),
+                [&"shot".to_string()]
+            );
+        });
+        cx.run_until_parked();
+        assert!(cx.debug_bounds("attachment-thumbnail-shot").is_some());
+        assert!(cx.debug_bounds("attachment-thumbnail-theirs").is_none());
+    }
+
+    #[gpui::test]
+    fn a_draft_whose_files_are_not_stored_yet_lends_no_picture(cx: &mut TestAppContext) {
+        cx.update(|cx| cx.set_reduce_motion(true));
+        let picture = sized_image(144, 81);
+        let (chat, cx) = chat_window(cx, |this, _| {
+            this.sidebar_collapsed = true;
+            this.attachment_requests.insert("theirs".to_string());
+        });
+        chat.update(cx, |this, cx| {
+            let mut draft = DraftAttachment::for_test(1, "shot.png", true);
+            draft.mime_type = "image/png".into();
+            draft.picture = Some(picture.clone());
+            // Still uploading: no stored id to match a row against.
+            let preview = sending::SendPreview::new(Some("s1".into()), "Look at this", &[draft])
+                .capture_timeline(&this.timeline)
+                .uploading();
+            this.sending_previews.insert("send-1".into(), preview);
+            this.handle_service_event(
+                AgentServiceEvent::TimelineItem {
+                    session_id: "s1".into(),
+                    run_id: Some("run-theirs".into()),
+                    item: image_message("their-row", "A message with a picture", &["theirs"]),
+                },
+                cx,
+            );
+            assert!(this.attachment_previews.is_empty());
+        });
+        cx.run_until_parked();
+        assert!(cx.debug_bounds("attachment-thumbnail-theirs").is_none());
     }
 
     #[gpui::test]

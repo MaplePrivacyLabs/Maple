@@ -21,6 +21,8 @@ struct PreviewAttachment {
     name: SharedString,
     mime: String,
     size: u64,
+    /// The stored file's id, known once it has uploaded.
+    id: Option<String>,
     /// The whole picture, as the sent message's thumbnail shows it.
     image: Option<Arc<gpui::Image>>,
 }
@@ -46,6 +48,7 @@ impl SendPreview {
                     name: attachment.name.clone().into(),
                     mime: attachment.mime_type.clone(),
                     size: attachment.size,
+                    id: None,
                     image: attachment.picture.clone(),
                 })
                 .collect(),
@@ -83,6 +86,13 @@ impl SendPreview {
     }
 
     pub(super) fn prepare(&mut self, send: uploads::PreparedSend) {
+        // The upload stores one file for each draft, in the drafts' order.
+        let stored = &send.request.attachments;
+        if stored.len() == self.attachments.len() {
+            for (attachment, id) in self.attachments.iter_mut().zip(stored) {
+                attachment.id = Some(id.clone());
+            }
+        }
         self.phase = SendPhase::Prepared(Box::new(send));
     }
 
@@ -188,8 +198,8 @@ impl ChatScreen {
         let Some(run) = run.filter(|_| is_user_message(item)) else {
             return;
         };
+        let pictures = self.sent_pictures(session, item);
         let mut handed_off = false;
-        let mut pictures = Vec::new();
         for preview in self
             .sending_previews
             .values_mut()
@@ -214,11 +224,6 @@ impl ChatScreen {
             }
             if showing && !preview.body_visible() {
                 handed_off = true;
-                pictures = preview
-                    .attachments
-                    .iter()
-                    .filter_map(|attachment| attachment.image.clone())
-                    .collect();
             }
         }
         // The row takes the place of the message already on screen; it
@@ -228,30 +233,45 @@ impl ChatScreen {
         if handed_off {
             let key = crate::backend::timeline_view_key(item).unwrap_or_else(|| item.id.clone());
             self.row_motion.hand_off(key);
-            if self.is_selected(session) {
-                self.keep_sent_pictures(item, pictures);
+        }
+        if self.is_selected(session) {
+            for (id, picture) in pictures {
+                if !self.attachment_images.contains_key(&id) {
+                    self.attachment_previews.insert(id, picture);
+                }
             }
         }
         self.sending_previews
             .retain(|_, preview| !preview.settled());
     }
 
-    /// The row that takes over from the message being sent shows the same
-    /// pictures from its first frame, instead of file names until the
-    /// stored pictures load. Its image attachments are the drafts' in
-    /// order; if they do not line up, the row loads its pictures as usual.
-    fn keep_sent_pictures(&mut self, item: &AgentTimelineItem, pictures: Vec<Arc<gpui::Image>>) {
-        let sent: Vec<&str> = transcript::image_attachment_refs(item)
+    /// The pictures a message being sent holds for the files this row names,
+    /// so the row shows them from its first frame instead of file names
+    /// until the stored pictures load. A file is matched by its stored id:
+    /// before the send is acknowledged, a row can be another controller's
+    /// message, and it must never show this draft's pictures.
+    fn sent_pictures(
+        &self,
+        session: &str,
+        item: &AgentTimelineItem,
+    ) -> Vec<(String, Arc<gpui::Image>)> {
+        let sent: HashSet<&str> = transcript::image_attachment_refs(item)
             .map(|(id, _)| id)
             .collect();
-        if sent.len() != pictures.len() {
-            return;
+        if sent.is_empty() {
+            return Vec::new();
         }
-        for (id, picture) in sent.into_iter().zip(pictures) {
-            if !self.attachment_images.contains_key(id) {
-                self.attachment_previews.insert(id.to_owned(), picture);
-            }
-        }
+        self.sending_previews
+            .values()
+            .filter(|preview| preview.session.as_deref() == Some(session))
+            .flat_map(|preview| &preview.attachments)
+            .filter_map(|attachment| {
+                let id = attachment.id.as_ref()?;
+                let picture = attachment.image.as_ref()?;
+                sent.contains(id.as_str())
+                    .then(|| (id.clone(), picture.clone()))
+            })
+            .collect()
     }
 
     pub(super) fn finish_send_preview(&mut self, session: &str, run: &str) {
