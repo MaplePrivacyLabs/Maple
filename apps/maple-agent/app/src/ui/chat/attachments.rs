@@ -21,7 +21,20 @@ pub(super) struct DraftAttachment {
     /// Reused only for the same execution task. A failed send never uploads a
     /// second copy merely because its admission response was lost.
     pub committed: Option<(String, String)>,
+    /// The picture cropped to a square, for the composer's chip.
     pub thumbnail: Option<Arc<gpui::Image>>,
+    /// The whole picture, small: what the sent message shows, so the
+    /// message being sent draws the same thumbnail.
+    pub picture: Option<Arc<gpui::Image>>,
+}
+
+/// The two small pictures of a draft image, made in one decode.
+#[derive(Clone, Debug)]
+pub(super) struct DraftPictures {
+    /// Cropped to a square, for the composer's chip.
+    pub square: Arc<gpui::Image>,
+    /// The whole picture, scaled to fit a message thumbnail.
+    pub whole: Arc<gpui::Image>,
 }
 
 #[derive(Debug)]
@@ -97,6 +110,7 @@ impl DraftAttachment {
             upload_session: None,
             committed: None,
             thumbnail: None,
+            picture: None,
         }
     }
     pub(super) fn detail(&self, messages: &MessageCache) -> SharedString {
@@ -197,13 +211,8 @@ impl ChatScreen {
                             let _permit = permit;
                             let mime = draft_image_mime(&name, &image.bytes)?;
                             let staged = staging::copy_bytes(&staging::root(), &image.bytes)?;
-                            let thumbnail = square_thumbnail(&image.bytes).ok().map(Arc::new);
-                            Ok((
-                                staged,
-                                mime.to_string(),
-                                image.bytes.len() as u64,
-                                thumbnail,
-                            ))
+                            let pictures = draft_pictures(&image.bytes).ok();
+                            Ok((staged, mime.to_string(), image.bytes.len() as u64, pictures))
                         })
                         .await
                         .map_err(|e| PreparationError::Failed(e.to_string()))?
@@ -245,13 +254,17 @@ impl ChatScreen {
             return;
         };
         match result {
-            Ok((staged, mime_type, size, thumbnail))
+            Ok((staged, mime_type, size, pictures))
                 if !mime_type.starts_with("image/") || images_allowed =>
             {
                 draft.staged = Some(staged);
                 draft.mime_type = mime_type;
                 draft.size = size;
-                draft.thumbnail = thumbnail;
+                let (square, whole) = pictures
+                    .map(|pictures| (pictures.square, pictures.whole))
+                    .unzip();
+                draft.thumbnail = square;
+                draft.picture = whole;
             }
             result => {
                 let message = result
@@ -409,12 +422,7 @@ fn preparation_slots() -> &'static Arc<tokio::sync::Semaphore> {
     SLOTS.get_or_init(|| Arc::new(tokio::sync::Semaphore::new(2)))
 }
 
-type PreparedAttachment = (
-    Arc<staging::StagedFile>,
-    String,
-    u64,
-    Option<Arc<gpui::Image>>,
-);
+type PreparedAttachment = (Arc<staging::StagedFile>, String, u64, Option<DraftPictures>);
 
 fn prepare_file(path: &Path) -> Result<PreparedAttachment, PreparationError> {
     use std::io::Read;
@@ -429,12 +437,7 @@ fn prepare_file(path: &Path) -> Result<PreparedAttachment, PreparationError> {
         }
         let bytes = std::fs::read(&staged.path).map_err(|e| e.to_string())?;
         let mime = draft_image_mime(&name, &bytes)?.to_string();
-        Ok((
-            staged,
-            mime,
-            size,
-            square_thumbnail(&bytes).ok().map(Arc::new),
-        ))
+        Ok((staged, mime, size, draft_pictures(&bytes).ok()))
     } else {
         let mime = match path
             .extension()
@@ -499,11 +502,16 @@ fn draft_image_mime(name: &str, bytes: &[u8]) -> Result<&'static str, Preparatio
 /// on HiDPI screens.
 const DRAFT_THUMBNAIL_PX: u32 = 128;
 
-/// Center-crop to a square and scale down, so the composer can show a
-/// rounded square that is the picture itself. gpui clips with rectangular
-/// masks only, so cropping the pixels is the one way to get round corners
-/// on a cover-fit thumbnail.
-fn square_thumbnail(bytes: &[u8]) -> Result<gpui::Image, String> {
+/// Longest edge of the whole picture in physical pixels: 2x the 72pt
+/// thumbnail a sent message shows.
+const MESSAGE_PICTURE_PX: u32 = 144;
+
+/// The composer's chip and the message's thumbnail, from one decode.
+///
+/// The chip is the picture center-cropped to a square and scaled down, so
+/// the composer shows a rounded square that is the picture itself. The
+/// message thumbnail keeps the picture's shape, as the sent message does.
+fn draft_pictures(bytes: &[u8]) -> Result<DraftPictures, String> {
     let mut reader = image::ImageReader::new(std::io::Cursor::new(bytes))
         .with_guessed_format()
         .map_err(|error| error.to_string())?;
@@ -518,24 +526,33 @@ fn square_thumbnail(bytes: &[u8]) -> Result<gpui::Image, String> {
     if edge == 0 {
         return Err("empty image".to_string());
     }
+    let filter = image::imageops::FilterType::Triangle;
     let cropped = decoded.crop_imm((width - edge) / 2, (height - edge) / 2, edge, edge);
-    let scaled = if edge > DRAFT_THUMBNAIL_PX {
-        cropped.resize_exact(
-            DRAFT_THUMBNAIL_PX,
-            DRAFT_THUMBNAIL_PX,
-            image::imageops::FilterType::Triangle,
-        )
+    let square = if edge > DRAFT_THUMBNAIL_PX {
+        cropped.resize_exact(DRAFT_THUMBNAIL_PX, DRAFT_THUMBNAIL_PX, filter)
     } else {
         cropped
     };
-    let mut png = std::io::Cursor::new(Vec::new());
-    scaled
-        .write_to(&mut png, image::ImageFormat::Png)
-        .map_err(|error| error.to_string())?;
-    Ok(gpui::Image::from_bytes(
-        gpui::ImageFormat::Png,
-        png.into_inner(),
-    ))
+    // `resize` keeps the shape and would also enlarge a small picture.
+    let whole = if width.max(height) > MESSAGE_PICTURE_PX {
+        decoded.resize(MESSAGE_PICTURE_PX, MESSAGE_PICTURE_PX, filter)
+    } else {
+        decoded
+    };
+    let png = |picture: image::DynamicImage| {
+        let mut png = std::io::Cursor::new(Vec::new());
+        picture
+            .write_to(&mut png, image::ImageFormat::Png)
+            .map_err(|error| error.to_string())?;
+        Ok::<_, String>(Arc::new(gpui::Image::from_bytes(
+            gpui::ImageFormat::Png,
+            png.into_inner(),
+        )))
+    };
+    Ok(DraftPictures {
+        square: png(square)?,
+        whole: png(whole)?,
+    })
 }
 
 /// Image format from the file signature; `None` for unsupported data.
@@ -590,6 +607,35 @@ mod tests {
         draft.prepare_upload_for("another-task");
         assert_ne!(draft.operation_id, original);
         assert!(draft.committed.is_none());
+    }
+
+    /// One decode gives the composer its square chip and the message its
+    /// whole picture; neither is ever enlarged.
+    #[test]
+    fn draft_pictures_crop_the_chip_and_keep_the_shape_of_the_message_picture() {
+        let encode = |width: u32, height: u32| {
+            let mut bytes = std::io::Cursor::new(Vec::new());
+            image::DynamicImage::new_rgba8(width, height)
+                .write_to(&mut bytes, image::ImageFormat::Png)
+                .unwrap();
+            bytes.into_inner()
+        };
+        let size = |picture: &gpui::Image| {
+            let decoded = image::load_from_memory(&picture.bytes).unwrap();
+            (decoded.width(), decoded.height())
+        };
+
+        let wide = draft_pictures(&encode(1600, 400)).unwrap();
+        assert_eq!(size(&wide.square), (128, 128));
+        assert_eq!(size(&wide.whole), (144, 36));
+
+        let tall = draft_pictures(&encode(300, 1200)).unwrap();
+        assert_eq!(size(&tall.square), (128, 128));
+        assert_eq!(size(&tall.whole), (36, 144));
+
+        let small = draft_pictures(&encode(60, 40)).unwrap();
+        assert_eq!(size(&small.square), (40, 40));
+        assert_eq!(size(&small.whole), (60, 40));
     }
 
     #[test]
