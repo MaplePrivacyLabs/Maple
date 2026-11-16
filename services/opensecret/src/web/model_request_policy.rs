@@ -194,27 +194,6 @@ pub(crate) fn apply_model_request_policy(
         );
     }
     let config = model_config(model);
-    if config.reasoning_effort_in_chat_template {
-        // An explicit top-level effort takes precedence over template kwargs,
-        // including `none`. The renderer consumes this kwarg.
-        let effort = body
-            .get(CHAT_REASONING_EFFORT_PARAM)
-            .cloned()
-            .unwrap_or_else(|| {
-                json!(config
-                    .reasoning
-                    .and_then(|reasoning| reasoning.default_effort)
-                    .map(|effort| effort.as_str())
-                    .unwrap_or("high"))
-            });
-        let kwargs = body
-            .entry("chat_template_kwargs")
-            .or_insert_with(|| json!({}));
-        if !kwargs.is_object() {
-            *kwargs = json!({});
-        }
-        kwargs["reasoning_effort"] = effort;
-    }
     if config
         .reasoning
         .is_some_and(|reasoning| reasoning.mandatory)
@@ -273,35 +252,57 @@ mod tests {
         DEEPSEEK_V4_1_FLASH_MODEL_ID,
     ];
 
+    /// Tinfoil's deployed vLLM passes top-level `reasoning_effort` to the
+    /// Inkling renderer and prefers it over the template kwarg, so the policy
+    /// writes the top-level field only and leaves client kwargs alone.
     #[test]
-    fn inkling_renderer_receives_effort_and_supported_roles() {
-        for effort in crate::model_config::ReasoningEffort::ALL {
+    fn inkling_effort_is_sent_top_level_only() {
+        for effort in ["minimal", "low", "medium", "high", "xhigh"] {
+            let resolved = resolve("inkling-2-small", json!(effort), ModelSelection::Explicit);
+            let Ok(EffectiveReasoningEffort::Set(set)) = resolved else {
+                panic!("{effort} must be accepted");
+            };
             let mut request = serde_json::from_value::<Map<String, Value>>(json!({
                 "model": "inkling-2-small",
                 "messages": [{"role": "developer", "content": "Be concise"}],
-                "chat_template_kwargs": {"reasoning_effort": "max", "other": true}
+                "chat_template_kwargs": {"other": true}
             }))
             .unwrap();
             apply_model_request_policy(
                 &mut request,
                 "inkling-2-small",
-                EffectiveReasoningEffort::Set(effort),
+                EffectiveReasoningEffort::Set(set),
             );
-            assert_eq!(request["reasoning_effort"], effort.as_str());
-            assert_eq!(
-                request["chat_template_kwargs"]["reasoning_effort"],
-                effort.as_str()
-            );
-            assert_eq!(request["chat_template_kwargs"]["other"], true);
+            assert_eq!(request["reasoning_effort"], effort);
+            assert_eq!(request["chat_template_kwargs"], json!({"other": true}));
             assert_eq!(request["messages"][0]["role"], "system");
         }
+
+        // No effort named: nothing is written, and the renderer's own default
+        // is the catalog default (high).
         let mut request = Map::new();
         apply_model_request_policy(
             &mut request,
             "inkling-2-small",
             EffectiveReasoningEffort::Unchanged,
         );
-        assert_eq!(request["chat_template_kwargs"]["reasoning_effort"], "high");
+        assert!(request.get("reasoning_effort").is_none());
+        assert!(request.get("chat_template_kwargs").is_none());
+    }
+
+    /// `none` leaks the model's working into `content` and `max` only aliases
+    /// `xhigh`: an explicit request is told so, an Auto alias is moved.
+    #[test]
+    fn inkling_rejects_none_and_max_and_clamps_them_for_aliases() {
+        for (effort, nearest) in [("none", "minimal"), ("max", "xhigh")] {
+            let rejected = resolve("inkling-2-small", json!(effort), ModelSelection::Explicit);
+            assert!(rejected.is_err(), "{effort}");
+            let clamped = resolve("inkling-2-small", json!(effort), ModelSelection::Alias);
+            let Ok(EffectiveReasoningEffort::Set(set)) = clamped else {
+                panic!("{effort} must clamp for an alias");
+            };
+            assert_eq!(set.as_str(), nearest);
+        }
     }
 
     fn resolve(

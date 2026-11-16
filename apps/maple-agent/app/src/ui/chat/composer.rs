@@ -2054,6 +2054,8 @@ pub(super) struct ModelSections {
 
 /// The badge string the catalog marks a popular model with.
 const POPULAR_BADGE: &str = "Popular";
+/// The badge string the catalog marks a newly launched model with.
+const NEW_BADGE: &str = "New";
 
 impl ModelSections {
     pub(super) fn from_catalog(catalog: &maple_sdk::ModelCatalogResponse) -> Self {
@@ -2067,7 +2069,7 @@ impl ModelSections {
             new: catalog
                 .data
                 .iter()
-                .filter(|model| model.badges.iter().any(|badge| badge == "New"))
+                .filter(|model| model.badges.iter().any(|badge| badge == NEW_BADGE))
                 .map(|model| model.id.clone())
                 .collect(),
             popular: catalog

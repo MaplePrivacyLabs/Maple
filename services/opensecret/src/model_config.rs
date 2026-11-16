@@ -14,8 +14,6 @@ pub struct ModelConfig {
     /// The model's renderer rejects OpenAI's `developer` role, so requests
     /// carry those messages as `system`.
     pub developer_role_as_system: bool,
-    /// Forward named reasoning effort through the model renderer.
-    pub reasoning_effort_in_chat_template: bool,
 }
 
 /// One value of OpenAI's `reasoning_effort` enum, ordered from least to most
@@ -614,7 +612,6 @@ impl ModelConfigEntry {
                 responses,
                 reasoning: None,
                 developer_role_as_system: false,
-                reasoning_effort_in_chat_template: false,
             },
             catalog_metadata: None,
         }
@@ -658,7 +655,6 @@ impl ModelConfigEntry {
                 responses,
                 reasoning: None,
                 developer_role_as_system: false,
-                reasoning_effort_in_chat_template: false,
             },
             catalog_metadata: None,
         }
@@ -686,11 +682,6 @@ impl ModelConfigEntry {
 
     const fn with_developer_role_as_system(mut self) -> Self {
         self.config.developer_role_as_system = true;
-        self
-    }
-
-    const fn with_template_reasoning_effort(mut self) -> Self {
-        self.config.reasoning_effort_in_chat_template = true;
         self
     }
 
@@ -939,7 +930,6 @@ const DEFAULT_MODEL_CONFIG: ModelConfig = ModelConfig {
     responses: UNCATALOGED_RESPONSES_MODEL_CONFIG,
     reasoning: None,
     developer_role_as_system: false,
-    reasoning_effort_in_chat_template: false,
 };
 
 // Reasoning controls each deployed build honors, verified live on both
@@ -1000,13 +990,30 @@ const DEEPSEEK_V4_1_FLASH_REASONING: ModelReasoning = ModelReasoning::tiers(
     ReasoningEffort::High,
 );
 
-// Thinking Machines' pinned chat template maps the seven named efforts to
-// scalars, with high (0.9) as its default. `auto` in Tinfoil's catalog is not
-// an OpenAI effort and is not accepted by that template.
-// https://huggingface.co/thinkingmachines/Inkling-2-Small/blob/aac974122acd33ddb0d3e1f54433a9c5dd2249ce/chat_template.jinja
+// Thinking Machines publishes six named presets for Inkling's continuous
+// effort: none 0.0, minimal 0.1, low 0.2, medium 0.7, high 0.9 (the default)
+// and xhigh 0.99.
+// https://tinker-docs.thinkingmachines.ai/cookbook/inkling/thinking-effort/
+//
+// Five are offered. Verified on Tinfoil's deployed build on 2026-11-16:
+// * top-level `reasoning_effort` reaches vLLM's Inkling renderer unchanged
+//   and wins over `chat_template_kwargs.reasoning_effort`, so no template
+//   kwarg is written; an omitted effort renders the same prompt as `high`;
+// * `max` is vLLM's alias for `xhigh` (identical prompt tokens), so only the
+//   creator's name is offered;
+// * `none` conditions toward no reasoning without enforcing it: on hard
+//   prompts the model writes its working into `content` (every sample),
+//   while any effort above zero keeps it in `reasoning`. As with GLM,
+//   reasoning is therefore mandatory and `minimal` is the lowest level.
 const INKLING_2_SMALL_REASONING: ModelReasoning = ModelReasoning::tiers(
-    false,
-    ReasoningEffortSet::of(&ReasoningEffort::ALL),
+    true,
+    ReasoningEffortSet::of(&[
+        ReasoningEffort::Minimal,
+        ReasoningEffort::Low,
+        ReasoningEffort::Medium,
+        ReasoningEffort::High,
+        ReasoningEffort::XHigh,
+    ]),
     ReasoningEffort::High,
 );
 
@@ -1151,7 +1158,6 @@ const MODEL_CONFIGS: &[ModelConfigEntry] = &[
         INKLING_2_SMALL_RESPONSES_MODEL_CONFIG,
     )
     .with_reasoning(INKLING_2_SMALL_REASONING)
-    .with_template_reasoning_effort()
     .in_group(ModelGroup::Fast)
     .with_developer_role_as_system()
     .with_catalog_metadata(ModelCatalogMetadata::new(
@@ -2291,9 +2297,9 @@ mod tests {
             ("gemma4-31b", false, false, None, None),
             (
                 INKLING_2_SMALL_MODEL_ID,
-                false,
                 true,
-                Some(&["max", "xhigh", "high", "medium", "low", "minimal", "none"]),
+                true,
+                Some(&["xhigh", "high", "medium", "low", "minimal"]),
                 Some("high"),
             ),
             (
