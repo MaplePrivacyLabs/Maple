@@ -1211,7 +1211,7 @@ const MODEL_CONFIGS: &[ModelConfigEntry] = &[
         "Long-context multimodal reasoning and tool-use model.",
         ModelAccessTier::Free,
         ModelCapabilities::chat(true, true),
-        &["New"],
+        &[],
         true,
         true,
         false,
@@ -2206,7 +2206,6 @@ mod tests {
     #[test]
     fn test_new_badges_match_the_currently_launched_models() {
         let expected = vec![
-            DEEPSEEK_V4_1_FLASH_MODEL_ID.to_string(),
             INKLING_2_SMALL_MODEL_ID.to_string(),
             KIMI_K3_1_PRO_MODEL_ID.to_string(),
         ];
@@ -2534,7 +2533,6 @@ mod tests {
             assert_eq!(
                 model_ids_with_badge(&catalog, "New"),
                 vec![
-                    DEEPSEEK_V4_1_FLASH_MODEL_ID.to_string(),
                     INKLING_2_SMALL_MODEL_ID.to_string(),
                     KIMI_K3_1_PRO_MODEL_ID.to_string()
                 ]
