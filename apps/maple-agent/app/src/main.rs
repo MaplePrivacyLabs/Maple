@@ -772,12 +772,11 @@ fn run_logout() -> Result<(), String> {
         eprintln!("Maple is not signed in.");
         return Ok(());
     };
-    // The desktop's Sign out sequence: stop the account's runtime, then
-    // report the sign-out and remove the saved session.
-    backend.runtime_handle().block_on(async {
-        backend.stop_runtime(&user_id).await?;
-        backend.logout_and_clear(&user_id).await
-    })?;
+    // The host operation behind the desktop's Sign out. It drains the
+    // account's runtime itself, reports the sign-out and removes the session.
+    backend
+        .runtime_handle()
+        .block_on(backend.logout_and_clear(&user_id))?;
     log::info!("signed out account {user_id} from the command line");
     eprintln!("Signed out. Run `maple-agent login` to sign in again.");
     Ok(())
