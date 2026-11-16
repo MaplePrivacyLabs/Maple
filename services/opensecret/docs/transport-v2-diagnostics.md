@@ -25,7 +25,7 @@ Every per-request and aggregate event uses the dedicated target
 | `outcome` | `admitted`, `rejected`, `decoded`, `dispatched`, `success`, `client_error`, `server_error`, `fallback`, `started`, `start_failed`, `ended`, `failed`, `disconnected` |
 | `reason` | bounded failure reason, when one applies |
 | `inner_status` | application HTTP status at `logical_response`; selected response-head status at later stages when known, including fallback 500 (not proof of delivery) |
-| `outer_status` | outer transport status, present only on an outer rejection |
+| `outer_status` | outer transport status, present only when the gateway answers with an outer error: a rejection, or a response head that could not be sealed (`start_failed`, 503) |
 | `window`, `total`, `suppressed` | aggregate counts (aggregate events only) |
 
 `inner_status` and `outer_status` are deliberately separate fields. A logical
@@ -48,7 +48,7 @@ carry that selected 500 status when those stages are reached.
 | --- | --- |
 | `admission` | a record is admitted, or rejected before decryption (content type, forbidden headers, query, oversize, session lookup, session store) |
 | `envelope_decode` | the record fails incoming authentication, or the decrypted envelope is invalid, or a decrypted envelope classifies to a route |
-| `inner_dispatch` | the logical request is handed to the application router |
+| `inner_dispatch` | the logical request is handed to the application router, or it was handed over and never returned: `disconnected` (`request_future_dropped`) when the outer connection closed while the handler was still running, `failed` (`handler_panicked`) when the handler panicked |
 | `logical_response` | the application returns, before response-head validation and encryption |
 | `encrypted_response` | an invalid response head falls back to encrypted 500, the encrypted response head is sealed, or sealing it fails |
 | `stream_terminal` | the encrypted body ends, fails, or is dropped before terminal |
@@ -56,6 +56,17 @@ carry that selected 500 status when those stages are reached.
 Before the envelope decrypts there is no trustworthy `method` or `route`, so
 those events carry `method=other route=unknown`. They never acquire an
 inner-route label.
+
+`disconnected` means the gateway stopped being read or waited on. At
+`inner_dispatch` the outer connection closed before the application returned;
+at `stream_terminal` the encrypted body was dropped before its terminal record.
+Either can come from an edge or proxy timeout, a shutdown, or the client going
+away. It does not identify which hop closed the connection. This is the gateway
+event to look for when the edge reports a timeout or 5xx for a request that was
+still running.
+
+`logical_response` classes only 4xx as `client_error` and 5xx as
+`server_error`; every other status is `success`.
 
 ## Route classes
 
@@ -71,6 +82,12 @@ and the whole query string are discarded, so a client cannot inject text into
 Volume is controlled in code, not by `RUST_LOG` level. The source default is
 `opensecret=debug`, so an operator cannot use level as the throttle.
 
+The defaults below are compiled in and apply when the variables are unset,
+which is how the enclave runs: nothing needs to be set for diagnostics to be
+on. Inside the enclave the only place to set them is `entrypoint.sh`, which is
+part of the measured image, so changing a value there means a new EIF and PCR
+approval. They change how many lines are written, never what a line contains.
+
 | Variable | Default | Effect |
 | --- | --- | --- |
 | `TRANSPORT_V2_DIAGNOSTICS_SAMPLE_PERMILLE` | `10` | per-mille sampling of per-request success events; `0` makes them opt-in |
@@ -83,6 +100,11 @@ from the gateway maintenance loop, one line per non-zero
 dropped; suppressed events are counted, not hidden. A per-key line is written
 only when its outcome survives sampling or the token bucket. The exceptional
 budget is per key; there is no separate global log-line cap across keys.
+
+Sampling is per event, not per request. A sampled success line is one stage of
+some request; its other stages are usually not written, and with no correlation
+key the lines cannot be regrouped into a request. Use the aggregates for rates
+and the per-request lines only as spot evidence that a stage and route occur.
 
 The deployed filter is separate from this policy. Confirm the running
 enclave's `RUST_LOG` includes the target at `info` (for example

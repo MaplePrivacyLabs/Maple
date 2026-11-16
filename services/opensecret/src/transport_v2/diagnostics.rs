@@ -227,6 +227,16 @@ impl Outcome {
         self as usize
     }
 
+    /// Class of an application status at `logical_response`. Only 4xx and 5xx
+    /// are errors; informational and redirect statuses are not failures.
+    pub(crate) const fn from_inner_status(status: u16) -> Self {
+        match status {
+            400..=499 => Outcome::ClientError,
+            500..=599 => Outcome::ServerError,
+            _ => Outcome::Success,
+        }
+    }
+
     /// Exceptional outcomes are always candidates for a log line, bounded by
     /// the volume budget. Everything else is a per-request success event and is
     /// sampled.
@@ -548,9 +558,62 @@ fn emit_event(
     }
 }
 
+/// Reports a logical request that never produced a response. The application
+/// future is dropped when the outer connection closes while the handler is
+/// still running (an edge timeout, a proxy reset, a client that went away), and
+/// that request would otherwise leave only a sampled `dispatched` event.
+///
+/// `disconnected` here means the gateway stopped waiting; it does not say which
+/// hop closed the connection. A handler panic unwinds through the same drop and
+/// is reported as `failed` instead.
+pub(crate) struct DispatchGuard {
+    diagnostics: std::sync::Arc<Diagnostics>,
+    request: RequestDiagnostics,
+    completed: bool,
+}
+
+impl DispatchGuard {
+    pub(crate) fn new(
+        diagnostics: std::sync::Arc<Diagnostics>,
+        request: RequestDiagnostics,
+    ) -> Self {
+        Self {
+            diagnostics,
+            request,
+            completed: false,
+        }
+    }
+
+    /// The application returned a response; nothing to report on drop.
+    pub(crate) fn complete(mut self) {
+        self.completed = true;
+    }
+}
+
+impl Drop for DispatchGuard {
+    fn drop(&mut self) {
+        if self.completed {
+            return;
+        }
+        let (outcome, reason) = if std::thread::panicking() {
+            (Outcome::Failed, "handler_panicked")
+        } else {
+            (Outcome::Disconnected, "request_future_dropped")
+        };
+        self.diagnostics.record(
+            Stage::InnerDispatch,
+            self.request,
+            outcome,
+            Some(reason),
+            None,
+        );
+    }
+}
+
 /// Emits a terminal stream outcome exactly once. If the response body stream is
-/// dropped before its terminal record, the drop reports a client disconnect
-/// instead of silently losing the request.
+/// dropped before its terminal record, the drop reports `disconnected`. That
+/// means a downstream hop stopped reading (edge, proxy or client); it does not
+/// by itself prove the end user disconnected.
 pub(crate) struct TerminalGuard {
     diagnostics: std::sync::Arc<Diagnostics>,
     request: RequestDiagnostics,
@@ -732,7 +795,7 @@ mod tests {
             RequestDiagnostics::unknown(),
             Outcome::Rejected,
             Some("unavailable"),
-            Some(502),
+            Some(503),
         );
         let events = captured.0.lock().unwrap();
         assert_eq!(events.len(), 2);
@@ -740,7 +803,7 @@ mod tests {
         assert_eq!(events[0]["inner_status"], "502");
         assert!(!events[0].contains_key("outer_status"));
         assert_eq!(events[1]["stage"], "admission");
-        assert_eq!(events[1]["outer_status"], "502");
+        assert_eq!(events[1]["outer_status"], "503");
         assert!(!events[1].contains_key("inner_status"));
     }
 
@@ -810,6 +873,31 @@ mod tests {
         assert_eq!(events[0]["window"], "1");
         assert_eq!(events[0]["total"], "1");
         assert_eq!(events[0]["suppressed"], "1");
+    }
+
+    #[test]
+    fn only_4xx_and_5xx_are_error_classes() {
+        assert_eq!(Outcome::from_inner_status(200), Outcome::Success);
+        assert_eq!(Outcome::from_inner_status(101), Outcome::Success);
+        assert_eq!(Outcome::from_inner_status(307), Outcome::Success);
+        assert_eq!(Outcome::from_inner_status(404), Outcome::ClientError);
+        assert_eq!(Outcome::from_inner_status(502), Outcome::ServerError);
+    }
+
+    #[test]
+    fn dispatch_guard_reports_a_dropped_request_but_not_a_completed_one() {
+        let (captured, _guard) = capture();
+        let diagnostics = Arc::new(Diagnostics::with_volume(volume(1000, 20.0, 60.0)));
+        let request = RequestDiagnostics::from_envelope("POST", "/v1/responses");
+        DispatchGuard::new(Arc::clone(&diagnostics), request).complete();
+        assert!(captured.0.lock().unwrap().is_empty());
+        drop(DispatchGuard::new(diagnostics, request));
+        let events = captured.0.lock().unwrap();
+        assert_eq!(events.len(), 1);
+        assert_eq!(events[0]["stage"], "inner_dispatch");
+        assert_eq!(events[0]["route"], "v1_responses");
+        assert_eq!(events[0]["outcome"], "disconnected");
+        assert_eq!(events[0]["reason"], "request_future_dropped");
     }
 
     #[test]

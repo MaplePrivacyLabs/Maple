@@ -40,7 +40,7 @@ use super::{
         HANDSHAKE_CHALLENGE_BYTES, MIN_REQUEST_RECORD_BYTES, RECORD_TAG_BYTES,
         X25519_PUBLIC_KEY_BYTES,
     },
-    diagnostics::{Diagnostics, Outcome, RequestDiagnostics, Stage, TerminalGuard},
+    diagnostics::{Diagnostics, DispatchGuard, Outcome, RequestDiagnostics, Stage, TerminalGuard},
     envelope::{
         EnvelopeError, LogicalHeader, RequestEnvelope, RequestId, MAX_ENCODED_REQUEST_BYTES,
         REQUEST_ID_BYTES, VERSION,
@@ -295,7 +295,14 @@ async fn dispatch_request(
     request: Request<Body>,
 ) -> Result<Response, OuterError> {
     let result = dispatch_request_inner(&state, request).await;
-    if let Err(error) = result.as_ref() {
+    // A failed response start is already recorded with its route by
+    // `encrypted_response`; recording it again here would double-count it under
+    // `route=unknown`.
+    if let Some(error) = result
+        .as_ref()
+        .err()
+        .filter(|error| !matches!(error, OuterError::ResponseStartFailed))
+    {
         state.diagnostics.record(
             error.stage(),
             RequestDiagnostics::unknown(),
@@ -404,18 +411,16 @@ async fn dispatch_request_inner(
         None,
         None,
     );
+    let in_flight = DispatchGuard::new(Arc::clone(&state.diagnostics), request_diagnostics);
     let response = state
         .application
         .clone()
         .oneshot(application_request)
         .await
         .expect("Axum Router has an infallible service error");
+    in_flight.complete();
     let inner_status = response.status().as_u16();
-    let outcome = match inner_status {
-        200..=299 => Outcome::Success,
-        400..=499 => Outcome::ClientError,
-        _ => Outcome::ServerError,
-    };
+    let outcome = Outcome::from_inner_status(inner_status);
     let request_diagnostics = request_diagnostics.with_inner_status(inner_status);
     state.diagnostics.record(
         Stage::LogicalResponse,
@@ -509,7 +514,7 @@ fn encrypted_response(
                 request,
                 Outcome::StartFailed,
                 Some("sealer_unavailable"),
-                None,
+                Some(OuterError::ResponseStartFailed.status().as_u16()),
             );
             return Err(OuterError::ResponseStartFailed);
         }
@@ -522,7 +527,7 @@ fn encrypted_response(
                 request,
                 Outcome::StartFailed,
                 Some("seal_failed"),
-                None,
+                Some(OuterError::ResponseStartFailed.status().as_u16()),
             );
             return Err(OuterError::ResponseStartFailed);
         }
@@ -2121,6 +2126,51 @@ mod tests {
                 assert_eq!(diagnostics.count(Stage::EnvelopeDecode, route, outcome), 0);
                 assert_eq!(diagnostics.count(Stage::InnerDispatch, route, outcome), 0);
             }
+        }
+    }
+
+    #[tokio::test]
+    async fn request_dropped_while_the_handler_runs_is_reported_with_its_route() {
+        use crate::transport_v2::diagnostics::classify_target;
+
+        let test = test_session(23);
+        let sessions = Arc::new(SessionStore::new(NonZeroUsize::new(2).unwrap()));
+        sessions.insert(Arc::clone(&test.server)).unwrap();
+        let application = Router::new().route(
+            "/v1/models",
+            any(|| async {
+                std::future::pending::<()>().await;
+                StatusCode::OK
+            }),
+        );
+        let diagnostics = Arc::new(Diagnostics::for_test());
+        let router =
+            request_router_with_diagnostics(application, sessions, Arc::clone(&diagnostics));
+        let request_id = RequestId::from_bytes([0x53; 16]);
+        // Dropping the outer request future is what the server does when the
+        // connection closes before the handler returns.
+        let dropped = tokio::time::timeout(
+            Duration::from_millis(50),
+            router.oneshot(outer_request(
+                test.server.id(),
+                &test.routing_key,
+                seal_request(&test.client, request_id, "/v1/models", None),
+            )),
+        )
+        .await;
+        assert!(dropped.is_err());
+
+        let route = classify_target("/v1/models");
+        assert_eq!(
+            diagnostics.count(Stage::InnerDispatch, route, Outcome::Dispatched),
+            1
+        );
+        assert_eq!(
+            diagnostics.count(Stage::InnerDispatch, route, Outcome::Disconnected),
+            1
+        );
+        for outcome in [Outcome::Success, Outcome::ClientError, Outcome::ServerError] {
+            assert_eq!(diagnostics.count(Stage::LogicalResponse, route, outcome), 0);
         }
     }
 
