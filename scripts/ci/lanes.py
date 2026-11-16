@@ -312,7 +312,7 @@ LANES: Tuple[Lane, ...] = (
     Lane("repo", (
         ".github/**", "scripts/ci/**", ".githooks/**", "flake.nix", "flake.lock", "justfile", "setup-hooks.sh",
         ".agents/skills/release-maple/scripts/**",
-        "scripts/update-version.py", "apps/maple-research/zapstore.yaml", "proxy/Cargo.toml", "proxy/justfile",
+        "scripts/update-version.py", "proxy/Cargo.toml", "proxy/justfile",
         RESEARCH + "package.json", TAURI + "Cargo.toml", TAURI + "tauri.conf.json",
     ), runner=GITHUB, run="nix flake check --no-update-lock-file --print-build-logs", timeout=15, hook="repo"),
 

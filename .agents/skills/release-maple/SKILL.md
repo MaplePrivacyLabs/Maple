@@ -27,9 +27,8 @@ commit, external effect, and authority provided by the user.
   internal group setup, and retry contract are documented in
   [Maple Dev on TestFlight](../../../docs/ios-dev-testflight.md).
 - Creating a GitHub Release starts the cross-platform release workflow. A
-  successful release workflow starts separate updater-metadata, Pages, and
-  best-effort Zapstore workflows. These siblings never gate or change the core
-  Maple release. With repository variable `MAPLE_PAGES_PRODUCTION_ENABLED=true`,
+  successful release workflow starts separate updater-metadata and Pages
+  workflows. These siblings never gate or change the core Maple release. With repository variable `MAPLE_PAGES_PRODUCTION_ENABLED=true`,
   `Publish Pages` uploads the verified existing release web artifact. A missing
   or false flag pauses production publication; Cloudflare native Git builds
   remain disabled. Read
@@ -335,7 +334,7 @@ Do not classify version/proof mismatches, deterministic builds, signing
 failures, missing credentials, or integrity checks as transient. Do not delete
 or recreate a published release without separate explicit direction.
 
-## Verify the release and optionally inspect Zapstore
+## Verify the release
 
 Verify the published release and its assets:
 
@@ -377,23 +376,9 @@ cmp "$updater_dir/hosted.json" "$updater_dir/release/latest.json"
 Do not report updater publication complete from workflow status alone: require
 the public endpoint to return the intended version and content.
 
-Zapstore starts only after `Release` succeeds and is strictly best effort. Its
-queued, running, skipped, or failed state must not delay release completion,
-trigger a release retry, or be reported as a Maple release failure. Inspect it
-only when Zapstore status is specifically useful:
-
-```bash
-gh run list --repo MaplePrivacyLabs/Maple --workflow 'Publish to Zapstore' \
-  --commit "$head_sha" --limit 10 \
-  --json databaseId,status,conclusion,headSha,createdAt,url
-```
-
-Do not retry or repair Zapstore as part of the Maple release flow. A separate
-explicit request may authorize investigating or retrying Zapstore itself.
-
 Do not call the core repository release complete while its required `Release`
 workflow is queued or running. Report updater publication and Pages production
-as separate downstream states. Zapstore is not a required release workflow.
+as separate downstream states.
 
 ## Store and API handoff
 
@@ -434,6 +419,5 @@ Report the Maple version, proxy version, tag, exact commit, release URL, main
 workflow URL and attempt count, application and four-proxy-archive verification
 results, any required-workflow retry and supporting evidence, authorized
 store/API actions, and every boundary that remains unverified. State crates.io
-and GHCR status separately. If Zapstore was inspected, report its status as
-non-gating. Separate repository release completion from store distribution and
+and GHCR status separately. Separate repository release completion from store distribution and
 live application availability.
