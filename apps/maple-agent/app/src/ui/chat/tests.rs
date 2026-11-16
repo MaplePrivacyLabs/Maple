@@ -12035,81 +12035,263 @@ mod state_tests {
         });
     }
 
-    /// To the keyboard a folded turn is one row, its line. `l` shows the
-    /// steps, which then take the selection one by one, and `h` on the
-    /// line folds them again.
+    /// Each activity chunk is a keyboard row; assistant messages between
+    /// chunks remain readable regardless of either disclosure's state.
     #[gpui::test]
-    fn test_application_vim_opens_a_turn_from_its_line(cx: &mut TestAppContext) {
-        struct ChatHost {
-            chat: Entity<ChatScreen>,
-        }
-        impl Render for ChatHost {
-            fn render(
-                &mut self,
-                _window: &mut Window,
-                _cx: &mut Context<Self>,
-            ) -> impl IntoElement {
-                div().w(px(1200.)).h(px(800.)).child(self.chat.clone())
-            }
-        }
-
-        cx.executor().allow_parking();
-        let chat = cx.new(|cx| {
-            let _guard = SETTINGS_LOCK.lock();
-            let backend = std::sync::Arc::new(
-                crate::backend::AgentBackend::for_test(
-                    "http://127.0.0.1:9".to_string(),
-                    String::new(),
-                )
-                .expect("backend"),
-            );
-            crate::desktop::register_key_bindings(cx);
-            let mut chat = ChatScreen::new_inner_for_test(backend, "user".to_string(), cx);
-            chat.selected_session = Some("s1".to_string());
-            chat.application_vim_enabled = true;
-            chat.application_focus = Some(cx.focus_handle());
-            chat.screen_focus_pending = true;
-            chat.booting = false;
+    fn test_application_vim_opens_chunks_independently_from_their_lines(cx: &mut TestAppContext) {
+        cx.update(|cx| cx.set_reduce_motion(true));
+        let (chat, cx) = chat_window(cx, |chat, cx| {
+            chat.set_application_vim_enabled(false, cx);
+            chat.tool_details = false;
             chat.replace_timeline(vec![
                 user_item("u1", "question"),
-                item("call", "tool", None),
+                AgentTimelineItem {
+                    input: Some(serde_json::json!({"command": "ls"})),
+                    ..item("call", "tool", None)
+                },
                 item("thought", "thinking", Some("reasoning")),
-                item("a1", "message", Some("answer")),
+                item("a1", "message", Some("Interim answer")),
+                item("later", "tool", None),
+                item("later-thought", "thinking", Some("more reasoning")),
+                item("a2", "message", Some("Final answer")),
             ]);
-            chat
+            chat.set_application_vim_enabled(true, cx);
         });
-        let (_host, cx) = cx.add_window_view(|_window, _cx| ChatHost { chat: chat.clone() });
-        cx.simulate_resize(gpui::size(px(1200.), px(800.)));
         let rows = |cx: &mut gpui::VisualTestContext| {
             cx.update(|_window, app| chat.read(app).navigable_timeline_ids())
         };
         let selected = |cx: &mut gpui::VisualTestContext| {
             cx.update(|_window, app| chat.read(app).selected_transcript_id().map(str::to_owned))
         };
+        let messages_shown = |cx: &mut gpui::VisualTestContext| {
+            cx.run_until_parked();
+            for id in ["timeline-row-a1", "timeline-row-a2"] {
+                assert!(cx.debug_bounds(id).is_some(), "{id} stays visible");
+            }
+        };
 
-        assert_eq!(rows(cx), ["u1", "call", "a1"], "folded steps are skipped");
+        assert_eq!(rows(cx), ["u1", "call", "a1", "later", "a2"]);
+        assert!(cx.debug_bounds("tool-card").is_none());
+        messages_shown(cx);
         cx.simulate_keystrokes("g g j l");
-        assert_eq!(rows(cx), ["u1", "call", "thought", "a1"]);
+        assert_eq!(rows(cx), ["u1", "call", "thought", "a1", "later", "a2"]);
+        cx.simulate_keystrokes("l");
+        cx.run_until_parked();
+        let detail_height = cx.debug_bounds("tool-card").unwrap().size.height;
+        chat.update(cx, |chat, _| {
+            assert!(chat.toggled_tools.contains("call"));
+            assert!(!chat.chunk_open(4));
+        });
         cx.simulate_keystrokes("j");
         assert_eq!(selected(cx).as_deref(), Some("thought"));
 
-        // Folding from the pointer while a step is selected: the selection
-        // moves to the line rather than staying on a row that is gone.
-        chat.update(cx, |chat, cx| chat.toggle_turn("call", cx));
+        // A pointer fold moves a hidden selection to its own chunk header,
+        // and does not clear the individual tool's disclosure choice.
+        press(cx, "activity-chunk-call");
         assert_eq!(selected(cx).as_deref(), Some("call"));
-
-        cx.simulate_keystrokes("l");
-        assert_eq!(
-            rows(cx).len(),
-            4,
-            "the line opens before its step's details"
-        );
-        cx.simulate_keystrokes("h");
+        assert_eq!(rows(cx), ["u1", "call", "a1", "later", "a2"]);
+        assert!(cx.debug_bounds("tool-card").is_none());
+        messages_shown(cx);
+        press(cx, "activity-chunk-later");
         assert_eq!(
             rows(cx),
-            ["u1", "call", "a1"],
-            "h on the line folds the turn"
+            ["u1", "call", "a1", "later", "later-thought", "a2"]
         );
+        chat.update(cx, |chat, _| {
+            assert!(!chat.chunk_open(1));
+            assert!(chat.chunk_open(4));
+            assert!(chat.toggled_tools.contains("call"));
+            assert!(!chat.toggled_tools.contains("later"));
+        });
+        messages_shown(cx);
+
+        cx.simulate_keystrokes("g g 3 j h");
+        assert_eq!(selected(cx).as_deref(), Some("later"));
+        assert_eq!(rows(cx), ["u1", "call", "a1", "later", "a2"]);
+        press(cx, "activity-chunk-call");
+        chat.update(cx, |chat, _| {
+            assert!(chat.chunk_open(1));
+            assert!(!chat.chunk_open(4));
+            assert!(chat.toggled_tools.contains("call"));
+        });
+        cx.run_until_parked();
+        assert_eq!(
+            cx.debug_bounds("tool-card").unwrap().size.height,
+            detail_height,
+            "reopening the chunk restores the tool's visible details"
+        );
+        messages_shown(cx);
+    }
+
+    #[gpui::test]
+    fn folded_chunks_keep_live_rows_and_outcomes_under_one_turn_clock(cx: &mut TestAppContext) {
+        use std::time::{Duration, Instant};
+
+        use crate::ui::motion;
+        use maple_agent::agent::{AgentRunEvent, AgentRunTerminal};
+
+        struct ResetClock;
+        impl Drop for ResetClock {
+            fn drop(&mut self) {
+                motion::set_test_now(None);
+            }
+        }
+        let _reset_clock = ResetClock;
+        let began = Instant::now();
+        motion::set_test_now(Some(began));
+        cx.update(|cx| cx.set_reduce_motion(true));
+        let (chat, cx) = chat_window(cx, |chat, _| {
+            chat.tool_details = false;
+            chat.summaries_enabled = false;
+            chat.replace_timeline(vec![user_item("u1", "Run the checks")]);
+        });
+        let event = |event| AgentServiceEvent::Run {
+            session_id: "s1".into(),
+            run_id: "run-1".into(),
+            event,
+        };
+        chat.update(cx, |chat, cx| {
+            chat.handle_service_event(event(AgentRunEvent::Started), cx);
+            chat.handle_service_event(
+                event(AgentRunEvent::TimelineItem(item("call", "tool", None))),
+                cx,
+            );
+        });
+        motion::set_test_now(Some(began + Duration::from_secs(5)));
+        chat.update(cx, |chat, cx| {
+            chat.handle_service_event(
+                event(AgentRunEvent::TimelineItem(item(
+                    "a1",
+                    "message",
+                    Some("The first check is done; checking the rest."),
+                ))),
+                cx,
+            );
+            chat.handle_service_event(
+                event(AgentRunEvent::TimelineItem(AgentTimelineItem {
+                    status: Some("running".into()),
+                    ..item("later", "tool", None)
+                })),
+                cx,
+            );
+            assert!(!chat.chunk_open(1));
+            assert!(!chat.chunk_open(3));
+        });
+        cx.run_until_parked();
+        assert!(cx.debug_bounds("activity-status-later").is_some());
+        assert!(cx.debug_bounds("timeline-row-a1").is_some());
+        assert!(cx.debug_bounds("tool-card").is_none());
+
+        motion::set_test_now(Some(began + Duration::from_secs(8)));
+        chat.update(cx, |chat, cx| {
+            chat.handle_service_event(
+                event(AgentRunEvent::TimelineItem(item(
+                    "live-thought",
+                    "thinking",
+                    Some("Another row arrives while this chunk is folded."),
+                ))),
+                cx,
+            );
+            assert_eq!(chat.turns.tail(), Some(1));
+            assert!(!chat.chunk_open(3));
+            assert_eq!(chat.navigable_timeline_ids(), ["u1", "call", "a1", "later"]);
+            assert!(
+                chat.turn_worked.is_empty(),
+                "a new chunk does not end the turn"
+            );
+        });
+        cx.run_until_parked();
+        assert!(cx.debug_bounds("thinking-title").is_none());
+        assert!(cx.debug_bounds("timeline-row-a1").is_some());
+
+        motion::set_test_now(Some(began + Duration::from_secs(13)));
+        chat.update(cx, |chat, cx| {
+            for (id, status) in [("call", "failed"), ("later", "cancelled")] {
+                chat.handle_service_event(
+                    event(AgentRunEvent::TimelineItem(AgentTimelineItem {
+                        status: Some(status.into()),
+                        ..item(id, "tool", None)
+                    })),
+                    cx,
+                );
+            }
+            chat.handle_service_event(
+                event(AgentRunEvent::TimelineItem(item(
+                    "failure",
+                    "error",
+                    Some("One check failed."),
+                ))),
+                cx,
+            );
+            chat.handle_service_event(
+                event(AgentRunEvent::Finished(AgentRunTerminal::Cancelled)),
+                cx,
+            );
+            assert_eq!(chat.turn_worked.len(), 1);
+            assert_eq!(chat.turn_worked.get("call"), Some(&Duration::from_secs(13)));
+            assert!(!chat.chunk_open(1));
+            assert!(!chat.chunk_open(3));
+            assert_eq!(
+                chat.turns.chunk(1).unwrap().state(false),
+                Some(crate::ui::chat::step::StepState::Failed)
+            );
+            assert_eq!(
+                chat.turns.chunk(3).unwrap().state(false),
+                Some(crate::ui::chat::step::StepState::Stopped)
+            );
+            assert_eq!(
+                chat.navigable_timeline_ids(),
+                ["u1", "call", "a1", "later", "failure"]
+            );
+        });
+        cx.run_until_parked();
+        for selector in [
+            "activity-status-call",
+            "activity-status-later",
+            "timeline-row-a1",
+            "timeline-row-failure",
+        ] {
+            assert!(
+                cx.debug_bounds(selector).is_some(),
+                "{selector} remains visible"
+            );
+        }
+        assert!(cx.debug_bounds("tool-card").is_none());
+        assert!(cx.debug_bounds("thinking-title").is_none());
+    }
+
+    #[test]
+    fn chunk_disclosure_motion_is_independent_and_settles_with_reduced_motion() {
+        use std::time::Instant;
+
+        use crate::ui::chat::transcript::RowMotion;
+        use crate::ui::motion;
+
+        let began = Instant::now();
+        let midway = began + motion::REVEAL.duration / 2;
+        let mut rows = RowMotion::default();
+        rows.disclose("tool", true, began);
+        rows.disclose_chunk("first", true, began);
+        let progress = rows.chunk_disclosure("first", midway, false);
+        assert!(progress > 0. && progress < 1.);
+        assert_eq!(rows.chunk_disclosure("second", midway, false), 1.);
+        rows.disclose_chunk("second", true, midway);
+        assert_eq!(rows.chunk_disclosure("second", midway, false), 0.);
+        assert_eq!(rows.chunk_disclosure("first", midway, false), progress);
+        assert_eq!(rows.disclosure("tool", midway, false), progress);
+
+        rows.rekey("first", "persisted-first");
+        assert_eq!(
+            rows.chunk_disclosure("persisted-first", midway, false),
+            progress
+        );
+        rows.disclose_chunk("second", false, midway);
+        assert_eq!(rows.chunk_disclosure("second", midway, false), 1.);
+        assert_eq!(rows.disclosure("tool", midway, false), progress);
+        assert_eq!(rows.chunk_disclosure("persisted-first", midway, true), 1.);
+        assert!(!rows.settle(midway, true));
+        assert_eq!(rows.chunk_disclosure("persisted-first", midway, false), 1.);
+        assert_eq!(rows.disclosure("tool", midway, false), 1.);
     }
 
     #[gpui::test]
@@ -12884,7 +13066,7 @@ mod state_tests {
             chat.tool_summaries
                 .insert("think-1".to_string(), SharedString::from(summary));
             // The rows under test are the turn's steps: show them.
-            chat.toggle_turn("tool-1", cx);
+            chat.toggle_chunk("tool-1", cx);
             chat
         });
 
@@ -12974,7 +13156,7 @@ mod state_tests {
                     ..call("edit", "edit", "src/net/retry.rs")
                 },
             ]);
-            chat.toggle_turn("run", cx);
+            chat.toggle_chunk("run", cx);
             chat
         });
 

@@ -1565,6 +1565,12 @@ chat-turn-worked = Gearbeitet
 chat-turn-worked-seconds = { $seconds } s gearbeitet
 # $minutes is a whole number of minutes; $seconds is the rest, under 60.
 chat-turn-worked-minutes = { $minutes } min { $seconds } s gearbeitet
+# $count is the number of tool and thinking steps in one activity chunk.
+chat-activity-steps =
+    { $count ->
+        [one] { $count } Schritt
+       *[other] { $count } Schritte
+    }
 chat-settings = Einstellungen
 chat-usage = Nutzung
 chat-usage-unavailable = Nutzung nicht verfügbar

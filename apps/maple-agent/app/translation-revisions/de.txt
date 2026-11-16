@@ -2,6 +2,7 @@
 chat-absolute-path a2ba378ac24704c4
 chat-active 196d1c9462f99ad3
 chat-activity-outside dc914a2d8037659c
+chat-activity-steps a12bb21490dd0f51
 chat-agent-task-cancelled e26bb0917a4c240b
 chat-agents-running 15f7861d7b1f2dc3
 chat-all-settings f521b783e34e05d0

@@ -76,16 +76,12 @@ impl ChatScreen {
             let Some(item) = chat.timeline.get(ix) else {
                 return div().into_any_element();
             };
-            // A turn's first step carries the turn's line. Folded, the line
-            // is all of that row, and the later steps draw nothing.
+            // Each activity chunk has a disclosure; only the first also
+            // carries the overall turn's animated status line.
             let turn = chat.turns.row(ix);
-            let lead = match turn {
-                TurnRow::Plain => None,
-                TurnRow::Lead => Some(ix),
-                TurnRow::Step(lead) => Some(lead),
-            };
-            let open = lead.is_none_or(|lead| chat.turn_open(lead));
-            if !open && turn != TurnRow::Lead {
+            let lead = turn.lead(ix);
+            let open = lead.is_none_or(|lead| chat.chunk_open(lead));
+            if !open && matches!(turn, TurnRow::Step(_)) {
                 return div().into_any_element();
             }
             // A row that arrived live enters, timed from view state so
@@ -148,22 +144,31 @@ impl ChatScreen {
                         }),
                     );
                 }
-                // Steps the line just showed fade in, like any details
-                // the user opens.
+                // Each chunk keeps the existing details reveal timing.
                 let shown = lead.map_or(1., |lead| {
                     chat.row_motion
-                        .turn_disclosure(&chat.timeline[lead].id, now, reduced)
+                        .chunk_disclosure(&chat.timeline[lead].id, now, reduced)
                 });
                 row.when(shown < 1., |row| row.opacity(motion::ease_out_quint(shown)))
             });
-            let line = (turn == TurnRow::Lead).then(|| {
-                turn::render_line(
-                    chat.turn_line(ix, still),
-                    Some((&item.id, open)),
-                    &entity,
-                    &chat.messages,
+            let body = if let Some(chunk) = chat.turns.chunk(ix) {
+                Some(
+                    div()
+                        .child(turn::render_chunk(
+                            &item.id,
+                            chunk,
+                            open,
+                            chat.turn_runs(ix),
+                            &entity,
+                            &chat.messages,
+                        ))
+                        .children(body),
                 )
-            });
+            } else {
+                body
+            };
+            let line = (turn == TurnRow::Lead)
+                .then(|| turn::render_line(chat.turn_line(ix, still), &item.id, &chat.messages));
             let select = |row: Div| {
                 if !chat.application_vim_enabled {
                     return row;
@@ -433,8 +438,7 @@ impl ChatScreen {
         let line = self.line_in_slot().then(|| {
             turn::render_line(
                 self.live_line(motion::loops_paused(window, cx)),
-                None,
-                &cx.entity().downgrade(),
+                "slot",
                 &self.messages,
             )
         });
@@ -560,7 +564,7 @@ pub(super) struct RowMotion {
     pub(super) heights: Rc<RefCell<HashMap<String, Pixels>>>,
     /// Rows whose details the user just opened, by item id.
     disclosed: HashMap<String, Instant>,
-    /// Turns whose steps the user just showed, by the id of their lead row.
+    /// Chunks whose steps the user just showed, by their lead row id.
     unfolded: HashMap<String, Instant>,
     /// When another task's transcript landed.
     switched: Option<Instant>,
@@ -704,8 +708,8 @@ impl RowMotion {
         }
     }
 
-    /// The user showed or folded a turn's steps. Folding is immediate.
-    pub(super) fn disclose_turn(&mut self, lead: &str, open: bool, now: Instant) {
+    /// The user showed or folded a chunk. Folding is immediate.
+    pub(super) fn disclose_chunk(&mut self, lead: &str, open: bool, now: Instant) {
         if open {
             self.unfolded.insert(lead.to_owned(), now);
         } else {
@@ -764,7 +768,7 @@ impl RowMotion {
     }
 
     /// Progress of the fade of steps the user just showed.
-    pub(super) fn turn_disclosure(&self, lead: &str, now: Instant, reduced: bool) -> f32 {
+    pub(super) fn chunk_disclosure(&self, lead: &str, now: Instant, reduced: bool) -> f32 {
         self.unfolded
             .get(lead)
             .map_or(1., |at| motion::progress(*at, motion::REVEAL, now, reduced))
@@ -3456,7 +3460,7 @@ mod motion_tests {
     }
 
     #[gpui::test]
-    fn a_turns_steps_stay_folded_until_its_line_is_clicked(cx: &mut TestAppContext) {
+    fn a_chunks_steps_stay_folded_until_its_header_is_clicked(cx: &mut TestAppContext) {
         let _clock = Clock::start();
         let (chat, cx) = pane(cx, 30);
         // A finished turn after the history: two steps, then the reply.
@@ -3480,6 +3484,13 @@ mod motion_tests {
 
         cx.simulate_click(line.center(), gpui::Modifiers::default());
         redraw(&chat, cx);
+        assert!(
+            cx.debug_bounds("tool-card").is_none(),
+            "the turn line is informational"
+        );
+        let header = bounds(cx, "activity-chunk-call");
+        cx.simulate_click(header.center(), gpui::Modifiers::default());
+        redraw(&chat, cx);
         let call = bounds(cx, "tool-card");
         let thought = bounds(cx, "thinking-title");
         assert_eq!(
@@ -3492,7 +3503,8 @@ mod motion_tests {
             "the steps open under the line, in order: {line:?}, {call:?}, {thought:?}"
         );
 
-        cx.simulate_click(line.center(), gpui::Modifiers::default());
+        let header = bounds(cx, "activity-chunk-call");
+        cx.simulate_click(header.center(), gpui::Modifiers::default());
         redraw(&chat, cx);
         assert!(
             cx.debug_bounds("tool-card").is_none(),
@@ -3521,7 +3533,7 @@ mod motion_tests {
     }
 
     #[gpui::test]
-    fn the_line_keeps_its_place_when_the_turns_first_step_arrives(cx: &mut TestAppContext) {
+    fn the_line_hands_off_without_a_jump_as_the_first_chunk_enters(cx: &mut TestAppContext) {
         let clock = Clock::start();
         let (chat, cx) = pane(cx, 30);
         // A run is going and nothing has come back yet: the line waits
@@ -3546,17 +3558,23 @@ mod motion_tests {
         });
         let tops =
             tops_through_entrance(&chat, &clock, start, &["turn-line", "timeline-row-h29"], cx);
-        assert!(
-            tops[0].iter().all(|top| *top == waiting.origin.y),
-            "the line stays where it waited ({:?}) once a row carries it: {:?}",
-            waiting.origin.y,
-            tops[0]
+        assert_eq!(tops[0][0], waiting.origin.y, "the line hands off in place");
+        assert_eq!(
+            tops[1][0], older.origin.y,
+            "older rows do not jump on handoff"
         );
+        assert_glides(&tops[0], "the line above the arriving chunk header");
+        assert_glides(&tops[1], "the history above the arriving chunk header");
+        for (line, history) in tops[0].iter().zip(&tops[1]) {
+            assert_eq!(
+                *line - *history,
+                waiting.origin.y - older.origin.y,
+                "the header's entrance moves the line and history together"
+            );
+        }
         assert!(
-            tops[1].iter().all(|top| *top == older.origin.y),
-            "older rows hold still: {:?} then {:?}",
-            older.origin.y,
-            tops[1]
+            bounds(cx, "activity-chunk-call").top() >= bounds(cx, "turn-line").bottom(),
+            "the inline disclosure settles below the informational line"
         );
     }
 
