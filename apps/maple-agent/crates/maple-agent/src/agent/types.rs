@@ -118,6 +118,16 @@ pub enum AgentMcpTransport {
         #[serde(default)]
         headers: Vec<AgentMcpKeyValue>,
     },
+    /// An MCP server the ACP client serves over the ACP connection itself,
+    /// per the unstable `mcp/connect`/`mcp/message` extension. `server_id` is
+    /// the ACP `serverId`; `channel` names the live connection in
+    /// [`crate::agent::mcp::acp_channel`]'s registry, which the ACP server
+    /// fills for each session attachment.
+    Acp {
+        server_id: String,
+        #[serde(default)]
+        channel: String,
+    },
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]

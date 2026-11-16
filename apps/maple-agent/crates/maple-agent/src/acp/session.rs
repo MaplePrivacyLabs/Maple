@@ -75,6 +75,9 @@ pub(super) struct AcpSession {
     pub(super) prompted: bool,
     pub(super) project_root: PathBuf,
     pub(super) project_trust_decision: Option<bool>,
+    /// The live MCP-over-ACP channels the session's `{"type":"acp"}`
+    /// servers run on, registered until the session is retired.
+    pub(super) mcp_channels: Vec<super::mcp_over_acp::AcpMcpAttachment>,
 }
 
 /// A session's lease until the session is published to the connection.
@@ -172,12 +175,24 @@ pub(super) fn resolve_project_root(cwd: &Path) -> Result<PathBuf, String> {
 }
 
 /// The caller's MCP servers for a session: HTTP servers, which run beside the
-/// task's own. Stdio servers are refused before anything starts: they would
-/// run caller-supplied native code here.
+/// task's own, and ACP servers, which the caller serves on the ACP
+/// connection itself. Stdio servers are refused before anything starts:
+/// they would run caller-supplied native code here.
+#[derive(Debug)]
+pub(super) struct PreparedSessionMcp {
+    /// Servers the task reaches over their own transport.
+    pub(super) http: Vec<AgentMcpServer>,
+    /// Servers the ACP client serves over the ACP connection itself.
+    pub(super) acp: Vec<super::mcp_over_acp::PreparedAcpMcpServer>,
+}
+
 pub(super) fn prepare_session_mcp(
     servers: &[McpServer],
-) -> Result<Vec<AgentMcpServer>, agent_client_protocol::Error> {
-    let mut session_servers = Vec::new();
+) -> Result<PreparedSessionMcp, agent_client_protocol::Error> {
+    let mut prepared = PreparedSessionMcp {
+        http: Vec::new(),
+        acp: Vec::new(),
+    };
     for server in servers {
         match server {
             McpServer::Stdio(server) => {
@@ -201,7 +216,7 @@ pub(super) fn prepare_session_mcp(
                         value: header.value.clone(),
                     });
                 }
-                session_servers.push(AgentMcpServer {
+                prepared.http.push(AgentMcpServer {
                     name: server.name.clone(),
                     description: "ACP session MCP server".to_string(),
                     enabled: true,
@@ -213,6 +228,18 @@ pub(super) fn prepare_session_mcp(
                     },
                 });
             }
+            McpServer::Acp(server) => {
+                // The task's own validation caps server names; a longer
+                // display name is kept as much as it allows, since the
+                // `serverId` is the real key.
+                let name: String = server.name.chars().take(64).collect();
+                prepared
+                    .acp
+                    .push(super::mcp_over_acp::PreparedAcpMcpServer {
+                        name,
+                        server_id: server.server_id.0.to_string(),
+                    });
+            }
             McpServer::Sse(_) => {
                 return Err(agent_client_protocol::Error::invalid_params()
                     .data("Maple ACP does not support legacy SSE MCP servers"));
@@ -223,7 +250,7 @@ pub(super) fn prepare_session_mcp(
             }
         }
     }
-    Ok(session_servers)
+    Ok(prepared)
 }
 
 pub(super) fn canonical_session_id(

@@ -11,7 +11,8 @@ use crate::agent::tests::{Harness, eventually};
 use crate::agent::{AgentRunUsage, AgentSessionSummary};
 use agent_client_protocol::schema::v1::{
     ClientCapabilities, ElicitationCapabilities, ElicitationFormCapabilities, InitializeRequest,
-    McpServer, McpServerHttp, McpServerStdio, RequestPermissionOutcome, SelectedPermissionOutcome,
+    McpServer, McpServerAcp, McpServerHttp, McpServerStdio, RequestPermissionOutcome,
+    SelectedPermissionOutcome,
 };
 use pi_ai::AssistantContent;
 use pi_ai::faux::faux_tool_call;
@@ -942,6 +943,257 @@ async fn a_started_task_switches_to_the_model_picked() {
     finish(serving).await;
 }
 
+/// A scripted MCP-over-ACP client: `mcp/connect` opens one connection, and
+/// each `mcp/message` request is answered as the inner MCP server would.
+fn acp_mcp_answers(recorded: &Arc<std::sync::Mutex<Vec<(String, Value)>>>) -> Answer {
+    let recorded = Arc::clone(recorded);
+    Box::new(move |method, params| {
+        recorded
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .push((method.to_string(), params.clone()));
+        match method {
+            "mcp/connect" => json!({"connectionId": "bridge-connection-1"}),
+            "mcp/message" => match params["method"].as_str() {
+                Some("initialize") => json!({
+                    "protocolVersion": "2025-11-25",
+                    "capabilities": {"tools": {}},
+                    "serverInfo": {"name": "t3-code", "version": "0.1.10"},
+                }),
+                Some("tools/list") => json!({
+                    "tools": [{
+                        "name": "echo",
+                        "description": "Echo the text",
+                        "inputSchema": {
+                            "type": "object",
+                            "properties": {"text": {"type": "string"}},
+                        },
+                    }],
+                }),
+                Some("tools/call") => json!({
+                    "content": [{
+                        "type": "text",
+                        "text": format!(
+                            "Echo: {}",
+                            params["params"]["arguments"]["text"]
+                                .as_str()
+                                .unwrap_or_default()
+                        ),
+                    }],
+                }),
+                Some(other) => panic!("unexpected inner method {other}"),
+                None => panic!("mcp/message without a method: {params}"),
+            },
+            other => panic!("the agent asked {other} unexpectedly"),
+        }
+    })
+}
+
+/// The editor's own MCP server, declared `{"type":"acp"}`, reaches the
+/// task over `mcp/connect` and `mcp/message` on the same connection, and
+/// its tools join the run like any other server's.
+#[tokio::test]
+async fn mcp_over_acp_tools_join_a_prompted_session() {
+    let harness = Harness::new().await;
+    let project = harness.project.path().to_path_buf();
+    let recorded = Arc::new(std::sync::Mutex::new(Vec::new()));
+    let (mut client, serving) = connect(&harness.handle, acp_mcp_answers(&recorded));
+    let initialize = client.initialize(json!({})).await;
+    assert_eq!(
+        initialize["agentCapabilities"]["mcpCapabilities"]["acp"], true,
+        "the agent must say it serves MCP over ACP: {initialize}"
+    );
+
+    let session_id = client
+        .new_session_with(json!({
+            "cwd": project,
+            "mcpServers": [{"type": "acp", "name": "t3-code", "serverId": "t3-code"}],
+        }))
+        .await;
+
+    harness.faux.push_message(vec![faux_tool_call(
+        "mcp__t3_code__echo",
+        json!({"text": "hello"}),
+    )]);
+    harness.faux.push_text("Done.");
+    let result = client
+        .prompt(&session_id, "Echo the word hello with the echo tool.")
+        .await;
+    assert_eq!(result["stopReason"], "end_turn", "{result}");
+
+    // The whole MCP session traveled over the ACP connection.
+    let recorded = recorded
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner())
+        .clone();
+    let connects: Vec<&Value> = recorded
+        .iter()
+        .filter(|(method, _)| method == "mcp/connect")
+        .map(|(_, params)| params)
+        .collect();
+    assert_eq!(connects.len(), 1, "one connection for the session");
+    assert_eq!(connects[0]["serverId"], "t3-code");
+    let inner: Vec<&str> = recorded
+        .iter()
+        .filter(|(method, _)| method == "mcp/message")
+        .filter_map(|(_, params)| params["method"].as_str())
+        .collect();
+    assert_eq!(
+        inner,
+        ["initialize", "tools/list", "tools/call"],
+        "the handshake lists tools before the run calls one"
+    );
+
+    // The model read the tool's answer.
+    let requests = harness.faux.requests();
+    let results: Vec<String> = requests[1]
+        .context
+        .messages
+        .iter()
+        .filter_map(|message| match message {
+            pi_ai::Message::ToolResult(result) => Some(pi_ai::content_text(&result.content)),
+            _ => None,
+        })
+        .collect();
+    assert_eq!(results, ["Echo: hello"]);
+
+    client.shutdown().await;
+    finish(serving).await;
+}
+
+/// `session/new` and `session/load` answer the v1 unstable `models`
+/// extension: every offered model's reasoning levels in `_meta`, read the
+/// same way the `thought_level` option shows them.
+#[tokio::test]
+async fn session_setup_reports_every_models_reasoning_levels() {
+    let harness = Harness::new().await;
+    harness
+        .serve_catalog(json!({
+            "object": "list",
+            "data": [
+                {"id": "reasoner", "reasoning": {"supported_efforts": ["low", "high", "max"], "default_effort": "high"}},
+                {"id": "always-on", "reasoning": {"supported_efforts": ["low", "high"], "mandatory": true, "default_effort": "low"}},
+                {"id": "plain"},
+            ],
+            "aliases": [],
+        }))
+        .await;
+    let project = harness.project.path().to_path_buf();
+    let (mut client, serving) = connect(&harness.handle, no_answers());
+    client.initialize(json!({})).await;
+    let created = client
+        .call("session/new", json!({"cwd": project, "mcpServers": []}))
+        .await;
+
+    let meta_of = |models: &Value, model: &str| {
+        models["availableModels"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|entry| entry["modelId"] == model)
+            .unwrap_or_else(|| panic!("{model} is offered: {models}"))["_meta"]
+            .clone()
+    };
+    fn levels_of(meta: &Value) -> Vec<&str> {
+        meta["reasoningEfforts"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|effort| effort["value"].as_str().unwrap())
+            .collect::<Vec<_>>()
+    }
+
+    assert_eq!(created["models"]["currentModelId"], "reasoner");
+    let reasoner = meta_of(&created["models"], "reasoner");
+    assert_eq!(levels_of(&reasoner), ["off", "low", "high", "max"]);
+    assert_eq!(reasoner["reasoningEffort"], "high");
+    let always_on = meta_of(&created["models"], "always-on");
+    assert_eq!(levels_of(&always_on), ["low", "high"]);
+    assert_eq!(always_on["reasoningEffort"], "low");
+    let plain = meta_of(&created["models"], "plain");
+    assert_eq!(plain["supportsReasoningEffort"], false);
+    assert!(plain["reasoningEfforts"].is_null());
+
+    // The current model's levels are the ones its option offers.
+    let options = created["configOptions"].as_array().unwrap();
+    let thinking = options
+        .iter()
+        .find(|option| option["id"] == "thought_level")
+        .unwrap_or_else(|| panic!("the current model has a thinking option: {created}"));
+    assert_eq!(thinking["currentValue"], "high");
+    assert_eq!(
+        thinking["options"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|option| option["value"].as_str().unwrap())
+            .collect::<Vec<_>>(),
+        ["off", "low", "high", "max"]
+    );
+
+    // A loaded task answers the same shape, on the model it runs on.
+    let desktop = harness
+        .handle
+        .create_session(Some(crate::agent::AgentCreateSessionRequest {
+            project_root: None,
+            title: None,
+            model: Some("always-on".to_string()),
+            context_limit: None,
+            mcp_server_names: None,
+        }))
+        .await
+        .unwrap()
+        .session
+        .id;
+    let loaded = client
+        .call(
+            "session/load",
+            json!({"sessionId": desktop, "cwd": project, "mcpServers": []}),
+        )
+        .await;
+    assert_eq!(loaded["models"]["currentModelId"], "always-on");
+    assert_eq!(
+        levels_of(&meta_of(&loaded["models"], "reasoner")),
+        ["off", "low", "high", "max"]
+    );
+    let always_on = meta_of(&loaded["models"], "always-on");
+    assert_eq!(levels_of(&always_on), ["low", "high"]);
+    assert_eq!(always_on["reasoningEffort"], "low");
+
+    client.shutdown().await;
+    finish(serving).await;
+}
+
+/// `session/new` keeps refusing a stdio MCP server over the wire, before
+/// any process can start.
+#[tokio::test]
+async fn session_new_rejects_a_stdio_mcp_server_over_the_wire() {
+    let harness = Harness::new().await;
+    let project = harness.project.path().to_path_buf();
+    let (mut client, serving) = connect(&harness.handle, no_answers());
+    client.initialize(json!({})).await;
+    let server = serde_json::to_value(McpServer::Stdio(
+        McpServerStdio::new("untrusted", "/bin/sh")
+            .args(vec!["-c".to_string(), "exit 0".to_string()]),
+    ))
+    .unwrap();
+    let id = client
+        .request(
+            "session/new",
+            json!({"cwd": project, "mcpServers": [server]}),
+        )
+        .await;
+    let response = client.response(id).await;
+    assert!(
+        response["error"]
+            .to_string()
+            .contains("Transient stdio MCP server 'untrusted' is disabled"),
+        "the refusal reaches the caller: {response}"
+    );
+    client.shutdown().await;
+    finish(serving).await;
+}
+
 /// `session/cancel` stops a turn in progress; the next prompt runs.
 #[tokio::test]
 async fn cancel_stops_the_turn_in_progress() {
@@ -1833,20 +2085,37 @@ fn arbitrary_stdio_mcp_is_rejected_before_any_process_can_start() {
             .args(vec!["-c".to_string(), "exit 0".to_string()]),
     );
 
-    assert!(prepare_session_mcp(&[server]).is_err());
+    let error = prepare_session_mcp(&[server]).unwrap_err();
+    assert!(
+        error
+            .to_string()
+            .contains("Transient stdio MCP server 'untrusted' is disabled"),
+        "the refusal names the refusal: {error}"
+    );
 }
 
 #[test]
 fn an_http_mcp_server_runs_beside_the_tasks_own() {
     let server = McpServer::Http(McpServerHttp::new("remote", "https://remote.example/mcp"));
-    let servers = prepare_session_mcp(&[server]).unwrap();
-    assert_eq!(servers.len(), 1);
-    assert_eq!(servers[0].name, "remote");
-    assert!(servers[0].enabled);
+    let prepared = prepare_session_mcp(&[server]).unwrap();
+    assert_eq!(prepared.http.len(), 1);
+    assert!(prepared.acp.is_empty());
+    assert_eq!(prepared.http[0].name, "remote");
+    assert!(prepared.http[0].enabled);
     assert!(matches!(
-        &servers[0].transport,
+        &prepared.http[0].transport,
         crate::agent::AgentMcpTransport::StreamableHttp { url, .. } if url == "https://remote.example/mcp"
     ));
+}
+
+#[test]
+fn an_acp_mcp_server_is_prepared_for_the_connection_itself() {
+    let server = McpServer::Acp(McpServerAcp::new("t3-code", "t3-code"));
+    let prepared = prepare_session_mcp(&[server]).unwrap();
+    assert!(prepared.http.is_empty());
+    assert_eq!(prepared.acp.len(), 1);
+    assert_eq!(prepared.acp[0].name, "t3-code");
+    assert_eq!(prepared.acp[0].server_id, "t3-code");
 }
 
 #[test]

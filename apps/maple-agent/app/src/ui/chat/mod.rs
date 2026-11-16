@@ -366,6 +366,7 @@ fn draft_mcp_row(server: AgentMcpServer) -> AgentSessionMcpServer {
         transport: match server.transport {
             AgentMcpTransport::Stdio { .. } => "stdio",
             AgentMcpTransport::StreamableHttp { .. } => "streamable_http",
+            AgentMcpTransport::Acp { .. } => "acp",
         }
         .to_string(),
         enabled: server.enabled,
