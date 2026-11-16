@@ -21,9 +21,20 @@ monotonic request counters, per-field signatures, or a custom memory scheduler.
 
 The TLS terminator, forwarding host, reverse proxy, and load balancer are not
 trusted with logical request or response contents. After session
-establishment, they can observe the V2 endpoint, session identifier, ciphertext
+establishment, the V2 wire exposes the endpoint, session identifier, ciphertext
 lengths, timing, and connection behavior, but not the logical method, target,
 headers, credential, cache root, body, status, or response bytes.
+
+The enclave intentionally sends a limited set of operational metadata to
+host-visible diagnostic logs: an allowlisted logical method, a coarse fixed
+route class, stage and outcome labels, bounded failure reasons, numeric logical
+and outer HTTP statuses, and aggregate counts. Anyone with access to those logs
+can infer the operation class and result; this is an explicit exception to the
+wire confidentiality boundary, not a change to the encrypted wire format. The
+diagnostics never contain the raw target, path parameters, query, headers,
+credential, cache root, body, response content, user or session identifiers,
+or transport request IDs. See [Transport V2 diagnostics](transport-v2-diagnostics.md)
+for the exact fields, sampling, and retention boundary.
 
 The client trusts session keys only after it has:
 
@@ -776,3 +787,10 @@ Before enabling V2 clients in production:
 9. Retain a coordinated rollback plan. Rolling the backend back below V2 after
    publishing V2-only clients strands those clients; they intentionally do not
    downgrade or transmit credentials over V1.
+
+## Diagnostics
+
+Bounded route and outcome diagnostics, their volume controls, and the operator
+query are documented in
+[transport-v2-diagnostics.md](transport-v2-diagnostics.md). They deliberately
+carry no correlation key across the edge and the enclave.
