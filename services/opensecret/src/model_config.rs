@@ -476,6 +476,7 @@ pub const GPT_OSS_120B_MODEL_ID: &str = "gpt-oss-120b";
 pub const GLM_5_3_MODEL_ID: &str = "glm-5-3";
 pub const GLM_5_3_FLASH_MODEL_ID: &str = "glm-5-3-flash";
 pub const POWERFUL_MODEL_ID: &str = GLM_5_3_MODEL_ID;
+pub const INKLING_2_SMALL_MODEL_ID: &str = "inkling-2-small";
 pub const KIMI_K3_1_PRO_MODEL_ID: &str = "kimi-k3-1-pro";
 pub const DEEPSEEK_V4_1_FLASH_MODEL_ID: &str = "deepseek-v4-1-flash";
 /// The Quick tier's preferred model on every plan.
@@ -989,6 +990,43 @@ const DEEPSEEK_V4_1_FLASH_REASONING: ModelReasoning = ModelReasoning::tiers(
     ReasoningEffort::High,
 );
 
+// Thinking Machines publishes six named presets for Inkling's continuous
+// effort: none 0.0, minimal 0.1, low 0.2, medium 0.7, high 0.9 (the default)
+// and xhigh 0.99.
+// https://tinker-docs.thinkingmachines.ai/cookbook/inkling/thinking-effort/
+//
+// Five are offered. Verified on Tinfoil's deployed build on 2026-11-16:
+// * top-level `reasoning_effort` reaches vLLM's Inkling renderer unchanged
+//   and wins over `chat_template_kwargs.reasoning_effort`, so no template
+//   kwarg is written; an omitted effort renders the same prompt as `high`;
+// * `max` is vLLM's alias for `xhigh` (identical prompt tokens), so only the
+//   creator's name is offered;
+// * `none` conditions toward no reasoning without enforcing it: on hard
+//   prompts the model writes its working into `content` (every sample),
+//   while any effort above zero keeps it in `reasoning`. As with GLM,
+//   reasoning is therefore mandatory and `minimal` is the lowest level.
+const INKLING_2_SMALL_REASONING: ModelReasoning = ModelReasoning::tiers(
+    true,
+    ReasoningEffortSet::of(&[
+        ReasoningEffort::Minimal,
+        ReasoningEffort::Low,
+        ReasoningEffort::Medium,
+        ReasoningEffort::High,
+        ReasoningEffort::XHigh,
+    ]),
+    ReasoningEffort::High,
+);
+
+// Thinking Machines' Inkling sampling guide recommends temperature 1.0;
+// its sampling script leaves top_p unfiltered. No reasoning-history replay
+// rule is published, so use Omit rather than inventing one from the template.
+// https://github.com/thinking-machines-lab/tinker-cookbook/blob/main/skills/inkling/SKILL.md#sampling
+const INKLING_2_SMALL_RESPONSES_MODEL_CONFIG: ResponsesModelConfig =
+    ResponsesModelConfig::recommended(
+        SamplingConfig::new(1.0, 1.0),
+        ReasoningHistoryStrategy::Omit,
+    );
+
 // Each catalog model uses its creator's published sampling and reasoning-history
 // rules. Change these only from a cited model card, generation config, or
 // official usage guide.
@@ -1104,6 +1142,31 @@ const MODEL_CONFIGS: &[ModelConfigEntry] = &[
         None,
     )),
     ModelConfigEntry::new(
+        INKLING_2_SMALL_MODEL_ID,
+        "Inkling 2 Small",
+        "Inkling 2 Small",
+        "Fast, affordable multimodal reasoning and tool-use model.",
+        ModelAccessTier::Pro,
+        ModelCapabilities::chat(true, true),
+        &["New"],
+        true,
+        true,
+        false,
+        27,
+        // Tinfoil's served window, not the weights' theoretical 1M maximum.
+        524_288,
+        INKLING_2_SMALL_RESPONSES_MODEL_CONFIG,
+    )
+    .with_reasoning(INKLING_2_SMALL_REASONING)
+    .in_group(ModelGroup::Fast)
+    .with_developer_role_as_system()
+    .with_catalog_metadata(ModelCatalogMetadata::new(
+        &["text", "image"],
+        &["text"],
+        Some("594B"),
+        Some("17B"),
+    )),
+    ModelConfigEntry::new(
         KIMI_K3_1_PRO_MODEL_ID,
         "Kimi K3.1 Pro",
         "Kimi K3.1 Pro",
@@ -1154,7 +1217,7 @@ const MODEL_CONFIGS: &[ModelConfigEntry] = &[
         "Long-context multimodal reasoning and tool-use model.",
         ModelAccessTier::Free,
         ModelCapabilities::chat(true, true),
-        &["New"],
+        &[],
         true,
         true,
         false,
@@ -1498,6 +1561,7 @@ mod tests {
         assert_eq!(model_context_window("glm-5-3"), 262_144);
         assert_eq!(model_context_window("glm-5-3-flash"), 1_048_576);
         assert_eq!(model_context_window("kimi-k3-1-pro"), 262_144);
+        assert_eq!(model_context_window(INKLING_2_SMALL_MODEL_ID), 524_288);
         assert_eq!(model_context_window("deepseek-v4-1-flash"), 1_048_576);
         assert_eq!(model_context_window(AUTO_QUICK_MODEL_ID), 1_048_576);
         assert_eq!(model_context_window(AUTO_POWERFUL_MODEL_ID), 262_144);
@@ -1512,6 +1576,7 @@ mod tests {
             ("glm-5-3", 1.0, 0.95, None, None),
             ("glm-5-3-flash", 1.0, 0.95, None, None),
             ("kimi-k3-1-pro", 1.0, 0.95, None, None),
+            (INKLING_2_SMALL_MODEL_ID, 1.0, 1.0, None, None),
             ("deepseek-v4-1-flash", 1.0, 1.0, None, None),
             (
                 DEEPSEEK_V4_1_FLASH_UNCENSORED_MODEL_ID,
@@ -2130,9 +2195,24 @@ mod tests {
     }
 
     #[test]
+    fn inkling_catalog_is_fast_new_multimodal_and_paid() {
+        let catalog = model_catalog_response(ModelPlan::Paid);
+        let inkling = catalog_model(&catalog, INKLING_2_SMALL_MODEL_ID);
+        assert_eq!(inkling["group"], "fast");
+        assert_eq!(inkling["badges"], json!(["New"]));
+        assert_eq!(inkling["context_window"], 524_288);
+        assert_eq!(inkling["input_modalities"], json!(["text", "image"]));
+        assert_eq!(inkling["capabilities"]["vision"], true);
+        assert_eq!(inkling["capabilities"]["tool_use"], true);
+        assert_eq!(inkling["available_in_agent"], true);
+        assert!(!ModelPlan::Free.allows_model(INKLING_2_SMALL_MODEL_ID));
+        assert!(ModelPlan::Paid.allows_model(INKLING_2_SMALL_MODEL_ID));
+    }
+
+    #[test]
     fn test_new_badges_match_the_currently_launched_models() {
         let expected = vec![
-            DEEPSEEK_V4_1_FLASH_MODEL_ID.to_string(),
+            INKLING_2_SMALL_MODEL_ID.to_string(),
             KIMI_K3_1_PRO_MODEL_ID.to_string(),
         ];
 
@@ -2199,7 +2279,7 @@ mod tests {
             Option<&'static [&'static str]>,
             Option<&'static str>,
         );
-        let expected: [Expected; 9] = [
+        let expected: [Expected; 10] = [
             (
                 "gpt-oss-120b",
                 true,
@@ -2215,6 +2295,13 @@ mod tests {
                 Some("medium"),
             ),
             ("gemma4-31b", false, false, None, None),
+            (
+                INKLING_2_SMALL_MODEL_ID,
+                true,
+                true,
+                Some(&["xhigh", "high", "medium", "low", "minimal"]),
+                Some("high"),
+            ),
             (
                 "kimi-k3-1-pro",
                 true,
@@ -2452,7 +2539,7 @@ mod tests {
             assert_eq!(
                 model_ids_with_badge(&catalog, "New"),
                 vec![
-                    DEEPSEEK_V4_1_FLASH_MODEL_ID.to_string(),
+                    INKLING_2_SMALL_MODEL_ID.to_string(),
                     KIMI_K3_1_PRO_MODEL_ID.to_string()
                 ]
             );

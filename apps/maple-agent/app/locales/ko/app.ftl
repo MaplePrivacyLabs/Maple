@@ -1474,6 +1474,9 @@ chat-model-group-capable = 최고 성능
 chat-model-group-uncensored = 무검열
 chat-model-group-fast = 빠르고 저렴함
 chat-model-group-more = 기타 모델
+chat-model-new = 신규
+# $model is the model display name; include its catalog badge in the accessible row name.
+chat-model-new-row = { $model }, 신규
 chat-model-popular = 인기
 # $model is the model's name. The model row's accessible name when it carries the Popular badge.
 chat-model-popular-row = { $model }, 인기

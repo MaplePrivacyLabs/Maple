@@ -1525,6 +1525,9 @@ chat-model-group-capable = Am leistungsfähigsten
 chat-model-group-uncensored = Unzensiert
 chat-model-group-fast = Schnell und günstig
 chat-model-group-more = Weitere Modelle
+chat-model-new = Neu
+# $model is the model display name; include its catalog badge in the accessible row name.
+chat-model-new-row = { $model }, neu
 chat-model-popular = Beliebt
 # $model is the model's name. The model row's accessible name when it carries the Popular badge.
 chat-model-popular-row = { $model }, beliebt

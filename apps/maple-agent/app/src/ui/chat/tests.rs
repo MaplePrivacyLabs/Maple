@@ -15259,7 +15259,7 @@ mod state_tests {
                         {"id": "empty", "label": "No models"},
                     ],
                     "data": [
-                        {"id": "flash", "group": "fast"},
+                        {"id": "flash", "group": "fast", "badges": ["New"]},
                         {"id": "gemma", "group": "fast"},
                         {"id": "ungrouped"},
                         {"id": "kimi", "group": "capable"},
@@ -15290,6 +15290,9 @@ mod state_tests {
                     ),
                 ]
             );
+            assert!(sections.is_new("flash"));
+            assert!(!sections.is_new("uncensored"));
+            assert!(!sections.is_new("glm"));
             assert!(sections.is_popular("uncensored"));
             assert!(!sections.is_popular("glm"));
 

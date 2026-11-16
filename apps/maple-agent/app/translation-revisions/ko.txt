@@ -153,6 +153,8 @@ chat-model-group-capable d87fa4070b26156c
 chat-model-group-fast c376ca3537291602
 chat-model-group-more da7bd78ff9ff2a0f
 chat-model-group-uncensored c2ff206f0e5718ad
+chat-model-new 9b881aa633561811
+chat-model-new-row 341c0ead9bc19def
 chat-model-popular 74e9e62ccf83bb9d
 chat-model-popular-row 2d08227acf6a9e67
 chat-month-1 0d679143b30162c2
