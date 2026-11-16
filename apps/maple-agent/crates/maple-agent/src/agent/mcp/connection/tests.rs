@@ -35,6 +35,7 @@ fn stdio_config(command: &str) -> AgentMcpServer {
         timeout_seconds: 5,
         transport: AgentMcpTransport::Stdio {
             command: command.to_string(),
+            argv: Vec::new(),
             environment: Vec::new(),
         },
     }
@@ -553,7 +554,9 @@ async fn stopping_a_stdio_server_ends_everything_it_started() {
     // The shell starts a child, prints its pid and waits; neither reads its
     // input, so only the signal to the process group ends them.
     let command = "sh -c 'sleep 300 & echo $!; wait'";
-    let mut process = server(stdio_config(command)).spawn(command, &[]).unwrap();
+    let mut process = server(stdio_config(command))
+        .spawn(command, &[], &[])
+        .unwrap();
     let mut stdout = process.child.stdout.take().unwrap();
     let mut line = Vec::new();
     let mut byte = [0u8; 1];

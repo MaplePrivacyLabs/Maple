@@ -8,6 +8,7 @@ fn stdio(name: &str, command: &str) -> AgentMcpServer {
         timeout_seconds: 300,
         transport: AgentMcpTransport::Stdio {
             command: command.to_string(),
+            argv: Vec::new(),
             environment: Vec::new(),
         },
     }
@@ -212,7 +213,7 @@ fn remote_catalog_save_requires_replacement_for_redirect_and_allows_removal() {
     );
     assert!(
         matches!(&read_saved_servers(&paths,"synthetic").unwrap()[0].transport,
-        AgentMcpTransport::Stdio { command,environment } if command=="synthetic-mcp" && environment[0].value=="synthetic-local-value")
+        AgentMcpTransport::Stdio { command,environment,.. } if command=="synthetic-mcp" && environment[0].value=="synthetic-local-value")
     );
     if let AgentMcpTransport::Stdio { environment, .. } = &mut safe[0].transport {
         environment[0].value = "synthetic-replacement".into();
@@ -220,7 +221,7 @@ fn remote_catalog_save_requires_replacement_for_redirect_and_allows_removal() {
     save_saved_mcp_servers(&paths, "synthetic", safe, McpEditOrigin::Remote).unwrap();
     assert!(
         matches!(&read_saved_servers(&paths,"synthetic").unwrap()[0].transport,
-        AgentMcpTransport::Stdio { command,environment } if command=="synthetic-capture" && environment[0].value=="synthetic-replacement")
+        AgentMcpTransport::Stdio { command,environment,.. } if command=="synthetic-capture" && environment[0].value=="synthetic-replacement")
     );
     assert!(
         !serde_json::to_string(&load_saved_mcp_servers(&paths, "synthetic").unwrap())

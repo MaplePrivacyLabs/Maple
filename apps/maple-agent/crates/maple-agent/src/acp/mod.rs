@@ -234,7 +234,7 @@ impl AcpConnectionContext {
             .ok_or_else(|| internal_acp_error("Maple returned no models".to_string()))?;
         let prepared = prepare_session_mcp(&request.mcp_servers)?;
         let mcp_channels = attach_acp_mcp_channels(self, cx, &prepared.acp);
-        let mut session_servers = prepared.http;
+        let mut session_servers = prepared.direct;
         session_servers.extend(mcp_channels.iter().map(|attached| attached.config.clone()));
         let created = self
             .agent
@@ -583,7 +583,7 @@ impl AcpConnectionContext {
         let available_models = self.available_models().await?;
         let prepared = prepare_session_mcp(&request.mcp_servers)?;
         let mcp_channels = attach_acp_mcp_channels(self, cx, &prepared.acp);
-        let mut session_servers = prepared.http;
+        let mut session_servers = prepared.direct;
         session_servers.extend(mcp_channels.iter().map(|attached| attached.config.clone()));
         let protocol_session_id = SessionId::new(session_id.clone());
         // Rebuilding announces HistoryReplaced. Finish before registering this
