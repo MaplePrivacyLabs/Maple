@@ -194,6 +194,27 @@ pub(crate) fn apply_model_request_policy(
         );
     }
     let config = model_config(model);
+    if config.reasoning_effort_in_chat_template {
+        // An explicit top-level effort takes precedence over template kwargs,
+        // including `none`. The renderer consumes this kwarg.
+        let effort = body
+            .get(CHAT_REASONING_EFFORT_PARAM)
+            .cloned()
+            .unwrap_or_else(|| {
+                json!(config
+                    .reasoning
+                    .and_then(|reasoning| reasoning.default_effort)
+                    .map(|effort| effort.as_str())
+                    .unwrap_or("high"))
+            });
+        let kwargs = body
+            .entry("chat_template_kwargs")
+            .or_insert_with(|| json!({}));
+        if !kwargs.is_object() {
+            *kwargs = json!({});
+        }
+        kwargs["reasoning_effort"] = effort;
+    }
     if config
         .reasoning
         .is_some_and(|reasoning| reasoning.mandatory)
@@ -251,6 +272,37 @@ mod tests {
         GLM_5_3_FLASH_MODEL_ID,
         DEEPSEEK_V4_1_FLASH_MODEL_ID,
     ];
+
+    #[test]
+    fn inkling_renderer_receives_effort_and_supported_roles() {
+        for effort in crate::model_config::ReasoningEffort::ALL {
+            let mut request = serde_json::from_value::<Map<String, Value>>(json!({
+                "model": "inkling-2-small",
+                "messages": [{"role": "developer", "content": "Be concise"}],
+                "chat_template_kwargs": {"reasoning_effort": "max", "other": true}
+            }))
+            .unwrap();
+            apply_model_request_policy(
+                &mut request,
+                "inkling-2-small",
+                EffectiveReasoningEffort::Set(effort),
+            );
+            assert_eq!(request["reasoning_effort"], effort.as_str());
+            assert_eq!(
+                request["chat_template_kwargs"]["reasoning_effort"],
+                effort.as_str()
+            );
+            assert_eq!(request["chat_template_kwargs"]["other"], true);
+            assert_eq!(request["messages"][0]["role"], "system");
+        }
+        let mut request = Map::new();
+        apply_model_request_policy(
+            &mut request,
+            "inkling-2-small",
+            EffectiveReasoningEffort::Unchanged,
+        );
+        assert_eq!(request["chat_template_kwargs"]["reasoning_effort"], "high");
+    }
 
     fn resolve(
         model: &str,

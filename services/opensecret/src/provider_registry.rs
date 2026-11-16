@@ -7,7 +7,7 @@
 use crate::model_config::{
     DECISION_LARGE_MODEL_ID, DECISION_MEDIUM_MODEL_ID, DECISION_SMALL_MODEL_ID,
     DEEPSEEK_V4_1_FLASH_MODEL_ID, DEEPSEEK_V4_1_FLASH_UNCENSORED_MODEL_ID, GLM_5_3_FLASH_MODEL_ID,
-    GLM_5_3_MODEL_ID, GPT_OSS_120B_MODEL_ID, KIMI_K3_1_PRO_MODEL_ID,
+    GLM_5_3_MODEL_ID, GPT_OSS_120B_MODEL_ID, INKLING_2_SMALL_MODEL_ID, KIMI_K3_1_PRO_MODEL_ID,
 };
 
 pub(crate) const SHADOW_ROUTING_POLICY_VERSION: &str = "routing-v2-weighted-v8";
@@ -349,10 +349,19 @@ const GPT_OSS_SAFEGUARD_120B_ROUTES: &[ModelRouteSpec] = &[ModelRouteSpec {
     enabled: true,
 }];
 
+const INKLING_2_SMALL_ROUTES: &[ModelRouteSpec] = &[ModelRouteSpec {
+    provider: ProviderId::Tinfoil,
+    provider_model_id: INKLING_2_SMALL_MODEL_ID,
+    response_model_id: INKLING_2_SMALL_MODEL_ID,
+    weight: 100,
+    enabled: true,
+}];
+
 const COMPLETION_MODELS: &[CompletionModelSpec] = &[
     completion_model(GPT_OSS_120B_MODEL_ID, GPT_OSS_120B_ROUTES),
     completion_model("gemma4-31b", GEMMA4_31B_ROUTES),
     completion_model(KIMI_K3_1_PRO_MODEL_ID, KIMI_K3_1_PRO_ROUTES),
+    completion_model(INKLING_2_SMALL_MODEL_ID, INKLING_2_SMALL_ROUTES),
     completion_model(GLM_5_3_MODEL_ID, GLM_5_3_ROUTES),
     completion_model(GLM_5_3_FLASH_MODEL_ID, GLM_5_3_FLASH_ROUTES),
     completion_model(DEEPSEEK_V4_1_FLASH_MODEL_ID, DEEPSEEK_V4_1_FLASH_ROUTES),
@@ -509,6 +518,7 @@ mod tests {
                 GPT_OSS_120B_MODEL_ID,
                 "gemma4-31b",
                 KIMI_K3_1_PRO_MODEL_ID,
+                INKLING_2_SMALL_MODEL_ID,
                 GLM_5_3_MODEL_ID,
                 GLM_5_3_FLASH_MODEL_ID,
                 DEEPSEEK_V4_1_FLASH_MODEL_ID,
@@ -568,6 +578,12 @@ mod tests {
                     ProviderId::Tinfoil,
                     KIMI_K3_1_PRO_MODEL_ID,
                     KIMI_K3_1_PRO_MODEL_ID
+                ),
+                (
+                    INKLING_2_SMALL_MODEL_ID,
+                    ProviderId::Tinfoil,
+                    INKLING_2_SMALL_MODEL_ID,
+                    INKLING_2_SMALL_MODEL_ID
                 ),
                 (
                     GLM_5_3_MODEL_ID,
