@@ -118,6 +118,19 @@ popup before a nested one). The popup handles the rest:
 A text field inside a menu that goes away calls `Popup::refocus`, so the
 menu keeps the keyboard. Menu keys live in the keymap's `Menu` context.
 
+## Motion
+
+Animate through `ui/motion.rs` only; [motion](docs/motion.md) holds the
+tokens and rules. The effort slider is the one exception, with its own
+tunings beside it. Motion never delays input, retargets from the value on
+screen, closes menus and dialogs at once, and settles immediately under
+reduced motion. Streaming text, typing, and keyboard navigation do not
+animate. Rows inside `gpui::list` time their entrance from view state, not
+element state, so they never replay when scrolled back into view. Timing
+comes from the tokens in `ui/motion.rs` and nowhere else: a reversible value
+is a `Tween` on a token's spring, kept and retargeted rather than replaced,
+and a one-shot entrance runs a token's duration and curve.
+
 ## Accessibility
 
 GPUI only reports elements with both an id and a role, and it builds the tree

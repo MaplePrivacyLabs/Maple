@@ -2,6 +2,7 @@
 //! segmented controls, tables and loading and empty states.
 
 use super::*;
+use crate::ui::motion::HoverBg as _;
 
 pub(super) fn card_heading(title: SharedString, description: SharedString) -> Div {
     div()
@@ -93,7 +94,7 @@ pub(super) fn segment_pill(
     tab_index: isize,
     select: impl Fn(&mut SettingsScreen, &mut Context<SettingsScreen>) + Copy + 'static,
     cx: &mut Context<SettingsScreen>,
-) -> gpui::Stateful<Div> {
+) -> crate::ui::motion::HoverBackground {
     let selector = id.to_string();
     div()
         .id(id)
@@ -120,11 +121,16 @@ pub(super) fn segment_pill(
         .when(!active, |pill| {
             pill.hover(|style| {
                 style
-                    .bg(gpui::rgb(theme::bg_sidebar_row_hover()))
                     .text_color(gpui::rgb(theme::text_primary()))
                     .cursor_pointer()
             })
         })
+        // The selected pill keeps its fill under the pointer.
+        .hover_bg(gpui::rgb(if active {
+            theme::bg_default_button()
+        } else {
+            theme::bg_sidebar_row_hover()
+        }))
         .focus_visible(widgets::focus_ring)
         .on_click(cx.listener(move |this, _event, _window, cx| select(this, cx)))
         .on_key_down(cx.listener(move |this, event: &gpui::KeyDownEvent, _, cx| {

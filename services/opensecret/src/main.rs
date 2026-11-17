@@ -581,12 +581,15 @@ impl IntoResponse for ApiError {
             ApiError::SystemOneRequest(error) => Some(error.code()),
             ApiError::Transcription(error) => Some(error.code()),
             ApiError::UnsupportedReasoningEffort(_) => Some("unsupported_value"),
+            ApiError::InferenceProvider(error) => Some(error.code()),
             _ => None,
         };
         // OpenAI's `type` and `param` are published only where the rejection
-        // is one OpenAI itself defines; existing bodies stay byte-identical.
+        // is one OpenAI itself defines, and for provider errors, whose stream
+        // payload already carries a type; other bodies stay byte-identical.
         let (error_type, error_param) = match &self {
             ApiError::InferenceRateLimited { .. } => (Some("rate_limit_error"), None),
+            ApiError::InferenceProvider(error) => (Some(error.error_type()), None),
             ApiError::UnsupportedReasoningEffort(error) => {
                 (Some("invalid_request_error"), Some(error.param()))
             }
@@ -802,6 +805,19 @@ mod api_error_contract_tests {
         for (error, status, body, code) in cases {
             assert_error_response(error, status, body, Some(code)).await;
         }
+    }
+
+    #[tokio::test]
+    async fn provider_context_limit_is_an_openai_context_length_error() {
+        assert_error_response(
+            ApiError::InferenceProvider(
+                web::provider_error::PublicProviderError::context_limit_for_test(),
+            ),
+            StatusCode::BAD_REQUEST,
+            br#"{"status":400,"message":"Upstream provider rejected the request because it exceeds the context window. Reduce the input or requested output tokens.","error":{"message":"Upstream provider rejected the request because it exceeds the context window. Reduce the input or requested output tokens.","code":"context_length_exceeded","type":"invalid_request_error"}}"#,
+            Some("context_length_exceeded"),
+        )
+        .await;
     }
 
     #[tokio::test]

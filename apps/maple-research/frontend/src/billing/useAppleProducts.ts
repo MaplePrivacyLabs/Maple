@@ -1,12 +1,22 @@
 import { useCallback, useEffect, useState } from "react";
 import { storeKit, type StoreKitBridge, type StoreKitProduct } from "@/services/storeKitService";
-import { appleProductIds, monthlyAppleProducts, type ApplePlan } from "./applePricingPolicy";
+import {
+  appleProductIds,
+  monthlyAppleProducts,
+  monthlyAppleSizeProducts,
+  type ApplePlan
+} from "./applePricingPolicy";
 
 type CatalogState = {
   products: Partial<Record<ApplePlan, StoreKitProduct>>;
+  /** Valid products for the larger sizes billing lists, by App Store product. */
+  sizes: Record<string, StoreKitProduct>;
   loading: boolean;
   error: string | null;
 };
+
+const noSizes: readonly string[] = [];
+const idle: CatalogState = { products: {}, sizes: {}, loading: true, error: null };
 
 interface CatalogEvents {
   visibility?: EventTarget & { visibilityState: DocumentVisibilityState };
@@ -31,10 +41,13 @@ function stopListening(remove: (() => void) | undefined): void {
 export function useAppleProducts(
   variant: string | undefined,
   bridge: Pick<StoreKitBridge, "getProducts" | "onStorefront"> = storeKit,
-  events: CatalogEvents = browserEvents
+  events: CatalogEvents = browserEvents,
+  sizeIds: readonly string[] = noSizes
 ) {
-  const [state, setState] = useState<CatalogState>({ products: {}, loading: true, error: null });
+  const [state, setState] = useState<CatalogState>(idle);
   const [attempt, setAttempt] = useState(0);
+  // The caller derives this list on every render; reload only when it changes.
+  const sizeKey = sizeIds.join("\n");
 
   useEffect(() => {
     let active = true;
@@ -42,16 +55,19 @@ export function useAppleProducts(
     let removeListener: (() => void) | undefined;
     let listening = false;
     const ids = appleProductIds(variant);
+    const sizes = sizeKey ? sizeKey.split("\n") : [];
     const load = async () => {
       const request = ++generation;
-      setState({ products: {}, loading: true, error: null });
+      setState(idle);
       try {
         if (!ids) throw new Error("invalid_app_variant");
-        const products = await bridge.getProducts(Object.values(ids));
+        const products = await bridge.getProducts([...Object.values(ids), ...sizes]);
         if (!active || request !== generation) return;
         const validated = monthlyAppleProducts(products, ids);
         setState({
           products: validated,
+          // A size the App Store does not return is simply not offered.
+          sizes: monthlyAppleSizeProducts(products, sizes),
           loading: false,
           error:
             Object.keys(validated).length === 2
@@ -62,6 +78,7 @@ export function useAppleProducts(
         if (active && request === generation) {
           setState({
             products: {},
+            sizes: {},
             loading: false,
             error: "App Store prices could not be loaded. Try again when you are connected."
           });
@@ -90,7 +107,12 @@ export function useAppleProducts(
       })
       .catch(() => {
         if (active) {
-          setState({ products: {}, loading: false, error: "Could not connect to the App Store." });
+          setState({
+            products: {},
+            sizes: {},
+            loading: false,
+            error: "Could not connect to the App Store."
+          });
         }
       });
     return () => {
@@ -100,7 +122,7 @@ export function useAppleProducts(
       events.focus?.removeEventListener("focus", refreshOnResume);
       stopListening(removeListener);
     };
-  }, [bridge, variant, attempt, events]);
+  }, [bridge, variant, attempt, events, sizeKey]);
 
   const retry = useCallback(() => setAttempt((value) => value + 1), []);
   return { ...state, retry };

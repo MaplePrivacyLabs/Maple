@@ -5,6 +5,7 @@
 //! separate stacked change.
 
 pub(crate) mod crypto;
+pub(crate) mod diagnostics;
 pub(crate) mod envelope;
 pub(crate) mod framing;
 pub(crate) mod gateway;

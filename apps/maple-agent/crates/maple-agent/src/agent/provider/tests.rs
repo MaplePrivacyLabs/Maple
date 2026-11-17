@@ -419,6 +419,30 @@ async fn http_errors_become_fixed_messages_pi_classifies() {
     }
 }
 
+/// The enclave's body when a provider rejects a request as too long.
+const ENCLAVE_CONTEXT_REJECTION: &str = r#"{"status":400,"message":"Upstream provider rejected the request because it exceeds the context window. Reduce the input or requested output tokens.","error":{"message":"Upstream provider rejected the request because it exceeds the context window. Reduce the input or requested output tokens.","code":"context_length_exceeded","type":"invalid_request_error"}}"#;
+
+#[tokio::test]
+async fn the_enclave_context_rejection_is_an_overflow_on_both_paths() {
+    let over_http = failure(Reply::Response {
+        status: 400,
+        headers: Vec::new(),
+        chunks: vec![Ok(ENCLAVE_CONTEXT_REJECTION)],
+        stall_after: false,
+    })
+    .await;
+    let over_sdk = failure(Reply::Fail(maple_sdk::Error::Api {
+        status: 400,
+        message: ENCLAVE_CONTEXT_REJECTION.into(),
+    }))
+    .await;
+    for message in [over_http, over_sdk] {
+        let error = message.error_message.clone().unwrap();
+        assert!(error.contains(CONTEXT_OVERFLOW_MESSAGE), "{error}");
+        assert!(is_context_overflow(&message, None), "{error}");
+    }
+}
+
 #[tokio::test]
 async fn transport_failures_become_fixed_messages_pi_classifies() {
     let cases: Vec<(maple_sdk::Error, &str, bool)> = vec![

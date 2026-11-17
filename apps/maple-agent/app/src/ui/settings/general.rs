@@ -287,12 +287,18 @@ impl SettingsScreen {
                                 .when(!active, |el| {
                                     el.hover(|style| {
                                         style
-                                            .bg(gpui::rgb(theme::bg_sidebar_row_hover()))
                                             .text_color(gpui::rgb(theme::text_primary()))
                                             .cursor_pointer()
                                     })
                                 })
                                 .when(active, |el| el.hover(|style| style.cursor_pointer()))
+                                // The selected pill keeps its fill under the
+                                // pointer.
+                                .hover_bg(gpui::rgb(if active {
+                                    theme::bg_default_button()
+                                } else {
+                                    theme::bg_sidebar_row_hover()
+                                }))
                                 .focus_visible(widgets::focus_ring)
                                 .on_click(cx.listener(move |this, _event, _window, cx| {
                                     this.choose_theme(preference, cx);

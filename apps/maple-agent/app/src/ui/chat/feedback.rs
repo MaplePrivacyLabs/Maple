@@ -224,12 +224,12 @@ impl ChatScreen {
                 .absolute()
                 .inset_0()
                 .occlude()
-                .bg(theme::scrim())
                 .flex()
                 .items_center()
                 .justify_center()
                 .on_mouse_down(gpui::MouseButton::Left, |_, _, cx| cx.stop_propagation())
-                .child(
+                .child(widgets::dialog_scrim())
+                .child(widgets::dialog_card(
                     div()
                         .id("feedback-form")
                         .role(gpui::Role::Dialog)
@@ -346,7 +346,7 @@ impl ChatScreen {
                                         ),
                                 ),
                         ),
-                ),
+                )),
         )
     }
 }

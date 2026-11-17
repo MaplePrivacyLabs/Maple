@@ -31,15 +31,17 @@ describe("Apple price lifecycle", () => {
     let change!: (country: string | null) => void;
     let removed = 0;
     const requests: ReturnType<typeof deferred<StoreKitProduct[]>>[] = [];
+    const asked: string[][] = [];
     const visibility = Object.assign(new EventTarget(), {
       visibilityState: "visible" as DocumentVisibilityState
     });
     const events = { visibility, focus: new EventTarget() };
     let view!: ReturnType<typeof useAppleProducts>;
     const bridge: Pick<StoreKitBridge, "getProducts" | "onStorefront"> = {
-      getProducts: () => {
+      getProducts: (productIds) => {
         const request = deferred<StoreKitProduct[]>();
         requests.push(request);
+        asked.push(productIds);
         return request.promise;
       },
       onStorefront: async (callback) => {
@@ -49,13 +51,14 @@ describe("Apple price lifecycle", () => {
         };
       }
     };
-    function Harness() {
-      view = useAppleProducts("dev", bridge, events);
+    function Harness({ sizeIds }: { sizeIds?: readonly string[] }) {
+      view = useAppleProducts("dev", bridge, events, sizeIds);
       return null;
     }
     return {
       Harness,
       requests,
+      asked,
       events,
       change: () => change("FRA"),
       get view() {
@@ -66,6 +69,43 @@ describe("Apple price lifecycle", () => {
       }
     };
   }
+  test("sizes billing lists are requested with the plans; one the App Store lacks is not an error", async () => {
+    const sizeId = "app.example.studio.monthly";
+    const max = { ...product, productId: "cloud.opensecret.maple.dev.max.monthly" };
+    const f = fixture();
+    await act(async () => {
+      renderer = create(<f.Harness sizeIds={[sizeId]} />);
+    });
+    expect(f.asked[0]).toEqual([product.productId, max.productId, sizeId]);
+    await act(async () => {
+      f.requests[0].resolve([product, max, { ...product, productId: sizeId }]);
+    });
+    expect(f.view.sizes[sizeId]?.productId).toBe(sizeId);
+    expect(f.view.error).toBeNull();
+    // The same list in a new array does not reload prices.
+    await act(async () => {
+      renderer!.update(<f.Harness sizeIds={[sizeId]} />);
+    });
+    expect(f.requests).toHaveLength(1);
+    // The list arriving later (or changing) loads again, with the plans.
+    await act(async () => {
+      renderer!.update(<f.Harness sizeIds={[]} />);
+    });
+    expect(f.asked[1]).toEqual([product.productId, max.productId]);
+    await act(async () => {
+      f.requests[1].resolve([product, max]);
+    });
+    expect(f.view.sizes).toEqual({});
+    await act(async () => {
+      renderer!.update(<f.Harness sizeIds={[sizeId]} />);
+    });
+    await act(async () => {
+      f.requests[2].resolve([product, max]);
+    });
+    expect(f.view.sizes).toEqual({});
+    expect(f.view.products.Max?.productId).toBe(max.productId);
+    expect(f.view.error).toBeNull();
+  });
   test("a storefront change immediately removes old prices and rejects an older completion", async () => {
     const f = fixture();
     await act(async () => {

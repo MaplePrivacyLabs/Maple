@@ -110,7 +110,7 @@ branches in step with the lane table.
 the other side of each contract. A failure means the workflow change is wrong:
 
 1. `release.yml` and the publishers (`pages-publish`, `proxy-publish`,
-   `updates-publish`, `zapstore-publish`, `sdk-publish-npm`, `sdk-publish-rust`,
+   `updates-publish`, `sdk-publish-npm`, `sdk-publish-rust`,
    `auth-pages-publish`, `opensecret-eif-release`)
    change only with owner review. Exactly one workflow is named `Release`, and
    every `workflow_run` listener names its producer and checks the head
@@ -225,8 +225,8 @@ and the [cache policy](../services/opensecret/docs/nitro-deploy.md#binary-caches
 
 ## Nix runtime
 
-Jobs install Determinate Nix 3.23.3 through an immutable
-`DeterminateSystems/determinate-nix-action` commit with `source-tag: v3.23.3`
+Jobs install Determinate Nix 3.24.2 through an immutable
+`DeterminateSystems/determinate-nix-action` commit with `source-tag: v3.24.2`
 (`.github/actions/setup-nix`, or inline in the sacred workflows), then run
 `scripts/ci/verify-nix-runtime.sh`. Keep the revision and tag in step when
 upgrading. No GitHub token reaches the installer; FlakeHub authentication is

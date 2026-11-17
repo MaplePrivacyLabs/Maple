@@ -1,4 +1,5 @@
 import type { BillingProduct, BillingStatus } from "./billingApi";
+import { planRank, productDisplayName, productGroup, productRank } from "./plan";
 
 export const ZAPRITE_UPGRADE_TERMINAL_STATUSES = [
   "COMPLETED",
@@ -100,22 +101,37 @@ export function isAllowedZapriteCheckoutUrl(url: string): boolean {
   }
 }
 
+type UpgradeProduct = Pick<BillingProduct, "id" | "name"> &
+  Partial<Pick<BillingProduct, "plan_group" | "plan_rank" | "display_name">>;
+
+/**
+ * A Bitcoin subscriber can pay the difference to move from one individual
+ * plan to a higher one. Billing decides the quote; this only chooses which
+ * plans offer the button.
+ */
 export function zapriteUpgradeTarget(
   billingStatus: BillingStatus | null | undefined,
-  product: Pick<BillingProduct, "id" | "name">
+  product: UpgradeProduct
 ): boolean {
   if (billingStatus?.payment_provider !== "zaprite") {
     return false;
   }
-  const source = billingStatus.product_name?.trim().toLowerCase() ?? "";
-  return source === "pro" && product.name.trim().toLowerCase() === "max";
+  const source = planRank(billingStatus);
+  const target = productRank(product);
+  return (
+    productGroup(product) === "individual" &&
+    source !== null &&
+    target !== null &&
+    source >= 1 &&
+    target > source
+  );
 }
 
 export function zapritePaidPlanButtonText(
   billingStatus: BillingStatus | null | undefined,
-  product: Pick<BillingProduct, "id" | "name">,
+  product: UpgradeProduct,
   isCurrentPlan: boolean
-): "Upgrade to Max" | "Contact Us" | "Start Chatting" | null {
+): string | null {
   if (billingStatus?.payment_provider !== "zaprite") {
     return null;
   }
@@ -123,7 +139,7 @@ export function zapritePaidPlanButtonText(
     return "Start Chatting";
   }
   if (zapriteUpgradeTarget(billingStatus, product)) {
-    return "Upgrade to Max";
+    return `Upgrade to ${productDisplayName(product)}`;
   }
   return "Contact Us";
 }

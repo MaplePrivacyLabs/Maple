@@ -3718,7 +3718,7 @@ fn completion_failure_payload(failure: &AttemptFailure) -> Value {
         Some(error) => json!({
             "error": {
                 "message": error.message(),
-                "type": if error.status().is_client_error() { "invalid_request_error" } else { "server_error" },
+                "type": error.error_type(),
                 "param": null,
                 "code": error.code(),
             }
@@ -4491,7 +4491,7 @@ mod tests {
             pinned.intent.auto_model = Some(AutoModelDecision {
                 selector: crate::model_config::AUTO_POWERFUL_MODEL_ID,
                 preferred_model_id: "glm-5-3",
-                chosen_model_id: "kimi-k3",
+                chosen_model_id: "kimi-k3-1-pro",
                 reason,
                 rejected: if reason == AutoModelReason::HealthFallback {
                     vec![(
@@ -4506,12 +4506,12 @@ mod tests {
                 policy_version: AUTO_MODEL_POLICY_VERSION,
             });
             let mut route = pinned.route.identity();
-            route.public_model_id = "kimi-k3".to_string();
-            route.provider_model_id = "kimi-k3".to_string();
+            route.public_model_id = "kimi-k3-1-pro".to_string();
+            route.provider_model_id = "kimi-k3-1-pro".to_string();
             let attempt = pinned.begin_execution().begin_attempt(route);
             let logged = capture_info_logs(|| log_selected_inference_route(&pinned, &attempt));
             assert!(logged.contains(reason.as_str()));
-            assert!(logged.contains("public_model=kimi-k3"));
+            assert!(logged.contains("public_model=kimi-k3-1-pro"));
             assert!(logged.contains(AUTO_MODEL_POLICY_VERSION));
             if reason == AutoModelReason::HealthFallback {
                 assert!(logged
@@ -4596,7 +4596,7 @@ mod tests {
         let trace = try_provider(
             &client,
             &proxy,
-            r#"{"model":"kimi-k3","messages":[]}"#.to_string(),
+            r#"{"model":"kimi-k3-1-pro","messages":[]}"#.to_string(),
             &HeaderMap::new(),
         )
         .await;
@@ -4637,7 +4637,7 @@ mod tests {
         let (tx, mut rx) = mpsc::channel(16);
         let result = process_completion_stream(
             response,
-            "kimi-k3",
+            "kimi-k3-1-pro",
             attempt,
             &tx,
             Duration::from_secs(1),
@@ -4775,8 +4775,8 @@ mod tests {
         let proxy_router = probe_test_proxy_router();
         let intent = InferenceIntent::new(
             Uuid::nil(),
-            crate::model_config::KIMI_K3_MODEL_ID,
-            crate::model_config::KIMI_K3_MODEL_ID,
+            crate::model_config::KIMI_K3_1_PRO_MODEL_ID,
+            crate::model_config::KIMI_K3_1_PRO_MODEL_ID,
             ModelPlan::Paid,
             InferenceSurface::ChatCompletions,
             WorkloadClass::Interactive,
@@ -4831,8 +4831,8 @@ mod tests {
         let proxy_router = probe_test_proxy_router();
         let intent = InferenceIntent::new(
             Uuid::nil(),
-            crate::model_config::KIMI_K3_MODEL_ID,
-            crate::model_config::KIMI_K3_MODEL_ID,
+            crate::model_config::KIMI_K3_1_PRO_MODEL_ID,
+            crate::model_config::KIMI_K3_1_PRO_MODEL_ID,
             ModelPlan::Paid,
             InferenceSurface::Responses,
             WorkloadClass::Interactive,
@@ -4955,9 +4955,13 @@ mod tests {
             successful_provider: ProviderId::Tinfoil.as_str().to_string(),
             attempt,
             terminal_guard: Some(terminal_guard),
-            response_model_id: "kimi-k3".to_string(),
+            response_model_id: "kimi-k3-1-pro".to_string(),
             is_streaming: false,
-            billing_context: BillingContext::new(AuthMethod::Jwt, "kimi-k3".to_string(), None),
+            billing_context: BillingContext::new(
+                AuthMethod::Jwt,
+                "kimi-k3-1-pro".to_string(),
+                None,
+            ),
             non_streaming_body_limit: None,
             stream_frame_limit: None,
             require_provider_done: false,
@@ -5043,7 +5047,7 @@ mod tests {
                 "{name}"
             );
             assert!(
-                chunks.iter().all(|chunk| chunk["model"] == "kimi-k3"),
+                chunks.iter().all(|chunk| chunk["model"] == "kimi-k3-1-pro"),
                 "{name}"
             );
 
@@ -5717,7 +5721,7 @@ mod tests {
                 400,
                 "context_length_exceeded",
                 400,
-                "upstream_context_limit",
+                "context_length_exceeded",
             ),
             (400, "invalid_parameter", 400, "upstream_invalid_parameter"),
             (
@@ -5797,20 +5801,23 @@ mod tests {
                 .as_str()
                 .unwrap()
                 .starts_with("Upstream provider"));
-            assert_eq!(body.as_object().unwrap().len(), 2); // Legacy ErrorResponse shape.
+            // Legacy flat fields plus the OpenAI-compatible error object.
+            assert_eq!(body.as_object().unwrap().len(), 3);
+            assert_eq!(body["error"]["message"], body["message"]);
+            assert_eq!(body["error"]["code"], code);
+            assert!(body["error"].get("param").is_none());
             assert!(!String::from_utf8(bytes.to_vec())
                 .unwrap()
                 .contains("private-"));
             let payload = completion_failure_payload(&failure);
             assert_eq!(payload["error"]["code"], code);
-            assert_eq!(
-                payload["error"]["type"],
-                if public_status < 500 {
-                    "invalid_request_error"
-                } else {
-                    "server_error"
-                }
-            );
+            let error_type = if public_status < 500 {
+                "invalid_request_error"
+            } else {
+                "server_error"
+            };
+            assert_eq!(payload["error"]["type"], error_type);
+            assert_eq!(body["error"]["type"], error_type);
             assert!(payload["error"]["param"].is_null());
             assert!(!payload.to_string().contains("private-"));
         }
@@ -6045,9 +6052,10 @@ mod tests {
         let attempt = pinned
             .begin_execution()
             .begin_attempt(pinned.route.identity());
-        let failure = read_non_streaming_completion_response(response, "kimi-k3", &attempt, None)
-            .await
-            .expect_err("top-level provider error payload must fail the attempt");
+        let failure =
+            read_non_streaming_completion_response(response, "kimi-k3-1-pro", &attempt, None)
+                .await
+                .expect_err("top-level provider error payload must fail the attempt");
         server.abort();
 
         assert_eq!(failure.kind, AttemptFailureKind::UpstreamResponseError);
@@ -6091,7 +6099,7 @@ mod tests {
             .begin_execution()
             .begin_attempt(pinned.route.identity());
         let failure =
-            read_non_streaming_completion_response(response, "kimi-k3", &attempt, Some(8))
+            read_non_streaming_completion_response(response, "kimi-k3-1-pro", &attempt, Some(8))
                 .await
                 .expect_err("response over the descriptor cap must fail");
         server.abort();
@@ -6127,7 +6135,7 @@ mod tests {
         let (tx, mut rx) = mpsc::channel(64);
         let result = process_completion_stream_with_frame_limit(
             response,
-            "kimi-k3",
+            "kimi-k3-1-pro",
             attempt,
             &tx,
             Duration::from_secs(1),
@@ -6225,7 +6233,7 @@ mod tests {
         let processing = tokio::spawn(async move {
             process_completion_stream_with_frame_limit(
                 response,
-                "kimi-k3",
+                "kimi-k3-1-pro",
                 attempt,
                 &tx,
                 Duration::from_secs(1),
@@ -6396,7 +6404,7 @@ mod tests {
         let (tx, mut rx) = mpsc::channel(1);
         let result = process_completion_stream(
             response,
-            "kimi-k3",
+            "kimi-k3-1-pro",
             attempt,
             &tx,
             Duration::from_millis(20),
@@ -6454,7 +6462,7 @@ mod tests {
             Duration::from_millis(100),
             process_completion_stream(
                 response,
-                "kimi-k3",
+                "kimi-k3-1-pro",
                 attempt,
                 &tx,
                 Duration::from_secs(30),
@@ -6508,7 +6516,7 @@ mod tests {
             Duration::from_millis(100),
             process_completion_stream(
                 response,
-                "kimi-k3",
+                "kimi-k3-1-pro",
                 attempt,
                 &tx,
                 Duration::from_secs(30),
@@ -6583,7 +6591,7 @@ mod tests {
         let trace = try_provider(
             &client,
             &proxy,
-            r#"{"model":"kimi-k3","messages":[]}"#.to_string(),
+            r#"{"model":"kimi-k3-1-pro","messages":[]}"#.to_string(),
             &HeaderMap::new(),
         )
         .await;
@@ -6598,7 +6606,7 @@ mod tests {
         let (tx, mut rx) = mpsc::channel(4);
         let result = process_completion_stream(
             response,
-            "kimi-k3",
+            "kimi-k3-1-pro",
             attempt,
             &tx,
             Duration::from_secs(1),
@@ -7031,11 +7039,6 @@ mod tests {
 
     #[test]
     fn completion_model_access_enforces_plan_gates() {
-        assert!(matches!(
-            ensure_completion_model_access("kimi-k3", ModelPlan::Free),
-            Err(ApiError::ModelNotAvailableOnPlan)
-        ));
-        assert!(ensure_completion_model_access("kimi-k3", ModelPlan::Paid).is_ok());
         assert!(matches!(
             ensure_completion_model_access("kimi-k3-1-pro", ModelPlan::Free),
             Err(ApiError::ModelNotAvailableOnPlan)
@@ -7799,7 +7802,6 @@ mod tests {
             ("tinfoil", "deepseek-v4-1-flash"),
             ("maple", "deepseek-v4-1-flash"),
             ("tinfoil", "kimi-k3-1-pro"),
-            ("tinfoil", "kimi-k3"),
             ("tinfoil", "glm-5-3"),
             ("tinfoil", "glm-5-3-flash"),
             ("continuum", "glm-5-3-flash"),
@@ -7827,7 +7829,6 @@ mod tests {
             ("glm-5.3-flash", "glm-5-3-flash"),
             ("glm-5.3", "glm-5-3"),
             ("kimi-k3-1-pro", "kimi-k3-1-pro"),
-            ("kimi-k3", "kimi-k3"),
             ("glm-5-3-flash", "glm-5-3-flash"),
         ] {
             let mut response = json!({
@@ -8774,7 +8775,7 @@ mod tests {
     #[test]
     fn reselection_without_an_alternate_keeps_the_capacity_contract_and_zero_sends() {
         use crate::model_config::{
-            AUTO_POWERFUL_MODEL_ID, AUTO_QUICK_MODEL_ID, GLM_5_3_MODEL_ID, KIMI_K3_MODEL_ID,
+            AUTO_POWERFUL_MODEL_ID, AUTO_QUICK_MODEL_ID, GLM_5_3_MODEL_ID, KIMI_K3_1_PRO_MODEL_ID,
             QUICK_MODEL_ID,
         };
         let provider_router = ProviderRouter::default();
@@ -8873,7 +8874,7 @@ mod tests {
                 Some(&lost),
             )
             .expect("alternate takes the request");
-            assert_eq!(moved.public_model_id(), KIMI_K3_MODEL_ID);
+            assert_eq!(moved.public_model_id(), KIMI_K3_1_PRO_MODEL_ID);
         }
         // The decision stage has no provider client and records nothing.
         assert_eq!(provider_router.sticky_routes().len(), 0);

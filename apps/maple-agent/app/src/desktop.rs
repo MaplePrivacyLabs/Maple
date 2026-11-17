@@ -5,8 +5,8 @@
 use std::{path::PathBuf, sync::Arc};
 
 use gpui::{
-    App, Bounds, Context, Entity, Render, Window, WindowBounds, WindowOptions, actions, div, point,
-    prelude::*, px, size,
+    App, Bounds, Context, Entity, Pixels, Render, Size, Window, WindowBounds, WindowOptions,
+    actions, div, point, prelude::*, px, size,
 };
 
 actions!(maple_app, [QuitApp, Hide, HideOthers, ShowAll]);
@@ -200,8 +200,6 @@ struct MapleApp {
     settings: crate::settings::AppSettings,
     updater: crate::update::Controller,
     restart_prompt_pending: bool,
-    #[cfg(target_os = "linux")]
-    restart_confirmation: Option<Entity<ui::update_confirmation::UpdateConfirmation>>,
     /// The complete live shortcut map. Settings mutations prepare a full
     /// replacement before this runtime clears GPUI's process-wide bindings.
     shortcuts: crate::shortcuts::ShortcutRuntime,
@@ -325,7 +323,7 @@ impl MapleApp {
         cx.notify();
     }
 
-    fn present_pending_store_attention(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+    fn present_pending_store_attention(&mut self, _window: &mut Window, cx: &mut Context<Self>) {
         if self.store_attention_open {
             return;
         }
@@ -344,19 +342,22 @@ impl MapleApp {
         });
         let buttons = if attention.retry {
             vec![
-                gpui::PromptButton::Other(tr("native-retry-saving")),
-                gpui::PromptButton::Other(tr("native-keep-viewing")),
+                NativeDialogButton::calm(
+                    "native-attention-keep-viewing",
+                    tr("native-keep-viewing"),
+                ),
+                NativeDialogButton::accent(
+                    "native-attention-retry-saving",
+                    tr("native-retry-saving"),
+                ),
             ]
         } else {
-            vec![gpui::PromptButton::Ok(tr("native-ok"))]
+            vec![NativeDialogButton::accent(
+                "native-attention-ok",
+                tr("native-ok"),
+            )]
         };
-        let prompt = window.prompt(
-            gpui::PromptLevel::Warning,
-            &title,
-            Some(&attention.message.resolve()),
-            &buttons,
-            cx,
-        );
+        let prompt = show_native_dialog(title, attention.message.resolve(), buttons, 300., cx);
         self.store_attention_open = true;
         cx.spawn(async move |this, cx| {
             let response = prompt.await;
@@ -369,10 +370,14 @@ impl MapleApp {
                             .iter()
                             .any(|pending| pending.kind == attention.kind)
                     {
-                        // Closing a window before delivery does not consume
+                        // Closing the dialog before delivery does not consume
                         // the warning. A later foreground render can retry it.
+                        // No notify here: it would also retry every frame when
+                        // opening the dialog window failed.
                         this.pending_store_attention.push_front(attention);
-                    } else if response == Ok(0) && attention.retry {
+                        return;
+                    }
+                    if response == Ok(1) && attention.retry {
                         this.retry_persistence(cx);
                     }
                 }
@@ -1090,7 +1095,7 @@ impl MapleApp {
         }
     }
 
-    fn show_about(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+    fn show_about(&mut self, _window: &mut Window, cx: &mut Context<Self>) {
         match &self.screen {
             Screen::Settings(settings) => {
                 settings.update(cx, |settings, cx| settings.show_about(cx))
@@ -1111,23 +1116,23 @@ impl MapleApp {
                         ),
                     ],
                 );
-                drop(window.prompt(
-                    gpui::PromptLevel::Info,
-                    crate::profile::DISPLAY_NAME,
-                    Some(&details),
-                    &[gpui::PromptButton::Ok(tr("native-ok"))],
+                // The answer is deliberately dropped: an informational
+                // dialog needs no response.
+                drop(show_native_dialog(
+                    crate::profile::DISPLAY_NAME.into(),
+                    details,
+                    vec![NativeDialogButton::accent(
+                        "native-about-ok",
+                        tr("native-ok"),
+                    )],
+                    300.,
                     cx,
                 ));
             }
         }
     }
 
-    fn update_action(
-        &mut self,
-        action: crate::update::UpdateAction,
-        window: &mut Window,
-        cx: &mut Context<Self>,
-    ) {
+    fn update_action(&mut self, action: crate::update::UpdateAction, cx: &mut Context<Self>) {
         use crate::update::UpdateAction;
         if self.updater.restart_path().is_some() && action != UpdateAction::Relaunch {
             return;
@@ -1154,7 +1159,6 @@ impl MapleApp {
                 return;
             }
             self.restart_prompt_pending = true;
-            #[cfg(not(target_os = "linux"))]
             let title = self.updater.snapshot().version.as_deref().map_or_else(
                 || tr("update-confirmation-title"),
                 |version| {
@@ -1164,26 +1168,20 @@ impl MapleApp {
                     )
                 },
             );
-            #[cfg(target_os = "linux")]
-            let answer = {
-                let (prompt, answer) = ui::update_confirmation::open(
-                    self.updater.snapshot().version.as_deref(),
-                    window,
-                    cx,
-                );
-                self.restart_confirmation = Some(prompt);
-                cx.notify();
-                answer
-            };
-            #[cfg(not(target_os = "linux"))]
-            let answer = window.prompt(
-                gpui::PromptLevel::Warning,
-                &title,
-                Some(&tr("update-confirmation-detail")),
-                &[
-                    tr("update-confirmation-later").as_ref(),
-                    tr("update-confirmation-restart").as_ref(),
+            let answer = show_native_dialog(
+                title,
+                tr("update-confirmation-detail"),
+                vec![
+                    NativeDialogButton::calm(
+                        "update-confirmation-later",
+                        tr("update-confirmation-later"),
+                    ),
+                    NativeDialogButton::accent(
+                        "update-confirmation-restart",
+                        tr("update-confirmation-restart"),
+                    ),
                 ],
+                300.,
                 cx,
             );
             let controller = self.updater.clone();
@@ -1193,11 +1191,6 @@ impl MapleApp {
                 let accepted = answer.await == Ok(1);
                 let confirmed = this
                     .update(cx, |this, cx| {
-                        #[cfg(target_os = "linux")]
-                        {
-                            this.restart_confirmation = None;
-                            cx.notify();
-                        }
                         if !accepted
                             || !this.store_ready
                             || this.backend.store_state() != maple_agent::store::StoreState::Open
@@ -2383,11 +2376,29 @@ impl Render for MapleApp {
             cx.refresh_windows();
         }
         let titlebar = self.titlebar.clone();
+        // The screen fades in when it changes kind; the first screen and a
+        // screen that only re-renders draw at once.
+        let screen_kind = if self.updater.restart_path().is_some() {
+            "restart"
+        } else {
+            match &self.screen {
+                Screen::Restoring => "restoring",
+                Screen::StoreGate(_) => "store-gate",
+                Screen::Login(_) => "login",
+                Screen::Chat(_) => "chat",
+                Screen::Settings(_) => "settings",
+                Screen::PlanGate(_) => "plan-gate",
+            }
+        };
         let root = div()
             .relative()
             .size_full()
             .flex()
             .flex_col()
+            // What shows while a screen fades in. Without it the fade starts
+            // from the window's own backdrop, which is black: a dark flash
+            // on every screen change.
+            .bg(gpui::rgb(ui::theme::bg_app()))
             .font_family(crate::assets::FONT_BODY)
             // The default for any text that sets no color of its own.
             // GPUI's own default is black, which vanishes on the dark
@@ -2397,7 +2408,7 @@ impl Render for MapleApp {
             // on transcript/composer via `typography::chat_reading`.
             .text_sm()
             .child(titlebar)
-            .child(
+            .child(ui::motion::swap_in(
                 div()
                     .flex_1()
                     .min_h_0()
@@ -2418,10 +2429,9 @@ impl Render for MapleApp {
                             .child(
                                 ui::widgets::primary_button("restart-installed-update")
                                     .child(gpui::text!(tr("native-restart")))
-                                    .on_click(cx.listener(|this, _, window, cx| {
+                                    .on_click(cx.listener(|this, _, _, cx| {
                                         this.update_action(
                                             crate::update::UpdateAction::Relaunch,
-                                            window,
                                             cx,
                                         );
                                     })),
@@ -2442,10 +2452,28 @@ impl Render for MapleApp {
                             Screen::PlanGate(gate) => gate.clone().into_any_element(),
                         }
                     }),
-            );
-        #[cfg(target_os = "linux")]
-        let root = root.children(self.restart_confirmation.clone());
-        root
+                "maple-screen",
+                screen_kind,
+            ));
+        // The Quit confirmation and the native dialogs float in their own OS
+        // windows; dim this window behind them so each reads as on top of
+        // the app, with the same scrim the in-app dialogs use.
+        let dialog_open = cx.try_global::<QuitPromptOpen>().is_some_and(|open| open.0)
+            || cx
+                .try_global::<NativeDialogsOpen>()
+                .is_some_and(|open| open.0 > 0);
+        root.when(dialog_open, |root| {
+            root.child(
+                div()
+                    .id("quit-scrim")
+                    .absolute()
+                    .size_full()
+                    .top_0()
+                    .left_0()
+                    .occlude()
+                    .bg(ui::theme::scrim()),
+            )
+        })
     }
 }
 
@@ -2746,7 +2774,7 @@ fn quit_app(cx: &mut App) {
         .map_err(|_| "The host did not answer its activity check".to_string())?
     });
     cx.spawn(async move |cx| match activity.await {
-        Ok(Ok(activity)) if activity.needs_confirmation() => {
+        Ok(Ok(activity)) if activity.needs_confirmation() || debug_quit_prompt_loop() => {
             cx.update(|cx| show_quit_prompt(QuitPromptKind::Confirm(activity), cx));
         }
         Ok(Ok(_)) => cx.update(|cx| drain_and_quit(state, cx)),
@@ -2928,10 +2956,32 @@ fn main_window_failure(error: &impl std::fmt::Display) -> String {
 
 /// A separate window also works when Quit comes from a tray with no open window.
 fn show_quit_prompt(kind: QuitPromptKind, cx: &mut App) {
-    let bounds = Bounds::centered(None, size(px(560.), px(270.)), cx);
-    if let Err(error) = cx.open_window(
+    // Only one confirmation belongs on screen. A fresh Quit can race the
+    // debug loop's reopen timer, and a failed drain supersedes a Confirm,
+    // so close any prompt already open the AccessKit-safe way first.
+    for handle in cx.windows() {
+        let _ = handle.update(cx, |_, window, cx| {
+            if let Some(prompt) = window.root::<QuitPrompt>().flatten() {
+                prompt.update(cx, |prompt, cx| prompt.close(cx));
+            }
+        });
+    }
+    let height = match &kind {
+        QuitPromptKind::Failed(_) => 340.,
+        _ => 300.,
+    };
+    let bounds = Bounds::centered(None, size(px(520.), px(height)), cx);
+    let reopen_kind = kind.clone();
+    match cx.open_window(
         WindowOptions {
             window_bounds: Some(WindowBounds::Windowed(bounds)),
+            // X11 WM_CLASS and Wayland app_id must match the packaged desktop
+            // entry so this dialog groups with Maple's other windows.
+            app_id: Some(crate::profile::BUNDLE_ID.to_string()),
+            titlebar: Some(gpui::TitlebarOptions {
+                title: Some(crate::profile::DISPLAY_NAME.into()),
+                ..Default::default()
+            }),
             ..Default::default()
         },
         |window, cx| {
@@ -2943,13 +2993,23 @@ fn show_quit_prompt(kind: QuitPromptKind, cx: &mut App) {
             let closing = prompt.downgrade();
             window.on_window_should_close(cx, move |_, cx| {
                 cancel_quit(cx);
-                closing.update(cx, |prompt, cx| prompt.close(cx)).is_err()
+                closing
+                    .update(cx, |prompt, cx| {
+                        if !prompt.closing {
+                            prompt.close(cx);
+                            reopen_quit_prompt_after_close(reopen_kind.clone(), cx);
+                        }
+                    })
+                    .is_err()
             });
             prompt
         },
     ) {
-        cancel_quit(cx);
-        log::error!("Could not show Quit confirmation: {error}");
+        Ok(_) => set_quit_prompt_open(true, cx),
+        Err(error) => {
+            cancel_quit(cx);
+            log::error!("Could not show Quit confirmation: {error}");
+        }
     }
     cx.activate(true);
 }
@@ -2958,11 +3018,441 @@ fn show_quit_warning(message: UiText, cx: &mut App) {
     show_quit_prompt(QuitPromptKind::Failed(message), cx);
 }
 
+/// Debug builds (never tests, never release) confirm every Quit and bring the
+/// prompt back after it is dismissed when MAPLE_DEBUG_QUIT_LOOP is set, so the
+/// dialog can be exercised without live host activity. The opt-in keeps
+/// ordinary debug builds quittable; release and test binaries keep today's
+/// behavior.
+fn debug_quit_prompt_loop() -> bool {
+    cfg!(debug_assertions) && !cfg!(test) && std::env::var_os("MAPLE_DEBUG_QUIT_LOOP").is_some()
+}
+
+/// The [`debug_quit_prompt_loop`] test loop: re-open the Quit prompt shortly
+/// after it is dismissed. A no-op in release builds and tests.
+fn reopen_quit_prompt_after_close(kind: QuitPromptKind, cx: &mut App) {
+    if !debug_quit_prompt_loop() {
+        return;
+    }
+    cx.spawn(async move |cx| {
+        cx.background_executor()
+            .timer(std::time::Duration::from_millis(400))
+            .await;
+        cx.update(|cx| show_quit_prompt(kind, cx));
+    })
+    .detach();
+}
+
+/// The prompt's body: the host's live work as one sentence, then
+/// what quitting does with it. Zero counts are omitted; the local API joins
+/// the second sentence when its listener is running.
+fn quit_activity_body(
+    activity: &HostActivity,
+    messages: &ui::i18n::MessageCache,
+) -> gpui::SharedString {
+    let mut items: Vec<String> = Vec::new();
+    for (count, key) in [
+        (activity.running_tasks, "native-quit-item-tasks"),
+        (activity.acp_clients, "native-quit-item-editors"),
+        (activity.remote_controllers, "native-quit-item-controllers"),
+        (activity.background_tasks, "native-quit-item-jobs"),
+        (activity.local_api_requests, "native-quit-item-requests"),
+    ] {
+        if count > 0 {
+            items.push(messages.get(key, [("count", count.into())]).to_string());
+        }
+    }
+    let api = if activity.local_api_running {
+        tr("native-quit-api-clause").to_string()
+    } else {
+        String::new()
+    };
+    let count = items.len();
+    let item_args = ["a", "b", "c", "d", "e"]
+        .into_iter()
+        .zip(items)
+        .map(|(name, item)| (name, item.into()));
+    messages.get(
+        "native-quit-activity",
+        [("count", count.into()), ("api", api.into())]
+            .into_iter()
+            .chain(item_args),
+    )
+}
+
+#[derive(Clone)]
 enum QuitPromptKind {
     Confirm(HostActivity),
     UnknownActivity,
     Failed(UiText),
 }
+
+/// Whether the Quit confirmation window is on screen, so the main window
+/// dims behind it with the same scrim the in-app dialogs use.
+struct QuitPromptOpen(bool);
+impl gpui::Global for QuitPromptOpen {}
+
+/// Mark the Quit confirmation open or closed and redraw the main window,
+/// whose scrim follows the prompt.
+fn set_quit_prompt_open(open: bool, cx: &mut App) {
+    if cx.try_global::<QuitPromptOpen>().map(|flag| flag.0) != Some(open) {
+        cx.set_global(QuitPromptOpen(open));
+        for handle in cx.windows() {
+            let _ = handle.update(cx, |_, window, cx| {
+                if let Some(app) = window.root::<MapleApp>().flatten() {
+                    app.update(cx, |_, cx| cx.notify());
+                }
+            });
+        }
+    }
+}
+/// One action of a [`NativeDialog`]: the calm choice renders as a quiet
+/// ghost pill and the recovery as the single accent pill, as in the Quit
+/// prompt.
+pub(crate) struct NativeDialogButton {
+    id: &'static str,
+    label: gpui::SharedString,
+    accent: bool,
+}
+
+impl NativeDialogButton {
+    fn calm(id: &'static str, label: gpui::SharedString) -> Self {
+        Self {
+            id,
+            label,
+            accent: false,
+        }
+    }
+    fn accent(id: &'static str, label: gpui::SharedString) -> Self {
+        Self {
+            id,
+            label,
+            accent: true,
+        }
+    }
+}
+
+/// How many [`NativeDialog`] windows are on screen, so the main window dims
+/// behind them with the same scrim the Quit prompt uses.
+struct NativeDialogsOpen(u32);
+impl gpui::Global for NativeDialogsOpen {}
+
+fn set_native_dialogs_open(delta: i32, cx: &mut App) {
+    let open = cx.try_global::<NativeDialogsOpen>().map_or(0, |n| n.0);
+    let next = open.saturating_add_signed(delta);
+    if next != open {
+        if next == 0 {
+            cx.remove_global::<NativeDialogsOpen>();
+        } else {
+            cx.set_global(NativeDialogsOpen(next));
+        }
+        for handle in cx.windows() {
+            let _ = handle.update(cx, |_, window, cx| {
+                if let Some(app) = window.root::<MapleApp>().flatten() {
+                    app.update(cx, |_, cx| cx.notify());
+                }
+            });
+        }
+    }
+}
+
+/// The app's OS alerts, redrawn in the Quit prompt's language: an Array
+/// headline, one plain passage, and the actions as quiet pills in their own
+/// small window, with the main window dimmed behind it. A click answers its
+/// index; closing the window answers nothing, as dismissing the OS alert
+/// did; Escape answers the calm action.
+struct NativeDialog {
+    headline: gpui::SharedString,
+    body: gpui::SharedString,
+    buttons: Vec<NativeDialogButton>,
+    focus: Vec<gpui::FocusHandle>,
+    answer: Option<tokio::sync::oneshot::Sender<usize>>,
+    closing: bool,
+}
+
+impl NativeDialog {
+    fn view(
+        headline: gpui::SharedString,
+        body: gpui::SharedString,
+        buttons: Vec<NativeDialogButton>,
+        answer: Option<tokio::sync::oneshot::Sender<usize>>,
+        window: &mut Window,
+        cx: &mut App,
+    ) -> gpui::Entity<Self> {
+        let focus = buttons.iter().map(|_| cx.focus_handle()).collect();
+        let dialog = cx.new(|_| Self {
+            headline,
+            body,
+            buttons,
+            focus,
+            answer,
+            closing: false,
+        });
+        // Keyboard users land on the calm action, as the OS alert's default
+        // button was the safe one.
+        if let Some(first) = dialog.read(cx).focus.first().cloned() {
+            window.focus(&first, cx);
+        }
+        dialog
+    }
+
+    fn respond(&mut self, index: usize, cx: &mut Context<Self>) {
+        if let Some(answer) = self.answer.take() {
+            let _ = answer.send(index);
+        }
+        self.close(cx);
+    }
+
+    /// Draw one empty frame, then remove the window, the Quit prompt's
+    /// AccessKit-safe close.
+    fn close(&mut self, cx: &mut Context<Self>) {
+        set_native_dialogs_open(-1, cx);
+        self.closing = true;
+        cx.notify();
+    }
+}
+
+impl Render for NativeDialog {
+    fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        if self.closing {
+            window.on_next_frame(|window, _| window.remove_window());
+            return div()
+                .size_full()
+                .bg(gpui::rgb(ui::theme::bg_elevated()))
+                .into_any_element();
+        }
+        let mut actions = div()
+            .mt_4()
+            .flex()
+            .flex_wrap()
+            .items_center()
+            .justify_end()
+            .gap_2();
+        for (index, button) in self.buttons.iter().enumerate() {
+            let focus = self.focus[index].clone();
+            let pill = if button.accent {
+                ui::widgets::primary_button(button.id)
+            } else {
+                ui::widgets::ghost_button(button.id)
+            };
+            actions = actions.child(
+                pill.debug_selector(move || button.id.to_string())
+                    .track_focus(&focus)
+                    .focus_visible(ui::widgets::focus_ring)
+                    .child(gpui::text!(button.label.clone()))
+                    .on_click(cx.listener(move |dialog, _, _, cx| {
+                        dialog.respond(index, cx);
+                    })),
+            );
+        }
+        div()
+            .id("native-dialog")
+            .role(gpui::Role::Dialog)
+            .aria_label(self.headline.clone())
+            .size_full()
+            .flex()
+            .flex_col()
+            .px(px(36.))
+            .pt(px(20.))
+            .pb(px(28.))
+            .bg(gpui::rgb(ui::theme::bg_elevated()))
+            .font_family(crate::assets::FONT_BODY)
+            .text_color(gpui::rgb(ui::theme::text_primary()))
+            .on_key_down(
+                cx.listener(|dialog, event: &gpui::KeyDownEvent, window, cx| {
+                    let focused = dialog
+                        .focus
+                        .iter()
+                        .position(|handle| handle.is_focused(window));
+                    match (event.keystroke.key.as_str(), focused) {
+                        ("escape", _) => dialog.respond(0, cx),
+                        ("tab", Some(current)) => {
+                            let next = (current + 1) % dialog.focus.len();
+                            window.focus(&dialog.focus[next], cx);
+                        }
+                        ("enter" | "space" | " ", Some(current))
+                            if !event.keystroke.modifiers.modified() =>
+                        {
+                            dialog.respond(current, cx);
+                        }
+                        _ => {}
+                    }
+                    cx.stop_propagation();
+                }),
+            )
+            .child(
+                div()
+                    .font_family(crate::assets::FONT_DISPLAY)
+                    .text_size(px(40.))
+                    .line_height(px(42.))
+                    .text_color(gpui::rgb(ui::theme::text_heading()))
+                    .child(gpui::text!(self.headline.clone())),
+            )
+            .child(
+                div()
+                    .id("native-dialog-body")
+                    .mt_4()
+                    .max_w(px(360.))
+                    // A very long passage must not push the actions past the
+                    // window edge; it scrolls within this cap.
+                    .max_h(px(120.))
+                    .overflow_y_scroll()
+                    .text_size(px(15.))
+                    .line_height(px(24.))
+                    .text_color(gpui::rgb(ui::theme::text_secondary()))
+                    .child(gpui::text!(self.body.clone())),
+            )
+            .child(div().flex_1())
+            .child(actions)
+            .into_any_element()
+    }
+}
+
+/// Open a [`NativeDialog`] in its own window and hand back its answer.
+fn show_native_dialog(
+    headline: gpui::SharedString,
+    body: gpui::SharedString,
+    buttons: Vec<NativeDialogButton>,
+    height: f32,
+    cx: &mut App,
+) -> tokio::sync::oneshot::Receiver<usize> {
+    let (sender, receiver) = tokio::sync::oneshot::channel();
+    let bounds = Bounds::centered(None, size(px(520.), px(height)), cx);
+    let opened = cx.open_window(
+        WindowOptions {
+            window_bounds: Some(WindowBounds::Windowed(bounds)),
+            // X11 WM_CLASS and Wayland app_id must match the packaged
+            // desktop entry so this dialog groups with Maple's windows.
+            app_id: Some(crate::profile::BUNDLE_ID.to_string()),
+            titlebar: Some(gpui::TitlebarOptions {
+                title: Some(crate::profile::DISPLAY_NAME.into()),
+                ..Default::default()
+            }),
+            ..Default::default()
+        },
+        |window, cx| {
+            let dialog = NativeDialog::view(headline, body, buttons, Some(sender), window, cx);
+            let closing = dialog.downgrade();
+            window.on_window_should_close(cx, move |_, cx| {
+                // Closing answers nothing, as dismissing the OS alert did.
+                closing.update(cx, |dialog, cx| dialog.close(cx)).is_err()
+            });
+            dialog
+        },
+    );
+    match opened {
+        Ok(_) => set_native_dialogs_open(1, cx),
+        Err(error) => {
+            log::error!("Could not show a native dialog: {error}");
+        }
+    }
+    cx.activate(true);
+    receiver
+}
+
+/// Debug builds (never tests, never release) open one dialog fixture
+/// shortly after launch when MAPLE_DEBUG_NATIVE_DIALOG is set, so states a
+/// live run cannot reach on demand — a save failure, a ready update — can be
+/// captured.
+fn native_dialog_fixture() -> Option<String> {
+    if cfg!(debug_assertions) && !cfg!(test) {
+        std::env::var("MAPLE_DEBUG_NATIVE_DIALOG").ok()
+    } else {
+        None
+    }
+}
+
+fn show_native_dialog_fixture(kind: &str, cx: &mut App) {
+    let (headline, body, buttons): (
+        gpui::SharedString,
+        gpui::SharedString,
+        Vec<NativeDialogButton>,
+    ) = match kind {
+        "attention" => (
+            tr("native-store-attention"),
+            tr("native-save-failed-open"),
+            vec![NativeDialogButton::accent(
+                "native-attention-ok",
+                tr("native-ok"),
+            )],
+        ),
+        "attention-retry" => (
+            tr("native-save-failed"),
+            tr("native-save-failed-open"),
+            vec![
+                NativeDialogButton::calm(
+                    "native-attention-keep-viewing",
+                    tr("native-keep-viewing"),
+                ),
+                NativeDialogButton::accent(
+                    "native-attention-retry-saving",
+                    tr("native-retry-saving"),
+                ),
+            ],
+        ),
+        "about" => (
+            crate::profile::DISPLAY_NAME.into(),
+            tr_args(
+                "native-about-details",
+                [
+                    ("version", TitleBar::version().into()),
+                    (
+                        "status",
+                        ui::settings::presentation::update_label(
+                            &crate::update::Snapshot::initial(),
+                            &ui::i18n::MessageCache::default(),
+                        )
+                        .into(),
+                    ),
+                ],
+            ),
+            vec![NativeDialogButton::accent(
+                "native-about-ok",
+                tr("native-ok"),
+            )],
+        ),
+        "update" => (
+            tr_args(
+                "update-confirmation-title-version",
+                [("version", "0.0.25".into())],
+            ),
+            tr("update-confirmation-detail"),
+            vec![
+                NativeDialogButton::calm(
+                    "update-confirmation-later",
+                    tr("update-confirmation-later"),
+                ),
+                NativeDialogButton::accent(
+                    "update-confirmation-restart",
+                    tr("update-confirmation-restart"),
+                ),
+            ],
+        ),
+        "no-tray" => (
+            tr("native-keep-open-title"),
+            tr("native-no-tray"),
+            vec![
+                NativeDialogButton::calm("native-keep-open-keep", tr("native-keep-open")),
+                NativeDialogButton::accent("native-keep-open-quit", tr("native-quit-maple")),
+            ],
+        ),
+        _ => return,
+    };
+    drop(show_native_dialog(headline, body, buttons, 300., cx));
+}
+
+/// Draw gpui's frame-time overlay over `window` when `MAPLE_FRAME_STATS` is
+/// set: `full` for the detailed panel, any other value for frame time
+/// alone. A developer aid for judging what a change costs per frame; it
+/// paints straight into the scene, so showing it asks for no extra frames.
+fn show_frame_stats(window: &mut Window) {
+    let mode = match std::env::var("MAPLE_FRAME_STATS").as_deref() {
+        Err(_) | Ok("" | "0") => return,
+        Ok("full") => gpui::DebugFrameOverlayMode::Full,
+        Ok(_) => gpui::DebugFrameOverlayMode::Minimal,
+    };
+    window.set_debug_frame_overlay_mode(mode);
+}
+
 struct QuitPrompt {
     kind: QuitPromptKind,
     closing: bool,
@@ -2978,6 +3468,7 @@ impl QuitPrompt {
     /// only the root, which answers safely. zed-industries/zed#64143 fixes
     /// the adapter's lifetime; this can go when the pin includes it.
     fn close(&mut self, cx: &mut Context<Self>) {
+        set_quit_prompt_open(false, cx);
         self.closing = true;
         cx.notify();
     }
@@ -2985,21 +3476,12 @@ impl QuitPrompt {
         match &self.kind {
             QuitPromptKind::Confirm(activity) => (
                 tr("native-stop-title"),
-                self.messages.get(
-                    "native-quit-activity",
-                    [
-                        ("tasks", activity.running_tasks.into()),
-                        ("editors", activity.acp_clients.into()),
-                        ("controllers", activity.remote_controllers.into()),
-                        ("jobs", activity.background_tasks.into()),
-                        ("requests", activity.local_api_requests.into()),
-                    ],
-                ),
+                quit_activity_body(activity, &self.messages),
                 false,
             ),
             QuitPromptKind::Failed(message) => (tr("native-still-open"), message.resolve(), true),
             QuitPromptKind::UnknownActivity => (
-                tr("native-stop-title"),
+                tr("native-quit-unknown-title"),
                 tr("native-unknown-activity"),
                 false,
             ),
@@ -3012,38 +3494,65 @@ impl Render for QuitPrompt {
             window.on_next_frame(|window, _| window.remove_window());
             return div()
                 .size_full()
-                .bg(gpui::rgb(ui::theme::bg_app()))
+                .bg(gpui::rgb(ui::theme::bg_elevated()))
                 .into_any_element();
         }
-        let (title, message, retry) = self.presentation();
+        // The prompt: an Array headline, one calm sentence about the live
+        // work, and a quiet Keep open beside the single accent Quit pill.
+        // The window sets its own body font: nothing else in this OS window
+        // inherits MapleApp's root style, and the platform default's metrics
+        // differ on Linux.
+        let (headline, body, retry) = self.presentation();
+        let kind = self.kind.clone();
         div()
             .id("quit-prompt")
             .role(gpui::Role::Dialog)
-            .aria_label(title.clone())
+            .aria_label(headline.clone())
             .size_full()
             .flex()
             .flex_col()
-            .gap_4()
-            .p_6()
-            .bg(gpui::rgb(ui::theme::bg_app()))
+            .px(px(36.))
+            .pt(px(20.))
+            .pb(px(28.))
+            .bg(gpui::rgb(ui::theme::bg_elevated()))
+            .font_family(crate::assets::FONT_BODY)
             .text_color(gpui::rgb(ui::theme::text_primary()))
-            .child(div().text_lg().child(gpui::text!(title)))
-            .child(gpui::text!(message))
+            .child(
+                div()
+                    .font_family(crate::assets::FONT_DISPLAY)
+                    .text_size(px(40.))
+                    .line_height(px(42.))
+                    .text_color(gpui::rgb(ui::theme::text_heading()))
+                    .child(gpui::text!(headline)),
+            )
+            .child(
+                div()
+                    .mt_4()
+                    .max_w(px(360.))
+                    .text_size(px(15.))
+                    .line_height(px(24.))
+                    .text_color(gpui::rgb(ui::theme::text_secondary()))
+                    .child(gpui::text!(body)),
+            )
+            .child(div().flex_1())
             .child(
                 div()
                     .flex()
-                    .gap_4()
+                    .items_center()
+                    .justify_end()
+                    .gap_2()
                     .child(
-                        ui::widgets::secondary_button("keep-maple-open")
+                        ui::widgets::ghost_button("keep-maple-open")
                             .debug_selector(|| "keep-maple-open".to_string())
                             .child(gpui::text!(tr("native-keep-open")))
-                            .on_click(cx.listener(|prompt, _, _, cx| {
+                            .on_click(cx.listener(move |prompt, _, _, cx| {
                                 cancel_quit(cx);
                                 prompt.close(cx);
+                                reopen_quit_prompt_after_close(kind.clone(), cx);
                             })),
                     )
                     .child(
-                        ui::widgets::secondary_button("retry-maple-quit")
+                        ui::widgets::primary_button("retry-maple-quit")
                             .debug_selector(|| "retry-maple-quit".to_string())
                             .child(gpui::text!(tr(if retry {
                                 "native-retry-quit"
@@ -3162,14 +3671,20 @@ pub(crate) fn close_window(window: &mut Window, cx: &mut App) {
                             window.remove_window();
                             None
                         } else {
-                            Some(window.prompt(
-                                gpui::PromptLevel::Warning,
-                                &tr("native-keep-open-title"),
-                                Some(&tr("native-no-tray")),
-                                &[
-                                    tr("native-keep-open").as_ref(),
-                                    tr("native-quit-maple").as_ref(),
+                            Some(show_native_dialog(
+                                tr("native-keep-open-title"),
+                                tr("native-no-tray"),
+                                vec![
+                                    NativeDialogButton::calm(
+                                        "native-keep-open-keep",
+                                        tr("native-keep-open"),
+                                    ),
+                                    NativeDialogButton::accent(
+                                        "native-keep-open-quit",
+                                        tr("native-quit-maple"),
+                                    ),
                                 ],
+                                300.,
                                 cx,
                             ))
                         }
@@ -3358,6 +3873,8 @@ struct StartupError {
     stopping: bool,
     retry_backend: Option<Arc<AgentBackend>>,
     requires_completed_stop: bool,
+    /// Whether the one-shot growth for a status has already fired.
+    grown_for_status: bool,
     diagnostics: StartupDiagnostics,
     details_copied: bool,
 }
@@ -3399,6 +3916,28 @@ fn home_relative_path(path: &std::path::Path, home: Option<&std::path::Path>) ->
 #[cfg(target_os = "macos")]
 #[derive(Clone)]
 struct GuardedStartupFailure(Entity<StartupError>);
+
+/// The one-shot growth when a status first replaces the failure: only the
+/// status stack needs the taller window, the growth must fire exactly once
+/// when that status appears, and it must never fight the WM or a later user
+/// resize. The width is preserved so a user's widen survives.
+fn startup_error_status_target(
+    bounds: Size<Pixels>,
+    has_status: bool,
+    handled: &mut bool,
+) -> Option<Size<Pixels>> {
+    if !has_status || *handled {
+        return None;
+    }
+    // Consume the first status even if the window is already tall enough.
+    // A later user resize must not turn it into a fresh growth request.
+    *handled = true;
+    if bounds.height >= px(480.) {
+        return None;
+    }
+    Some(size(bounds.width, px(480.)))
+}
+
 #[cfg(target_os = "macos")]
 impl gpui::Global for GuardedStartupFailure {}
 
@@ -3410,6 +3949,7 @@ impl StartupError {
             stopping: false,
             retry_backend: None,
             requires_completed_stop: false,
+            grown_for_status: false,
             diagnostics: StartupDiagnostics::collect(),
             details_copied: false,
         }
@@ -3496,6 +4036,9 @@ impl StartupError {
             return;
         };
         self.stopping = true;
+        // A fresh attempt must not keep the previous failure on screen.
+        self.localized_message = None;
+        cx.notify();
         let stop_backend = backend.clone();
         let stop =
             backend.spawn(async move { crate::host::request_stop(stop_backend.api_url()).await });
@@ -3532,6 +4075,9 @@ impl StartupError {
             ],
             cx,
         );
+        // A fresh attempt must not keep the previous failure on screen.
+        self.localized_message = None;
+        cx.notify();
         self.stopping = true;
         cx.spawn(async move |this, cx| {
             let result = if answer.await == Ok(1) {
@@ -3570,31 +4116,96 @@ impl StartupError {
 }
 
 impl Render for StartupError {
-    fn render(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+    fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        // This window never renders MapleApp, which is where the palette
+        // otherwise resolves; follow the OS appearance here, every frame.
+        ui::theme::resolve(window.appearance());
+        // A status that replaces the failure adds its own sentence and a
+        // details pane; the failure-only window is sized for neither.
+        // Grow once, when the status first appears, and never again: the
+        // guarded 520px window already fits the larger stack, and a
+        // re-checked rule would fight a tiling WM or a user resize.
+        if let Some(target) = startup_error_status_target(
+            window.bounds().size,
+            self.localized_message.is_some(),
+            &mut self.grown_for_status,
+        ) {
+            window.resize(target);
+        }
+        // The startup failure in the Quit prompt's language: a display
+        // headline, the failure as one plain passage, quiet evidence
+        // (details, log path), and one accent recovery pill beside a
+        // quiet Close. The window sets its own body font: nothing else
+        // in this OS window inherits MapleApp's root style, and the
+        // platform default's metrics differ on Linux.
+        let incompatible = !self.requires_completed_stop
+            && self.message.contains("Incompatible Maple host or profile");
+        let recovery = incompatible || self.requires_completed_stop;
+        let close_allowed = self.close_is_allowed();
         div()
+            .id("startup-error")
+            .role(gpui::Role::Dialog)
+            .aria_label(tr("native-startup-title"))
             .size_full()
             .flex()
             .flex_col()
-            .gap_4()
-            .p_6()
-            .bg(gpui::rgb(ui::theme::bg_app()))
+            .px(px(36.))
+            .pt(px(20.))
+            .pb(px(28.))
+            .bg(gpui::rgb(ui::theme::bg_elevated()))
+            .font_family(crate::assets::FONT_BODY)
             .text_color(gpui::rgb(ui::theme::text_primary()))
             .child(
                 div()
-                    .text_lg()
+                    .font_family(crate::assets::FONT_DISPLAY)
+                    .text_size(px(40.))
+                    .line_height(px(42.))
+                    .text_color(gpui::rgb(ui::theme::text_heading()))
                     .child(gpui::text!(tr("native-startup-title"))),
             )
-            .child(gpui::text!(
-                self.localized_message
-                    .as_ref()
-                    .map(UiText::resolve)
-                    .unwrap_or_else(|| self.message.clone().into())
-            ))
+            .child(
+                div()
+                    .id("startup-error-passage")
+                    .mt_4()
+                    .max_w(px(480.))
+                    // A very long raw diagnostic must not push the actions
+                    // past the window edge; it scrolls within this cap.
+                    .max_h(px(120.))
+                    .overflow_y_scroll()
+                    .text_size(px(15.))
+                    .line_height(px(24.))
+                    .text_color(gpui::rgb(ui::theme::text_secondary()))
+                    .child(gpui::text!(
+                        self.localized_message
+                            .as_ref()
+                            .map(UiText::resolve)
+                            .unwrap_or_else(|| self.message.clone().into())
+                    )),
+            )
+            // A guarded start must stay open until the host stop is
+            // proven; the wait sentence sits with the failure, and a
+            // status that replaces the failure already carries its own
+            // keep-open instruction.
+            .when(
+                self.requires_completed_stop && self.localized_message.is_none(),
+                |view| {
+                    view.child(
+                        div()
+                            .mt_2()
+                            .max_w(px(480.))
+                            .text_size(px(15.))
+                            .line_height(px(24.))
+                            .text_color(gpui::rgb(ui::theme::text_secondary()))
+                            .child(gpui::text!(tr("native-wait-stop"))),
+                    )
+                },
+            )
             // Once a status replaces the original error, keep the error as
             // details: it is the only evidence of why startup failed.
             .when(self.localized_message.is_some(), |view| {
                 view.child(
                     div()
+                        .mt_3()
                         .flex()
                         .flex_col()
                         .gap_1()
@@ -3607,50 +4218,19 @@ impl Render for StartupError {
                         .child(
                             div()
                                 .id("startup-error-details")
-                                .max_h(px(120.))
+                                .max_h(px(88.))
                                 .overflow_y_scroll()
                                 .px_3()
                                 .py_2()
                                 .rounded_md()
-                                .bg(gpui::rgb(ui::theme::bg_elevated()))
+                                .bg(gpui::rgb(ui::theme::bg_app()))
                                 .child(gpui::text!(self.message.clone())),
                         ),
                 )
             })
-            .when(
-                !self.requires_completed_stop
-                    && self.message.contains("Incompatible Maple host or profile"),
-                |view| {
-                    view.child(
-                        ui::widgets::secondary_button("stop-incompatible-host")
-                            .child(gpui::text!(if self.stopping {
-                                tr("native-stopping")
-                            } else {
-                                tr("native-stop-existing")
-                            }))
-                            .on_click(
-                                cx.listener(|this, _, window, cx| this.stop_old_host(window, cx)),
-                            ),
-                    )
-                },
-            )
-            .when(self.requires_completed_stop, |view| {
-                view.child(div().text_sm().child(gpui::text!(tr("native-wait-stop"))))
-                    .child(
-                        ui::widgets::secondary_button("retry-startup-host-stop")
-                            .child(gpui::text!(if self.stopping {
-                                tr("native-stopping-host")
-                            } else {
-                                tr("native-retry-stop")
-                            }))
-                            .when(self.stopping, |button| button.opacity(0.5))
-                            .on_click(
-                                cx.listener(|this, _, _, cx| this.retry_required_stop(false, cx)),
-                            ),
-                    )
-            })
             .child(
                 div()
+                    .mt_4()
                     .flex()
                     .flex_col()
                     .gap_1()
@@ -3664,12 +4244,13 @@ impl Render for StartupError {
             )
             .child(
                 div()
+                    .mt_4()
                     .flex()
                     .flex_row()
                     .flex_wrap()
                     .gap_2()
                     .child(
-                        ui::widgets::secondary_button("copy-startup-details")
+                        ui::widgets::ghost_button("copy-startup-details")
                             .child(gpui::text!(if self.details_copied {
                                 tr("native-startup-details-copied")
                             } else {
@@ -3679,40 +4260,173 @@ impl Render for StartupError {
                     )
                     .when(self.diagnostics.log_exists, |row| {
                         row.child(
-                            ui::widgets::secondary_button("show-startup-log")
+                            ui::widgets::ghost_button("show-startup-log")
                                 .child(gpui::text!(tr("native-startup-show-log")))
                                 .on_click(cx.listener(|this, _, _, cx| this.show_log(cx))),
                         )
                     }),
             )
-            .when(self.close_is_allowed(), |view| {
-                view.child(
-                    div()
-                        .id("close-startup-error")
-                        .cursor_pointer()
-                        .px_4()
-                        .py_2()
-                        .rounded_md()
-                        .bg(gpui::rgb(ui::theme::bg_elevated()))
-                        .child(gpui::text!(tr("native-close")))
-                        .on_click(cx.listener(|this, _, _, cx| this.request_close(cx))),
-                )
-            })
+            .child(div().flex_1())
+            .child(
+                div()
+                    .mt_4()
+                    .flex()
+                    .flex_wrap()
+                    .items_center()
+                    .justify_end()
+                    .gap_2()
+                    .when(close_allowed && recovery, |row| {
+                        row.child(
+                            ui::widgets::ghost_button("close-startup-error")
+                                .child(gpui::text!(tr("native-close")))
+                                .on_click(cx.listener(|this, _, _, cx| this.request_close(cx))),
+                        )
+                    })
+                    .when(incompatible, |row| {
+                        row.child(
+                            ui::widgets::primary_button("stop-incompatible-host")
+                                .child(gpui::text!(if self.stopping {
+                                    tr("native-stopping")
+                                } else {
+                                    tr("native-stop-existing")
+                                }))
+                                .when(self.stopping, |button| button.opacity(0.5))
+                                .on_click(cx.listener(|this, _, window, cx| {
+                                    this.stop_old_host(window, cx)
+                                })),
+                        )
+                    })
+                    .when(self.requires_completed_stop, |row| {
+                        row.child(
+                            ui::widgets::primary_button("retry-startup-host-stop")
+                                .child(gpui::text!(if self.stopping {
+                                    tr("native-stopping-host")
+                                } else {
+                                    tr("native-retry-stop")
+                                }))
+                                .when(self.stopping, |button| button.opacity(0.5))
+                                .on_click(cx.listener(|this, _, _, cx| {
+                                    this.retry_required_stop(false, cx)
+                                })),
+                        )
+                    })
+                    // With no recovery to offer, Close is the one accent action.
+                    .when(close_allowed && !recovery, |row| {
+                        row.child(
+                            ui::widgets::primary_button("close-startup-error")
+                                .child(gpui::text!(tr("native-close")))
+                                .on_click(cx.listener(|this, _, _, cx| this.request_close(cx))),
+                        )
+                    }),
+            )
+    }
+}
+
+/// Both startup paths build GPUI windows outside any bundle context:
+/// the standalone error window renders the same display and body fonts
+/// as the main app, so font registration is shared, not repeated.
+fn register_bundled_fonts(cx: &mut App) {
+    if let Err(error) = cx.text_system().add_fonts(
+        crate::assets::FONTS
+            .iter()
+            .map(|bytes| std::borrow::Cow::Borrowed(*bytes))
+            .collect(),
+    ) {
+        log::warn!("failed to register bundled fonts: {error}");
+    }
+}
+
+/// Deterministic geometry fixtures for the startup-failure states a live
+/// start cannot reach on demand: the guarded stop and the restart-failure
+/// status. `MAPLE_DEBUG_STARTUP_ERROR=incompatible|guarded|restart`,
+/// optionally suffixed with a locale, as in `guarded-de`.
+fn fixture_startup_error(state: &str, error: String) -> StartupError {
+    match state {
+        "guarded" => {
+            let mut startup = StartupError::new(
+                "Maple's termination coordinator requires the main thread; the \
+                 native application delegate is FixtureDelegate, not derived from \
+                 the reviewed GPUIApplicationDelegate"
+                    .into(),
+            );
+            startup.requires_completed_stop = true;
+            // The worst stack: a failed retry has replaced the failure with
+            // a status, keeping the original error as details.
+            startup.localized_message = Some(UiText::message(
+                "native-stop-failed",
+                [(
+                    "error",
+                    "the fixture host did not release its ownership lock".into(),
+                )],
+            ));
+            startup
+        }
+        "restart" => {
+            let mut startup = StartupError::new(
+                "Incompatible Maple host or profile. Close the existing host or \
+                 run `maple-agent host stop` for this profile, then reopen Maple."
+                    .into(),
+            );
+            startup.localized_message = Some(UiText::message(
+                "native-restart-failed",
+                [("error", "the fixture exit status was FixtureStatus".into())],
+            ));
+            startup
+        }
+        "incompatible" => StartupError::new(
+            "Incompatible Maple host or profile. Close the existing host or run \
+             `maple-agent host stop` for this profile, then reopen Maple."
+                .into(),
+        ),
+        _ => StartupError::new(error),
     }
 }
 
 fn show_startup_error(error: String) {
     #[cfg(target_os = "linux")]
     let restart_path = crate::self_launch::executable().ok();
+    // The failure window follows the resolved preferences: the guarded
+    // variant picks up hydrated settings, and the standalone window falls
+    // back to the OS appearance and system locale rather than opening a
+    // store that a locked or older host may own.
+    let settings = crate::settings::load_settings();
+    // Debug-only geometry fixtures; a no-op in release builds and tests,
+    // like the Quit prompt's debug loop.
+    let (fixture_state, fixture_locale) = if cfg!(debug_assertions)
+        && !cfg!(test)
+        && std::env::var_os("MAPLE_DEBUG_STARTUP_ERROR").is_some()
+    {
+        match std::env::var("MAPLE_DEBUG_STARTUP_ERROR")
+            .unwrap_or_default()
+            .split_once('-')
+        {
+            Some((state, locale)) => (state.to_string(), Some(locale.to_string())),
+            None => (
+                std::env::var("MAPLE_DEBUG_STARTUP_ERROR").unwrap_or_default(),
+                None,
+            ),
+        }
+    } else {
+        Default::default()
+    };
     gpui_platform::application().run(move |cx| {
         cx.set_app_identity(crate::profile::BUNDLE_ID, crate::profile::DISPLAY_NAME);
+        register_bundled_fonts(cx);
+        ui::i18n::initialize_saved_preference(
+            fixture_locale.as_deref().or(settings.locale.as_deref()),
+        );
+        ui::theme::apply_preference(ui::theme::Preference::parse(&settings.theme), cx);
         #[cfg(target_os = "linux")]
         if let Some(path) = restart_path {
             cx.set_restart_path(path);
         }
         cx.on_action(|_: &QuitApp, cx| quit_app(cx));
         ui::menus::install(cx);
-        let bounds = Bounds::centered(None, size(px(600.), px(440.)), cx);
+        let bounds = if fixture_state == "guarded" {
+            Bounds::centered(None, size(px(640.), px(520.)), cx)
+        } else {
+            Bounds::centered(None, size(px(600.), px(440.)), cx)
+        };
         let result = cx.open_window(
             WindowOptions {
                 window_bounds: Some(WindowBounds::Windowed(bounds)),
@@ -3728,7 +4442,12 @@ fn show_startup_error(error: String) {
                     finish_quit(cx);
                     true
                 });
-                cx.new(|_| StartupError::new(error))
+                // The window follows the OS appearance; redraw when it
+                // changes while the window is open.
+                window
+                    .observe_window_appearance(|_window, cx| cx.refresh_windows())
+                    .detach();
+                cx.new(|_| fixture_startup_error(&fixture_state, error))
             },
         );
         if let Err(error) = result {
@@ -3742,9 +4461,9 @@ fn show_startup_error(error: String) {
 
 fn dispatch_update_action(action: crate::update::UpdateAction, cx: &mut App) {
     for window in cx.windows() {
-        let _ = window.update(cx, |root, window, cx| {
+        let _ = window.update(cx, |root, _window, cx| {
             if let Ok(app) = root.downcast::<MapleApp>() {
-                app.update(cx, |app, cx| app.update_action(action, window, cx));
+                app.update(cx, |app, cx| app.update_action(action, cx));
             }
         });
     }
@@ -3798,14 +4517,7 @@ pub fn run() {
             cx.set_restart_path(restart_path);
             cx.set_quit_mode(gpui::QuitMode::Explicit);
             log::debug!("startup: gpui app ready at {} ms", crate::startup_elapsed());
-            if let Err(error) = cx.text_system().add_fonts(
-                crate::assets::FONTS
-                    .iter()
-                    .map(|bytes| std::borrow::Cow::Borrowed(*bytes))
-                    .collect(),
-            ) {
-                log::warn!("failed to register bundled fonts: {error}");
-            }
+            register_bundled_fonts(cx);
             ui::spell::preload();
             cx.on_action(|_: &QuitApp, cx| quit_app(cx));
             // Menu actions dispatch while the active window is borrowed.
@@ -3901,6 +4613,11 @@ pub fn run() {
                 // take the ordinary Quit path until request_stop proves EOF
                 // and owner-lock release. The drain stays off the UI thread.
                 log::error!("{error}");
+                // The main window hydrates the locale when its settings
+                // load; this window never does, so resolve it here.
+                ui::i18n::initialize_saved_preference(
+                    crate::settings::load_settings().locale.as_deref(),
+                );
                 let startup = cx.new(|_| StartupError::requiring_host_stop(error, backend.clone()));
                 cx.set_global(GuardedStartupFailure(startup.clone()));
                 let view = startup.clone();
@@ -3913,6 +4630,9 @@ pub fn run() {
                             closing.update(cx, |startup, cx| startup.request_close(cx));
                             false
                         });
+                        window
+                            .observe_window_appearance(|_window, cx| cx.refresh_windows())
+                            .detach();
                         view
                     },
                 );
@@ -3967,7 +4687,8 @@ pub fn run() {
             let root_settings = startup_settings.clone();
             let root_updater = updater.clone();
             let window = cx
-                .open_window(main_window_options(window_placement), move |_, cx| {
+                .open_window(main_window_options(window_placement), move |window, cx| {
+                    show_frame_stats(window);
                     cx.new(move |cx| MapleApp {
                         backend: root_backend,
                         screen: Screen::Restoring,
@@ -4013,8 +4734,6 @@ pub fn run() {
                         settings: root_settings,
                         updater: root_updater,
                         restart_prompt_pending: false,
-                        #[cfg(target_os = "linux")]
-                        restart_confirmation: None,
                         shortcuts: shortcut_runtime,
                         titlebar: cx.new(|_| TitleBar::new(ui::titlebar::WINDOW_TITLE)),
                         plan_check: PlanCheck::default(),
@@ -4062,6 +4781,16 @@ pub fn run() {
                     cx.entity()
                 })
                 .expect("root entity");
+
+            if let Some(kind) = native_dialog_fixture() {
+                cx.spawn(async move |cx| {
+                    cx.background_executor()
+                        .timer(std::time::Duration::from_millis(600))
+                        .await;
+                    cx.update(|cx| show_native_dialog_fixture(&kind, cx));
+                })
+                .detach();
+            }
 
             // Local status is cheap and does not contact the enrollment
             // service. This also notices changes made through the CLI.
@@ -4270,6 +4999,19 @@ mod tests {
     #[test]
     fn quit_warning_preserves_all_counts_when_switching_locale() {
         let _locale = ui::i18n::TestLocalizationGuard::enable();
+        // The body omits zero counts, so an idle host with only the API
+        // listener lists no items.
+        let items = |count: usize, singular: [&str; 5], plural: [&str; 5]| {
+            if count == 0 {
+                Vec::new()
+            } else {
+                let labels = if count == 1 { singular } else { plural };
+                labels
+                    .iter()
+                    .map(|label| format!("{count} {label}"))
+                    .collect::<Vec<_>>()
+            }
+        };
         for count in [0, 1, 2] {
             let prompt = QuitPrompt {
                 closing: false,
@@ -4283,48 +5025,91 @@ mod tests {
                 }),
                 messages: Default::default(),
             };
-            for (locale, labels, drain) in [
+            let english = items(
+                count,
+                [
+                    "running task",
+                    "attached editor",
+                    "remote controller",
+                    "background job",
+                    "API request",
+                ],
+                [
+                    "running tasks",
+                    "attached editors",
+                    "remote controllers",
+                    "background jobs",
+                    "API requests",
+                ],
+            );
+            let spanish = items(
+                count,
+                [
+                    "tarea en ejecución",
+                    "editor conectado",
+                    "controlador remoto",
+                    "trabajo en segundo plano",
+                    "solicitud de API",
+                ],
+                [
+                    "tareas en ejecución",
+                    "editores conectados",
+                    "controladores remotos",
+                    "trabajos en segundo plano",
+                    "solicitudes de API",
+                ],
+            );
+            let german = items(
+                count,
+                [
+                    "laufende Aufgabe",
+                    "verbundener Editor",
+                    "Fernsteuerung",
+                    "Hintergrundauftrag",
+                    "API-Anfrage",
+                ],
+                [
+                    "laufende Aufgaben",
+                    "verbundene Editoren",
+                    "Fernsteuerungen",
+                    "Hintergrundaufträge",
+                    "API-Anfragen",
+                ],
+            );
+            for (locale, labels, api_clause, closing) in [
                 (
                     "en",
-                    [
-                        "running tasks",
-                        "attached editors",
-                        "remote controllers",
-                        "background jobs",
-                        "active requests",
-                    ],
-                    "waits for them to drain",
+                    english.clone(),
+                    ", including the local API,",
+                    "and then closes",
                 ),
                 (
                     "es",
-                    [
-                        "tareas en ejecución",
-                        "editores conectados",
-                        "controladores remotos",
-                        "trabajos en segundo plano",
-                        "solicitudes activas",
-                    ],
-                    "espera a que terminen",
+                    spanish,
+                    ", incluida la API local,",
+                    "y luego Maple se cierra",
+                ),
+                (
+                    "de",
+                    german,
+                    ", einschließlich der lokalen API,",
+                    "danach schließt sich Maple",
                 ),
                 (
                     "en",
-                    [
-                        "running tasks",
-                        "attached editors",
-                        "remote controllers",
-                        "background jobs",
-                        "active requests",
-                    ],
-                    "waits for them to drain",
+                    english,
+                    ", including the local API,",
+                    "and then closes",
                 ),
             ] {
                 ui::i18n::apply_preference(Some(locale));
                 let (_, detail, retry) = prompt.presentation();
                 assert!(!retry);
-                for label in labels {
-                    assert!(detail.contains(&format!("{label} ({count})")), "{detail}");
+                for label in &labels {
+                    assert!(detail.contains(label.as_str()), "{detail}");
                 }
-                assert!(detail.contains(drain));
+                assert!(detail.contains(api_clause), "{detail}");
+                assert!(detail.contains(closing), "{detail}");
                 assert!(
                     matches!(&prompt.kind, QuitPromptKind::Confirm(activity) if activity.needs_confirmation())
                 );
@@ -4875,6 +5660,89 @@ mod tests {
         assert!(startup.retry_backend.is_none());
     }
 
+    #[test]
+    fn startup_error_status_target_grows_once_for_a_status_and_preserves_width() {
+        let mut narrow_handled = false;
+        // A status replaces the failure: grow once, preserving the width.
+        let narrow = super::startup_error_status_target(
+            gpui::Size {
+                width: px(600.),
+                height: px(440.),
+            },
+            true,
+            &mut narrow_handled,
+        );
+        assert_eq!(
+            narrow,
+            Some(gpui::Size {
+                width: px(600.),
+                height: px(480.)
+            })
+        );
+        // A user's widen survives the growth.
+        let mut widened_handled = false;
+        let widened = super::startup_error_status_target(
+            gpui::Size {
+                width: px(700.),
+                height: px(440.),
+            },
+            true,
+            &mut widened_handled,
+        );
+        assert_eq!(
+            widened,
+            Some(gpui::Size {
+                width: px(700.),
+                height: px(480.)
+            })
+        );
+        // No status, no growth: the failure-only window already fits.
+        let mut plain_handled = false;
+        let plain = super::startup_error_status_target(
+            gpui::Size {
+                width: px(600.),
+                height: px(440.),
+            },
+            false,
+            &mut plain_handled,
+        );
+        assert_eq!(plain, None);
+        assert!(!plain_handled);
+        // Once grown, never again: a later shrink is the user's choice.
+        let regrown = super::startup_error_status_target(
+            gpui::Size {
+                width: px(600.),
+                height: px(300.),
+            },
+            true,
+            &mut narrow_handled,
+        );
+        assert_eq!(regrown, None);
+        // The guarded 520px window already fits the status stack.
+        let mut tall_handled = false;
+        let tall = super::startup_error_status_target(
+            gpui::Size {
+                width: px(640.),
+                height: px(520.),
+            },
+            true,
+            &mut tall_handled,
+        );
+        assert_eq!(tall, None);
+        // Its first status is consumed too: a later user shrink stays put.
+        assert_eq!(
+            super::startup_error_status_target(
+                gpui::Size {
+                    width: px(640.),
+                    height: px(300.),
+                },
+                true,
+                &mut tall_handled,
+            ),
+            None
+        );
+    }
+
     #[gpui::test]
     fn completed_startup_stop_keeps_the_original_error_for_support(cx: &mut gpui::TestAppContext) {
         let _locale = ui::i18n::TestLocalizationGuard::enable();
@@ -4955,6 +5823,110 @@ mod tests {
     }
 
     use super::*;
+
+    struct NativeDialogHost {
+        dialog: Option<Entity<NativeDialog>>,
+    }
+
+    impl Render for NativeDialogHost {
+        fn render(&mut self, _window: &mut Window, _cx: &mut Context<Self>) -> impl IntoElement {
+            match &self.dialog {
+                Some(dialog) => dialog.clone().into_any_element(),
+                None => div().into_any_element(),
+            }
+        }
+    }
+
+    fn native_dialog_in_window(
+        cx: &mut gpui::TestAppContext,
+    ) -> (
+        Entity<NativeDialogHost>,
+        tokio::sync::oneshot::Receiver<usize>,
+        &mut gpui::VisualTestContext,
+    ) {
+        let answer = std::rc::Rc::new(std::cell::RefCell::new(None));
+        let result = answer.clone();
+        let (host, cx) = cx.add_window_view(move |window, cx| {
+            let (sender, receiver) = tokio::sync::oneshot::channel();
+            let dialog = NativeDialog::view(
+                tr("native-keep-open-title"),
+                tr("native-no-tray"),
+                vec![
+                    NativeDialogButton::calm("native-keep-open-keep", tr("native-keep-open")),
+                    NativeDialogButton::accent("native-keep-open-quit", tr("native-quit-maple")),
+                ],
+                Some(sender),
+                window,
+                cx,
+            );
+            *result.borrow_mut() = Some(receiver);
+            NativeDialogHost {
+                dialog: Some(dialog),
+            }
+        });
+        let receiver = answer.borrow_mut().take().unwrap();
+        (host, receiver, cx)
+    }
+
+    fn native_dialog_window(cx: &mut gpui::TestAppContext) -> gpui::VisualTestContext {
+        let mut found = None;
+        for handle in cx.windows() {
+            let is_dialog = cx.update(|cx| {
+                handle
+                    .update(cx, |_, window, _| {
+                        window.root::<NativeDialog>().flatten().is_some()
+                    })
+                    .unwrap_or(false)
+            });
+            if is_dialog {
+                found = Some(handle);
+                break;
+            }
+        }
+        let handle = found.expect("a native dialog window");
+        gpui::VisualTestContext::from_window(handle, cx)
+    }
+
+    #[gpui::test]
+    fn native_dialog_keyboard_answers_calm_then_accent(cx: &mut gpui::TestAppContext) {
+        let _localization = ui::i18n::TestLocalizationGuard::enable();
+        // Escape and Enter both answer the calm action, which starts
+        // focused, as the OS alert's default button was the safe one.
+        for keystrokes in ["escape", "enter"] {
+            let (_host, mut answer, cx) = native_dialog_in_window(cx);
+            cx.simulate_keystrokes(keystrokes);
+            assert_eq!(answer.try_recv().unwrap(), 0, "{keystrokes}");
+        }
+        // Tab moves to the accent action and Enter answers it.
+        let (_host, mut answer, cx) = native_dialog_in_window(cx);
+        cx.simulate_keystrokes("tab enter");
+        assert_eq!(answer.try_recv().unwrap(), 1);
+    }
+
+    #[gpui::test]
+    fn native_dialog_click_answers_the_clicked_pill(cx: &mut gpui::TestAppContext) {
+        let _localization = ui::i18n::TestLocalizationGuard::enable();
+        let (_host, mut answer, cx) = native_dialog_in_window(cx);
+        let quit = cx.debug_bounds("native-keep-open-quit").unwrap();
+        let center = quit.center() - gpui::point(px(0.), px(0.));
+        cx.simulate_click(center, gpui::Modifiers::default());
+        assert_eq!(answer.try_recv().unwrap(), 1);
+    }
+
+    #[gpui::test]
+    fn closing_the_native_dialog_answers_nothing(cx: &mut gpui::TestAppContext) {
+        let _localization = ui::i18n::TestLocalizationGuard::enable();
+        let (host, mut answer, cx) = native_dialog_in_window(cx);
+        host.update(cx, |host, cx| {
+            let dialog = host.dialog.take().unwrap();
+            dialog.update(cx, |dialog, cx| dialog.close(cx));
+        });
+        cx.run_until_parked();
+        assert_eq!(
+            answer.try_recv(),
+            Err(tokio::sync::oneshot::error::TryRecvError::Closed)
+        );
+    }
 
     #[gpui::test]
     fn scratch_first_send_survives_same_computer_navigation_but_not_a_switch(
@@ -5101,8 +6073,6 @@ mod tests {
                 settings,
                 updater: crate::update::Controller::new(true),
                 restart_prompt_pending: false,
-                #[cfg(target_os = "linux")]
-                restart_confirmation: None,
                 shortcuts,
                 titlebar: cx.new(|_| TitleBar::new(ui::titlebar::WINDOW_TITLE)),
                 plan_check: PlanCheck::default(),
@@ -5323,6 +6293,80 @@ mod tests {
         assert!(return_to_window(true, cx));
     }
 
+    /// Settings and back brings the chat's sidebar back with its task rows.
+    /// The screen fade covers the whole window, so a regression there would
+    /// show as a sidebar whose rows never return.
+    #[gpui::test]
+    fn settings_and_back_keeps_the_sidebar_task_rows(cx: &mut gpui::TestAppContext) {
+        struct Host(Entity<MapleApp>);
+        impl Render for Host {
+            fn render(&mut self, _: &mut Window, _: &mut Context<Self>) -> impl IntoElement {
+                div().size_full().child(self.0.clone())
+            }
+        }
+        let settings = crate::settings::SETTINGS_IO_LOCK.lock();
+        let app = project_shell_locked(cx, &settings);
+        let chat = app.read_with(cx, |app, _| app.local_chat.clone().expect("local chat"));
+        chat.update(cx, |chat, cx| {
+            chat.seed_sessions_for_test(
+                vec![maple_agent::agent::AgentSessionSummary {
+                    web_enabled: true,
+                    permission_mode: Default::default(),
+                    state: maple_agent::agent::AgentTaskState::Active,
+                    acp: false,
+                    id: "s1".into(),
+                    title: "First task".into(),
+                    project_root: "/same/project".into(),
+                    created_ms: 0,
+                    updated_ms: 0,
+                    message_count: 1,
+                    model: None,
+                    thinking_level: None,
+                }],
+                cx,
+            )
+        });
+        let (_, cx) = cx.add_window_view(|_, _| Host(app.clone()));
+        cx.simulate_resize(size(px(1100.), px(850.)));
+        cx.run_until_parked();
+        assert!(
+            cx.debug_bounds("session-s1").is_some(),
+            "the task row shows"
+        );
+
+        app.update(cx, |app, cx| app.show_settings(Section::General, cx));
+        cx.run_until_parked();
+        assert!(
+            cx.debug_bounds("session-s1").is_none(),
+            "Settings replaces the chat"
+        );
+        let snapshot = app.read_with(cx, |app, cx| match &app.screen {
+            Screen::Settings(screen) => screen.read(cx).settings_snapshot(),
+            _ => panic!("expected Settings"),
+        });
+        let start = std::time::Instant::now();
+        ui::motion::set_test_now(Some(start));
+        app.update(cx, |app, cx| app.close_settings(snapshot, cx));
+        cx.run_until_parked();
+        // Let the screen fade and anything the sidebar eases settle.
+        for step in 1..=4 {
+            ui::motion::set_test_now(Some(start + ui::motion::PANEL.settle * step));
+            cx.update(|window, cx| {
+                window.simulate_next_frame(cx);
+            });
+            cx.run_until_parked();
+        }
+        // A cached view replays its last paint without recording debug
+        // bounds, so draw every view afresh before looking for the row.
+        cx.update(|_, cx| cx.refresh_windows());
+        cx.run_until_parked();
+        assert!(
+            cx.debug_bounds("session-s1").is_some(),
+            "the task row is back after Settings"
+        );
+        ui::motion::set_test_now(None);
+    }
+
     #[gpui::test]
     fn a_free_guest_gets_its_account_id_in_the_gate(cx: &mut gpui::TestAppContext) {
         let settings = crate::settings::SETTINGS_IO_LOCK.lock();
@@ -5476,21 +6520,34 @@ mod tests {
             assert_eq!(app.pending_store_attention.len(), 2);
             assert!(!app.store_attention_open);
         });
-        assert!(!cx.has_pending_prompt());
+        // No window is open yet, so the queued warnings wait.
+        assert!(cx.windows().is_empty());
         let (_host, cx) = cx.add_window_view(|_, _| AppHost(app.clone()));
         cx.run_until_parked();
-        assert!(cx.has_pending_prompt());
-        let (title, detail) = cx.pending_prompt().expect("local-data dialog");
-        assert_eq!(title, "Local data needs attention");
-        assert!(detail.contains("both passwords"));
-        cx.simulate_prompt_answer("OK");
+        // The completion notice is a plain attention dialog: one OK pill.
+        let mut dialog = native_dialog_window(cx);
+        dialog.update(|window, cx| {
+            let dialog = window.root::<NativeDialog>().flatten().unwrap();
+            let dialog = dialog.read(cx);
+            assert_eq!(dialog.headline.as_ref(), "Local data needs attention");
+            assert!(dialog.body.as_ref().contains("both passwords"));
+        });
+        dialog.simulate_keystrokes("enter");
         cx.run_until_parked();
-        let (title, detail) = cx
-            .pending_prompt()
-            .expect("independent save-failure dialog");
-        assert_eq!(title, "Maple couldn't save local data");
-        assert!(detail.contains("disk is full"));
-        cx.simulate_prompt_answer("Keep viewing");
+        // The answered dialog empties a frame before its window goes.
+        let mut closing = native_dialog_window(cx);
+        closing.update(|window, cx| window.simulate_next_frame(cx));
+        cx.run_until_parked();
+        // The save failure is next, with calm-first pills.
+        let mut dialog = native_dialog_window(cx);
+        dialog.update(|window, cx| {
+            let dialog = window.root::<NativeDialog>().flatten().unwrap();
+            let dialog = dialog.read(cx);
+            assert_eq!(dialog.headline.as_ref(), "Maple couldn't save local data");
+            assert!(dialog.body.as_ref().contains("disk is full"));
+        });
+        // Enter answers the focused calm pill: keep viewing.
+        dialog.simulate_keystrokes("enter");
         cx.run_until_parked();
         app.update(cx, |app, _| {
             assert!(app.pending_store_attention.is_empty());
@@ -5532,8 +6589,10 @@ mod tests {
             );
         });
         cx.run_until_parked();
-        assert!(cx.has_pending_prompt());
-        cx.simulate_prompt_answer("Keep viewing");
+        // The failure opens a dialog; Enter answers the focused calm pill
+        // (keep viewing), which returns to the chat banner.
+        let mut dialog = native_dialog_window(cx);
+        dialog.simulate_keystrokes("enter");
         cx.run_until_parked();
         assert!(cx.debug_bounds("chat-persistence-feedback").is_some());
         assert!(cx.debug_bounds("retry-local-store-persistence").is_some());
@@ -5942,6 +7001,87 @@ mod tests {
         assert!(
             cx.windows().is_empty(),
             "Keep open dismisses the confirmation, not the app"
+        );
+    }
+
+    #[gpui::test]
+    fn a_second_quit_prompt_replaces_the_first_instead_of_stacking(cx: &mut gpui::TestAppContext) {
+        assert!(cx.windows().is_empty());
+        cx.update(|cx| show_quit_warning("A first drain failed.".into(), cx));
+        cx.update(|cx| show_quit_warning("A second drain failed.".into(), cx));
+        assert_eq!(
+            cx.windows().len(),
+            2,
+            "the replaced window empties a frame before it goes"
+        );
+        let mut replaced = gpui::VisualTestContext::from_window(cx.windows()[0], cx);
+        replaced.run_until_parked();
+        replaced.update(|window, cx| window.simulate_next_frame(cx));
+        replaced.run_until_parked();
+        assert_eq!(
+            cx.windows().len(),
+            1,
+            "showing a new prompt replaces the open one instead of stacking"
+        );
+        let mut survivor = gpui::VisualTestContext::from_window(cx.windows()[0], cx);
+        assert!(
+            survivor.update(|window, cx| matches!(
+                &window.root::<QuitPrompt>().flatten().unwrap().read(cx).kind,
+                QuitPromptKind::Failed(UiText::Raw(message)) if message == "A second drain failed."
+            )),
+            "the newest prompt is the one that stays"
+        );
+    }
+
+    #[test]
+    fn quit_prompt_body_lists_live_work_then_closes() {
+        let _localization = ui::i18n::TestLocalizationGuard::enable();
+        let messages = ui::i18n::MessageCache::default();
+        let activity = HostActivity {
+            running_tasks: 2,
+            acp_clients: 1,
+            remote_controllers: 1,
+            background_tasks: 1,
+            local_api_running: true,
+            local_api_requests: 3,
+        };
+        assert_eq!(
+            quit_activity_body(&activity, &messages).as_ref(),
+            "2 running tasks, 1 attached editor, 1 remote controller, 1 background job, and 3 API \
+             requests. Quitting stops the host, including the local API, and then closes."
+        );
+        // Only the API listener is live: no list, and the host drains alone.
+        let activity = HostActivity {
+            local_api_running: true,
+            ..Default::default()
+        };
+        assert_eq!(
+            quit_activity_body(&activity, &messages).as_ref(),
+            "Quitting stops the host, including the local API, and then closes."
+        );
+        // An idle host, as the debug loop shows, has nothing to list.
+        assert_eq!(
+            quit_activity_body(&HostActivity::default(), &messages).as_ref(),
+            "Quitting stops the host and then closes."
+        );
+        // A single item keeps the [1] arm's plain period join.
+        let activity = HostActivity {
+            running_tasks: 1,
+            ..Default::default()
+        };
+        assert_eq!(
+            quit_activity_body(&activity, &messages).as_ref(),
+            "1 running task. Quitting stops the host and then closes."
+        );
+        // Two items join without the serial comma.
+        let activity = HostActivity {
+            running_tasks: 1,
+            acp_clients: 2,
+            ..Default::default()
+        };
+        assert_eq!(
+            quit_activity_body(&activity, &messages).as_ref(),
+            "1 running task and 2 attached editors. Quitting stops the host and then closes."
         );
     }
 

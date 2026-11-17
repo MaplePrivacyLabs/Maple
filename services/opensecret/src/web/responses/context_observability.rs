@@ -447,7 +447,7 @@ fn safe_public_code(code: Option<&'static str>) -> &'static str {
             | "upstream_invalid_parameter"
             | "upstream_unsupported_parameter"
             | "upstream_invalid_messages"
-            | "upstream_context_limit"
+            | "context_length_exceeded"
             | "upstream_payload_too_large"
             | "upstream_provider_error"
             | "upstream_timeout"),

@@ -26,8 +26,6 @@ pub mod text_input;
 pub mod theme;
 pub mod titlebar;
 pub mod typography;
-#[cfg(any(target_os = "linux", test))]
-pub(crate) mod update_confirmation;
 pub mod widgets;
 
 pub mod remote;

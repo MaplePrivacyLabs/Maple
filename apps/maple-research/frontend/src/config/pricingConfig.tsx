@@ -8,6 +8,10 @@ export type PlanFeature = {
 
 export type PricingPlan = {
   name: string;
+  /** Billing's stable key for this card's plan. */
+  planKey: string;
+  /** Order among Free and the individual plans; `null` for Team. */
+  rank: number | null;
   price: string;
   description: string;
   features: PlanFeature[];
@@ -18,6 +22,8 @@ export type PricingPlan = {
 export const PRICING_PLANS: PricingPlan[] = [
   {
     name: "Free",
+    planKey: "free",
+    rank: 0,
     price: "$0",
     description: "Try Maple with limited usage",
     features: [
@@ -68,6 +74,8 @@ export const PRICING_PLANS: PricingPlan[] = [
   },
   {
     name: "Pro",
+    planKey: "pro",
+    rank: 1,
     price: "$20",
     description: "For power users who need more",
     features: [
@@ -112,6 +120,8 @@ export const PRICING_PLANS: PricingPlan[] = [
   },
   {
     name: "Max",
+    planKey: "max",
+    rank: 2,
     price: "$100",
     description: "Maximum usage for power users",
     features: [
@@ -165,6 +175,8 @@ export const PRICING_PLANS: PricingPlan[] = [
   },
   {
     name: "Team",
+    planKey: "team",
+    rank: null,
     price: "$30",
     description: "For teams and businesses",
     features: [

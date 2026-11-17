@@ -1446,7 +1446,7 @@ mod tests {
             .expect("settings content");
         let range = settings.update(cx, |this, _| this.pane_scroll.max_offset().y);
         assert!(range > px(0.), "General overflows its content area");
-        cx.simulate_event(gpui::ScrollWheelEvent {
+        cx.simulate_event(gpui::ScrollEvent {
             // In the pane's gutter, so no row takes the wheel.
             position: gpui::point(content.left() + px(8.), content.center().y),
             delta: gpui::ScrollDelta::Pixels(gpui::point(px(0.), px(-200.))),
@@ -1688,7 +1688,7 @@ mod tests {
         let _guard = crate::settings::SETTINGS_IO_LOCK.lock();
         crate::settings::install_test_settings(crate::settings::AppSettings::default());
         let (settings, cx) = dropdown_window(cx, false);
-        for expected in [Some("en"), Some("es"), Some("de"), None] {
+        for expected in [Some("en"), Some("es"), Some("de"), Some("ko"), None] {
             let button = cx
                 .debug_bounds("setting-value-language")
                 .expect("language selector");
@@ -1701,6 +1701,7 @@ mod tests {
                     match expected {
                         Some("es") => "Idioma",
                         Some("de") => "Sprache",
+                        Some("ko") => "언어",
                         _ => "Language",
                     }
                 );

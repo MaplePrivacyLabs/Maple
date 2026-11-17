@@ -30,15 +30,12 @@ pub struct ImageDescriptionCandidate {
     pub public_model_id: &'static str,
 }
 
-pub const IMAGE_DESCRIPTION_CANDIDATES: [ImageDescriptionCandidate; 3] = [
+pub const IMAGE_DESCRIPTION_CANDIDATES: [ImageDescriptionCandidate; 2] = [
     ImageDescriptionCandidate {
         public_model_id: "glm-5-3-flash",
     },
     ImageDescriptionCandidate {
         public_model_id: "gemma4-31b",
-    },
-    ImageDescriptionCandidate {
-        public_model_id: "kimi-k3",
     },
 ];
 
@@ -124,11 +121,6 @@ pub fn build_image_description_request(
         // Gemma 4 uses vLLM's `enable_thinking` template switch.
         "gemma4-31b" => {
             request["chat_template_kwargs"] = json!({ "enable_thinking": false });
-        }
-        // Kimi K3's vLLM renderer accepts `enable_thinking` as an alias, but
-        // `thinking` is its canonical native control.
-        "kimi-k3" => {
-            request["chat_template_kwargs"] = json!({ "thinking": false });
         }
         _ => {}
     }
@@ -508,7 +500,7 @@ mod tests {
         assert_eq!(IMAGE_DESCRIPTION_ATTEMPT_TIMEOUT_SECS, 15);
         assert_eq!(
             IMAGE_DESCRIPTION_CANDIDATES.map(|candidate| candidate.public_model_id),
-            ["glm-5-3-flash", "gemma4-31b", "kimi-k3"]
+            ["glm-5-3-flash", "gemma4-31b"]
         );
     }
 
@@ -574,7 +566,6 @@ mod tests {
         let expected = [
             ("glm-5-3-flash", 0.95, None),
             ("gemma4-31b", 0.95, Some(64)),
-            ("kimi-k3", 0.95, None),
         ];
         for (candidate, (model, top_p, top_k)) in IMAGE_DESCRIPTION_CANDIDATES.iter().zip(expected)
         {
@@ -616,21 +607,6 @@ mod tests {
         assert_eq!(request["include_reasoning"], false);
         assert_eq!(request["chat_template_kwargs"]["enable_thinking"], false);
         assert!(request["chat_template_kwargs"].get("thinking").is_none());
-        assert!(request.get("reasoning_effort").is_none());
-        assert!(request.get("cache_salt").is_none());
-    }
-
-    #[test]
-    fn tinfoil_kimi_k3_request_uses_native_thinking_control() {
-        let request = build_image_description_request(IMAGE_DESCRIPTION_CANDIDATES[2], input())
-            .expect("request");
-
-        assert_eq!(request["model"], "kimi-k3");
-        assert_eq!(request["include_reasoning"], false);
-        assert_eq!(request["chat_template_kwargs"]["thinking"], false);
-        assert!(request["chat_template_kwargs"]
-            .get("enable_thinking")
-            .is_none());
         assert!(request.get("reasoning_effort").is_none());
         assert!(request.get("cache_salt").is_none());
     }
@@ -760,6 +736,30 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn exhausted_image_helpers_stop_without_routing_to_kimi_pro() {
+        let executor = FakeExecutor::new(
+            IMAGE_DESCRIPTION_CANDIDATES
+                .iter()
+                .map(|_| {
+                    PlannedAttempt::Return(Err(ImageDescriptionAttemptError::new(
+                        ImageDescriptionFailureClass::RetryableResponse,
+                        "provider unavailable",
+                    )))
+                })
+                .collect(),
+        );
+        let error = describe_image_with_fallback(
+            &executor,
+            &RetryNonTerminalImageDescriptionFallbackPolicy,
+            input(),
+        )
+        .await
+        .expect_err("all approved image helpers failed");
+        assert_eq!(error.attempts().len(), 2);
+        assert_eq!(executor.observed_candidates(), IMAGE_DESCRIPTION_CANDIDATES);
+    }
+
+    #[tokio::test]
     async fn terminal_failure_stops_without_fallback() {
         let executor = FakeExecutor::new(vec![
             PlannedAttempt::Return(Err(ImageDescriptionAttemptError::new(
@@ -783,17 +783,13 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn production_policy_retries_timeout_and_reaches_third_candidate() {
+    async fn production_policy_retries_timeout_and_reaches_second_candidate() {
         let executor = FakeExecutor::new(vec![
             PlannedAttempt::Delay(
                 Duration::from_millis(25),
                 Ok(successful_response("late response")),
             ),
-            PlannedAttempt::Return(Err(ImageDescriptionAttemptError::new(
-                ImageDescriptionFailureClass::RetryableResponse,
-                "provider unavailable",
-            ))),
-            PlannedAttempt::Return(Ok(successful_response("Third candidate response."))),
+            PlannedAttempt::Return(Ok(successful_response("Second candidate response."))),
         ]);
 
         let outcome = describe_image_with_fallback_timeout(
@@ -805,9 +801,9 @@ mod tests {
         .await
         .expect("production policy permits ambiguous and retryable fallbacks");
 
-        assert_eq!(outcome.description, "Third candidate response.");
-        assert_eq!(outcome.candidate, IMAGE_DESCRIPTION_CANDIDATES[2]);
-        assert_eq!(outcome.attempt_count, 3);
+        assert_eq!(outcome.description, "Second candidate response.");
+        assert_eq!(outcome.candidate, IMAGE_DESCRIPTION_CANDIDATES[1]);
+        assert_eq!(outcome.attempt_count, 2);
         assert_eq!(executor.observed_candidates(), IMAGE_DESCRIPTION_CANDIDATES);
     }
 }

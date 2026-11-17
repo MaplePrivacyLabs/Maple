@@ -44,6 +44,16 @@ impl ChatScreen {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
+        if self.lightbox.is_some() {
+            if matches!(
+                command,
+                ChatCommand::Escape | ChatCommand::ApplicationVim(ApplicationVimCommand::Escape)
+            ) {
+                self.close_lightbox(cx);
+            }
+            cx.stop_propagation();
+            return;
+        }
         if matches!(
             command,
             ChatCommand::Escape | ChatCommand::ApplicationVim(ApplicationVimCommand::Escape)
