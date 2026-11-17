@@ -140,7 +140,7 @@ pub(super) fn day_tip(data: Option<&UsageData>, index: usize, metric: Metric) ->
         let folded: Vec<String> = day
             .folded
             .iter()
-            .map(|model| format!("{} {}", model.label, fmt_compact(model.value)))
+            .map(|(model, value)| format!("{model} {}", fmt_compact(*value)))
             .collect();
         notes.push(messages.get(
             "settings-usage-tip-more-models",

@@ -374,13 +374,6 @@ pub(crate) struct Series {
 }
 
 #[derive(Clone, Debug, PartialEq)]
-pub(crate) struct FoldedModel {
-    pub(crate) model: String,
-    pub(crate) label: String,
-    pub(crate) value: f64,
-}
-
-#[derive(Clone, Debug, PartialEq)]
 pub(crate) struct ChartDay {
     pub(crate) date: NaiveDate,
     /// One value per series, in series order.
@@ -390,7 +383,7 @@ pub(crate) struct ChartDay {
     pub(crate) extra_credits: f64,
     /// The models behind "More models" that day, largest first, when more
     /// than one model folded in the range.
-    pub(crate) folded: Vec<FoldedModel>,
+    pub(crate) folded: Vec<(String, f64)>,
 }
 
 #[derive(Clone, Debug, PartialEq)]
@@ -516,20 +509,12 @@ pub(crate) fn build_daily_chart(
         .map(|(day, &date)| {
             let day_values: Vec<f64> = used.iter().map(|&index| values[day][index]).collect();
             let day_folded = if several_folded {
-                let mut models: Vec<_> = std::mem::take(&mut folded[day])
-                    .into_iter()
-                    .map(|(id, value)| FoldedModel {
-                        model: id.to_string(),
-                        label: model_label(id, labels),
-                        value,
-                    })
-                    .collect();
-                models.sort_by(|a, b| {
-                    b.value
-                        .total_cmp(&a.value)
-                        .then_with(|| a.model.cmp(&b.model))
-                });
+                let mut models = std::mem::take(&mut folded[day]);
+                models.sort_by(|a, b| b.1.total_cmp(&a.1).then_with(|| a.0.cmp(b.0)));
                 models
+                    .into_iter()
+                    .map(|(id, value)| (model_label(id, labels), value))
+                    .collect()
             } else {
                 Vec::new()
             };
@@ -1066,18 +1051,18 @@ mod tests {
             assert_eq!(chart.series[5].label, None);
             let folded = &chart.days[1].folded;
             assert_eq!(
-                folded
-                    .iter()
-                    .map(|model| (model.model.as_str(), model.value))
-                    .collect::<Vec<_>>(),
-                expected
+                folded,
+                &expected
+                    .into_iter()
+                    .map(|(id, value)| (model_label(id, &labels), value))
+                    .collect::<Vec<_>>()
             );
             assert_eq!(
-                folded.iter().filter(|model| model.label == "Same").count(),
+                folded.iter().filter(|(label, _)| label == "Same").count(),
                 2
             );
             assert_eq!(
-                folded.iter().map(|model| model.value).sum::<f64>(),
+                folded.iter().map(|(_, value)| value).sum::<f64>(),
                 chart.days[1].total
             );
             assert_eq!(
