@@ -4,24 +4,21 @@ import type { UsageClientApp, UsagePool } from "@/billing/usageApi";
 // ΔE >= 8, normal vision >= 15 against light and dark cards). Coral stays
 // reserved for the plan meter and Chat; models never use it.
 
-/**
- * Fixed slots for current flagship models. Colors follow model identity, never
- * rank, so a model keeps its color across ranges. Every other model folds into
- * the gray "More models" series in charts; tables still list it by name.
- */
-export const MODEL_SLOTS: Readonly<Record<string, string>> = {
-  "glm-5-3": "var(--series-1)",
-  "kimi-k3": "var(--series-2)",
-  "deepseek-v4-1-flash": "var(--series-3)",
-  "gpt-oss-120b": "var(--series-4)",
-  "glm-5-3-flash": "var(--series-5)"
-};
+export const MODEL_COLORS = [
+  "var(--series-1)",
+  "var(--series-2)",
+  "var(--series-3)",
+  "var(--series-4)",
+  "var(--series-5)"
+] as const;
+
+export type ModelColors = ReadonlyMap<string, string>;
 
 export const MORE_MODELS_KEY = "more";
 export const MORE_MODELS_COLOR = "var(--series-other)";
 
-export function modelColor(model: string): string {
-  return MODEL_SLOTS[model] ?? MORE_MODELS_COLOR;
+export function modelColor(model: string, colors: ModelColors): string {
+  return colors.get(model) ?? MORE_MODELS_COLOR;
 }
 
 export type TokenKind = "input" | "cached" | "output";

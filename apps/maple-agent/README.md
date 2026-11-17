@@ -176,8 +176,10 @@ agent runtime; its desktop Agent page points users to Maple Work.
   (detected built-ins and custom MCP servers), Tools (which of Maple's tools
   tasks offer the model, with one Web switch for `web_search` and `open_url`;
   a change reaches open tasks from their next request, and the page asks for a
-  paired computer running an older Maple to be updated), Usage (the plan meter
-  from the billing API), and About.
+  paired computer running an older Maple to be updated), Usage (plan meters and
+  usage history from the billing API), and About. Usage charts name the five
+  most-used models for the selected range and metric; the per-model table lists
+  every model that ran.
 - Dark and light themes; the default follows the system.
   On Linux, the protected GUI starts a portal-only child of the same executable
   (`--internal-theme-watch`). The child receives only desktop-bus environment,

@@ -140,7 +140,7 @@ pub(super) fn day_tip(data: Option<&UsageData>, index: usize, metric: Metric) ->
         let folded: Vec<String> = day
             .folded
             .iter()
-            .map(|(model, value)| format!("{model} {}", fmt_compact(*value)))
+            .map(|model| format!("{} {}", model.label, fmt_compact(model.value)))
             .collect();
         notes.push(messages.get(
             "settings-usage-tip-more-models",
@@ -366,7 +366,7 @@ pub(super) fn series_name(key: SeriesKey, label: Option<&str>) -> SharedString {
         return label.to_string().into();
     }
     match key {
-        SeriesKey::Model(slot) => model::MODEL_SLOTS[slot].into(),
+        SeriesKey::Model(_) => unreachable!("model series carry their usage label"),
         SeriesKey::MoreModels => tr("settings-usage-more-models"),
         SeriesKey::Origin(origin) => origin_name(origin),
         SeriesKey::Plan => tr("settings-usage-pool-plan"),

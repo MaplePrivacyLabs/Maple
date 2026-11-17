@@ -15,11 +15,15 @@ import { AboutNumbers, LastTwelveMonths, PricingTable, RecentRequests } from "./
 import { ErrorBlock, LoadingBlock, ScopeNote } from "./ui";
 import {
   browserTimeZone,
+  buildDailyChart,
   buildPeriodProgress,
   localDate,
+  responseDates,
   statusWindow,
   summarizeDays,
-  usagePlanKind
+  usagePlanKind,
+  type Metric,
+  type Split
 } from "./usageData";
 
 const PAID_DESCRIPTION =
@@ -32,6 +36,8 @@ export function UsageSettings() {
   const { billingStatus, setBillingStatus } = useBillingState();
   const [tz] = useState(browserTimeZone);
   const [range, setRange] = useState<UsageRange>("last_30_days");
+  const [selectedMetric, setMetric] = useState<Metric | null>(null);
+  const [split, setSplit] = useState<Split>("model");
 
   const statusQuery = useQuery({
     queryKey: ["billingStatus"],
@@ -44,6 +50,7 @@ export function UsageSettings() {
   });
   const status = statusQuery.data ?? billingStatus;
   const kind = usagePlanKind(status);
+  const metric = selectedMetric ?? (kind === "free" ? "requests" : "credits");
   const planWindow = statusWindow(status);
 
   const usage = useUsageSummary(
@@ -66,6 +73,21 @@ export function UsageSettings() {
 
   const now = new Date();
   const today = localDate(now, tz);
+  const dates = useMemo(
+    () => (usage.data ? responseDates(usage.data, today) : []),
+    [usage.data, today]
+  );
+  const chart = useMemo(
+    () =>
+      buildDailyChart({
+        dates,
+        rows: usage.data?.days ?? [],
+        labels: usage.data?.models ?? {},
+        metric,
+        split
+      }),
+    [dates, usage.data, metric, split]
+  );
   const period = usage.data?.current_period ?? null;
   const used = Math.max(0, status?.used_tokens ?? 0);
   const allowance = status?.total_tokens ?? 0;
@@ -159,11 +181,16 @@ export function UsageSettings() {
         }}
         today={today}
         periodStartDate={planWindow ? localDate(new Date(planWindow.start), tz) : null}
+        chart={chart}
+        metric={metric}
+        setMetric={setMetric}
+        split={split}
+        setSplit={setSplit}
       />
       {kind !== "free" && usage.data && (
         <LastTwelveMonths months={usage.data.months} currentMonth={today.slice(0, 7)} />
       )}
-      <RecentRequests accountId={accountId} kind={kind} tz={tz} />
+      <RecentRequests accountId={accountId} kind={kind} tz={tz} modelColors={chart.modelColors} />
       <PricingTable usedModels={usedModels} />
       <AboutNumbers
         kind={kind}
