@@ -1,6 +1,7 @@
 import { describe, expect, test } from "bun:test";
 import type { OpenSecretModel } from "@/state/LocalStateContextDef";
 import {
+  buildOpenCodeLimitConfig,
   buildOpenCodeProviderFields,
   buildCurlProxyExample,
   buildPythonProxyExample,
@@ -99,6 +100,25 @@ describe("proxy guide values", () => {
       headers: "Leave blank"
     });
     expect(Object.values(fields).join("\n")).not.toContain("anything");
+  });
+
+  test("builds the OpenCode context limit from the catalog window", () => {
+    const config = buildOpenCodeLimitConfig(model("kimi-k3-1-pro", { context_window: 262_144 }));
+    expect(JSON.parse(config!)).toEqual({
+      provider: {
+        "maple-local": {
+          models: { "kimi-k3-1-pro": { limit: { context: 262_144, output: 32_000 } } }
+        }
+      }
+    });
+    // A small window still leaves most of itself for the conversation.
+    const small = buildOpenCodeLimitConfig(model("small", { max_context_tokens: 32_768 }));
+    expect(JSON.parse(small!).provider["maple-local"].models.small.limit).toEqual({
+      context: 32_768,
+      output: 8_192
+    });
+    expect(buildOpenCodeLimitConfig(model("unknown"))).toBeNull();
+    expect(buildOpenCodeLimitConfig()).toBeNull();
   });
 
   test("only recommends models that explicitly support coding tools", () => {

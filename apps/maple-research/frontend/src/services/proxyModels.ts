@@ -63,9 +63,13 @@ export function getModelDisplayName(model: OpenSecretModel): string {
   return model.display_name || model.short_name || model.id;
 }
 
+const OPENCODE_PROVIDER_ID = "maple-local";
+// OpenCode's own output cap for a model whose limit it does not know.
+const OPENCODE_OUTPUT_LIMIT = 32_000;
+
 export function buildOpenCodeProviderFields(baseUrl: string, model?: OpenSecretModel) {
   return {
-    providerId: "maple-local",
+    providerId: OPENCODE_PROVIDER_ID,
     displayName: "Maple (local proxy)",
     baseUrl,
     apiKey: "Paste the real Maple key you created",
@@ -73,6 +77,27 @@ export function buildOpenCodeProviderFields(baseUrl: string, model?: OpenSecretM
     modelName: model ? getModelDisplayName(model) : "Select a model",
     headers: "Leave blank"
   };
+}
+
+/**
+ * The `opencode.json` block that gives OpenCode this model's context window.
+ * OpenCode cannot read the window from a custom provider, and without it a long
+ * session can grow until the model rejects it. Null when the catalog has no
+ * window for the model.
+ */
+export function buildOpenCodeLimitConfig(model?: OpenSecretModel): string | null {
+  const context = model?.context_window ?? model?.max_context_tokens;
+  if (!model || !context) return null;
+  const output = Math.min(OPENCODE_OUTPUT_LIMIT, Math.floor(context / 4));
+  return JSON.stringify(
+    {
+      provider: {
+        [OPENCODE_PROVIDER_ID]: { models: { [model.id]: { limit: { context, output } } } }
+      }
+    },
+    null,
+    2
+  );
 }
 
 export function formatModelContext(model: OpenSecretModel): string | null {
