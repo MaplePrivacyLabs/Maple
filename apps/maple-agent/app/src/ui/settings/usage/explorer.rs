@@ -462,7 +462,7 @@ impl SettingsScreen {
             .into_iter()
             .map(|(label, column)| (column, header_cell(label))),
         );
-        let rows = models.iter().map(|model| {
+        let rows = models.iter().enumerate().map(|(index, model)| {
             let color = palette::model(&model.model, &range.chart.named_models);
             let (mix, more) = &model.mix;
             // One app needs no percentage: `Work`, not `100% Work`.
@@ -509,7 +509,7 @@ impl SettingsScreen {
                                 .truncate()
                                 .text_color(gpui::rgb(theme::text_primary()))
                                 .child(gpui::text!(
-                                    id = SharedString::from(format!("usage-model-{}", model.model)),
+                                    id = ("usage-model", index),
                                     model.label.clone()
                                 )),
                         )

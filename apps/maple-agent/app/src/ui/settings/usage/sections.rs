@@ -308,7 +308,7 @@ impl SettingsScreen {
             .map(|(label, column)| (column, header_cell(label))),
         );
         let mut rows: Vec<gpui::AnyElement> = vec![header.into_any_element()];
-        rows.extend(prices.models.iter().map(|price| {
+        rows.extend(prices.models.iter().enumerate().map(|(index, price)| {
             let name = if price.display_name.trim().is_empty() {
                 price.id.clone()
             } else {
@@ -330,10 +330,7 @@ impl SettingsScreen {
                             div()
                                 .truncate()
                                 .text_color(gpui::rgb(theme::text_primary()))
-                                .child(gpui::text!(
-                                    id = SharedString::from(format!("usage-price-{}", price.id)),
-                                    name
-                                )),
+                                .child(gpui::text!(id = ("usage-price", index), name)),
                         )
                         .when(price.price_may_vary, |cell| {
                             cell.child(div().text_color(gpui::rgb(theme::text_muted())).child("*"))
@@ -357,36 +354,41 @@ impl SettingsScreen {
             ])
             .into_any_element()
         }));
-        rows.extend(data.unpriced.iter().map(|(model, label)| {
-            table_row([
-                (
-                    Column::Name,
-                    div()
-                        .flex()
-                        .items_center()
-                        .gap_2()
-                        .min_w_0()
-                        .child(chart::swatch(
-                            palette::model(model, data.named_models()),
-                            px(8.),
-                        ))
-                        .child(
+        rows.extend(
+            data.unpriced
+                .iter()
+                .enumerate()
+                .map(|(index, (model, label))| {
+                    table_row([
+                        (
+                            Column::Name,
                             div()
-                                .truncate()
-                                .text_color(gpui::rgb(theme::text_secondary()))
-                                .child(gpui::text!(
-                                    id = SharedString::from(format!("usage-unpriced-{model}")),
-                                    label.clone()
-                                )),
-                        )
-                        .into_any_element(),
-                ),
-                (Column::Price, number_cell("—".into())),
-                (Column::Price, number_cell("—".into())),
-                (Column::Price, number_cell("—".into())),
-            ])
-            .into_any_element()
-        }));
+                                .flex()
+                                .items_center()
+                                .gap_2()
+                                .min_w_0()
+                                .child(chart::swatch(
+                                    palette::model(model, data.named_models()),
+                                    px(8.),
+                                ))
+                                .child(
+                                    div()
+                                        .truncate()
+                                        .text_color(gpui::rgb(theme::text_secondary()))
+                                        .child(gpui::text!(
+                                            id = ("usage-unpriced", index),
+                                            label.clone()
+                                        )),
+                                )
+                                .into_any_element(),
+                        ),
+                        (Column::Price, number_cell("—".into())),
+                        (Column::Price, number_cell("—".into())),
+                        (Column::Price, number_cell("—".into())),
+                    ])
+                    .into_any_element()
+                }),
+        );
         let mut notes = vec![tr("settings-usage-prices-note")];
         if !data.unpriced.is_empty() {
             notes.push(tr("settings-usage-prices-unlisted"));
