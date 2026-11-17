@@ -103,6 +103,11 @@ class EifReleaseBuildCommandTests(unittest.TestCase):
             self.assertFalse((candidate / name).is_symlink())
             self.assertEqual((candidate / name).stat().st_mode & 0o777, 0o644)
         digest = hashlib.sha256(b"fixture EIF, not a real image").hexdigest()
+        # The build attestation covers every SHA256SUMS line, so the handoff's build
+        # mode and source commit are attested along with the EIF and measurements.
+        self.assertEqual((candidate / "SHA256SUMS").read_text().splitlines(), [
+            f"{hashlib.sha256((candidate / name).read_bytes()).hexdigest()}  {name}"
+            for name in ("image.eif", "pcr.json", "handoff.json")])
         self.assertEqual((candidate / "SHA256SUMS").read_text().splitlines()[0], f"{digest}  image.eif")
         handoff = json.loads((candidate / "handoff.json").read_text())
         self.assertEqual(handoff, {
@@ -465,9 +470,10 @@ class ApprovalPublishCommandTests(unittest.TestCase):
     def branch(self):
         return f"opensecret/pcr-approval-{self.source_sha[:12]}"
 
-    def run_publish(self, mode="dev", path=None):
+    def run_publish(self, mode="dev", path=None, **extra_env):
         env = {"PATH": path or os.environ["PATH"], "HOME": str(self.root), "GITHUB_TOKEN": "fixture-token",
-               "GITHUB_REPOSITORY": "fixture/repo", "GITHUB_RUN_ID": "7", "GITHUB_STEP_SUMMARY": str(self.summary)}
+               "GITHUB_REPOSITORY": "fixture/repo", "GITHUB_RUN_ID": "7", "GITHUB_STEP_SUMMARY": str(self.summary),
+               **extra_env}
         return subprocess.run(
             [shutil.which("bash"), "--noprofile", "--norc",
              str(self.repo / "scripts/ci/publish_opensecret_approval.sh"), mode, str(self.artifact)],
@@ -559,6 +565,31 @@ class ApprovalPublishCommandTests(unittest.TestCase):
                                            "services/opensecret/pcrProd.json", "services/opensecret/pcrProdHistory.json"])
         subjects = self.git("-C", str(self.origin), "log", "--format=%s", f"master..{branch}")
         self.assertEqual(subjects.splitlines()[0], f"Approve dev OpenSecret EIF measurements from {self.source_sha[:12]}")
+
+    def test_an_earlier_build_is_approved_from_a_newer_checkout_on_its_own_branch(self):
+        (self.repo / "later-change").write_text("later master source\n")
+        self.git("-C", str(self.repo), "add", "later-change")
+        self.git("-C", str(self.repo), "commit", "-q", "-m", "later master change")
+        checkout_sha = self.git("-C", str(self.repo), "rev-parse", "HEAD")
+        self.change_approvals()
+        result = self.run_publish(EXPECTED_SOURCE_SHA=self.source_sha)
+        self.assertEqual(result.returncode, 0, result.stderr)
+        branch = f"{self.branch()}-{checkout_sha[:12]}"
+        self.assertEqual(sorted(self.origin_branches().split()), sorted(["master", branch]))
+        self.assertEqual(self.git("-C", str(self.origin), "rev-parse", f"{branch}~1"), checkout_sha)
+        self.assertIn(f"Source commit: {self.source_sha}",
+                      self.git("-C", str(self.origin), "log", "-1", "--format=%B", branch))
+
+    def test_named_source_must_be_a_full_contained_commit_matching_the_handoff(self):
+        self.change_approvals()
+        self.git("-C", str(self.repo), "commit", "-q", "--allow-empty", "-m", "unrelated")
+        unrelated = self.git("-C", str(self.repo), "rev-parse", "HEAD")
+        self.git("-C", str(self.repo), "reset", "-q", "HEAD~1")
+        for source in (self.source_sha[:12], "f" * 40, "bad\nsource", "--all", unrelated):
+            with self.subTest(source=source):
+                result = self.run_publish(EXPECTED_SOURCE_SHA=source)
+                self.assertNotEqual(result.returncode, 0)
+        self.assertEqual(self.origin_branches(), "master")
 
     def test_nothing_to_publish_and_handoff_mismatches(self):
         result = self.run_publish()

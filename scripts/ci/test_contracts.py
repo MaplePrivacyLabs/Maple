@@ -57,6 +57,7 @@ OIDC_JOBS = frozenset({
     ("desktop-build.yml", "build-macos"), ("desktop-build.yml", "build-linux"), ("desktop-build.yml", "build-windows"),
     ("dev-credential-requester-image.yml", "build"), ("ios-dev-testflight.yml", "build-ios-dev"),
     ("mobile-build.yml", "build-ios"), ("opensecret-eif-release.yml", "build"),
+    ("opensecret-release-statement-dev.yml", "sign"),  # assumes the Dev signer role
     ("ci.yml", "os-eif"), ("opensecret-eif.yml", "eif-trusted"),
     *(("release.yml", job) for job in ("build-tauri", "build-windows", "build-android", "build-ios", "build-web",
                                        "publish-proxy-release-artifacts", "update-latest-json",
@@ -83,6 +84,7 @@ CONSUMERS = {
     ("mobile-build.yml", "build-ios"): "apple-signing",
     ("mobile-build.yml", "submit-ios-testflight"): "apple-signing",
     ("opensecret-eif-release.yml", "sign"): "pcr-signing",
+    ("opensecret-release-statement-dev.yml", "sign"): "pcr-signing-dev",
     ("pages-publish.yml", "preview"): "pages-preview",
     ("pages-publish.yml", "production"): "pages-production",
     ("release.yml", "build-tauri"): "desktop-signing",
@@ -632,12 +634,69 @@ class ContractTests(unittest.TestCase):
         self.assertNotIn("environment", build)
         self.assertFalse(re.search(r"\bsecrets\b|github\.token|\bGH_TOKEN\b", json.dumps(build)))
         self.assertEqual(sign["needs"], "build")
-        self.assertEqual(sign["if"], "inputs.dry_run == false && needs.build.outputs.approval_needed == 'true'")
+        # Only prod is signed here; the Dev release statement workflow signs dev.
+        for mode, dry_run, needed in itertools.product(("dev", "prod"), (True, False), ("true", "false")):
+            context = {"inputs.environment": mode, "inputs.dry_run": dry_run,
+                       "needs.build.outputs.approval_needed": needed}
+            self.assertEqual(evaluate(expression(sign), context),
+                             mode == "prod" and dry_run is False and needed == "true", context)
         self.assertEqual(sign["permissions"], {"contents": "write"})
         self.assertNotRegex(json.dumps(sign), r"id-token|flakehub-cache")
         key = [step for step in sign["steps"] if "outputs.SIGNING_PRIVATE_KEY" in json.dumps(step)]
         self.assertEqual(len(key), 1)  # the signing key reaches exactly one step
         self.assertEqual(key[0]["env"], {"SIGNING_PRIVATE_KEY": "${{ steps.signing-key.outputs.SIGNING_PRIVATE_KEY }}"})
+
+    def test_c5_dev_release_statement_is_one_gated_job_with_a_fixed_target(self):
+        config = workflows()["opensecret-release-statement-dev.yml"]
+        self.assertEqual(set(config["on"]), {"workflow_dispatch"})  # no workflow_call or other caller
+        self.assertEqual(set(config["on"]["workflow_dispatch"]["inputs"]), {"build_run_id"})
+        self.assertEqual(set(config["jobs"]), {"sign"})
+        sign = config["jobs"]["sign"]
+        self.assertEqual(environment(sign), "pcr-signing-dev")
+        for repo, ref in itertools.product(("MaplePrivacyLabs/Maple", "fork/Maple"),
+                                           ("refs/heads/master", "refs/heads/feature", "refs/tags/master")):
+            self.assertEqual(evaluate(expression(sign), {"github.repository": repo, "github.ref": ref}),
+                             repo == "MaplePrivacyLabs/Maple" and ref == "refs/heads/master")
+        self.assertEqual(sign["permissions"], {"contents": "write", "actions": "read", "attestations": "read",
+                                               "id-token": "write"})
+        # The target is literal workflow text: no input, variable or secret selects it.
+        for name in ("SIGNING_KEY_ARN", "SIGNER_ROLE_ARN", "SIGNING_PUBLIC_KEY"):
+            self.assertNotIn("${{", sign["env"][name])
+        self.assertEqual(sign["env"]["BUILD_RUN_ID"], "${{ inputs.build_run_id }}")
+        steps = sign["steps"]
+        self.assertNotIn("inputs.", json.dumps([step.get("run", "") for step in steps]))
+
+        def index(predicate):
+            found = [position for position, step in enumerate(steps) if predicate(step)]
+            self.assertEqual(len(found), 1)
+            return found[0]
+
+        def runs(command):
+            return lambda step: f"opensecret_release_statement.py {command} dev" in step.get("run", "")
+
+        preflight, prepare, sign_kms, publish = (index(runs(name)) for name in ("preflight", "prepare", "sign",
+                                                                                 "publish"))
+        legacy = index(lambda step: "ci_sign_pcr.sh dev" in step.get("run", ""))
+        retain = index(lambda step: step.get("uses", "").startswith("actions/upload-artifact@"))
+        branch = index(lambda step: "publish_opensecret_approval.sh dev" in step.get("run", ""))
+        credentials = [position for position, step in enumerate(steps) if "secrets." in json.dumps(step)]
+        # Nothing holding a credential or signing runs before the identity check and the
+        # verified build; the bundle is verified and retained before it is published,
+        # and the legacy branch is pushed only after publication succeeded.
+        self.assertLess(preflight, prepare)
+        self.assertTrue(all(prepare < position for position in credentials + [legacy, sign_kms]))
+        self.assertLess(sign_kms, retain)
+        self.assertLess(retain, publish)
+        self.assertLess(publish, branch)
+        key = [step for step in steps if "outputs.SIGNING_PRIVATE_KEY" in json.dumps(step)]
+        self.assertEqual(key, [steps[legacy]])  # the legacy key reaches exactly one step
+        self.assertEqual(steps[legacy]["env"]["EXPECTED_EIF_SHA256"], "${{ steps.candidate.outputs.eif_sha256 }}")
+        publisher = [step for step in steps if "outputs.AWS_SECRET_ACCESS_KEY" in json.dumps(step)]
+        self.assertEqual(publisher, [steps[publish]])  # the bucket credential reaches only the publisher
+        for step in steps:
+            if step.get("uses", "").startswith("bitwarden/sm-action@"):
+                self.assertIs(step["with"]["set_env"], False)
+        self.assertEqual(steps[branch]["env"]["EXPECTED_SOURCE_SHA"], "${{ steps.candidate.outputs.source_sha }}")
 
     def test_c6_protected_environments_have_fixed_consumers(self):
         self.assertEqual({(name, job_id): environment(job) for name, job_id, job in jobs() if environment(job)},

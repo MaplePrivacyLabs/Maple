@@ -102,7 +102,8 @@ checkout and commit on each deployment host rather than assuming a merged
 source change migrated that host.
 
 The separate `OpenSecret EIF release` workflow builds and attests a candidate
-and can sign new PCR entries behind its protected approval environment. It
+and can sign new Production PCR entries behind its protected approval
+environment; `OpenSecret Dev release statement` signs Dev candidates. Each
 pushes an approval branch for review; it creates no GitHub Release or tag and
 does not deploy. Ordinary CI remains read-only with respect to approvals.
 The copy helper does not commit or push. The signing-key transition and legacy
