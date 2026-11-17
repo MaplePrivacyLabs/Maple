@@ -199,6 +199,14 @@
             inherit system;
             overlays = [ (import rust-overlay) ];
           };
+          # Reuse the locked Nixpkgs recipe with the fixed Git point release.
+          patchedGit = pkgs.git.overrideAttrs (_: {
+            version = "2.55.1";
+            src = pkgs.fetchurl {
+              url = "https://www.kernel.org/pub/software/scm/git/git-2.55.1.tar.xz";
+              hash = "sha256-e8NF26I8kIn6cbz055PRPSBP3Jm5arwRizopwYFZ6xY=";
+            };
+          });
           rustToolchain = pkgs.rust-bin.stable.latest.default.override {
             extensions = [
               "clippy"
@@ -268,7 +276,7 @@
               python3
               perl
               # Reproduce the pinned SQLCipher amalgamation and audit its graph.
-              git
+              patchedGit
               gnupg
               tcl
               gnumake
