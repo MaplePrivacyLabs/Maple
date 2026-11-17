@@ -22,7 +22,8 @@ import {
   ORIGIN_LABEL,
   ORIGINS,
   TOKEN_KINDS,
-  TOKEN_LABEL
+  TOKEN_LABEL,
+  type ModelColors
 } from "./palette";
 import { ErrorBlock, LoadingBlock, SectionHeader } from "./ui";
 import {
@@ -42,11 +43,13 @@ import {
 export function RecentRequests({
   accountId,
   kind,
-  tz
+  tz,
+  modelColors
 }: {
   accountId: string;
   kind: UsagePlanKind;
   tz: string;
+  modelColors: ModelColors;
 }) {
   const query = useUsageRequests(accountId);
   const free = kind === "free";
@@ -99,7 +102,7 @@ export function RecentRequests({
                     </td>
                     <td className="whitespace-nowrap px-3 py-2">
                       <span className="inline-flex items-center gap-2">
-                        <Swatch color={modelColor(r.model)} />
+                        <Swatch color={modelColor(r.model, modelColors)} />
                         {modelLabel(r.model, labels)}
                       </span>
                     </td>

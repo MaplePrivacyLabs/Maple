@@ -2,7 +2,7 @@ import { describe, expect, test } from "bun:test";
 import type { BillingStatus } from "@/billing/billingApi";
 import type { UsageClientApp, UsageDayRow, UsageMonthRow, UsageSource } from "@/billing/usageApi";
 import { niceScale } from "./chartScale";
-import { MORE_MODELS_KEY, type UsageOrigin } from "./palette";
+import { MORE_MODELS_COLOR, MORE_MODELS_KEY, modelColor, type UsageOrigin } from "./palette";
 import {
   addDays,
   buildDailyChart,
@@ -228,7 +228,9 @@ describe("usage origins", () => {
       split: "model",
       labels: {}
     });
-    expect(chart.days[0].values).toEqual({ "glm-5-3": 23 });
+    expect(
+      Object.fromEntries(chart.series.map(({ key, label }) => [label, chart.days[0].values[key]]))
+    ).toEqual({ "glm-5-3": 23 });
   });
 });
 
@@ -317,39 +319,189 @@ describe("buildDailyChart", () => {
     row({ date: "2026-09-30", model: "glm-5-3", credits: 999 })
   ];
 
-  test("model split uses identity order and folds unslotted models", () => {
+  test("names every used model when there are at most five, in raw ID order", () => {
     const chart = buildDailyChart({ dates, rows, metric: "credits", split: "model", labels });
-    expect(chart.series.map((s) => [s.key, s.label, s.color])).toEqual([
-      ["glm-5-3", "GLM-5.3", "var(--series-1)"],
-      ["kimi-k3", "Kimi K3", "var(--series-2)"],
-      [MORE_MODELS_KEY, "More models", "var(--series-other)"]
+    expect(chart.series.map((s) => [s.key, s.label])).toEqual([
+      ["model:gemma4-31b", "Gemma 4 31B"],
+      ["model:glm-5-3", "GLM-5.3"],
+      ["model:kimi-k3", "Kimi K3"],
+      ["model:llama3-3-70b", "Llama 3.3 70B"]
     ]);
     expect(chart.days.map((d) => d.date)).toEqual(dates);
-    expect(chart.days[0].values).toEqual({ "kimi-k3": 30, "glm-5-3": 50, more: 2 });
-    expect(chart.days[1].values).toEqual({ more: 7, "glm-5-3": 20 });
+    expect(chart.days[0].values).toEqual({
+      "model:kimi-k3": 30,
+      "model:glm-5-3": 50,
+      "model:llama3-3-70b": 2
+    });
+    expect(chart.days[1].values).toEqual({ "model:gemma4-31b": 7, "model:glm-5-3": 20 });
     expect(chart.days[2].values).toEqual({});
-    expect(chart.days[0].folded).toEqual([
-      { model: "llama3-3-70b", label: "Llama 3.3 70B", value: 2 }
-    ]);
+    expect(chart.days[0].folded).toEqual([]);
     expect(chart.days[0].requests).toBe(11);
     expect(chart.days[1].extraCredits).toBe(20);
   });
 
-  test("a single unslotted model is named instead of folded", () => {
+  test("selects actual totals across apps, pools and days before ranking", () => {
+    const actualRows = [
+      ...["a", "b", "c", "d", "e"].map((model) => row({ date: dates[0], model, credits: 10 })),
+      row({ date: dates[0], model: "previously-unlisted", credits: 6, client_app: "chat" }),
+      row({
+        date: dates[1],
+        model: "previously-unlisted",
+        credits: 6,
+        source: "api",
+        client_app: "work",
+        pool: "extra"
+      }),
+      row({ date: "2026-09-30", model: "outside", credits: 999 }),
+      row({ date: dates[0], model: "zero", credits: 0 })
+    ];
     const chart = buildDailyChart({
       dates,
-      rows: rows.filter((r) => r.model !== "gemma4-31b"),
-      metric: "requests",
+      rows: actualRows,
+      metric: "credits",
       split: "model",
-      labels
+      labels: { "previously-unlisted": { display_name: "Actual leader" } }
     });
-    expect(chart.series.at(-1)).toEqual({
-      key: MORE_MODELS_KEY,
-      label: "Llama 3.3 70B",
-      color: "var(--series-other)"
+    expect([...chart.modelColors.keys()]).toEqual(["a", "b", "c", "d", "previously-unlisted"]);
+    expect(chart.series.find((s) => s.label === "Actual leader")).toBeDefined();
+    expect(chart.series.at(-1)).toMatchObject({ key: MORE_MODELS_KEY, label: "e" });
+    expect(chart.days[0].values[MORE_MODELS_KEY]).toBe(10);
+    expect(chart.days.every((day) => day.folded.length === 0)).toBe(true);
+    expect(
+      chart.days.reduce((sum, day) => sum + Object.values(day.values).reduce((a, b) => a + b, 0), 0)
+    ).toBe(62);
+    expect(modelColor("outside", chart.modelColors)).toBe(MORE_MODELS_COLOR);
+    expect(modelColor("zero", chart.modelColors)).toBe(MORE_MODELS_COLOR);
+  });
+
+  test("metric and displayed dates select their own positive leaders", () => {
+    const actualRows = [
+      ...["a", "b", "c", "d", "e"].map((model) =>
+        row({ date: dates[0], model, credits: 10, requests: 1 })
+      ),
+      row({ date: dates[0], model: "free-requests", requests: 100 }),
+      row({ date: dates[0], model: "free-tokens", requests: 0, output_tokens: 100 }),
+      row({ date: dates[1], model: "next-day", credits: 200, requests: 200, output_tokens: 200 })
+    ];
+    const chartFor = (metric: "credits" | "requests" | "tokens", selectedDates = [dates[0]]) =>
+      buildDailyChart({
+        dates: selectedDates,
+        rows: actualRows,
+        metric,
+        split: "model",
+        labels: {}
+      });
+    expect([...chartFor("credits").modelColors.keys()]).toEqual(["a", "b", "c", "d", "e"]);
+    expect([...chartFor("requests").modelColors.keys()]).toEqual([
+      "a",
+      "b",
+      "c",
+      "d",
+      "free-requests"
+    ]);
+    expect([...chartFor("tokens").modelColors.keys()]).toEqual(["free-tokens"]);
+    for (const metric of ["credits", "requests", "tokens"] as const) {
+      expect([...chartFor(metric, [dates[1]]).modelColors.keys()]).toEqual(["next-day"]);
+    }
+    const requests = chartFor("requests");
+    expect(requests.days[0].values[MORE_MODELS_KEY]).toBe(1);
+    expect(Object.values(requests.days[0].values).reduce((a, b) => a + b, 0)).toBe(105);
+  });
+
+  test("overflow conserves values and discloses all identities with deterministic ties", () => {
+    const actualRows = [
+      ...["a", "b", "c", "d", "e"].map((model) => row({ date: dates[0], model, credits: 100 })),
+      row({ date: dates[0], model: "z", credits: 5 }),
+      row({ date: dates[0], model: "y", credits: 2 }),
+      row({ date: dates[0], model: "y", credits: 3, source: "api" }),
+      row({ date: dates[0], model: "missing-label", credits: 1 })
+    ];
+    const duplicateLabels = { y: { display_name: "Same" }, z: { display_name: "Same" } };
+    const chart = buildDailyChart({
+      dates,
+      rows: actualRows,
+      metric: "credits",
+      split: "model",
+      labels: duplicateLabels
     });
-    expect(chart.days[0].values.more).toBe(5);
-    expect(chart.days[0].folded).toEqual([]);
+    expect(chart.series.at(-1)?.label).toBe("More models");
+    expect(chart.days[0].values[MORE_MODELS_KEY]).toBe(11);
+    expect(chart.days[0].folded).toEqual([
+      { model: "y", label: "Same", value: 5 },
+      { model: "z", label: "Same", value: 5 },
+      { model: "missing-label", label: "missing-label", value: 1 }
+    ]);
+    const summary = summarizeDays(actualRows, duplicateLabels);
+    expect(summary.byModel).toHaveLength(8);
+    expect(Object.values(chart.days[0].values).reduce((a, b) => a + b, 0)).toBe(summary.credits);
+    expect(
+      buildDailyChart({
+        dates,
+        rows: [...actualRows].reverse(),
+        metric: "credits",
+        split: "model",
+        labels: duplicateLabels
+      }).days[0].folded
+    ).toEqual(chart.days[0].folded);
+  });
+
+  test("stable selected sets keep raw-ID color order despite rank and row order changes", () => {
+    const models = ["z", "b", "A", "a", "missing"];
+    const duplicateLabels = { a: { display_name: "Same" }, b: { display_name: "Same" } };
+    const chartFor = (reverse: boolean) =>
+      buildDailyChart({
+        dates,
+        rows: models
+          .map((model, index) =>
+            row({
+              date: dates[0],
+              model,
+              credits: reverse ? models.length - index : index + 1
+            })
+          )
+          .reverse(),
+        metric: "credits",
+        split: "model",
+        labels: duplicateLabels
+      });
+    const first = chartFor(false);
+    const second = chartFor(true);
+    expect([...first.modelColors.keys()]).toEqual(["A", "a", "b", "missing", "z"]);
+    expect(new Set(first.series.map((series) => series.color)).size).toBe(first.series.length);
+    expect([...second.modelColors]).toEqual([...first.modelColors]);
+    expect(first.series.filter((s) => s.label === "Same")).toHaveLength(2);
+    expect(first.series.find((s) => s.key === "model:missing")?.label).toBe("missing");
+    for (const series of first.series) {
+      expect(modelColor(series.key.slice("model:".length), first.modelColors)).toBe(series.color);
+    }
+  });
+
+  test("model IDs cannot collide with aggregates or prototype properties", () => {
+    const models = [
+      "more",
+      "__proto__",
+      "constructor",
+      "toString",
+      "model:more",
+      "overflow-a",
+      "overflow-b"
+    ];
+    const chart = buildDailyChart({
+      dates,
+      rows: models.map((model, index) => row({ date: dates[0], model, credits: 10 - index })),
+      metric: "credits",
+      split: "model",
+      labels: {}
+    });
+    expect(chart.modelColors.size).toBe(5);
+    expect(new Set(chart.series.map((s) => s.key)).size).toBe(6);
+    expect(chart.days[0].values["model:more"]).toBe(10);
+    expect(chart.days[0].values["model:__proto__"]).toBe(9);
+    expect(chart.days[0].values["model:constructor"]).toBe(8);
+    expect(chart.days[0].values["model:toString"]).toBe(7);
+    expect(chart.days[0].values["model:model:more"]).toBe(6);
+    expect(chart.days[0].values[MORE_MODELS_KEY]).toBe(9);
+    expect(Object.values(chart.days[0].values).reduce((a, b) => a + b, 0)).toBe(49);
   });
 
   test("origin, pool and token splits pivot the same rows", () => {
@@ -372,8 +524,8 @@ describe("buildDailyChart", () => {
       split: "model",
       labels
     });
-    expect(tokensByModel.series.map((s) => s.key)).toEqual(["glm-5-3"]);
-    expect(tokensByModel.days[1].values["glm-5-3"]).toBe(175);
+    expect(tokensByModel.series.map((s) => s.key)).toEqual(["model:glm-5-3"]);
+    expect(tokensByModel.days[1].values["model:glm-5-3"]).toBe(175);
   });
 
   test("an empty range has no series", () => {
