@@ -366,8 +366,8 @@ pub(super) fn series_name(key: SeriesKey, label: Option<&str>) -> SharedString {
         return label.to_string().into();
     }
     match key {
-        SeriesKey::Model(_) => unreachable!("model series carry their usage label"),
-        SeriesKey::MoreModels => tr("settings-usage-more-models"),
+        // Model series carry their own label; one without is shown as the rest.
+        SeriesKey::Model(_) | SeriesKey::MoreModels => tr("settings-usage-more-models"),
         SeriesKey::Origin(origin) => origin_name(origin),
         SeriesKey::Plan => tr("settings-usage-pool-plan"),
         SeriesKey::Extra => tr("settings-usage-pool-extra"),

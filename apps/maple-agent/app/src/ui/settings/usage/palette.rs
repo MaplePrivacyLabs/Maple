@@ -61,7 +61,12 @@ fn palette() -> &'static Palette {
 pub(super) fn series(key: SeriesKey) -> u32 {
     let palette = palette();
     match key {
-        SeriesKey::Model(slot) => palette.series[slot],
+        // A slot past the palette draws as the rest rather than panicking.
+        SeriesKey::Model(slot) => palette
+            .series
+            .get(slot)
+            .copied()
+            .unwrap_or(palette.more_models),
         SeriesKey::MoreModels => palette.more_models,
         SeriesKey::Origin(origin) => self::origin(origin),
         SeriesKey::Plan => palette.plan,
