@@ -182,6 +182,8 @@ impl ChatScreen {
                             chunk,
                             open,
                             chat.turn_runs(ix),
+                            waiting_step
+                                .is_some_and(|step| (ix..chat.turns.end(ix)).contains(&step)),
                             &entity,
                             &chat.messages,
                         ))

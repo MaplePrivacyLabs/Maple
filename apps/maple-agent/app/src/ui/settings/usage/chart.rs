@@ -66,25 +66,32 @@ impl Render for ChartTooltip {
                             .child(headline)
                     })),
             )
-            .children(tip.rows.iter().map(|(color, label, value)| {
-                div()
-                    .flex()
-                    .items_center()
-                    .gap_2()
-                    .child(swatch(*color, px(8.)))
-                    .child(
+            .children(
+                tip.rows
+                    .iter()
+                    .enumerate()
+                    .map(|(index, (color, label, value))| {
                         div()
-                            .flex_1()
-                            .text_color(gpui::rgb(theme::text_secondary()))
-                            .child(label.clone()),
-                    )
-                    .child(div().child(value.clone()))
-            }))
-            .children(tip.notes.iter().map(|note| {
+                            .id(("usage-tip-row", index))
+                            .flex()
+                            .items_center()
+                            .gap_2()
+                            .child(swatch(*color, px(8.)))
+                            .child(
+                                div()
+                                    .flex_1()
+                                    .text_color(gpui::rgb(theme::text_secondary()))
+                                    .child(gpui::text!(label.clone())),
+                            )
+                            .child(div().child(value.clone()))
+                    }),
+            )
+            .children(tip.notes.iter().enumerate().map(|(index, note)| {
                 div()
+                    .id(("usage-tip-note", index))
                     .pt_1()
                     .text_color(gpui::rgb(theme::text_muted()))
-                    .child(note.clone())
+                    .child(gpui::text!(note.clone()))
             }));
         // Anchored at the pointer like the app's other tooltips: centered
         // above it, flipping below when there is no room.

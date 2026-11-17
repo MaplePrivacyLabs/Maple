@@ -1559,7 +1559,7 @@ chat-turn-worked-minutes = { $minutes }분 { $seconds }초 동안 작업했어�
 # $count is the number of files a turn changed.
 chat-turn-files-changed = 파일 { $count }개 변경됨
 # $count is the number of tool and thinking steps in one activity chunk.
-chat-activity-steps = { $count }단계
+chat-activity-steps = 단계 { $count }개
 chat-settings = 설정
 chat-usage = 사용량
 chat-usage-unavailable = 사용량을 확인할 수 없음

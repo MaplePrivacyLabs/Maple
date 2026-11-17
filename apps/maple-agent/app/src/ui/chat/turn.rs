@@ -398,7 +398,9 @@ fn worked_label(messages: &MessageCache, worked: Option<Duration>) -> SharedStri
     let Some(worked) = worked else {
         return tr("chat-turn-worked");
     };
-    let seconds = (worked.as_secs_f32().round() as u64).max(1);
+    // Whole seconds, counted as the running time counts them, so the
+    // line never says more when it stops than it showed while running.
+    let seconds = worked.as_secs().max(1);
     if seconds < 60 {
         messages.get("chat-turn-worked-seconds", [("seconds", seconds.into())])
     } else {
@@ -481,10 +483,11 @@ fn maple_mark(mark: Mark, phase: f32) -> Div {
             } else {
                 match mark {
                     Mark::Working => {
-                        // The pulse runs the stroke, then rests for the
-                        // last sixth of the pass. Blocks off the stroke
-                        // hold still.
-                        let head = -1. + (phase / 0.84).min(1.) * (STROKE.len() as f32 + 1.);
+                        // The pulse runs the stroke, starting and ending
+                        // clear of it so every block is whole while it
+                        // rests for the last sixth of the pass. Blocks
+                        // off the stroke hold still.
+                        let head = -1.5 + (phase / 0.84).min(1.) * (STROKE.len() as f32 + 2.);
                         let level =
                             STROKE
                                 .iter()
@@ -596,14 +599,23 @@ pub(super) fn render_chunk(
     chunk: &Chunk,
     open: bool,
     live: bool,
+    // One of the chunk's calls waits for the user to allow it. Folded, the
+    // step that says so is hidden, so the header says it.
+    waiting: bool,
     chat: &gpui::WeakEntity<ChatScreen>,
     messages: &MessageCache,
 ) -> Div {
     let label = messages.get("chat-activity-steps", [("count", chunk.count().into())]);
-    let status = chunk.state(live).map(|state| {
+    let state = if waiting {
+        Some(step::StepState::Waiting)
+    } else {
+        chunk.state(live)
+    };
+    let status = state.map(|state| {
         let (key, ink) = match state {
             step::StepState::Failed => ("chat-status-failed", theme::status_error()),
             step::StepState::Stopped => ("chat-status-stopped", theme::text_muted()),
+            step::StepState::Waiting => ("chat-status-waiting", theme::accent_ink()),
             _ => ("chat-status-running", theme::text_muted()),
         };
         let id = SharedString::from(format!("activity-status-{lead}"));
