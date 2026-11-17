@@ -709,7 +709,7 @@ async fn recovery_does_not_replay_authenticated_logical_errors() {
 async fn safe_upstream_errors_preserve_the_inference_contract_without_recovery() {
     for (status, code) in [
         (400, "upstream_invalid_request"),
-        (400, "upstream_context_limit"),
+        (400, "context_length_exceeded"),
         (502, "upstream_provider_error"),
         (504, "upstream_timeout"),
     ] {

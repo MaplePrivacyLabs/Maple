@@ -4724,6 +4724,7 @@ mod state_tests {
             timeout_seconds: 30,
             transport: AgentMcpTransport::Stdio {
                 command: format!("{name}-mcp"),
+                argv: Vec::new(),
                 environment: Vec::new(),
             },
         }
@@ -11276,6 +11277,710 @@ mod state_tests {
         bytes
     }
 
+    fn sized_image(width: u32, height: u32) -> Arc<gpui::Image> {
+        // Rendering regressions need decodable pixels: the signature-only
+        // draft fixture never gives gpui an intrinsic image size.
+        let mut bytes = std::io::Cursor::new(Vec::new());
+        image::DynamicImage::new_rgba8(width, height)
+            .write_to(&mut bytes, image::ImageFormat::Png)
+            .expect("encode fixture image");
+        Arc::new(gpui::Image::from_bytes(
+            gpui::ImageFormat::Png,
+            bytes.into_inner(),
+        ))
+    }
+
+    /// A message with one picture whose file is stored and whose send has
+    /// gone out: the state between the upload finishing and the reply that
+    /// names the run.
+    fn picture_send_awaiting_reply(
+        chat: &ChatScreen,
+        text: &str,
+        picture: Arc<gpui::Image>,
+        stored: &str,
+    ) -> sending::SendPreview {
+        let mut draft = DraftAttachment::for_test(1, "shot.png", true);
+        draft.mime_type = "image/png".into();
+        draft.picture = Some(picture);
+        let drafts = vec![draft];
+        let mut preview = sending::SendPreview::new(Some("s1".into()), text, &drafts)
+            .capture_timeline(&chat.timeline)
+            .uploading();
+        preview.prepare(uploads::PreparedSend {
+            request: AgentSendMessageRequest {
+                session_id: "s1".into(),
+                text: text.into(),
+                model: None,
+                context_limit: None,
+                vision_capable: true,
+                steer: false,
+                queue_id: None,
+                attachments: vec![stored.into()],
+            },
+            send: UnresolvedSend {
+                backend: chat.backend.clone(),
+                outcome: None,
+                session: "s1".into(),
+                text: text.into(),
+                attachments: drafts,
+                from_composer: true,
+            },
+            fence: uploads::UploadFence::default(),
+        });
+        // Dispatch takes the prepared send with it.
+        assert!(preview.take_prepared().is_some());
+        preview
+    }
+
+    fn image_message(id: &str, text: &str, attachments: &[&str]) -> AgentTimelineItem {
+        let mut message = user_item(id, text);
+        message.input = Some(serde_json::json!({
+            "attachments": attachments.iter().map(|id| serde_json::json!({
+                "id": id,
+                "name": format!("{id}.png"),
+                "mimeType": "image/png",
+                "size": 1024,
+                "executionPath": format!("/uploads/{id}.png"),
+            })).collect::<Vec<_>>()
+        }));
+        message
+    }
+
+    #[gpui::test]
+    fn message_images_stay_thumbnail_sized_above_the_text(cx: &mut TestAppContext) {
+        cx.update(|cx| cx.set_reduce_motion(true));
+        let landscape = sized_image(2000, 300);
+        let portrait = sized_image(300, 2000);
+        let (_chat, cx) = chat_window(cx, |this, _| {
+            this.sidebar_collapsed = true;
+            this.replace_timeline(vec![
+                image_message(
+                    "screenshots",
+                    "Please check these screenshots.",
+                    &["wide", "tall"],
+                ),
+                image_message("image-only", "", &["only"]),
+            ]);
+            this.attachment_images
+                .insert("wide".into(), landscape.clone());
+            this.attachment_images
+                .insert("tall".into(), portrait.clone());
+            this.attachment_images.insert("only".into(), landscape);
+        });
+
+        for width in [1200., 480.] {
+            cx.simulate_resize(gpui::size(px(width), px(800.)));
+            cx.run_until_parked();
+            let row = cx
+                .debug_bounds("timeline-row-screenshots")
+                .expect("message row");
+            let bubble = cx
+                .debug_bounds("message-bubble-screenshots")
+                .expect("message text");
+            for selector in ["attachment-thumbnail-wide", "attachment-thumbnail-tall"] {
+                let thumbnail = cx.debug_bounds(selector).expect("image thumbnail");
+                assert_eq!(thumbnail.size, gpui::size(px(72.), px(72.)));
+                assert!(thumbnail.left() >= row.left(), "{selector} left the row");
+                assert!(thumbnail.right() <= row.right(), "{selector} left the row");
+                assert!(
+                    thumbnail.bottom() <= bubble.top(),
+                    "images belong above the text"
+                );
+            }
+            let image_only_row = cx
+                .debug_bounds("timeline-row-image-only")
+                .expect("image-only message");
+            let image_only = cx
+                .debug_bounds("attachment-thumbnail-only")
+                .expect("image-only thumbnail");
+            assert_eq!(image_only.size, gpui::size(px(72.), px(72.)));
+            assert!(image_only.left() >= image_only_row.left());
+            assert!(image_only.right() <= image_only_row.right());
+            assert!(
+                cx.debug_bounds("message-bubble-image-only").is_none(),
+                "an image-only message has no empty text bubble"
+            );
+        }
+    }
+
+    #[gpui::test]
+    fn message_thumbnail_opens_a_fitted_image_and_dismisses_without_clicking_through(
+        cx: &mut TestAppContext,
+    ) {
+        cx.update(|cx| cx.set_reduce_motion(true));
+        let landscape = sized_image(2000, 300);
+        let portrait = sized_image(300, 2000);
+        let (chat, cx) = chat_window(cx, |this, _| {
+            this.sidebar_collapsed = true;
+            this.replace_timeline(vec![image_message(
+                "screenshots",
+                "Images",
+                &["wide", "tall"],
+            )]);
+            this.attachment_images
+                .insert("wide".into(), landscape.clone());
+            this.attachment_images
+                .insert("tall".into(), portrait.clone());
+        });
+
+        for (width, height) in [(1200., 800.), (480., 440.)] {
+            cx.simulate_resize(gpui::size(px(width), px(height)));
+            cx.run_until_parked();
+            for (selector, expected_image, shape) in [
+                ("attachment-thumbnail-wide", &landscape, 2000. / 300.),
+                ("attachment-thumbnail-tall", &portrait, 300. / 2000.),
+            ] {
+                press(cx, selector);
+                cx.run_until_parked();
+                chat.read_with(cx, |this, _| {
+                    assert!(Arc::ptr_eq(
+                        this.lightbox.as_ref().expect("opened image"),
+                        expected_image
+                    ));
+                });
+                // The picture is as large as the window allows, whole and
+                // in its own shape; the card is no larger than the picture.
+                let image = cx.debug_bounds("lightbox-image").expect("expanded image");
+                let (room_width, room_height) = (width * 0.9, height * 0.9);
+                let (image_width, image_height) =
+                    (image.size.width.as_f32(), image.size.height.as_f32());
+                assert!(image_width <= room_width + 1. && image_height <= room_height + 1.);
+                assert!(
+                    (image_width - room_width).abs() < 1.
+                        || (image_height - room_height).abs() < 1.,
+                    "the picture fills the room in one direction: {image:?}"
+                );
+                assert!(
+                    (image_width / image_height / shape - 1.).abs() < 0.02,
+                    "the card keeps the picture's shape: {image:?}"
+                );
+                assert!(image.left() >= px(0.) && image.right() <= px(width));
+                assert!(image.top() >= px(0.) && image.bottom() <= px(height));
+
+                cx.simulate_click(image.center(), gpui::Modifiers::default());
+                cx.run_until_parked();
+                assert!(
+                    chat.read_with(cx, |this, _| this.lightbox.is_some()),
+                    "clicking the image keeps it open"
+                );
+                // Beside the picture, well inside the window: the dimmed
+                // backdrop, wherever it shows, closes the preview.
+                let beside = if shape > 1. {
+                    gpui::point(image.center().x, image.top() - px(12.))
+                } else {
+                    gpui::point(image.left() - px(12.), image.center().y)
+                };
+                cx.simulate_click(beside, gpui::Modifiers::default());
+                cx.run_until_parked();
+                assert!(
+                    chat.read_with(cx, |this, _| this.lightbox.is_none()),
+                    "clicking beside the picture closes it"
+                );
+
+                press(cx, selector);
+                cx.run_until_parked();
+                cx.simulate_click(gpui::point(px(2.), px(2.)), gpui::Modifiers::default());
+                cx.run_until_parked();
+                assert!(
+                    chat.read_with(cx, |this, _| this.lightbox.is_none()),
+                    "clicking the scrim closes the image"
+                );
+
+                press(cx, selector);
+                press(cx, "lightbox-close");
+                cx.run_until_parked();
+                assert!(chat.read_with(cx, |this, _| this.lightbox.is_none()));
+            }
+        }
+    }
+
+    /// The message being sent draws its attachments as the sent message
+    /// does: the same thumbnail above the same bubble. When the host's row
+    /// takes over, nothing changes shape or place within the message, and
+    /// the row shows the picture at once though its stored copy has not
+    /// loaded.
+    #[gpui::test]
+    fn a_sent_picture_keeps_its_place_when_its_row_takes_over(cx: &mut TestAppContext) {
+        cx.update(|cx| cx.set_reduce_motion(true));
+        let picture = sized_image(144, 81);
+        let (chat, cx) = chat_window(cx, |this, _| {
+            this.sidebar_collapsed = true;
+            this.replace_timeline(vec![user_item("earlier", "An earlier message")]);
+            // The stored pictures are being read and do not arrive here; a
+            // read that fails would rightly show the file as unavailable.
+            this.attachment_requests
+                .extend(["shot".to_string(), "only".to_string()]);
+        });
+        let send = |text: &'static str, send_id: &'static str, stored: &'static str| {
+            let picture = picture.clone();
+            move |this: &mut ChatScreen, cx: &mut Context<ChatScreen>| {
+                let preview = picture_send_awaiting_reply(this, text, picture, stored);
+                this.sending_previews.insert(send_id.into(), preview);
+                cx.notify();
+            }
+        };
+        let arrive = |id: &'static str, text: &'static str, attachment: &'static str| {
+            move |this: &mut ChatScreen, cx: &mut Context<ChatScreen>| {
+                this.handle_service_event(
+                    AgentServiceEvent::TimelineItem {
+                        session_id: "s1".into(),
+                        run_id: Some(format!("run-{id}")),
+                        item: image_message(id, text, &[attachment]),
+                    },
+                    cx,
+                );
+                assert!(
+                    this.attachment_images.is_empty(),
+                    "the stored picture has not loaded"
+                );
+            }
+        };
+        let thumbnail = gpui::size(px(72.), px(72.));
+
+        chat.update(cx, send("Look at this", "send-1", "shot"));
+        cx.run_until_parked();
+        let sending_picture = cx
+            .debug_bounds("pending-send-thumbnail-0")
+            .expect("the picture while sending");
+        let sending_text = cx
+            .debug_bounds("pending-send-body")
+            .expect("the text while sending");
+        assert_eq!(sending_picture.size, thumbnail);
+        assert!(
+            sending_picture.bottom() <= sending_text.top(),
+            "the picture sits above the text, outside its bubble"
+        );
+
+        chat.update(cx, arrive("first", "Look at this", "shot"));
+        cx.run_until_parked();
+        assert!(
+            cx.debug_bounds("pending-send-body").is_none(),
+            "the row took over"
+        );
+        let sent_picture = cx
+            .debug_bounds("attachment-thumbnail-shot")
+            .expect("the row shows the picture at once");
+        let sent_text = cx
+            .debug_bounds("message-bubble-first")
+            .expect("the sent text");
+        assert_eq!(sent_picture.size, sending_picture.size);
+        assert_eq!(sent_text.size, sending_text.size);
+        assert_eq!(sent_picture.left(), sending_picture.left());
+        assert_eq!(sent_text.left(), sending_text.left());
+        assert_eq!(
+            sent_text.top() - sent_picture.bottom(),
+            sending_text.top() - sending_picture.bottom(),
+            "the picture and the text keep their distance"
+        );
+
+        // A message of pictures only: no bubble, before or after.
+        chat.update(cx, send("", "send-2", "only"));
+        cx.run_until_parked();
+        let sending_picture = cx
+            .debug_bounds("pending-send-thumbnail-0")
+            .expect("the picture while sending");
+        assert_eq!(sending_picture.size, thumbnail);
+        assert!(
+            cx.debug_bounds("pending-send-body").is_none(),
+            "no empty bubble while sending"
+        );
+        chat.update(cx, arrive("second", "", "only"));
+        cx.run_until_parked();
+        let sent_picture = cx
+            .debug_bounds("attachment-thumbnail-only")
+            .expect("the row shows the picture at once");
+        assert_eq!(sent_picture.size, sending_picture.size);
+        assert_eq!(sent_picture.left(), sending_picture.left());
+        assert!(cx.debug_bounds("message-bubble-second").is_none());
+
+        // The stored picture replaces the stand-in when it loads.
+        let stored = sized_image(1600, 900);
+        chat.update(cx, |this, cx| {
+            assert!(this.attachment_previews.contains_key("only"));
+            this.insert_attachment_image("only", stored.clone(), cx);
+            assert!(!this.attachment_previews.contains_key("only"));
+            assert!(Arc::ptr_eq(&this.attachment_images["only"], &stored));
+        });
+    }
+
+    /// With motion on, the frame on which the row takes over draws its
+    /// picture and its text where the message being sent had them. From
+    /// there the row only eases to its own place.
+    #[gpui::test]
+    fn a_sent_picture_does_not_jump_on_the_frame_its_row_takes_over(cx: &mut TestAppContext) {
+        let start = std::time::Instant::now();
+        motion::set_test_now(Some(start));
+        cx.update(|cx| cx.set_reduce_motion(false));
+        let picture = sized_image(144, 81);
+        let (chat, cx) = chat_window(cx, |this, _| {
+            this.sidebar_collapsed = true;
+            this.replace_timeline(vec![user_item("earlier", "An earlier message")]);
+            this.attachment_requests.insert("shot".to_string());
+        });
+        let frame_at = |at: std::time::Instant, cx: &mut gpui::VisualTestContext| {
+            motion::set_test_now(Some(at));
+            cx.update(|window, app| window.simulate_next_frame(app));
+            cx.run_until_parked();
+        };
+        chat.update(cx, |this, cx| {
+            let preview =
+                picture_send_awaiting_reply(this, "Look at this", picture.clone(), "shot");
+            this.sending_previews.insert("send-1".into(), preview);
+            cx.notify();
+        });
+        cx.run_until_parked();
+        // The message being sent has risen in and its slot has opened.
+        let settled = start + motion::PANEL.settle * 4;
+        frame_at(settled, cx);
+        frame_at(settled, cx);
+        let sending_picture = cx
+            .debug_bounds("pending-send-thumbnail-0")
+            .expect("the picture while sending");
+        let sending_text = cx
+            .debug_bounds("pending-send-body")
+            .expect("the text while sending");
+
+        chat.update(cx, |this, cx| {
+            this.handle_service_event(
+                AgentServiceEvent::TimelineItem {
+                    session_id: "s1".into(),
+                    run_id: Some("run-1".into()),
+                    item: image_message("sent", "Look at this", &["shot"]),
+                },
+                cx,
+            );
+        });
+        cx.run_until_parked();
+        let sent_picture = cx
+            .debug_bounds("attachment-thumbnail-shot")
+            .expect("the row shows the picture at once");
+        let sent_text = cx
+            .debug_bounds("message-bubble-sent")
+            .expect("the sent text");
+        assert_eq!(sent_picture.size, sending_picture.size);
+        assert_eq!(sent_text.size, sending_text.size);
+        assert_eq!(sent_picture.left(), sending_picture.left());
+        assert_eq!(sent_text.left(), sending_text.left());
+        assert!(
+            (sent_picture.top() - sending_picture.top()).abs() <= px(1.),
+            "the picture holds still on the hand-off frame: {sending_picture:?} then {sent_picture:?}"
+        );
+        assert!(
+            (sent_text.top() - sending_text.top()).abs() <= px(1.),
+            "the text holds still on the hand-off frame: {sending_text:?} then {sent_text:?}"
+        );
+        motion::set_test_now(None);
+    }
+
+    #[gpui::test]
+    fn another_controllers_message_never_shows_this_drafts_picture(cx: &mut TestAppContext) {
+        cx.update(|cx| cx.set_reduce_motion(true));
+        let picture = sized_image(144, 81);
+        let (chat, cx) = chat_window(cx, |this, _| {
+            this.sidebar_collapsed = true;
+            this.replace_timeline(vec![user_item("earlier", "An earlier message")]);
+            // Neither stored picture arrives here.
+            this.attachment_requests
+                .extend(["theirs".to_string(), "shot".to_string()]);
+        });
+        chat.update(cx, |this, cx| {
+            let preview =
+                picture_send_awaiting_reply(this, "Look at this", picture.clone(), "shot");
+            this.sending_previews.insert("send-1".into(), preview);
+            cx.notify();
+        });
+        cx.run_until_parked();
+        assert!(cx.debug_bounds("pending-send-thumbnail-0").is_some());
+
+        // Before this send is acknowledged, a message from another controller
+        // lands in the same task, also with one picture.
+        let arrive = |id: &'static str, run: &'static str, attachment: &'static str| {
+            move |this: &mut ChatScreen, cx: &mut Context<ChatScreen>| {
+                this.handle_service_event(
+                    AgentServiceEvent::TimelineItem {
+                        session_id: "s1".into(),
+                        run_id: Some(run.into()),
+                        item: image_message(id, "A message with a picture", &[attachment]),
+                    },
+                    cx,
+                );
+            }
+        };
+        chat.update(cx, arrive("their-row", "run-theirs", "theirs"));
+        chat.read_with(cx, |this, _| {
+            assert!(
+                this.attachment_previews.is_empty(),
+                "their file is not one this send stored"
+            );
+        });
+        cx.run_until_parked();
+        assert!(
+            cx.debug_bounds("attachment-thumbnail-theirs").is_none(),
+            "their row waits for its own picture"
+        );
+
+        // This send's own row still shows its picture from the first frame.
+        chat.update(cx, arrive("our-row", "run-ours", "shot"));
+        chat.read_with(cx, |this, _| {
+            assert_eq!(
+                this.attachment_previews.keys().collect::<Vec<_>>(),
+                [&"shot".to_string()]
+            );
+        });
+        cx.run_until_parked();
+        assert!(cx.debug_bounds("attachment-thumbnail-shot").is_some());
+        assert!(cx.debug_bounds("attachment-thumbnail-theirs").is_none());
+    }
+
+    #[gpui::test]
+    fn a_draft_whose_files_are_not_stored_yet_lends_no_picture(cx: &mut TestAppContext) {
+        cx.update(|cx| cx.set_reduce_motion(true));
+        let picture = sized_image(144, 81);
+        let (chat, cx) = chat_window(cx, |this, _| {
+            this.sidebar_collapsed = true;
+            this.attachment_requests.insert("theirs".to_string());
+        });
+        chat.update(cx, |this, cx| {
+            let mut draft = DraftAttachment::for_test(1, "shot.png", true);
+            draft.mime_type = "image/png".into();
+            draft.picture = Some(picture.clone());
+            // Still uploading: no stored id to match a row against.
+            let preview = sending::SendPreview::new(Some("s1".into()), "Look at this", &[draft])
+                .capture_timeline(&this.timeline)
+                .uploading();
+            this.sending_previews.insert("send-1".into(), preview);
+            this.handle_service_event(
+                AgentServiceEvent::TimelineItem {
+                    session_id: "s1".into(),
+                    run_id: Some("run-theirs".into()),
+                    item: image_message("their-row", "A message with a picture", &["theirs"]),
+                },
+                cx,
+            );
+            assert!(this.attachment_previews.is_empty());
+        });
+        cx.run_until_parked();
+        assert!(cx.debug_bounds("attachment-thumbnail-theirs").is_none());
+    }
+
+    #[gpui::test]
+    fn lightbox_owns_keyboard_input_and_restores_its_opener(cx: &mut TestAppContext) {
+        cx.update(|cx| cx.set_reduce_motion(true));
+        let (chat, cx) = chat_window(cx, |this, cx| {
+            this.set_application_vim_enabled(false, cx);
+            this.composer_vim_enabled = false;
+            this.replace_timeline(vec![image_message("screenshot", "Screenshot", &["shot"])]);
+            this.attachment_images
+                .insert("shot".into(), sized_image(300, 2000));
+            this.composer.as_ref().unwrap().update(cx, |input, cx| {
+                input.set_vim_enabled(false, cx);
+                input.set_text("Unsent draft", cx);
+            });
+        });
+        press(cx, "attachment-thumbnail-shot");
+        cx.run_until_parked();
+        let opener = chat.read_with(cx, |this, _| {
+            this.lightbox_previous_focus
+                .clone()
+                .expect("focused thumbnail opener")
+        });
+        assert_ne!(
+            cx.update(|window, app| window.focused(app)),
+            Some(opener.clone())
+        );
+        cx.simulate_keystrokes("i j k l enter");
+        cx.run_until_parked();
+        chat.read_with(cx, |this, app| {
+            assert!(this.lightbox.is_some());
+            assert_eq!(
+                this.composer.as_ref().unwrap().read(app).text(),
+                "Unsent draft"
+            );
+            assert!(this.sending_previews.is_empty());
+        });
+        cx.simulate_keystrokes("escape");
+        cx.run_until_parked();
+        assert!(chat.read_with(cx, |this, _| this.lightbox.is_none()));
+        assert_eq!(
+            cx.update(|window, app| window.focused(app)),
+            Some(opener.clone())
+        );
+        cx.simulate_keystrokes("tab");
+        cx.run_until_parked();
+        let after_tab = cx.update(|window, app| window.focused(app));
+        assert!(
+            after_tab.is_some(),
+            "Tab reaches a live control after dismissal"
+        );
+        assert_ne!(after_tab, Some(opener));
+    }
+
+    #[gpui::test]
+    fn image_thumbnails_support_keyboard_activation_and_modal_tab_navigation(
+        cx: &mut TestAppContext,
+    ) {
+        cx.update(|cx| cx.set_reduce_motion(true));
+        for application_vim in [false, true] {
+            let (chat, cx) = chat_window(cx, |this, cx| {
+                this.set_application_vim_enabled(application_vim, cx);
+                this.replace_timeline(vec![image_message("screenshot", "Screenshot", &["shot"])]);
+                this.attachment_images
+                    .insert("shot".into(), sized_image(300, 2000));
+            });
+            // Pointer activation gives the thumbnail its own focus handle. Closing
+            // restores that handle, so these keys exercise the real opener rather
+            // than directly calling open_lightbox or dispatching its action.
+            press(cx, "attachment-thumbnail-shot");
+            cx.run_until_parked();
+            let opener = chat.read_with(cx, |this, _| {
+                this.lightbox_previous_focus
+                    .clone()
+                    .expect("focused thumbnail opener")
+            });
+            cx.simulate_keystrokes("escape");
+            cx.run_until_parked();
+            assert_eq!(
+                cx.update(|window, app| window.focused(app)),
+                Some(opener.clone())
+            );
+
+            for activation in ["enter", "space"] {
+                cx.simulate_keystrokes(activation);
+                // GPUI's native button activation completes on key-up. The
+                // keystroke helper sends only key-down, so dispatch the release
+                // as well, just as the window receives a physical key press.
+                cx.update(|window, app| {
+                    window.dispatch_event(
+                        gpui::PlatformInput::KeyUp(gpui::KeyUpEvent {
+                            keystroke: gpui::Keystroke::parse(activation).unwrap(),
+                        }),
+                        app,
+                    );
+                });
+                cx.run_until_parked();
+                assert!(
+                    chat.read_with(cx, |this, _| this.lightbox.is_some()),
+                    "{activation} opens the focused thumbnail (Application Vim: {application_vim})"
+                );
+                for navigation in ["tab", "tab", "shift-tab", "shift-tab"] {
+                    cx.simulate_keystrokes(navigation);
+                    cx.run_until_parked();
+                    cx.update(|window, app| {
+                        assert!(
+                            chat.read(app).lightbox_focus.contains_focused(window, app),
+                            "{navigation} stays inside the image dialog"
+                        );
+                    });
+                }
+                cx.simulate_keystrokes("escape");
+                cx.run_until_parked();
+                assert!(chat.read_with(cx, |this, _| this.lightbox.is_none()));
+                assert_eq!(
+                    cx.update(|window, app| window.focused(app)),
+                    Some(opener.clone())
+                );
+            }
+
+            cx.simulate_keystrokes("tab");
+            cx.run_until_parked();
+            assert_ne!(
+                cx.update(|window, app| window.focused(app)),
+                Some(opener.clone())
+            );
+            cx.simulate_keystrokes("shift-tab");
+            cx.run_until_parked();
+            assert_eq!(cx.update(|window, app| window.focused(app)), Some(opener));
+        }
+    }
+
+    #[gpui::test]
+    fn leaving_a_task_closes_its_image_and_discards_stale_focus(cx: &mut TestAppContext) {
+        cx.update(|cx| cx.set_reduce_motion(true));
+        for application_vim in [false, true] {
+            let (chat, cx) = chat_window(cx, |this, cx| {
+                this.set_application_vim_enabled(application_vim, cx);
+                this.replace_timeline(vec![image_message("screenshot", "Screenshot", &["shot"])]);
+                this.attachment_images
+                    .insert("shot".into(), sized_image(300, 2000));
+            });
+            press(cx, "attachment-thumbnail-shot");
+            cx.run_until_parked();
+            chat.read_with(cx, |this, _| {
+                assert!(this.lightbox.is_some());
+                assert!(this.lightbox_previous_focus.is_some());
+            });
+            chat.update(cx, |this, cx| {
+                this.clear_selected_session_presentation(cx);
+                cx.notify();
+            });
+            cx.run_until_parked();
+            assert!(cx.debug_bounds("lightbox").is_none());
+            cx.update(|window, app| {
+                let this = chat.read(app);
+                assert!(this.lightbox.is_none());
+                assert!(!this.lightbox_focus_pending);
+                assert!(this.lightbox_previous_focus.is_none());
+                let expected = if application_vim {
+                    this.application_focus.clone()
+                } else {
+                    Some(this.composer.as_ref().unwrap().read(app).focus_handle(app))
+                };
+                assert_eq!(
+                    window.focused(app),
+                    expected,
+                    "navigation restores the new screen's live focus"
+                );
+            });
+        }
+    }
+
+    #[gpui::test]
+    fn late_project_trust_waits_until_the_image_preview_closes(cx: &mut TestAppContext) {
+        cx.update(|cx| cx.set_reduce_motion(true));
+        let (chat, cx) = chat_window(cx, |this, _| {
+            this.replace_timeline(vec![image_message("screenshot", "Screenshot", &["shot"])]);
+            this.attachment_images
+                .insert("shot".into(), sized_image(300, 2000));
+        });
+        press(cx, "attachment-thumbnail-shot");
+        cx.run_until_parked();
+        let trust = AgentProjectTrustStatus {
+            path: absolute_fixture_root("late-trust"),
+            decision: None,
+            available: true,
+            protected_features: vec![maple_agent::agent::AgentProjectTrustFeature::SystemPrompt],
+        };
+        // Mirror a project-trust response arriving asynchronously after the
+        // preview took the keyboard. Its decision remains pending underneath.
+        chat.update(cx, |this, cx| {
+            this.trust_prompt = Some(trust.clone());
+            this.dialog_focus.get_or_insert_with(|| cx.focus_handle());
+            this.dialog_focus_pending = true;
+            cx.notify();
+        });
+        cx.run_until_parked();
+        assert!(cx.debug_bounds("lightbox").is_some());
+        assert!(cx.debug_bounds("trust-backdrop").is_none());
+        cx.update(|window, app| {
+            let this = chat.read(app);
+            assert!(this.lightbox_focus.contains_focused(window, app));
+            assert!(this.dialog_focus_pending);
+            assert_eq!(this.trust_prompt.as_ref(), Some(&trust));
+        });
+
+        cx.simulate_keystrokes("escape");
+        cx.run_until_parked();
+        assert!(cx.debug_bounds("lightbox").is_none());
+        assert!(cx.debug_bounds("trust-backdrop").is_some());
+        cx.update(|window, app| {
+            let this = chat.read(app);
+            assert!(this.lightbox.is_none());
+            assert_eq!(this.trust_prompt.as_ref(), Some(&trust));
+            assert!(!this.dialog_focus_pending);
+            assert_eq!(window.focused(app), this.dialog_focus.clone());
+        });
+    }
+
     /// The lightbox draws in a debug build, where gpui asserts each
     /// element has at most one tooltip, and Escape closes it.
     #[gpui::test]
@@ -12092,81 +12797,263 @@ mod state_tests {
         });
     }
 
-    /// To the keyboard a folded turn is one row, its line. `l` shows the
-    /// steps, which then take the selection one by one, and `h` on the
-    /// line folds them again.
+    /// Each activity chunk is a keyboard row; assistant messages between
+    /// chunks remain readable regardless of either disclosure's state.
     #[gpui::test]
-    fn test_application_vim_opens_a_turn_from_its_line(cx: &mut TestAppContext) {
-        struct ChatHost {
-            chat: Entity<ChatScreen>,
-        }
-        impl Render for ChatHost {
-            fn render(
-                &mut self,
-                _window: &mut Window,
-                _cx: &mut Context<Self>,
-            ) -> impl IntoElement {
-                div().w(px(1200.)).h(px(800.)).child(self.chat.clone())
-            }
-        }
-
-        cx.executor().allow_parking();
-        let chat = cx.new(|cx| {
-            let _guard = SETTINGS_LOCK.lock();
-            let backend = std::sync::Arc::new(
-                crate::backend::AgentBackend::for_test(
-                    "http://127.0.0.1:9".to_string(),
-                    String::new(),
-                )
-                .expect("backend"),
-            );
-            crate::desktop::register_key_bindings(cx);
-            let mut chat = ChatScreen::new_inner_for_test(backend, "user".to_string(), cx);
-            chat.selected_session = Some("s1".to_string());
-            chat.application_vim_enabled = true;
-            chat.application_focus = Some(cx.focus_handle());
-            chat.screen_focus_pending = true;
-            chat.booting = false;
+    fn test_application_vim_opens_chunks_independently_from_their_lines(cx: &mut TestAppContext) {
+        cx.update(|cx| cx.set_reduce_motion(true));
+        let (chat, cx) = chat_window(cx, |chat, cx| {
+            chat.set_application_vim_enabled(false, cx);
+            chat.tool_details = false;
             chat.replace_timeline(vec![
                 user_item("u1", "question"),
-                item("call", "tool", None),
+                AgentTimelineItem {
+                    input: Some(serde_json::json!({"command": "ls"})),
+                    ..item("call", "tool", None)
+                },
                 item("thought", "thinking", Some("reasoning")),
-                item("a1", "message", Some("answer")),
+                item("a1", "message", Some("Interim answer")),
+                item("later", "tool", None),
+                item("later-thought", "thinking", Some("more reasoning")),
+                item("a2", "message", Some("Final answer")),
             ]);
-            chat
+            chat.set_application_vim_enabled(true, cx);
         });
-        let (_host, cx) = cx.add_window_view(|_window, _cx| ChatHost { chat: chat.clone() });
-        cx.simulate_resize(gpui::size(px(1200.), px(800.)));
         let rows = |cx: &mut gpui::VisualTestContext| {
             cx.update(|_window, app| chat.read(app).navigable_timeline_ids())
         };
         let selected = |cx: &mut gpui::VisualTestContext| {
             cx.update(|_window, app| chat.read(app).selected_transcript_id().map(str::to_owned))
         };
+        let messages_shown = |cx: &mut gpui::VisualTestContext| {
+            cx.run_until_parked();
+            for id in ["timeline-row-a1", "timeline-row-a2"] {
+                assert!(cx.debug_bounds(id).is_some(), "{id} stays visible");
+            }
+        };
 
-        assert_eq!(rows(cx), ["u1", "call", "a1"], "folded steps are skipped");
+        assert_eq!(rows(cx), ["u1", "call", "a1", "later", "a2"]);
+        assert!(cx.debug_bounds("tool-card").is_none());
+        messages_shown(cx);
         cx.simulate_keystrokes("g g j l");
-        assert_eq!(rows(cx), ["u1", "call", "thought", "a1"]);
+        assert_eq!(rows(cx), ["u1", "call", "thought", "a1", "later", "a2"]);
+        cx.simulate_keystrokes("l");
+        cx.run_until_parked();
+        let detail_height = cx.debug_bounds("tool-card").unwrap().size.height;
+        chat.update(cx, |chat, _| {
+            assert!(chat.toggled_tools.contains("call"));
+            assert!(!chat.chunk_open(4));
+        });
         cx.simulate_keystrokes("j");
         assert_eq!(selected(cx).as_deref(), Some("thought"));
 
-        // Folding from the pointer while a step is selected: the selection
-        // moves to the line rather than staying on a row that is gone.
-        chat.update(cx, |chat, cx| chat.toggle_turn("call", cx));
+        // A pointer fold moves a hidden selection to its own chunk header,
+        // and does not clear the individual tool's disclosure choice.
+        press(cx, "activity-chunk-call");
         assert_eq!(selected(cx).as_deref(), Some("call"));
-
-        cx.simulate_keystrokes("l");
-        assert_eq!(
-            rows(cx).len(),
-            4,
-            "the line opens before its step's details"
-        );
-        cx.simulate_keystrokes("h");
+        assert_eq!(rows(cx), ["u1", "call", "a1", "later", "a2"]);
+        assert!(cx.debug_bounds("tool-card").is_none());
+        messages_shown(cx);
+        press(cx, "activity-chunk-later");
         assert_eq!(
             rows(cx),
-            ["u1", "call", "a1"],
-            "h on the line folds the turn"
+            ["u1", "call", "a1", "later", "later-thought", "a2"]
         );
+        chat.update(cx, |chat, _| {
+            assert!(!chat.chunk_open(1));
+            assert!(chat.chunk_open(4));
+            assert!(chat.toggled_tools.contains("call"));
+            assert!(!chat.toggled_tools.contains("later"));
+        });
+        messages_shown(cx);
+
+        cx.simulate_keystrokes("g g 3 j h");
+        assert_eq!(selected(cx).as_deref(), Some("later"));
+        assert_eq!(rows(cx), ["u1", "call", "a1", "later", "a2"]);
+        press(cx, "activity-chunk-call");
+        chat.update(cx, |chat, _| {
+            assert!(chat.chunk_open(1));
+            assert!(!chat.chunk_open(4));
+            assert!(chat.toggled_tools.contains("call"));
+        });
+        cx.run_until_parked();
+        assert_eq!(
+            cx.debug_bounds("tool-card").unwrap().size.height,
+            detail_height,
+            "reopening the chunk restores the tool's visible details"
+        );
+        messages_shown(cx);
+    }
+
+    #[gpui::test]
+    fn folded_chunks_keep_live_rows_and_outcomes_under_one_turn_clock(cx: &mut TestAppContext) {
+        use std::time::{Duration, Instant};
+
+        use crate::ui::motion;
+        use maple_agent::agent::{AgentRunEvent, AgentRunTerminal};
+
+        struct ResetClock;
+        impl Drop for ResetClock {
+            fn drop(&mut self) {
+                motion::set_test_now(None);
+            }
+        }
+        let _reset_clock = ResetClock;
+        let began = Instant::now();
+        motion::set_test_now(Some(began));
+        cx.update(|cx| cx.set_reduce_motion(true));
+        let (chat, cx) = chat_window(cx, |chat, _| {
+            chat.tool_details = false;
+            chat.summaries_enabled = false;
+            chat.replace_timeline(vec![user_item("u1", "Run the checks")]);
+        });
+        let event = |event| AgentServiceEvent::Run {
+            session_id: "s1".into(),
+            run_id: "run-1".into(),
+            event,
+        };
+        chat.update(cx, |chat, cx| {
+            chat.handle_service_event(event(AgentRunEvent::Started), cx);
+            chat.handle_service_event(
+                event(AgentRunEvent::TimelineItem(item("call", "tool", None))),
+                cx,
+            );
+        });
+        motion::set_test_now(Some(began + Duration::from_secs(5)));
+        chat.update(cx, |chat, cx| {
+            chat.handle_service_event(
+                event(AgentRunEvent::TimelineItem(item(
+                    "a1",
+                    "message",
+                    Some("The first check is done; checking the rest."),
+                ))),
+                cx,
+            );
+            chat.handle_service_event(
+                event(AgentRunEvent::TimelineItem(AgentTimelineItem {
+                    status: Some("running".into()),
+                    ..item("later", "tool", None)
+                })),
+                cx,
+            );
+            assert!(!chat.chunk_open(1));
+            assert!(!chat.chunk_open(3));
+        });
+        cx.run_until_parked();
+        assert!(cx.debug_bounds("activity-status-later").is_some());
+        assert!(cx.debug_bounds("timeline-row-a1").is_some());
+        assert!(cx.debug_bounds("tool-card").is_none());
+
+        motion::set_test_now(Some(began + Duration::from_secs(8)));
+        chat.update(cx, |chat, cx| {
+            chat.handle_service_event(
+                event(AgentRunEvent::TimelineItem(item(
+                    "live-thought",
+                    "thinking",
+                    Some("Another row arrives while this chunk is folded."),
+                ))),
+                cx,
+            );
+            assert_eq!(chat.turns.tail(), Some(1));
+            assert!(!chat.chunk_open(3));
+            assert_eq!(chat.navigable_timeline_ids(), ["u1", "call", "a1", "later"]);
+            assert!(
+                chat.turn_worked.is_empty(),
+                "a new chunk does not end the turn"
+            );
+        });
+        cx.run_until_parked();
+        assert!(cx.debug_bounds("thinking-title").is_none());
+        assert!(cx.debug_bounds("timeline-row-a1").is_some());
+
+        motion::set_test_now(Some(began + Duration::from_secs(13)));
+        chat.update(cx, |chat, cx| {
+            for (id, status) in [("call", "failed"), ("later", "cancelled")] {
+                chat.handle_service_event(
+                    event(AgentRunEvent::TimelineItem(AgentTimelineItem {
+                        status: Some(status.into()),
+                        ..item(id, "tool", None)
+                    })),
+                    cx,
+                );
+            }
+            chat.handle_service_event(
+                event(AgentRunEvent::TimelineItem(item(
+                    "failure",
+                    "error",
+                    Some("One check failed."),
+                ))),
+                cx,
+            );
+            chat.handle_service_event(
+                event(AgentRunEvent::Finished(AgentRunTerminal::Cancelled)),
+                cx,
+            );
+            assert_eq!(chat.turn_worked.len(), 1);
+            assert_eq!(chat.turn_worked.get("call"), Some(&Duration::from_secs(13)));
+            assert!(!chat.chunk_open(1));
+            assert!(!chat.chunk_open(3));
+            assert_eq!(
+                chat.turns.chunk(1).unwrap().state(false),
+                Some(crate::ui::chat::step::StepState::Failed)
+            );
+            assert_eq!(
+                chat.turns.chunk(3).unwrap().state(false),
+                Some(crate::ui::chat::step::StepState::Stopped)
+            );
+            assert_eq!(
+                chat.navigable_timeline_ids(),
+                ["u1", "call", "a1", "later", "failure"]
+            );
+        });
+        cx.run_until_parked();
+        for selector in [
+            "activity-status-call",
+            "activity-status-later",
+            "timeline-row-a1",
+            "timeline-row-failure",
+        ] {
+            assert!(
+                cx.debug_bounds(selector).is_some(),
+                "{selector} remains visible"
+            );
+        }
+        assert!(cx.debug_bounds("tool-card").is_none());
+        assert!(cx.debug_bounds("thinking-title").is_none());
+    }
+
+    #[test]
+    fn chunk_disclosure_motion_is_independent_and_settles_with_reduced_motion() {
+        use std::time::Instant;
+
+        use crate::ui::chat::transcript::RowMotion;
+        use crate::ui::motion;
+
+        let began = Instant::now();
+        let midway = began + motion::REVEAL.duration / 2;
+        let mut rows = RowMotion::default();
+        rows.disclose("tool", true, began);
+        rows.disclose_chunk("first", true, began);
+        let progress = rows.chunk_disclosure("first", midway, false);
+        assert!(progress > 0. && progress < 1.);
+        assert_eq!(rows.chunk_disclosure("second", midway, false), 1.);
+        rows.disclose_chunk("second", true, midway);
+        assert_eq!(rows.chunk_disclosure("second", midway, false), 0.);
+        assert_eq!(rows.chunk_disclosure("first", midway, false), progress);
+        assert_eq!(rows.disclosure("tool", midway, false), progress);
+
+        rows.rekey("first", "persisted-first");
+        assert_eq!(
+            rows.chunk_disclosure("persisted-first", midway, false),
+            progress
+        );
+        rows.disclose_chunk("second", false, midway);
+        assert_eq!(rows.chunk_disclosure("second", midway, false), 1.);
+        assert_eq!(rows.disclosure("tool", midway, false), progress);
+        assert_eq!(rows.chunk_disclosure("persisted-first", midway, true), 1.);
+        assert!(!rows.settle(midway, true));
+        assert_eq!(rows.chunk_disclosure("persisted-first", midway, false), 1.);
+        assert_eq!(rows.disclosure("tool", midway, false), 1.);
     }
 
     #[gpui::test]
@@ -12941,7 +13828,7 @@ mod state_tests {
             chat.tool_summaries
                 .insert("think-1".to_string(), SharedString::from(summary));
             // The rows under test are the turn's steps: show them.
-            chat.toggle_turn("tool-1", cx);
+            chat.toggle_chunk("tool-1", cx);
             chat
         });
 
@@ -13031,7 +13918,7 @@ mod state_tests {
                     ..call("edit", "edit", "src/net/retry.rs")
                 },
             ]);
-            chat.toggle_turn("run", cx);
+            chat.toggle_chunk("run", cx);
             chat
         });
 
@@ -14810,7 +15697,7 @@ mod state_tests {
                         {"id": "empty", "label": "No models"},
                     ],
                     "data": [
-                        {"id": "flash", "group": "fast"},
+                        {"id": "flash", "group": "fast", "badges": ["New"]},
                         {"id": "gemma", "group": "fast"},
                         {"id": "ungrouped"},
                         {"id": "kimi", "group": "capable"},
@@ -14841,6 +15728,9 @@ mod state_tests {
                     ),
                 ]
             );
+            assert!(sections.is_new("flash"));
+            assert!(!sections.is_new("uncensored"));
+            assert!(!sections.is_new("glm"));
             assert!(sections.is_popular("uncensored"));
             assert!(!sections.is_popular("glm"));
 

@@ -296,7 +296,7 @@ describe("Transport V2 authentication runtime", () => {
 
     for (const [status, code] of [
       [400, "upstream_invalid_request"],
-      [400, "upstream_context_limit"],
+      [400, "context_length_exceeded"],
       [502, "upstream_provider_error"],
       [504, "upstream_timeout"]
     ] as const) {

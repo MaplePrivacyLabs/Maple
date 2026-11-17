@@ -605,6 +605,8 @@ diesel::table! {
         seed_enc -> Bytea,
         created_at -> Timestamptz,
         updated_at -> Timestamptz,
+        recovery_last_used_at -> Nullable<Timestamptz>,
+        recovery_use_count -> Int4,
     }
 }
 

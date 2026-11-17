@@ -21,9 +21,20 @@ monotonic request counters, per-field signatures, or a custom memory scheduler.
 
 The TLS terminator, forwarding host, reverse proxy, and load balancer are not
 trusted with logical request or response contents. After session
-establishment, they can observe the V2 endpoint, session identifier, ciphertext
+establishment, the V2 wire exposes the endpoint, session identifier, ciphertext
 lengths, timing, and connection behavior, but not the logical method, target,
 headers, credential, cache root, body, status, or response bytes.
+
+The enclave intentionally sends a limited set of operational metadata to
+host-visible diagnostic logs: an allowlisted logical method, a coarse fixed
+route class, stage and outcome labels, bounded failure reasons, numeric logical
+and outer HTTP statuses, and aggregate counts. Anyone with access to those logs
+can infer the operation class and result; this is an explicit exception to the
+wire confidentiality boundary, not a change to the encrypted wire format. The
+diagnostics never contain the raw target, path parameters, query, headers,
+credential, cache root, body, response content, user or session identifiers,
+or transport request IDs. See [Transport V2 diagnostics](transport-v2-diagnostics.md)
+for the exact fields, sampling, and retention boundary.
 
 The client trusts session keys only after it has:
 
@@ -484,10 +495,13 @@ the native Agent clients' existing status-based credit classification.
 ### Completion provider errors
 
 Before Chat Completions or Responses starts its public response, provider errors
-use the existing `{"status":400,"message":"..."}` shape with static messages,
-`x-opensecret-error-contract: 1`, and a static `x-opensecret-error-code`. V2
-authenticates the logical status, headers and body; V1 uses its existing HTTP
-error representation with the classified status/message.
+keep the flat `status`/`message` fields with static messages and add the nested
+OpenAI-compatible `error` described above: the same `message`, the static
+`code`, and a `type` of `invalid_request_error` for 4xx or `server_error`
+otherwise. The code is also carried by `x-opensecret-error-code`, alongside
+`x-opensecret-error-contract: 1`. V2 authenticates the logical status, headers
+and body; V1 uses its existing HTTP error representation with the classified
+status/message.
 
 | Failure | Public HTTP status | Error code |
 | --- | --- | --- |
@@ -500,16 +514,19 @@ error representation with the classified status/message.
 
 For 400/422 only, the bounded diagnostic can select
 `upstream_invalid_parameter`, `upstream_unsupported_parameter`,
-`upstream_invalid_messages`, or `upstream_context_limit`, each with a locally
-written message. Unknown, unreadable or oversized bodies fall back to the status
-category. Raw text, parameter names/values, request IDs and provider headers are
+`upstream_invalid_messages`, or `context_length_exceeded`, each with a locally
+written message. A context or token limit rejection uses OpenAI's own
+`context_length_exceeded` code, and its message says the request "exceeds the
+context window", because coding agents match that code or wording to compact
+the conversation and retry; under any other code they fail the turn. Unknown,
+unreadable or oversized bodies fall back to the status category. Raw text, parameter names/values, request IDs and provider headers are
 never copied. Diagnostics cannot override HTTP categories: HTTP429 remains a
 capacity error even with an `invalid_request_error` label; provider 401/403/404
 becomes 502, never a Maple authentication, entitlement or resource error. A
 provider rejection need not mean the caller violated Maple's schema.
 
 Routing, billing, retries and capacity feedback are unchanged. Capacity retains
-its existing `Retry-After` and client-replay rules. New `upstream_*` codes grant
+its existing `Retry-After` and client-replay rules. These provider codes grant
 no replay permission and request no session recreation or token refresh.
 
 After streaming starts, Chat emits one encrypted OpenAI-shaped error; Responses
@@ -776,3 +793,10 @@ Before enabling V2 clients in production:
 9. Retain a coordinated rollback plan. Rolling the backend back below V2 after
    publishing V2-only clients strands those clients; they intentionally do not
    downgrade or transmit credentials over V1.
+
+## Diagnostics
+
+Bounded route and outcome diagnostics, their volume controls, and the operator
+query are documented in
+[transport-v2-diagnostics.md](transport-v2-diagnostics.md). They deliberately
+carry no correlation key across the edge and the enclave.

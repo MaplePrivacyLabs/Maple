@@ -137,7 +137,6 @@
                 "libsqlite3-sys-0.38.2" = "sha256-+Ppdrv03WsGQkCcWw6qiwnDnbY/z4ql2O/RSxEdXuyQ=";
                 "pake-cpace-0.1.0" = "07ig50fcmrlsccn0pmxk30bznbdqq9fgs01y9qw9881vv34a18gj";
                 "collections-0.1.0" = "sha256-d2GVmZgvJzLk1pbNtPedw0V09+ANZFORZjTSLVxw7jc=";
-                "proptest-1.10.0" = "sha256-p5NTcHhruI8QQvANACg8AMRVNmuvGxs2NLit+/8PaWo=";
                 "wasm_thread-0.3.3" = "sha256-+lRLCIk0S6Y5ORYjDKsYYHia2FtoSoh+rWkQh7mnPBE=";
                 "xim-ctext-0.3.0" = "sha256-pRT4Sz1JU9ros47/7pmIW9kosWOGMOItcnNd+VrvnpE=";
                 "zed-font-kit-0.14.1-zed" = "sha256-KXygi0olNQi5yM8eaJVykNDtbPMDjT+cWPBF8UrtXR4=";
@@ -200,6 +199,14 @@
             inherit system;
             overlays = [ (import rust-overlay) ];
           };
+          # Reuse the locked Nixpkgs recipe with the fixed Git point release.
+          patchedGit = pkgs.git.overrideAttrs (_: {
+            version = "2.55.1";
+            src = pkgs.fetchurl {
+              url = "https://www.kernel.org/pub/software/scm/git/git-2.55.1.tar.xz";
+              hash = "sha256-e8NF26I8kIn6cbz055PRPSBP3Jm5arwRizopwYFZ6xY=";
+            };
+          });
           rustToolchain = pkgs.rust-bin.stable.latest.default.override {
             extensions = [
               "clippy"
@@ -269,7 +276,7 @@
               python3
               perl
               # Reproduce the pinned SQLCipher amalgamation and audit its graph.
-              git
+              patchedGit
               gnupg
               tcl
               gnumake

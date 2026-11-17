@@ -21,6 +21,7 @@ import {
 } from "@/components/ui/select";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import {
+  buildOpenCodeLimitConfig,
   buildOpenCodeProviderFields,
   buildCurlProxyExample,
   buildPythonProxyExample,
@@ -146,6 +147,7 @@ export function ProxyClientGuides({
   const selectedModel = models.find((model) => model.id === selectedModelId);
   const exampleModelId = selectedModel?.id ?? "SELECT_A_MODEL";
   const openCodeFields = buildOpenCodeProviderFields(baseUrl, selectedModel);
+  const openCodeLimitConfig = buildOpenCodeLimitConfig(selectedModel);
 
   return (
     <div className="space-y-4">
@@ -206,6 +208,13 @@ export function ProxyClientGuides({
               In OpenCode, open <strong>Settings → Providers → Custom Provider → Connect</strong>.
             </Step>
             <Step number={3}>Enter the values below, then connect and select the model.</Step>
+            {openCodeLimitConfig && (
+              <Step number={4}>
+                Add the context limit below to your <code>opencode.json</code>. OpenCode cannot read
+                it from a custom provider, and needs it to compact a long session before the model
+                rejects it.
+              </Step>
+            )}
           </ol>
 
           {hasApiKeys && (
@@ -232,6 +241,8 @@ export function ProxyClientGuides({
             />
             <SetupField label="Headers" value={openCodeFields.headers} copyable={false} />
           </div>
+
+          {openCodeLimitConfig && <CodeExample label="opencode.json" code={openCodeLimitConfig} />}
 
           <Alert role="note" className="border-maple-warning/40 bg-maple-warning/10">
             <ShieldCheck className="h-4 w-4 text-maple-warning" />

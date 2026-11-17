@@ -1,16 +1,13 @@
 import type { BillingStatus, BillingSubscription } from "./billingApi";
+import { isPaidPlan, isTeamPlan, planGroup } from "./plan";
 
 export function isKnownFreePlan(billingStatus: BillingStatus | null | undefined): boolean {
-  if (!billingStatus) return false;
-
-  const productName = billingStatus.product_name?.trim().toLowerCase() ?? "";
-  return productName === "free";
+  return planGroup(billingStatus) === "free";
 }
 
+/** Every paid plan includes API access, paid models and uploads. */
 export function hasApiAccess(billingStatus: BillingStatus | null | undefined): boolean {
-  const productName = billingStatus?.product_name?.toLowerCase() ?? "";
-
-  return productName.includes("pro") || productName.includes("max") || productName.includes("team");
+  return isPaidPlan(billingStatus);
 }
 
 export function shouldWarnBeforeAccountDeletion(
@@ -56,8 +53,7 @@ export function accountDeletionBillingDescription(
 
   if (ownedCard.length > 0 || (legacyProvider === "stripe" && status?.stripe_customer_id)) {
     const ownsTeam = ownedCard.some(({ plan }) => plan.toLowerCase().includes("team"));
-    const legacyTeam =
-      legacyProvider === "stripe" && status?.product_name?.toLowerCase().includes("team");
+    const legacyTeam = legacyProvider === "stripe" && isTeamPlan(status);
     messages.push(
       ownsTeam
         ? "Your card subscriptions will be canceled automatically during deletion, including your team's subscription. Members will lose access provided by that team subscription."

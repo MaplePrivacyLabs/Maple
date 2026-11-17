@@ -2,6 +2,7 @@ import type { ReactNode } from "react";
 import { Link } from "@tanstack/react-router";
 import { AlertTriangle, Coins, TrendingUp, UsersRound } from "lucide-react";
 import type { BillingStatus } from "@/billing/billingApi";
+import { planDisplayName } from "@/billing/plan";
 import type { UsageDayRow } from "@/billing/usageApi";
 import { SettingsSection } from "@/components/settings/SettingsPage";
 import { Badge } from "@/components/ui/badge";
@@ -79,7 +80,7 @@ export function CreditPlanCard({
             <p className="text-xs font-medium text-muted-foreground">
               This billing period{range ? ` · ${range}` : ""}
             </p>
-            {status.product_name && <PlanBadge name={status.product_name} />}
+            {planDisplayName(status) && <PlanBadge name={planDisplayName(status)!} />}
           </div>
           <p className="mt-2 text-4xl font-semibold tracking-tight">{fmt(used)}</p>
           <p className="text-sm text-muted-foreground">
@@ -226,7 +227,7 @@ export function TeamPlanCard({
             <p className="text-xs font-medium text-muted-foreground">
               Team pool{range ? ` · ${range}` : ""}
             </p>
-            {status.product_name && <PlanBadge name={status.product_name} />}
+            {planDisplayName(status) && <PlanBadge name={planDisplayName(status)!} />}
           </div>
           <p className="mt-2 text-4xl font-semibold tracking-tight">{fmt(used)}</p>
           <p className="text-sm text-muted-foreground">of {fmt(allowance)} team credits</p>
@@ -356,7 +357,7 @@ export function FreePlanCard({
         <div className="lg:w-64 lg:shrink-0">
           <div className="flex items-center justify-between gap-2">
             <p className="text-xs font-medium text-muted-foreground">Today</p>
-            <PlanBadge name={status.product_name || "Free"} />
+            <PlanBadge name={planDisplayName(status) || "Free"} />
           </div>
           <p className="mt-2 text-4xl font-semibold tracking-tight">{fmt(usedToday)}</p>
           <p className="text-sm text-muted-foreground">of {FREE_DAILY_MESSAGES} messages</p>

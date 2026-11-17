@@ -260,7 +260,7 @@ impl ChatScreen {
             .map(|(i, item)| (item.id.clone(), (i, 0)))
             .collect();
         self.turns.rebuild(&self.timeline);
-        self.toggled_turns
+        self.toggled_chunks
             .retain(|id| self.timeline_index.contains_key(id));
         self.turn_worked
             .retain(|id, _| self.timeline_index.contains_key(id));
@@ -325,6 +325,7 @@ impl ChatScreen {
         }
         if changed {
             self.attachment_images.clear();
+            self.attachment_previews.clear();
             self.attachment_requests.clear();
             self.attachment_failures.clear();
             self.attachment_queue.clear();
