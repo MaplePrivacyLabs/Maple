@@ -16,13 +16,13 @@ use crate::inference::health::MIN_CAPACITY_COOLDOWN;
 use crate::inference_planning::ConfiguredProviders;
 use crate::model_config::{
     model_capabilities, model_context_window, ModelAliasTargets, ModelPlan, GLM_5_3_FLASH_MODEL_ID,
-    KIMI_K3_MODEL_ID,
+    KIMI_K3_1_PRO_MODEL_ID,
 };
 use crate::web::responses::context_builder::model_uses_kimi_tool_call_ids;
 use std::cell::OnceCell;
 use std::time::Duration;
 
-pub(crate) const AUTO_MODEL_POLICY_VERSION: &str = "auto-model-v3";
+pub(crate) const AUTO_MODEL_POLICY_VERSION: &str = "auto-model-v4";
 
 // Alternates are product policy and are tried in order only after every earlier
 // candidate is unavailable or incompatible. The tier's preferred model is the
@@ -32,7 +32,8 @@ pub(crate) const AUTO_MODEL_POLICY_VERSION: &str = "auto-model-v3";
 // Paid Quick prefers DeepSeek, so it reaches GLM Flash only after every
 // DeepSeek route (Maple and Tinfoil) is unavailable.
 const PAID_QUICK_ALTERNATES: &[&str] = &[GLM_5_3_FLASH_MODEL_ID];
-const PAID_POWERFUL_ALTERNATES: &[&str] = &[KIMI_K3_MODEL_ID];
+// K3.1 Pro replaces the retired K3 only as Powerful's existing fallback.
+const PAID_POWERFUL_ALTERNATES: &[&str] = &[KIMI_K3_1_PRO_MODEL_ID];
 const FREE_ALTERNATES: &[&str] = &[];
 
 /// Ordered candidate models for an Auto tier and plan: the alias target first,
@@ -476,7 +477,7 @@ mod tests {
         );
         assert_eq!(
             auto_model_candidates(ModelSelectionMode::AutoPowerful, ModelPlan::Paid),
-            Some(vec![GLM_5_3_MODEL_ID, KIMI_K3_MODEL_ID])
+            Some(vec![GLM_5_3_MODEL_ID, KIMI_K3_1_PRO_MODEL_ID])
         );
         assert_eq!(
             auto_model_candidates(ModelSelectionMode::AutoQuick, ModelPlan::Free),
@@ -486,7 +487,7 @@ mod tests {
             auto_model_candidates(ModelSelectionMode::AutoPowerful, ModelPlan::Free),
             Some(vec![GLM_5_3_MODEL_ID])
         );
-        assert_eq!(AUTO_MODEL_POLICY_VERSION, "auto-model-v3");
+        assert_eq!(AUTO_MODEL_POLICY_VERSION, "auto-model-v4");
     }
 
     #[test]
@@ -511,6 +512,25 @@ mod tests {
         assert!(!decision.changed_model());
         assert!(decision.rejected.is_empty());
         assert_eq!(decision.policy_version, AUTO_MODEL_POLICY_VERSION);
+    }
+
+    #[test]
+    fn retired_k3_sticky_choice_keeps_powerful_on_healthy_glm() {
+        let table = availability(&[
+            (GLM_5_3_MODEL_ID, available()),
+            (KIMI_K3_1_PRO_MODEL_ID, available()),
+            ("kimi-k3", available()),
+        ]);
+        let decision = select(
+            ModelSelectionMode::AutoPowerful,
+            ModelPlan::Paid,
+            Some("kimi-k3"),
+            requirements(),
+            &table,
+        )
+        .expect("retired sticky model must not replace the healthy primary");
+        assert_eq!(decision.chosen_model_id, GLM_5_3_MODEL_ID);
+        assert_eq!(decision.reason, AutoModelReason::Primary);
     }
 
     #[test]
@@ -543,7 +563,7 @@ mod tests {
 
         let powerful = availability(&[
             (GLM_5_3_MODEL_ID, unavailable(30)),
-            (KIMI_K3_MODEL_ID, available()),
+            (KIMI_K3_1_PRO_MODEL_ID, available()),
         ]);
         let decision = select(
             ModelSelectionMode::AutoPowerful,
@@ -553,7 +573,7 @@ mod tests {
             &powerful,
         )
         .expect("powerful fallback");
-        assert_eq!(decision.chosen_model_id, KIMI_K3_MODEL_ID);
+        assert_eq!(decision.chosen_model_id, KIMI_K3_1_PRO_MODEL_ID);
         assert_eq!(decision.reason, AutoModelReason::HealthFallback);
     }
 
@@ -594,7 +614,7 @@ mod tests {
         // A remembered model outside the tier or equal to the preferred model
         // changes nothing.
         for sticky in [
-            Some(KIMI_K3_MODEL_ID),
+            Some(KIMI_K3_1_PRO_MODEL_ID),
             Some(DEEPSEEK_V4_1_FLASH_MODEL_ID),
             Some("unknown"),
         ] {
@@ -645,11 +665,11 @@ mod tests {
         // Synthetic pairing exercises the generic guard: the current Auto tiers
         // have equal-size windows, but Kimi is smaller than a 1M preferred model.
         let preferred_window = model_context_window(DEEPSEEK_V4_1_FLASH_MODEL_ID);
-        let candidate_window = model_context_window(KIMI_K3_MODEL_ID);
+        let candidate_window = model_context_window(KIMI_K3_1_PRO_MODEL_ID);
         assert!(candidate_window < preferred_window);
         for tokens in [candidate_window - 1, candidate_window, candidate_window + 1] {
             let rejection = incompatible_alternate(
-                KIMI_K3_MODEL_ID,
+                KIMI_K3_1_PRO_MODEL_ID,
                 preferred_window,
                 &AutoModelRequirements {
                     prompt_tokens: PromptTokenEstimate::Known(tokens),
@@ -672,7 +692,7 @@ mod tests {
         // Synthetic smaller-window pairing keeps the lazy exact-count contract
         // covered without changing the production Auto candidate lists.
         let preferred_window = model_context_window(DEEPSEEK_V4_1_FLASH_MODEL_ID);
-        let candidate_window = model_context_window(KIMI_K3_MODEL_ID);
+        let candidate_window = model_context_window(KIMI_K3_1_PRO_MODEL_ID);
         let calls = std::cell::Cell::new(0usize);
         let exact = || {
             calls.set(calls.get() + 1);
@@ -682,7 +702,7 @@ mod tests {
 
         // A byte bound below the window admits the alternate without counting.
         let rejection = incompatible_alternate(
-            KIMI_K3_MODEL_ID,
+            KIMI_K3_1_PRO_MODEL_ID,
             preferred_window,
             &AutoModelRequirements {
                 vision: false,
@@ -700,7 +720,7 @@ mod tests {
         // Repeated checks above the window share a single exact count.
         for _ in 0..2 {
             let rejection = incompatible_alternate(
-                KIMI_K3_MODEL_ID,
+                KIMI_K3_1_PRO_MODEL_ID,
                 preferred_window,
                 &AutoModelRequirements {
                     vision: false,
@@ -723,7 +743,7 @@ mod tests {
         select_auto_model(AutoModelSelectionInput {
             mode: ModelSelectionMode::AutoPowerful,
             plan: ModelPlan::Paid,
-            sticky_model_id: Some(KIMI_K3_MODEL_ID),
+            sticky_model_id: Some(KIMI_K3_1_PRO_MODEL_ID),
             excluded: None,
             requirements: AutoModelRequirements {
                 vision: false,
@@ -762,7 +782,7 @@ mod tests {
     fn kimi_is_skipped_for_incompatible_tool_history_but_vision_is_never_lost() {
         let table = availability(&[
             (GLM_5_3_MODEL_ID, unavailable(30)),
-            (KIMI_K3_MODEL_ID, available()),
+            (KIMI_K3_1_PRO_MODEL_ID, available()),
         ]);
         let error = select(
             ModelSelectionMode::AutoPowerful,
@@ -778,7 +798,7 @@ mod tests {
         assert!(matches!(
             error,
             AutoModelError::NoEligibleCandidate { ref rejected, retry_after: Some(_), .. }
-                if rejected.contains(&(KIMI_K3_MODEL_ID, AutoCandidateRejection::IncompatibleToolHistory))
+                if rejected.contains(&(KIMI_K3_1_PRO_MODEL_ID, AutoCandidateRejection::IncompatibleToolHistory))
         ));
 
         // GLM 5.3 has no vision; Kimi does, so images never make the
@@ -794,10 +814,14 @@ mod tests {
             &table,
         )
         .expect("kimi accepts images");
-        assert_eq!(decision.chosen_model_id, KIMI_K3_MODEL_ID);
-        assert!(model_capabilities(KIMI_K3_MODEL_ID).expect("kimi").vision);
+        assert_eq!(decision.chosen_model_id, KIMI_K3_1_PRO_MODEL_ID);
+        assert!(
+            model_capabilities(KIMI_K3_1_PRO_MODEL_ID)
+                .expect("kimi")
+                .vision
+        );
         assert!(!model_capabilities(GLM_5_3_MODEL_ID).expect("glm").vision);
-        assert!(model_uses_kimi_tool_call_ids(KIMI_K3_MODEL_ID));
+        assert!(model_uses_kimi_tool_call_ids(KIMI_K3_1_PRO_MODEL_ID));
         assert!(!model_uses_kimi_tool_call_ids(GLM_5_3_FLASH_MODEL_ID));
     }
 
@@ -996,7 +1020,7 @@ mod tests {
         // model's capacity result survives with both causes recorded.
         let paid = availability(&[
             (GLM_5_3_MODEL_ID, available()),
-            (KIMI_K3_MODEL_ID, available()),
+            (KIMI_K3_1_PRO_MODEL_ID, available()),
         ]);
         let lost =
             ExcludedAutoCandidate::unavailable(GLM_5_3_MODEL_ID, Some(Duration::from_secs(35)));
@@ -1024,7 +1048,7 @@ mod tests {
                         },
                     ),
                     (
-                        KIMI_K3_MODEL_ID,
+                        KIMI_K3_1_PRO_MODEL_ID,
                         AutoCandidateRejection::IncompatibleToolHistory,
                     ),
                 ],
@@ -1041,7 +1065,7 @@ mod tests {
             &paid,
         )
         .expect("alternate takes the request");
-        assert_eq!(moved.chosen_model_id, KIMI_K3_MODEL_ID);
+        assert_eq!(moved.chosen_model_id, KIMI_K3_1_PRO_MODEL_ID);
         assert_eq!(moved.reason, AutoModelReason::HealthFallback);
         assert_eq!(
             moved.rejected,

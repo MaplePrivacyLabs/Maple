@@ -15,6 +15,7 @@ use crate::store::records::{
     McpTarget, SecretString,
 };
 
+pub(crate) mod acp_channel;
 pub(crate) mod apps;
 pub(crate) mod catalog;
 mod connection;
@@ -225,29 +226,35 @@ pub(super) fn normalize_mcp_servers(
             ));
         }
 
-        let environment = match &mut server.transport {
+        let environment: &[AgentMcpKeyValue] = match &mut server.transport {
             AgentMcpTransport::Stdio {
                 command,
+                argv,
                 environment,
             } => {
                 *command = command.trim().to_string();
                 if command.is_empty() {
                     return Err(format!("MCP server '{}' requires a command", server.name));
                 }
-                let words = split_command(command).map_err(|error| {
-                    format!(
-                        "MCP server '{}' has an invalid command: {error}",
-                        server.name
-                    )
-                })?;
-                if words.first().is_none_or(String::is_empty) {
+                // Exact words are used as given; only a typed line is split.
+                let words = if argv.is_empty() {
+                    split_command(command).map_err(|error| {
+                        format!(
+                            "MCP server '{}' has an invalid command: {error}",
+                            server.name
+                        )
+                    })?
+                } else {
+                    argv.clone()
+                };
+                if words.first().is_none_or(|word| word.trim().is_empty()) {
                     return Err(format!(
                         "MCP server '{}' requires an executable",
                         server.name
                     ));
                 }
                 validate_key_values(environment, &server.name, "environment variable", false)?;
-                environment
+                &environment[..]
             }
             AgentMcpTransport::StreamableHttp {
                 url,
@@ -263,7 +270,19 @@ pub(super) fn normalize_mcp_servers(
                 }
                 validate_key_values(environment, &server.name, "environment variable", false)?;
                 validate_key_values(headers, &server.name, "HTTP header", true)?;
-                environment
+                &environment[..]
+            }
+            AgentMcpTransport::Acp { server_id, .. } => {
+                *server_id = server_id.trim().to_string();
+                if server_id.is_empty() {
+                    return Err(format!(
+                        "MCP server '{}' requires an ACP server id",
+                        server.name
+                    ));
+                }
+                // An ACP server runs on the caller's connection; it carries no
+                // environment of its own.
+                &[]
             }
         };
         if let Some(entry) = environment.iter().find(|entry| {
@@ -461,9 +480,22 @@ fn save_saved_mcp_servers(
     origin: McpEditOrigin,
 ) -> Result<(), String> {
     let servers = normalize_mcp_servers(servers)?;
+    // A server over the caller's ACP connection belongs to a live session;
+    // it cannot become a saved account server.
+    if servers
+        .iter()
+        .any(|server| matches!(server.transport, AgentMcpTransport::Acp { .. }))
+    {
+        return Err(
+            "An MCP-over-ACP server belongs to a live editor session and cannot be saved".into(),
+        );
+    }
     let previous = load_saved_mcp_servers(paths, user_id)?;
     validate_new_mcp_integration_collisions(&previous, &servers)?;
-    let edits: Vec<_> = servers.into_iter().map(server_to_edit).collect();
+    let edits: Vec<_> = servers
+        .into_iter()
+        .map(server_to_edit)
+        .collect::<Result<Vec<_>, String>>()?;
     let (store, account) = account_store(paths, user_id).map_err(|error| error.to_string())?;
     store
         .save_mcp_definitions(account, &edits, origin)
@@ -502,6 +534,7 @@ fn definition_to_server(definition: McpDefinition) -> AgentMcpServer {
     let transport = match definition.target {
         McpTarget::Stdio { command } => AgentMcpTransport::Stdio {
             command,
+            argv: Vec::new(),
             environment,
         },
         McpTarget::StreamableHttp { url } => AgentMcpTransport::StreamableHttp {
@@ -555,11 +588,13 @@ fn launch_to_server(launch: McpLaunchSecrets) -> AgentMcpServer {
                 })
                 .collect();
         }
+        // A launch never carries a live ACP session attachment.
+        AgentMcpTransport::Acp { .. } => {}
     }
     server
 }
 
-fn server_to_edit(server: AgentMcpServer) -> McpServerEdit {
+fn server_to_edit(server: AgentMcpServer) -> Result<McpServerEdit, String> {
     let convert = |values: Vec<AgentMcpKeyValue>| {
         values
             .into_iter()
@@ -574,9 +609,12 @@ fn server_to_edit(server: AgentMcpServer) -> McpServerEdit {
             .collect()
     };
     let (target, environment, headers) = match server.transport {
+        // A saved server is a typed command line; exact words belong to a
+        // live session's server, which is never saved.
         AgentMcpTransport::Stdio {
             command,
             environment,
+            ..
         } => (McpTarget::Stdio { command }, convert(environment), vec![]),
         AgentMcpTransport::StreamableHttp {
             url,
@@ -587,8 +625,14 @@ fn server_to_edit(server: AgentMcpServer) -> McpServerEdit {
             convert(environment),
             convert(headers),
         ),
+        AgentMcpTransport::Acp { .. } => {
+            return Err(
+                "An MCP-over-ACP server belongs to a live editor session and cannot be saved"
+                    .into(),
+            );
+        }
     };
-    McpServerEdit {
+    Ok(McpServerEdit {
         key: name_to_key(&server.name),
         name: server.name,
         description: server.description,
@@ -597,7 +641,7 @@ fn server_to_edit(server: AgentMcpServer) -> McpServerEdit {
         target,
         environment,
         headers,
-    }
+    })
 }
 
 fn edit_to_validation_server(edit: &McpServerEdit) -> AgentMcpServer {
@@ -613,6 +657,7 @@ fn edit_to_validation_server(edit: &McpServerEdit) -> AgentMcpServer {
     let transport = match &edit.target {
         McpTarget::Stdio { command } => AgentMcpTransport::Stdio {
             command: command.clone(),
+            argv: Vec::new(),
             environment: values(&edit.environment),
         },
         McpTarget::StreamableHttp { url } => AgentMcpTransport::StreamableHttp {

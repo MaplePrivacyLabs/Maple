@@ -44,9 +44,8 @@ export function PasswordResetRequestForm() {
       await os.requestPasswordReset(nextEmail, hashedSecret);
       setSecret(generatedSecret);
       setShowConfirmForm(true);
-    } catch (err) {
+    } catch {
       setError("Failed to request password reset. Please try again.");
-      console.error(err);
     } finally {
       setIsLoading(false);
     }
@@ -65,7 +64,16 @@ export function PasswordResetRequestForm() {
   };
 
   if (showConfirmForm) {
-    return <PasswordResetConfirmForm email={requestedEmail} secret={secret} />;
+    return (
+      <PasswordResetConfirmForm
+        email={requestedEmail}
+        secret={secret}
+        onRestart={() => {
+          setShowConfirmForm(false);
+          setSecret("");
+        }}
+      />
+    );
   }
 
   return (
@@ -103,11 +111,12 @@ export function PasswordResetRequestForm() {
             <div className="mb-2 flex h-10 w-10 items-center justify-center rounded-full bg-destructive/10 text-destructive">
               <AlertTriangle className="h-5 w-5" aria-hidden="true" />
             </div>
-            <AlertDialogTitle>Resetting your password deletes private data</AlertDialogTitle>
+            <AlertDialogTitle>Keep your private data with a recovery code</AlertDialogTitle>
             <AlertDialogDescription className="space-y-3">
               <span className="block">
-                Password reset is account access recovery. It creates a new private key and removes
-                private encrypted content such as chats and saved data.
+                After verifying the email code, you can use a saved recovery code to keep your
+                private chats and encrypted data. Without one, resetting your password deletes that
+                data. Requesting this email does not delete anything.
               </span>
               <span className="block">
                 Before continuing, try signing in with your current password or with Apple, Google,

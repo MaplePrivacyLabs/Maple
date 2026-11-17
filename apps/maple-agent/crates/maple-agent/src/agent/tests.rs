@@ -2502,6 +2502,7 @@ async fn mcp_servers_are_saved_apart_from_the_other_settings() {
         timeout_seconds: 300,
         transport: AgentMcpTransport::Stdio {
             command: "npx server-files".into(),
+            argv: Vec::new(),
             environment: Vec::new(),
         },
     };
@@ -3173,6 +3174,7 @@ async fn a_server_that_cannot_connect_is_reported_once_and_cannot_be_switched_on
         timeout_seconds: 30,
         transport: AgentMcpTransport::Stdio {
             command: "maple-test-no-such-mcp-server".into(),
+            argv: Vec::new(),
             environment: Vec::new(),
         },
     };

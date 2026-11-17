@@ -19,7 +19,7 @@ mod external_agents;
 mod integrations;
 mod login_path;
 mod maintenance;
-mod mcp;
+pub(crate) mod mcp;
 pub use mcp::apps::{McpAppConnection, McpAppMissing};
 pub use mcp::catalog::{
     McpCatalogAddress, McpCatalogAuth, McpCatalogCategory, McpCatalogEntry, mcp_catalog,

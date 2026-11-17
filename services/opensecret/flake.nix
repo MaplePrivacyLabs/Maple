@@ -47,6 +47,14 @@
           libtpmsGcc15FixOverlay
         ];
         pkgs = import nixpkgs { inherit system overlays; };
+        # Keep the locked package recipe while using the fixed Git point release.
+        patchedGit = pkgs.git.overrideAttrs (_: {
+          version = "2.54.1";
+          src = pkgs.fetchurl {
+            url = "https://www.kernel.org/pub/software/scm/git/git-2.54.1.tar.xz";
+            hash = "sha256-ypiOua99h3AznffNw4EG/sgkRmT/iGhAdny5vj7w4Ww=";
+          };
+        });
         # Keep the build framework and enclave kernel pinned while refreshing
         # the root store used by the EIF. NSS 3.131.1 removes the emSign ECC
         # Root CA - G3 trust anchor after the eMudhra intermediate compromise.
@@ -138,7 +146,7 @@
           rust
           pkgs.bash
           pkgs.coreutils
-          pkgs.git
+          patchedGit
           pkgs.pkg-config
           pkgs.openssl
           pkgs.zlib
@@ -663,7 +671,7 @@
           '';
           operator-boundaries = pkgs.runCommand "opensecret-operator-boundaries" {
             nativeBuildInputs = [
-              pkgs.bash pkgs.coreutils pkgs.git pkgs.jq pkgs.just pkgs.nodejs
+              pkgs.bash pkgs.coreutils patchedGit pkgs.jq pkgs.just pkgs.nodejs
               secretsPkgs.secretspec
               (pkgs.python3.withPackages (ps: [ ps.cryptography ]))
             ];
@@ -685,7 +693,7 @@
         # containers, or shell hooks.
         devShells.signing = pkgs.mkShell {
           packages = [
-            pkgs.bash pkgs.coreutils pkgs.git pkgs.jq pkgs.just pkgs.nodejs
+            pkgs.bash pkgs.coreutils patchedGit pkgs.jq pkgs.just pkgs.nodejs
             (pkgs.python3.withPackages (ps: [ ps.cryptography ]))
           ];
         };

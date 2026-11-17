@@ -17,6 +17,7 @@ import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { useTheme } from "@/contexts/ThemeContext";
 import { useBillingState } from "@/state/useLocalState";
+import { planDisplayName } from "@/billing/plan";
 import { SettingsPage, SettingsSection } from "./SettingsPage";
 
 type SettingsLinkRowProps = {
@@ -131,7 +132,7 @@ export function AccountSettings() {
             <Label>Plan</Label>
             <div className="rounded-lg border border-border/70 bg-muted/40 px-3 py-2.5">
               <p className="text-sm font-medium">
-                {billingStatus ? `${billingStatus.product_name} Plan` : "Loading..."}
+                {billingStatus ? `${planDisplayName(billingStatus)} Plan` : "Loading..."}
               </p>
               {billingStatus?.current_period_end && (
                 <p className="mt-0.5 text-xs text-muted-foreground">

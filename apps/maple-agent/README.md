@@ -528,6 +528,7 @@ maple-agent                 Open the desktop app.
 maple-agent acp             Serve the Agent Client Protocol on stdio.
 maple-agent proxy [FLAGS]   Serve an OpenAI-compatible HTTP endpoint.
 maple-agent login           Sign in with email and password from a terminal.
+maple-agent logout          Sign out and remove the saved session.
 maple-agent unlock          Unlock the local store using a hidden TTY prompt.
 maple-agent host stop       Stop this profile's host and its running tasks.
 maple-agent --version       Print the version.
@@ -547,6 +548,19 @@ desktop-only for now.
 
 A password-protected store must be unlocked first. Login uses the Maple account
 password; it does not unlock local storage.
+
+Login does not replace an existing sign-in. If Maple is already signed in, it
+stops before prompting and asks you to run `maple-agent logout` first, for
+example to sign in again after changing the account password.
+
+### `maple-agent logout`
+
+Signs out the saved account, the same as **Sign out** in the desktop app: it
+stops that account's running tasks, reports the sign-out to the server and
+removes the saved session. Remote access goes offline until someone signs
+in again. Tasks, settings and remote pairings stay in the account's local
+data; signing in to the same account brings them back, including remote access
+if it was enabled. Like login, it needs an unlocked store.
 
 ### `maple-agent unlock`
 
@@ -586,10 +600,12 @@ plain text. Project trust remains an explicit choice. ACP tasks run with Full
 access and there are no session modes; a desktop task loaded over ACP keeps its
 permission mode, and its approvals use the same questions.
 
-Client-supplied HTTP MCP bindings are temporary and become unavailable on
-disconnect. Conflicting server names are refused. Transient stdio MCP injection
-remains disabled; configure local stdio servers in Maple. Tools execute on the
-host's filesystem with its normal login-shell PATH. See [lifecycle and client
+Client-supplied MCP bindings, HTTP and stdio, are temporary and become
+unavailable on disconnect. Conflicting server names are refused. A client's
+stdio server starts in the task's folder with the exact program, arguments and
+environment the client gave, under the same rules as a stdio server configured
+in Maple. Tools execute on the host's filesystem with its normal login-shell
+PATH. See [lifecycle and client
 compatibility](docs/local-host.md) before configuring an ACP launcher.
 
 ### `maple-agent proxy`
@@ -658,7 +674,7 @@ ignored. See [build profiles](docs/release-profiles.md).
 | `MAPLE_DISABLE_UPDATE_CHECK` | `1` turns Agent update checks off. | unset |
 | `RUST_LOG` | Log filter. | `info` |
 
-Settings → General → Language offers System, English, Español and Deutsch.
+Settings → General → Language offers System, English, Español, Deutsch and 한국어.
 Language changes apply immediately and are saved locally. The system locale is
 used before the local store is unlocked. See [localization](docs/localization.md)
 for coverage and platform validation requirements.

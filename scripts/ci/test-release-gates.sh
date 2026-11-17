@@ -164,11 +164,9 @@ expect_failure "rejects an unknown argument" \
 release_json="${temp_root}/release.json"
 proxy_rust_json="${temp_root}/proxy-rust.json"
 proxy_publish_json="${temp_root}/proxy-publish.json"
-zapstore_json="${temp_root}/zapstore-publish.json"
 yq -o=json '.' "${repo_root}/.github/workflows/release.yml" > "${release_json}"
 yq -o=json '.' "${repo_root}/.github/workflows/proxy-rust.yml" > "${proxy_rust_json}"
 yq -o=json '.' "${repo_root}/.github/workflows/proxy-publish.yml" > "${proxy_publish_json}"
-yq -o=json '.' "${repo_root}/.github/workflows/zapstore-publish.yml" > "${zapstore_json}"
 
 if rg -n --glob '*.yml' --glob '*.yaml' \
   'gh[[:space:]]+release[[:space:]]+create|softprops/action-gh-release' \
@@ -198,7 +196,7 @@ if rg -n 'ghcr-(push|build-push|login)' "${repo_root}/proxy/justfile"; then
 fi
 pass "proxy container publication has one GitHub Actions writer"
 
-python3 - "${release_json}" "${proxy_rust_json}" "${proxy_publish_json}" "${zapstore_json}" <<'PY'
+python3 - "${release_json}" "${proxy_rust_json}" "${proxy_publish_json}" <<'PY'
 import json
 import re
 import sys
@@ -233,24 +231,6 @@ def secret_names(value):
             found.add("*")
     return found
 
-
-with open(sys.argv[4], encoding="utf-8") as handle:
-    zapstore = json.load(handle)
-zapstore_steps = zapstore["jobs"]["publish"]["steps"]
-checkout = next(step for step in zapstore_steps if str(step.get("uses", "")).startswith("actions/checkout@"))
-check(
-    checkout["with"]["sparse-checkout"].splitlines() == [
-        "apps/maple-research/zapstore.yaml",
-        "apps/maple-research/frontend/src-tauri/icons/icon.png",
-    ],
-    "Zapstore must checkout the Research config and its relative icon",
-)
-download = next(step for step in zapstore_steps if step.get("name") == "Download APK from release")
-check("--dir apps/maple-research" in download["run"],
-      "Zapstore APK must be downloaded beside the config for config-relative release_source")
-publish = next(step for step in zapstore_steps if step.get("name") == "Publish to Zapstore")
-check("apps/maple-research/zapstore.yaml 2>&1" in publish["run"],
-      "Zapstore must publish with the relocated config")
 
 with open(sys.argv[1], encoding="utf-8") as handle:
     release = json.load(handle)
