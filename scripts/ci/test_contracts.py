@@ -92,9 +92,8 @@ CONSUMERS = {
     ("sdk-publish-npm.yml", "publish"): "sdk-npm",
     ("sdk-publish-rust.yml", "publish"): "sdk-crates",
     **{("signing-credentials-check.yml", name): name for name in (
-        "desktop-signing", "apple-signing", "android-signing", "windows-signing", "zapstore-publishing")},
+        "desktop-signing", "apple-signing", "android-signing", "windows-signing")},
     ("updates-publish.yml", "publish"): "updates-production",
-    ("zapstore-publish.yml", "publish"): "zapstore-publishing",
 }
 DOCS = ("docs/**", "*/docs/**", "*/*/docs/**", ".agents/**", "**/README.md", "**/AGENTS.md", "**/CLAUDE.md")
 
@@ -222,7 +221,7 @@ class ContractTests(unittest.TestCase):
                 self.assertIn("classify-app-release", needs, job_id)
                 self.assertNotIn("if", job, job_id)
         for name, job_id in (("pages-publish.yml", "production"), ("updates-publish.yml", "publish"),
-                             ("proxy-publish.yml", "prepare"), ("zapstore-publish.yml", "publish")):
+                             ("proxy-publish.yml", "prepare")):
             gate = condition(workflows()[name]["jobs"][job_id])
             for control in ("startsWith(github.event.workflow_run.head_branch, 'v') &&",
                             "github.event.workflow_run.conclusion == 'success'",

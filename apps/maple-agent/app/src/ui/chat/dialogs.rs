@@ -134,11 +134,11 @@ impl ChatScreen {
             .top_0()
             .left_0()
             .occlude()
-            .bg(theme::scrim())
             .flex()
             .items_center()
             .justify_center()
-            .child(
+            .child(widgets::dialog_scrim())
+            .child(widgets::dialog_card(
                 div()
                     .id("trust-card")
                     .role(gpui::Role::Dialog)
@@ -219,7 +219,7 @@ impl ChatScreen {
                                 ),
                             ),
                     ),
-            )
+            ))
     }
 
     /// Ask before a project leaves the sidebar.
@@ -323,7 +323,6 @@ impl ChatScreen {
             .top_0()
             .left_0()
             .occlude()
-            .bg(theme::scrim())
             .flex()
             .items_center()
             .justify_center()
@@ -331,7 +330,8 @@ impl ChatScreen {
                 this.confirm = None;
                 cx.notify();
             }))
-            .child(
+            .child(widgets::dialog_scrim())
+            .child(widgets::dialog_card(
                 div()
                     .id("confirm-card")
                     .role(gpui::Role::Dialog)
@@ -407,7 +407,7 @@ impl ChatScreen {
                                 }),
                             )),
                     ),
-            )
+            ))
     }
 
     /// Drop the selection and everything the composer shows for it: the

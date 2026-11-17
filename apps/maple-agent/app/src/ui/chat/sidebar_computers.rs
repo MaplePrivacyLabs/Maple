@@ -4,6 +4,7 @@ use super::*;
 use crate::backend::ProjectPageRequest;
 use crate::ui::chat::computers::{Computer, Destination, Navigate};
 use crate::ui::icons::spinner;
+use crate::ui::motion::HoverBg as _;
 use maple_agent::store::{
     NavigationGroupPage, NavigationGroupQuery, NavigationProjectGroup, NavigationProjectPage,
     NavigationSearchQuery, NavigationTaskPage, NavigationTaskQuery, ProjectSummary, TaskSummary,
@@ -2424,9 +2425,9 @@ impl Sidebar {
                         row.aria_active_descendant()
                             .bg(gpui::rgb(theme::bg_sidebar_row_hover()))
                     })
-                    .when(!loading, |row| {
-                        row.hover(|s| s.cursor_pointer().bg(gpui::rgb(hover_bg)))
-                    })
+                    .hover_bg(gpui::rgb(hover_bg))
+                    .when(loading, |row| row.highlighted(false))
+                    .when(!loading, |row| row.hover(|style| style.cursor_pointer()))
                     .on_click(cx.listener(move |this, _, _, cx| {
                         if !loading {
                             this.load_computer_page(action.clone(), cx);
@@ -2474,12 +2475,10 @@ impl Sidebar {
                         row.aria_active_descendant()
                             .bg(gpui::rgb(theme::bg_sidebar_row_hover()))
                     })
-                    .hover(move |s| {
-                        if dragging || renaming {
-                            s
-                        } else {
-                            s.bg(gpui::rgb(hover_bg)).cursor_pointer()
-                        }
+                    .hover_bg(gpui::rgb(hover_bg))
+                    .when(dragging || renaming, |row| row.highlighted(false))
+                    .when(!(dragging || renaming), |row| {
+                        row.hover(|style| style.cursor_pointer())
                     })
                     .on_click(cx.listener(move |_, _, _, cx| {
                         cx.emit(SidebarEvent::Navigate(request.clone()))
@@ -2586,13 +2585,9 @@ impl Sidebar {
                     .gap_1()
                     .text_xs()
                     .text_color(gpui::rgb(theme::text_secondary()))
-                    .hover(move |s| {
-                        if dragging {
-                            s
-                        } else {
-                            s.bg(gpui::rgb(hover_bg)).cursor_pointer()
-                        }
-                    })
+                    .hover_bg(gpui::rgb(hover_bg))
+                    .when(dragging, |row| row.highlighted(false))
+                    .when(!dragging, |row| row.hover(|style| style.cursor_pointer()))
                     .on_click(cx.listener(move |this, _, _, cx| {
                         if !this.toggle_computer_group(&request, cx) {
                             cx.emit(SidebarEvent::Navigate(request.clone()));

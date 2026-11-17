@@ -376,11 +376,7 @@ impl ChatScreen {
                     .rounded(theme::RADIUS_SM)
                     .when(resettable, |button| {
                         button
-                            .hover(|style| {
-                                style
-                                    .bg(gpui::rgb(theme::bg_sidebar_row_hover()))
-                                    .cursor_pointer()
-                            })
+                            .hover(|style| style.cursor_pointer())
                             .active(|style| style.bg(gpui::rgb(theme::bg_sidebar_row_selected())))
                             .tooltip(widgets::tooltip(tr("chat-effort-reset"), None))
                             .on_click(cx.listener(|this, _: &gpui::ClickEvent, _, cx| {
@@ -388,6 +384,8 @@ impl ChatScreen {
                                 this.reset_effort(cx);
                             }))
                     })
+                    .hover_bg(gpui::rgb(theme::bg_sidebar_row_hover()))
+                    .when(!resettable, |button| button.highlighted(false))
                     .child(reset)
             });
 

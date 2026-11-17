@@ -239,19 +239,71 @@ mod tests {
     use super::*;
     use crate::model_config::{
         DEEPSEEK_V4_1_FLASH_MODEL_ID, GLM_5_3_FLASH_MODEL_ID, GLM_5_3_MODEL_ID,
-        GPT_OSS_120B_MODEL_ID, KIMI_K3_1_PRO_MODEL_ID, KIMI_K3_MODEL_ID,
+        GPT_OSS_120B_MODEL_ID, KIMI_K3_1_PRO_MODEL_ID,
     };
 
-    const REASONING_MODELS: [&str; 8] = [
+    const REASONING_MODELS: [&str; 7] = [
         GPT_OSS_120B_MODEL_ID,
         "gpt-oss-safeguard-120b",
         "gemma4-31b",
         KIMI_K3_1_PRO_MODEL_ID,
-        KIMI_K3_MODEL_ID,
         GLM_5_3_MODEL_ID,
         GLM_5_3_FLASH_MODEL_ID,
         DEEPSEEK_V4_1_FLASH_MODEL_ID,
     ];
+
+    /// Tinfoil's deployed vLLM passes top-level `reasoning_effort` to the
+    /// Inkling renderer and prefers it over the template kwarg, so the policy
+    /// writes the top-level field only and leaves client kwargs alone.
+    #[test]
+    fn inkling_effort_is_sent_top_level_only() {
+        for effort in ["minimal", "low", "medium", "high", "xhigh"] {
+            let resolved = resolve("inkling-2-small", json!(effort), ModelSelection::Explicit);
+            let Ok(EffectiveReasoningEffort::Set(set)) = resolved else {
+                panic!("{effort} must be accepted");
+            };
+            let mut request = serde_json::from_value::<Map<String, Value>>(json!({
+                "model": "inkling-2-small",
+                "messages": [{"role": "developer", "content": "Be concise"}],
+                "chat_template_kwargs": {"other": true}
+            }))
+            .unwrap();
+            apply_model_request_policy(
+                &mut request,
+                "inkling-2-small",
+                EffectiveReasoningEffort::Set(set),
+            );
+            assert_eq!(request["reasoning_effort"], effort);
+            assert_eq!(request["chat_template_kwargs"], json!({"other": true}));
+            assert_eq!(request["messages"][0]["role"], "system");
+        }
+
+        // No effort named: nothing is written, and the renderer's own default
+        // is the catalog default (high).
+        let mut request = Map::new();
+        apply_model_request_policy(
+            &mut request,
+            "inkling-2-small",
+            EffectiveReasoningEffort::Unchanged,
+        );
+        assert!(request.get("reasoning_effort").is_none());
+        assert!(request.get("chat_template_kwargs").is_none());
+    }
+
+    /// `none` leaks the model's working into `content` and `max` only aliases
+    /// `xhigh`: an explicit request is told so, an Auto alias is moved.
+    #[test]
+    fn inkling_rejects_none_and_max_and_clamps_them_for_aliases() {
+        for (effort, nearest) in [("none", "minimal"), ("max", "xhigh")] {
+            let rejected = resolve("inkling-2-small", json!(effort), ModelSelection::Explicit);
+            assert!(rejected.is_err(), "{effort}");
+            let clamped = resolve("inkling-2-small", json!(effort), ModelSelection::Alias);
+            let Ok(EffectiveReasoningEffort::Set(set)) = clamped else {
+                panic!("{effort} must clamp for an alias");
+            };
+            assert_eq!(set.as_str(), nearest);
+        }
+    }
 
     fn resolve(
         model: &str,
@@ -293,12 +345,6 @@ mod tests {
             message,
             "Unsupported value: 'none' is not supported with the 'glm-5-3' model. Supported values are: 'low', 'high', 'max'."
         );
-        let message =
-            resolve(KIMI_K3_MODEL_ID, json!("medium"), ModelSelection::Explicit).unwrap_err();
-        assert_eq!(
-            message,
-            "Unsupported value: 'medium' is not supported with the 'kimi-k3' model. Supported values are: 'none', 'low', 'high', 'max'."
-        );
         for rejected in ["none", "medium"] {
             let message = resolve(
                 KIMI_K3_1_PRO_MODEL_ID,
@@ -327,8 +373,6 @@ mod tests {
             (GPT_OSS_120B_MODEL_ID, "minimal", "low"),
             (GPT_OSS_120B_MODEL_ID, "xhigh", "high"),
             (GPT_OSS_120B_MODEL_ID, "max", "high"),
-            (KIMI_K3_MODEL_ID, "medium", "high"),
-            (KIMI_K3_MODEL_ID, "none", "none"),
             (KIMI_K3_1_PRO_MODEL_ID, "medium", "high"),
             (KIMI_K3_1_PRO_MODEL_ID, "none", "low"),
             (DEEPSEEK_V4_1_FLASH_MODEL_ID, "minimal", "low"),
@@ -483,7 +527,7 @@ mod tests {
 
     #[test]
     fn optional_models_keep_their_thinking_switches() {
-        for model in [KIMI_K3_MODEL_ID, DEEPSEEK_V4_1_FLASH_MODEL_ID, "gemma4-31b"] {
+        for model in [DEEPSEEK_V4_1_FLASH_MODEL_ID, "gemma4-31b"] {
             let mut request = body(json!({
                 "model": model,
                 "messages": [],
@@ -498,15 +542,15 @@ mod tests {
     }
 
     #[test]
-    fn kimi_k3_receives_developer_messages_as_system() {
+    fn kimi_k3_1_pro_receives_developer_messages_as_system() {
         let messages = json!([
             {"role": "developer", "content": "Be terse."},
             {"role": "user", "content": "hi"}
         ]);
-        let mut kimi = body(json!({"model": KIMI_K3_MODEL_ID, "messages": messages}));
+        let mut kimi = body(json!({"model": KIMI_K3_1_PRO_MODEL_ID, "messages": messages}));
         apply_model_request_policy(
             &mut kimi,
-            KIMI_K3_MODEL_ID,
+            KIMI_K3_1_PRO_MODEL_ID,
             EffectiveReasoningEffort::Unchanged,
         );
         assert_eq!(kimi["messages"][0]["role"], "system");

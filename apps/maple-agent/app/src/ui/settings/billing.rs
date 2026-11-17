@@ -98,7 +98,7 @@ pub(super) fn product_action(status: &BillingStatus, product: &Product) -> Produ
     if status.product_id.as_deref() == Some(product.id.as_str()) {
         return ProductAction::Current;
     }
-    let tier = PlanTier::from_product_name(Some(&product.name));
+    let tier = crate::billing::product_tier(product);
     if tier == PlanTier::Team {
         return ProductAction::Web;
     }
@@ -156,7 +156,7 @@ impl SettingsScreen {
                         product.active
                             && product.is_available != Some(false)
                             && product.default_price.is_some()
-                            && PlanTier::from_product_name(Some(&product.name)).is_for_sale()
+                            && crate::billing::product_tier(product).is_for_sale()
                     });
                     BillingState::sort_products(&mut products);
                     this.billing.products = Some(products);
@@ -440,9 +440,7 @@ impl SettingsScreen {
             );
         };
 
-        let plan_name = status
-            .product_name
-            .clone()
+        let plan_name = crate::billing::plan_display_name(status)
             .unwrap_or_else(|| tr("settings-billing-free").to_string());
         let current_product = status.product_id.as_deref().and_then(|id| {
             self.billing
@@ -637,7 +635,9 @@ impl SettingsScreen {
                                     .text_sm()
                                     .font_weight(gpui::FontWeight::MEDIUM)
                                     .text_color(gpui::rgb(theme::text_primary()))
-                                    .child(product.name.clone()),
+                                    .child(
+                                        crate::billing::product_display_name(product).to_string(),
+                                    ),
                             )
                             .when_some(
                                 super::presentation::price(product, &self.messages),
@@ -743,6 +743,7 @@ mod tests {
                 recurring: None,
             }),
             is_available: None,
+            ..Default::default()
         }
     }
 

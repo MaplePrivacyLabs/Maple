@@ -1,6 +1,7 @@
 //! The chat pane chrome: the header and its menus, the slash palette,
 //! the plan and side-question cards, and the composer itself.
 
+use crate::ui::motion::HoverBg as _;
 use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
 
@@ -86,6 +87,54 @@ fn mode_note(mode: AgentPermissionMode) -> &'static str {
         AgentPermissionMode::Auto => "chat-mode-auto-note",
         AgentPermissionMode::FullAccess => "chat-mode-full-access-note",
     }
+}
+
+/// The share of the chat column the composer region takes when expanded.
+/// The layout and the expand transition both read it, so the transition
+/// always lands on the height the layout then holds.
+pub(super) const EXPANDED_SHARE: f32 = 0.7;
+/// The expand button's side, in rems. The composer's text row is never
+/// shorter than this button beside it, which the expand transition allows
+/// for when it works out the box's height at rest.
+pub(super) const EXPAND_BUTTON_REMS: f32 = 1.5;
+/// The empty state's vertical padding while the composer fills its pane, in
+/// rems, on each side.
+pub(super) const EMPTY_PANE_PADDING_REMS: f32 = 1.5;
+
+/// Heights the composer expand/shrink transition eases between, recorded
+/// as each frame is laid out so the next one can start from the screen.
+#[derive(Clone, Copy, Default)]
+pub(super) struct ComposerFrame {
+    /// The composer region: cards, composer box, palette, padding.
+    pub(super) region: Option<gpui::Pixels>,
+    /// The height the region takes when expanded.
+    pub(super) room: Option<gpui::Pixels>,
+    /// The empty state's title and privacy line at rest, which fold away
+    /// while the composer expands there.
+    pub(super) title: Option<gpui::Pixels>,
+    pub(super) privacy: Option<gpui::Pixels>,
+}
+
+/// Stores a measured element's bounds in a [`ComposerFrame`].
+pub(super) type Record = fn(&mut ComposerFrame, gpui::Bounds<gpui::Pixels>, &Window);
+
+/// A paint-free canvas over its parent that hands the parent's bounds to
+/// `record` at prepaint, for the next frame's composer transition.
+pub(super) fn measure(
+    frame: &std::rc::Rc<std::cell::Cell<ComposerFrame>>,
+    record: Record,
+) -> impl IntoElement {
+    let frame = frame.clone();
+    gpui::canvas(
+        move |bounds, window, _| {
+            let mut measured = frame.get();
+            record(&mut measured, bounds, window);
+            frame.set(measured);
+        },
+        |_, _, _, _| {},
+    )
+    .absolute()
+    .inset_0()
 }
 
 impl ChatScreen {
@@ -197,8 +246,9 @@ impl ChatScreen {
                 .w(px(14.))
                 .h(px(14.))
                 .debug_selector(|| "navigation-loading-slot".to_string())
+                // A task that opens quickly never flashes the spinner.
                 .when(
-                    self.loading_session.is_some() || self.root_selecting || self.booting,
+                    self.loading_spinner_due() || self.root_selecting || self.booting,
                     |slot| slot.child(spinner("navigation-loading", px(14.), theme::text_muted())),
                 ),
         )
@@ -273,10 +323,10 @@ impl ChatScreen {
 
     /// `button` as the opener of `popup`, with `menu` attached below or
     /// above it while the popup is open.
-    fn with_menu(
+    fn with_menu<E: gpui::StatefulInteractiveElement + IntoElement>(
         &self,
         popup: ChatPopup,
-        button: gpui::Stateful<Div>,
+        button: E,
         placement: Placement,
         window: &mut Window,
         cx: &mut Context<Self>,
@@ -447,11 +497,8 @@ impl ChatScreen {
                     .items_center()
                     .justify_center()
                     .rounded(theme::RADIUS_LG)
-                    .hover(|style| {
-                        style
-                            .bg(gpui::rgb(theme::accent_container()))
-                            .cursor_pointer()
-                    })
+                    .hover_bg(gpui::rgb(theme::bg_sidebar_pill()))
+                    .hover(|style| style.cursor_pointer())
                     .active(|style| style.bg(gpui::rgb(theme::bg_sidebar_pill())))
                     .when(self.attachment_picking, |el| el.opacity(0.5))
                     .tooltip(widgets::tooltip(tr("chat-attach"), None))
@@ -472,11 +519,12 @@ impl ChatScreen {
                         .justify_center()
                         .rounded(theme::RADIUS_LG)
                         .when(recording, |el| el.bg(gpui::rgb(theme::status_error())))
-                        .hover(|style| {
-                            style
-                                .bg(gpui::rgb(theme::accent_container()))
-                                .cursor_pointer()
-                        })
+                        .hover_bg(gpui::rgb(if recording {
+                            theme::status_error()
+                        } else {
+                            theme::bg_sidebar_pill()
+                        }))
+                        .hover(|style| style.cursor_pointer())
                         .when(transcribing, |el| el.opacity(0.5))
                         .tooltip(widgets::tooltip(
                             if recording {
@@ -618,9 +666,13 @@ impl ChatScreen {
                 let pick = model.to_string();
                 let label = self.model_label(model).to_string();
                 let popular = self.model_sections.is_popular(model);
+                let new = self.model_sections.is_new(model);
                 // The badge is drawn content; the row's name carries it for
                 // assistive technology.
-                let name: SharedString = if popular {
+                let name: SharedString = if new {
+                    self.messages
+                        .get("chat-model-new-row", [("model", label.clone().into())])
+                } else if popular {
                     self.messages
                         .get("chat-model-popular-row", [("model", label.clone().into())])
                 } else {
@@ -634,7 +686,12 @@ impl ChatScreen {
                     },
                 )
                 .current(selected == Some(model));
-                if popular {
+                if popular || new {
+                    let badge = if new {
+                        tr("chat-model-new")
+                    } else {
+                        tr("chat-model-popular")
+                    };
                     row.content(
                         div()
                             .min_w_0()
@@ -642,7 +699,7 @@ impl ChatScreen {
                             .items_center()
                             .gap_2()
                             .child(div().min_w_0().truncate().child(label))
-                            .child(popular_badge()),
+                            .child(model_badge(badge)),
                     )
                 } else {
                     row
@@ -823,11 +880,8 @@ impl ChatScreen {
                     .when(is_selected, |row| {
                         row.bg(gpui::rgb(theme::bg_sidebar_row_selected()))
                     })
-                    .hover(|style| {
-                        style
-                            .bg(gpui::rgb(theme::bg_sidebar_row_hover()))
-                            .cursor_pointer()
-                    })
+                    .hover_bg(gpui::rgb(theme::bg_sidebar_row_hover()))
+                    .hover(|style| style.cursor_pointer())
                     .on_click(move |_event, _window, cx: &mut gpui::App| {
                         chat.update(cx, |chat, cx| chat.complete_slash_command(&name, cx))
                             .ok();
@@ -993,7 +1047,7 @@ impl ChatScreen {
                     .cursor_pointer()
                     .text_sm()
                     .text_color(gpui::rgb(theme::text_muted()))
-                    .hover(|style| style.bg(gpui::rgb(theme::bg_elevated())))
+                    .hover_bg(gpui::rgb(theme::bg_elevated()))
                     .on_click(cx.listener(|this, _event, _window, cx| {
                         this.close_side_thread(cx);
                     }))
@@ -1139,7 +1193,7 @@ impl ChatScreen {
             .px_3()
             .py_2()
             .cursor_pointer()
-            .hover(|style| style.bg(gpui::rgb(theme::bg_elevated())))
+            .hover_bg(gpui::rgb(theme::bg_elevated()))
             .on_click(cx.listener(|this, _event, _window, cx| {
                 this.toggle_plan_collapsed(cx);
             }))
@@ -1222,13 +1276,56 @@ impl ChatScreen {
             self.controls_revealed = Some((std::time::Instant::now(), generation));
         }
         let row = match self.controls_revealed {
-            Some((at, generation)) if at.elapsed() < motion::REVEAL * 2 => {
+            Some((at, generation)) if at.elapsed() < motion::REVEAL.duration * 2 => {
                 motion::fade_in(row, ("composer-controls-reveal", generation as usize))
                     .into_any_element()
             }
             _ => row.into_any_element(),
         };
         (row, false)
+    }
+
+    /// While the composer eases between the height of its text and
+    /// expanded: how far toward expanded it is, and the region's height
+    /// for this frame, from heights measured last frame. `None` at rest;
+    /// once a transition lands the field goes back to its resting fill.
+    pub(super) fn composer_resize_frame(
+        &mut self,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> Option<(f32, gpui::Pixels)> {
+        let transition = self.composer_resize?;
+        let now = motion::now();
+        let frame = self.composer_frame.get();
+        let sample = (!cx.reduce_motion() && transition.is_moving(now))
+            .then(|| {
+                let progress = transition.value(now);
+                // The field fills the box throughout, so the box at the
+                // height of its text is the region less the field's spare
+                // height. Its row is never shorter than the expand button
+                // beside it (`EXPAND_BUTTON_REMS`).
+                let (drawn, text) = self.composer.as_ref()?.read(cx).drawn_and_text_height()?;
+                let row = text.max(window.rem_size() * EXPAND_BUTTON_REMS);
+                let natural = frame.region? - (drawn - row).max(gpui::px(0.));
+                let room = frame.room?;
+                Some((progress, natural + (room - natural) * progress))
+            })
+            .flatten();
+        if sample.is_some() {
+            window.request_animation_frame();
+            return sample;
+        }
+        self.composer_resize = None;
+        let expanded = self.composer_expanded;
+        if let Some(composer) = self.composer.clone() {
+            composer.update(cx, |input, cx| input.set_fill_height(expanded, cx));
+        }
+        None
+    }
+
+    /// The composer box lays out expanded: at rest there, or on the way.
+    pub(super) fn composer_fills(&self) -> bool {
+        self.composer_expanded || self.composer_resize.is_some()
     }
 
     /// The selected task's latest turn ended out of usage and nothing has
@@ -1349,6 +1446,23 @@ impl ChatScreen {
             .then(|| self.render_usage_tray(cx));
         let queue_chips = self.render_queue(cx);
         let expanded = self.composer_expanded;
+        // Layout follows the box while it eases; the icon and tooltip
+        // name the state it is heading to.
+        let fills = self.composer_fills();
+        // Send ↔ Stop and the send fill's enabled state ease over TOGGLE.
+        let (send_stop, send_ready) = {
+            let now = motion::now();
+            let reduced = cx.reduce_motion();
+            let step = |tween: &mut motion::Tween, on: bool| {
+                tween.step(if on { 1. } else { 0. }, motion::TOGGLE, now, reduced)
+            };
+            let (stop, stop_moving) = step(&mut self.send_stop, show_stop);
+            let (ready, ready_moving) = step(&mut self.send_ready, can_send);
+            if stop_moving || ready_moving {
+                window.request_animation_frame();
+            }
+            (stop, ready)
+        };
         let composer = self.composer.clone();
         let vim_badge = composer
             .as_ref()
@@ -1410,7 +1524,7 @@ impl ChatScreen {
             .flex_col()
             .relative()
             .debug_selector(|| "composer-box".to_string())
-            .when(expanded, |container| container.flex_1().min_h_0())
+            .when(fills, |container| container.flex_1().min_h_0())
             .rounded(theme::RADIUS_XL)
             .bg(gpui::rgb(theme::bg_app()))
             .border_1()
@@ -1464,7 +1578,7 @@ impl ChatScreen {
                 container.child(div().flex().flex_wrap().gap_2().px_4().pt_4().children(
                     drafts.iter().map(|attachment| {
                         let id = attachment.id;
-                        div()
+                        let chip = div()
                             .relative()
                             .max_w(px(260.))
                             .h_16()
@@ -1533,7 +1647,15 @@ impl ChatScreen {
                                         this.remove_attachment(id, cx);
                                     }))
                                     .child(icon("x", px(10.), theme::text_primary())),
-                            )
+                            );
+                        // A file joining the draft settles in; removing
+                        // one is immediate.
+                        motion::slide_in(
+                            chip,
+                            ("draft-attachment", id as usize),
+                            motion::ENTER,
+                            gpui::point(px(0.), motion::RISE),
+                        )
                     }),
                 ))
             })
@@ -1544,47 +1666,46 @@ impl ChatScreen {
                     .px_4()
                     .pt_4()
                     .pb_2()
-                    .when(expanded, |row| row.flex_1().min_h_0())
+                    .when(fills, |row| row.flex_1().min_h_0())
                     .child(
                         crate::ui::typography::chat_reading(div())
                             .flex_1()
                             .min_w_0()
-                            .when(expanded, |cell| cell.h_full())
+                            .when(fills, |cell| cell.h_full())
                             .text_color(gpui::rgb(theme::text_primary()))
                             // The first send remains visibly editable until
                             // task creation settles; keep its real focus path.
                             .children(composer),
                     )
-                    .child(
+                    .child({
+                        let label = if expanded {
+                            tr("chat-shrink-composer")
+                        } else {
+                            tr("chat-expand-composer")
+                        };
                         div()
                             .id("composer-expand")
-                            .size_6()
+                            .role(gpui::Role::Button)
+                            .aria_label(label.clone())
+                            .size(gpui::rems(EXPAND_BUTTON_REMS))
                             .flex()
                             .items_center()
                             .justify_center()
                             .rounded(theme::RADIUS_SM)
-                            .hover(|style| {
-                                style
-                                    .bg(gpui::rgb(theme::accent_container()))
-                                    .cursor_pointer()
-                            })
-                            .tooltip(widgets::tooltip(
-                                if expanded {
-                                    tr("chat-shrink-composer")
-                                } else {
-                                    tr("chat-expand-composer")
-                                },
-                                None,
-                            ))
+                            .hover_bg(gpui::rgb(theme::bg_sidebar_pill()))
+                            .hover(|style| style.cursor_pointer())
+                            .tooltip(widgets::tooltip(label, None))
                             .on_click(cx.listener(|this, _event, _window, cx| {
                                 this.toggle_composer_expanded(cx);
                             }))
-                            .child(icon(
-                                if expanded { "minimize-2" } else { "maximize-2" },
+                            .child(motion::icon_swap(
+                                "composer-expand-icon",
+                                expanded,
+                                ["maximize-2", "minimize-2"],
                                 px(14.),
                                 theme::text_muted(),
-                            )),
-                    ),
+                            ))
+                    }),
             )
             .child(
                 div()
@@ -1639,52 +1760,76 @@ impl ChatScreen {
                         } else {
                             tr("chat-send")
                         };
+                        // The fills cross-fade and the arrow scales while
+                        // the handler, role and label switch at once.
+                        let send_layer = (send_stop < 1.).then(|| {
+                            div()
+                                .absolute()
+                                .inset_0()
+                                .flex()
+                                .items_center()
+                                .justify_center()
+                                .rounded_full()
+                                .bg(gpui::linear_gradient(
+                                    180.,
+                                    gpui::linear_color_stop(gpui::rgb(theme::send_top()), 0.),
+                                    gpui::linear_color_stop(gpui::rgb(theme::send_bottom()), 1.),
+                                ))
+                                .opacity((0.4 + 0.6 * send_ready) * (1. - send_stop))
+                                .child(if disabled {
+                                    spinner("send-booting", px(16.), theme::on_accent())
+                                } else {
+                                    let scale = 1. - 0.4 * send_stop;
+                                    icon("arrow-up", px(16.), theme::on_accent())
+                                        .with_transformation(gpui::Transformation::scale(
+                                            gpui::size(scale, scale),
+                                        ))
+                                        .into_any_element()
+                                })
+                        });
+                        let stop_layer = (send_stop > 0.).then(|| {
+                            div()
+                                .absolute()
+                                .inset_0()
+                                .flex()
+                                .items_center()
+                                .justify_center()
+                                .rounded_full()
+                                .bg(gpui::rgb(theme::status_error()))
+                                .opacity(send_stop)
+                                .child(
+                                    div()
+                                        .size_3()
+                                        .rounded(theme::RADIUS_SM)
+                                        .bg(gpui::rgb(theme::bg_app())),
+                                )
+                        });
                         div()
                             .id(button_id)
                             .debug_selector(move || button_id.to_string())
                             .role(gpui::Role::Button)
                             .aria_label(button_label.clone())
+                            .relative()
                             .flex_none()
                             .size_8()
-                            .flex()
-                            .items_center()
-                            .justify_center()
                             .rounded_full()
+                            .children(send_layer)
+                            .children(stop_layer)
                             .when(show_stop, |el| {
-                                el.bg(gpui::rgb(theme::status_error()))
-                                    .hover(|style| style.opacity(0.85).cursor_pointer())
+                                el.hover(|style| style.opacity(0.85).cursor_pointer())
                                     .active(|style| style.opacity(0.7))
                                     .tooltip(widgets::tooltip(tr("chat-stop-run"), None))
                                     .on_click(cx.listener(|this, _event, _window, cx| {
                                         this.stop(cx);
                                     }))
-                                    .child(
-                                        div()
-                                            .size_3()
-                                            .rounded(theme::RADIUS_SM)
-                                            .bg(gpui::rgb(theme::bg_app())),
-                                    )
                             })
-                            .when(!show_stop, |el| {
-                                el.bg(gpui::linear_gradient(
-                                    180.,
-                                    gpui::linear_color_stop(gpui::rgb(theme::send_top()), 0.),
-                                    gpui::linear_color_stop(gpui::rgb(theme::send_bottom()), 1.),
-                                ))
-                                .when(!can_send, |el| el.opacity(0.4))
-                                .when(can_send, |el| {
-                                    el.hover(|style| style.opacity(0.9).cursor_pointer())
-                                        .active(|style| style.opacity(0.75))
-                                        .tooltip(widgets::tooltip(button_label.clone(), Some("↵")))
-                                        .on_click(cx.listener(|this, _event, _window, cx| {
-                                            this.send_inner(cx);
-                                        }))
-                                })
-                                .child(if disabled {
-                                    spinner("send-booting", px(16.), theme::on_accent())
-                                } else {
-                                    icon("arrow-up", px(16.), theme::on_accent()).into_any_element()
-                                })
+                            .when(!show_stop && can_send, |el| {
+                                el.hover(|style| style.opacity(0.9).cursor_pointer())
+                                    .active(|style| style.opacity(0.75))
+                                    .tooltip(widgets::tooltip(button_label.clone(), Some("↵")))
+                                    .on_click(cx.listener(|this, _event, _window, cx| {
+                                        this.send_inner(cx);
+                                    }))
                             })
                     }),
             );
@@ -1696,7 +1841,10 @@ impl ChatScreen {
             .flex()
             .flex_col()
             .gap_2()
-            .when(expanded, |container| container.flex_1().min_h_0())
+            // The picker row comes with the box, so the pair fills the
+            // region for as long as the box does: expanded, and on the way
+            // there and back, not only once expanded.
+            .when(fills, |container| container.flex_1().min_h_0())
             .child(self.render_project_context(window, cx).flex_none())
             .child(composer_box)
     }
@@ -1764,7 +1912,7 @@ fn chip(
     detail: Option<(SharedString, gpui::Hsla, usize)>,
     chevron: bool,
     active: bool,
-) -> gpui::Stateful<Div> {
+) -> crate::ui::motion::HoverBackground {
     let label = label.into();
     let shrinks = detail.is_some();
     chip_frame(id, leading, label.clone(), active)
@@ -1802,7 +1950,7 @@ fn project_chip(
     computer: Option<ProjectComputer>,
     project: SharedString,
     active: bool,
-) -> gpui::Stateful<Div> {
+) -> crate::ui::motion::HoverBackground {
     let name = computer
         .as_ref()
         .map_or_else(|| project.clone(), |computer| computer.caption.clone());
@@ -1853,7 +2001,7 @@ fn chip_frame(
     leading: Option<&'static str>,
     name: SharedString,
     active: bool,
-) -> gpui::Stateful<Div> {
+) -> crate::ui::motion::HoverBackground {
     let color = chip_color(active);
     div()
         .id(id)
@@ -1871,18 +2019,15 @@ fn chip_frame(
         .font_weight(gpui::FontWeight::MEDIUM)
         .text_color(gpui::rgb(color))
         .when(active, |el| el.bg(gpui::rgb(theme::bg_sidebar_pill())))
-        .hover(|style| {
-            style
-                .bg(gpui::rgb(theme::bg_sidebar_pill()))
-                .cursor_pointer()
-        })
+        .hover_bg(gpui::rgb(theme::bg_sidebar_pill()))
+        .hover(|style| style.cursor_pointer())
         .active(|style| style.bg(gpui::rgb(theme::bg_sidebar_row_selected())))
         .children(leading.map(|name| icon(name, px(16.), color)))
 }
 
-/// The Popular badge on a model row: coral on dark, grey on light (see
+/// A catalog badge on a model row: coral on dark, grey on light (see
 /// `badge_fill`), held to 4.5:1 by the contrast test.
-fn popular_badge() -> Div {
+fn model_badge(label: SharedString) -> Div {
     div()
         .flex_none()
         .px_1p5()
@@ -1892,11 +2037,11 @@ fn popular_badge() -> Div {
         .text_xs()
         .font_weight(gpui::FontWeight::SEMIBOLD)
         .text_color(gpui::rgb(theme::badge_text()))
-        .child(tr("chat-model-popular"))
+        .child(label)
 }
 
 /// How the catalog presents the models: the panel's sections in display
-/// order, each model's section, and the models it marks Popular. The server
+/// order, each model's section, and its New/Popular model badges. The server
 /// owns all three, so a model deployed without an app release lists where
 /// its release put it.
 #[derive(Clone, Debug, Default)]
@@ -1904,10 +2049,13 @@ pub(super) struct ModelSections {
     groups: Vec<maple_sdk::CatalogGroup>,
     group_of: HashMap<String, String>,
     popular: HashSet<String>,
+    new: HashSet<String>,
 }
 
 /// The badge string the catalog marks a popular model with.
 const POPULAR_BADGE: &str = "Popular";
+/// The badge string the catalog marks a newly launched model with.
+const NEW_BADGE: &str = "New";
 
 impl ModelSections {
     pub(super) fn from_catalog(catalog: &maple_sdk::ModelCatalogResponse) -> Self {
@@ -1917,6 +2065,12 @@ impl ModelSections {
                 .data
                 .iter()
                 .filter_map(|model| Some((model.id.clone(), model.group.clone()?)))
+                .collect(),
+            new: catalog
+                .data
+                .iter()
+                .filter(|model| model.badges.iter().any(|badge| badge == NEW_BADGE))
+                .map(|model| model.id.clone())
                 .collect(),
             popular: catalog
                 .data
@@ -1929,6 +2083,10 @@ impl ModelSections {
 
     pub(super) fn is_popular(&self, model: &str) -> bool {
         self.popular.contains(model)
+    }
+
+    pub(super) fn is_new(&self, model: &str) -> bool {
+        self.new.contains(model)
     }
 
     /// `models` in their sections: the catalog's groups in its order, each
@@ -1979,5 +2137,473 @@ fn group_heading(group: &maple_sdk::CatalogGroup) -> SharedString {
         "uncensored" => tr("chat-model-group-uncensored"),
         "fast" => tr("chat-model-group-fast"),
         _ => group.label.clone().into(),
+    }
+}
+
+#[cfg(test)]
+mod resize_tests {
+    use super::*;
+    use gpui::{Entity, TestAppContext, VisualTestContext};
+    use maple_agent::agent::AgentTimelineItem;
+    use std::time::{Duration, Instant};
+
+    struct Host {
+        chat: Entity<ChatScreen>,
+    }
+
+    impl Render for Host {
+        fn render(&mut self, _window: &mut Window, _cx: &mut Context<Self>) -> impl IntoElement {
+            div()
+                .w(px(1200.))
+                .h(px(800.))
+                .flex()
+                .flex_col()
+                .child(self.chat.clone())
+        }
+    }
+
+    /// A chat whose transcript holds `rows` messages and follows its
+    /// tail; none shows the empty state.
+    fn chat_window(
+        cx: &mut TestAppContext,
+        rows: usize,
+    ) -> (Entity<ChatScreen>, &mut VisualTestContext) {
+        cx.executor().allow_parking();
+        let backend = {
+            let _guard = crate::settings::SETTINGS_IO_LOCK.lock();
+            Arc::new(
+                crate::backend::AgentBackend::for_test("http://127.0.0.1:9".into(), String::new())
+                    .expect("backend"),
+            )
+        };
+        let chat = cx.new(|cx| {
+            let _guard = crate::settings::SETTINGS_IO_LOCK.lock();
+            let mut chat = ChatScreen::new_without_start(backend, "user".to_string(), cx);
+            chat.selected_session = Some("s1".to_string());
+            chat.booting = false;
+            chat.trust_prompts = false;
+            chat.sidebar_collapsed = true;
+            chat.sidebar
+                .update(cx, |sidebar, _| sidebar.reset_persisted_for_test());
+            chat.replace_timeline(
+                (0..rows)
+                    .map(|index| AgentTimelineItem {
+                        label: None,
+                        persisted: None,
+                        live: None,
+                        truncated: None,
+                        revision: 0,
+                        id: format!("m{index}"),
+                        item_type: "message".to_string(),
+                        role: None,
+                        title: None,
+                        text: Some(format!("Message {index}\n\n{}", "lorem ipsum ".repeat(30))),
+                        status: None,
+                        input: None,
+                        output: None,
+                        created_ms: 0,
+                        merge: "replace".to_string(),
+                    })
+                    .collect(),
+            );
+            chat
+        });
+        let (_host, cx) = cx.add_window_view(|_window, _cx| Host { chat: chat.clone() });
+        cx.simulate_resize(gpui::size(px(1200.), px(800.)));
+        cx.run_until_parked();
+        (chat, cx)
+    }
+
+    fn composer_height(cx: &mut VisualTestContext) -> gpui::Pixels {
+        cx.debug_bounds("composer-box")
+            .expect("composer")
+            .size
+            .height
+    }
+
+    /// Space between the newest transcript row and the composer: constant
+    /// while the transcript keeps its tail on screen.
+    fn tail_gap(cx: &mut VisualTestContext) -> gpui::Pixels {
+        let newest = cx
+            .debug_bounds("timeline-row-m39")
+            .expect("the newest row is on screen");
+        cx.debug_bounds("composer-box").expect("composer").top() - newest.bottom()
+    }
+
+    fn toggle(chat: &Entity<ChatScreen>, cx: &mut VisualTestContext) {
+        chat.update(cx, |chat, cx| chat.toggle_composer_expanded(cx));
+        cx.run_until_parked();
+    }
+
+    fn frame_at(at: Instant, cx: &mut VisualTestContext) {
+        motion::set_test_now(Some(at));
+        cx.update(|window, app| window.simulate_next_frame(app));
+        cx.run_until_parked();
+    }
+
+    #[gpui::test]
+    fn expanding_the_composer_eases_reverses_and_keeps_the_tail(cx: &mut TestAppContext) {
+        let start = Instant::now();
+        motion::set_test_now(Some(start));
+        cx.update(|cx| cx.set_reduce_motion(false));
+        let (chat, cx) = chat_window(cx, 40);
+        let rest = composer_height(cx);
+        let pinned = tail_gap(cx);
+
+        toggle(&chat, cx);
+        assert_eq!(
+            composer_height(cx),
+            rest,
+            "starts from the height on screen"
+        );
+        frame_at(start + motion::PANEL.settle - Duration::from_millis(1), cx);
+        let landing = composer_height(cx);
+        assert_eq!(tail_gap(cx), pinned, "the transcript keeps its tail");
+        frame_at(start + motion::PANEL.settle, cx);
+        let expanded = composer_height(cx);
+        assert!(expanded > rest * 2., "expanded: {expanded:?}");
+        assert!(
+            (expanded - landing).abs() < px(1.),
+            "lands on the resting layout: {landing:?} then {expanded:?}"
+        );
+        assert_eq!(tail_gap(cx), pinned, "the transcript keeps its tail");
+
+        // Shrink, then expand again halfway down.
+        let shrink = start + motion::PANEL.settle * 2;
+        motion::set_test_now(Some(shrink));
+        toggle(&chat, cx);
+        frame_at(shrink + motion::PANEL.settle / 2, cx);
+        let partway = composer_height(cx);
+        assert!(partway > rest && partway < expanded, "partway: {partway:?}");
+        assert_eq!(tail_gap(cx), pinned, "the tail stays put mid-flight");
+        toggle(&chat, cx);
+        assert_eq!(
+            composer_height(cx),
+            partway,
+            "a reversal starts where it is"
+        );
+        frame_at(
+            shrink + motion::PANEL.settle / 2 + Duration::from_millis(30),
+            cx,
+        );
+        assert!(composer_height(cx) > partway, "heading back up");
+        frame_at(shrink + motion::PANEL.settle * 2, cx);
+        assert_eq!(composer_height(cx), expanded);
+        assert!(chat.read_with(cx, |chat, _| chat.composer_resize.is_none()));
+
+        // Reduced motion switches at once.
+        cx.update(|_window, app| app.set_reduce_motion(true));
+        toggle(&chat, cx);
+        assert_eq!(composer_height(cx), rest);
+        assert_eq!(tail_gap(cx), pinned);
+        motion::set_test_now(None);
+    }
+
+    #[gpui::test]
+    fn expanding_from_the_empty_state_folds_the_hero_without_a_jump(cx: &mut TestAppContext) {
+        let start = Instant::now();
+        motion::set_test_now(Some(start));
+        cx.update(|cx| cx.set_reduce_motion(false));
+        let (chat, cx) = chat_window(cx, 0);
+        let rest = cx.debug_bounds("composer-box").expect("composer");
+
+        toggle(&chat, cx);
+        assert_eq!(
+            cx.debug_bounds("composer-box"),
+            Some(rest),
+            "the heading and the note are still there on the first frame"
+        );
+        frame_at(start + motion::PANEL.settle / 2, cx);
+        let partway = composer_height(cx);
+        assert!(partway > rest.size.height, "partway: {partway:?}");
+        frame_at(start + motion::PANEL.settle - Duration::from_millis(1), cx);
+        let landing = cx.debug_bounds("composer-box").expect("composer");
+        frame_at(start + motion::PANEL.settle, cx);
+        let expanded = cx.debug_bounds("composer-box").expect("composer");
+        assert!(
+            (expanded.top() - landing.top()).abs() < px(1.),
+            "{landing:?} {expanded:?}"
+        );
+        assert!(
+            (expanded.size.height - landing.size.height).abs() < px(1.),
+            "{landing:?} {expanded:?}"
+        );
+
+        let shrink = start + motion::PANEL.settle * 2;
+        motion::set_test_now(Some(shrink));
+        toggle(&chat, cx);
+        assert_eq!(cx.debug_bounds("composer-box"), Some(expanded));
+        // On the way back the heading rides above the composer at its full
+        // size: the folding box never cuts it against the composer's edge.
+        for step in 1..8 {
+            frame_at(shrink + motion::PANEL.settle * step / 8, cx);
+            let composer = cx.debug_bounds("composer-box").expect("composer");
+            let title = cx
+                .debug_bounds("empty-title")
+                .expect("the heading draws on the way back");
+            assert!(
+                title.bottom() <= composer.top(),
+                "the heading stays clear of the composer: {title:?} {composer:?}"
+            );
+        }
+        frame_at(shrink + motion::PANEL.settle - Duration::from_millis(1), cx);
+        let landing = cx.debug_bounds("composer-box").expect("composer");
+        frame_at(shrink + motion::PANEL.settle, cx);
+        assert!(
+            (rest.top() - landing.top()).abs() < px(1.),
+            "{landing:?} {rest:?}"
+        );
+        assert_eq!(cx.debug_bounds("composer-box"), Some(rest));
+        motion::set_test_now(None);
+    }
+
+    /// A new task has no session yet. Shrinking its expanded composer starts
+    /// from the expanded box and eases down to rest, so nothing around it
+    /// jumps, whatever the composer brings along for a new task.
+    #[gpui::test]
+    fn a_new_task_shrinks_its_composer_from_where_it_was(cx: &mut TestAppContext) {
+        let start = Instant::now();
+        motion::set_test_now(Some(start));
+        cx.update(|cx| cx.set_reduce_motion(false));
+        let (chat, cx) = chat_window(cx, 0);
+        chat.update(cx, |chat, cx| {
+            chat.selected_session = None;
+            cx.notify();
+        });
+        cx.run_until_parked();
+        let rest = cx.debug_bounds("composer-box").expect("composer");
+        toggle(&chat, cx);
+        frame_at(start + motion::PANEL.settle * 2, cx);
+        let expanded = cx.debug_bounds("composer-box").expect("composer");
+        assert!(
+            expanded.size.height > rest.size.height,
+            "{rest:?} {expanded:?}"
+        );
+
+        let shrink = start + motion::PANEL.settle * 3;
+        motion::set_test_now(Some(shrink));
+        toggle(&chat, cx);
+        assert_eq!(
+            cx.debug_bounds("composer-box"),
+            Some(expanded),
+            "shrinking starts from the expanded box"
+        );
+        let mut heights = vec![expanded.size.height];
+        for step in 1..8 {
+            frame_at(shrink + motion::PANEL.settle * step / 8, cx);
+            heights.push(composer_height(cx));
+        }
+        assert!(
+            heights.windows(2).all(|pair| pair[1] <= pair[0]),
+            "it only shrinks: {heights:?}"
+        );
+        assert!(
+            heights[1] > rest.size.height,
+            "it eases rather than snapping to rest: {heights:?}"
+        );
+        frame_at(shrink + motion::PANEL.settle * 2, cx);
+        assert_eq!(
+            cx.debug_bounds("composer-box"),
+            Some(rest),
+            "it lands at rest"
+        );
+        motion::set_test_now(None);
+    }
+
+    /// Sending a message several lines long: the composer gets shorter on
+    /// that frame, and the slot the sent message shows in opens from the
+    /// height it gave up. The newest row holds still on the send frame and
+    /// from then on only moves up, to make the room the bubble needs beyond
+    /// that. It never drops first.
+    #[gpui::test]
+    fn sending_a_long_message_never_drops_the_transcript(cx: &mut TestAppContext) {
+        let start = Instant::now();
+        motion::set_test_now(Some(start));
+        cx.update(|cx| cx.set_reduce_motion(false));
+        let (chat, cx) = chat_window(cx, 40);
+        let text = "one\ntwo\nthree\nfour\nfive";
+        chat.update(cx, |chat, cx| {
+            let composer = chat.composer.clone().expect("composer");
+            composer.update(cx, |input, cx| input.set_text(text, cx));
+        });
+        cx.run_until_parked();
+        let typed = start + motion::PANEL.settle * 2;
+        frame_at(typed, cx);
+        let newest = |cx: &mut VisualTestContext| {
+            cx.debug_bounds("timeline-row-m39")
+                .expect("the newest row is on screen")
+                .bottom()
+        };
+        let tall = composer_height(cx);
+        let before = newest(cx);
+
+        // What dispatching a send does to the composer and the slot.
+        chat.update(cx, |chat, cx| {
+            chat.clear_composer_for_send(cx);
+            let preview = crate::ui::chat::sending::SendPreview::new(Some("s1".into()), text, &[])
+                .capture_timeline(&chat.timeline);
+            chat.sending_previews.insert("send-1".into(), preview);
+            cx.notify();
+        });
+        cx.run_until_parked();
+        assert!(
+            composer_height(cx) < tall - px(40.),
+            "the composer emptied on the send frame"
+        );
+        let first = newest(cx);
+        assert!(
+            (first - before).abs() <= px(1.),
+            "the newest row holds still on the send frame: {before:?} then {first:?}"
+        );
+        let mut last = first;
+        for step in 1..=12 {
+            frame_at(typed + motion::ENTER.settle * step / 6, cx);
+            let now = newest(cx);
+            assert!(
+                now <= last + px(0.5),
+                "it only ever moves up: {last:?} then {now:?}"
+            );
+            last = now;
+        }
+        assert!(
+            last < before,
+            "it ends higher, by what the bubble needs beyond the composer's rows"
+        );
+        // The frame asked for while it moved still runs once; then it rests.
+        // gpui's own one-shot fades (the composer's "Sending…" status) read
+        // the executor's clock, so that moves on too.
+        cx.executor().advance_clock(motion::PANEL.settle * 4);
+        frame_at(typed + motion::PANEL.settle * 4, cx);
+        frame_at(typed + motion::PANEL.settle * 5, cx);
+        assert_eq!(newest(cx), last, "settled");
+        assert_eq!(cx.update(|window, app| window.simulate_next_frame(app)), 0);
+        motion::set_test_now(None);
+    }
+
+    /// The same send while the waiting dots already show under the thread
+    /// (a second message before the first reply): the slot is on screen at
+    /// rest, so it takes the height the composer gives up on that frame and
+    /// opens the rest over the following frames. The newest row never
+    /// drops, and the slot does not pop to its full height in one frame.
+    #[gpui::test]
+    fn a_send_while_the_dots_show_neither_drops_nor_pops(cx: &mut TestAppContext) {
+        let start = Instant::now();
+        motion::set_test_now(Some(start));
+        cx.update(|cx| cx.set_reduce_motion(false));
+        let (chat, cx) = chat_window(cx, 40);
+        let text = "one\ntwo\nthree\nfour\nfive";
+        chat.update(cx, |chat, cx| {
+            chat.active_runs.insert("s1".into(), "run-1".into());
+            chat.awaiting_first_token = true;
+            let composer = chat.composer.clone().expect("composer");
+            composer.update(cx, |input, cx| input.set_text(text, cx));
+            cx.notify();
+        });
+        cx.run_until_parked();
+        // Long after the dots appeared: a stale start time must not count.
+        let typed = start + Duration::from_secs(5);
+        frame_at(typed, cx);
+        frame_at(typed, cx);
+        let newest = |cx: &mut VisualTestContext| {
+            cx.debug_bounds("timeline-row-m39")
+                .expect("the newest row is on screen")
+                .bottom()
+        };
+        let before = newest(cx);
+
+        chat.update(cx, |chat, cx| {
+            chat.clear_composer_for_send(cx);
+            let preview = crate::ui::chat::sending::SendPreview::new(Some("s1".into()), text, &[])
+                .capture_timeline(&chat.timeline);
+            chat.sending_previews.insert("send-2".into(), preview);
+            cx.notify();
+        });
+        cx.run_until_parked();
+        let first = newest(cx);
+        assert!(
+            first <= before + px(1.),
+            "the newest row does not drop on the send frame: {before:?} then {first:?}"
+        );
+        let mut last = first;
+        let mut steps = 0;
+        for step in 1..=12 {
+            frame_at(typed + motion::ENTER.settle * step / 6, cx);
+            let now = newest(cx);
+            assert!(
+                now <= last + px(0.5),
+                "it only ever moves up: {last:?} then {now:?}"
+            );
+            if now < last - px(0.5) {
+                steps += 1;
+            }
+            last = now;
+        }
+        assert!(
+            steps >= 3,
+            "the slot opens over several frames, not in one: {steps} moves from {first:?} to {last:?}"
+        );
+        motion::set_test_now(None);
+    }
+
+    /// The composer changes place at once between the empty state and a
+    /// conversation: on the first message it is at the foot of the thread
+    /// on the next frame and asks for no more, and New Task puts it straight
+    /// back. Where the composer sits is not something to animate.
+    #[gpui::test]
+    fn the_composer_changes_place_at_once_between_a_new_task_and_a_conversation(
+        cx: &mut TestAppContext,
+    ) {
+        let start = Instant::now();
+        motion::set_test_now(Some(start));
+        cx.update(|cx| cx.set_reduce_motion(false));
+        let (chat, cx) = chat_window(cx, 0);
+        let hero = cx.debug_bounds("composer-box").expect("composer");
+
+        let message = |chat: &mut ChatScreen| {
+            chat.replace_timeline(vec![AgentTimelineItem {
+                label: None,
+                persisted: None,
+                live: None,
+                truncated: None,
+                revision: 0,
+                id: "m0".to_string(),
+                item_type: "message".to_string(),
+                role: None,
+                title: None,
+                text: Some("Hello".to_string()),
+                status: None,
+                input: None,
+                output: None,
+                created_ms: 0,
+                merge: "replace".to_string(),
+            }]);
+        };
+        chat.update(cx, |chat, cx| {
+            message(chat);
+            cx.notify();
+        });
+        cx.run_until_parked();
+        let first = cx.debug_bounds("composer-box").expect("composer");
+        assert!(
+            first.top() > hero.top() + px(100.),
+            "at the foot of the thread on the first frame: {hero:?} {first:?}"
+        );
+        frame_at(start + motion::PANEL.settle, cx);
+        let rest = cx.debug_bounds("composer-box").expect("composer");
+        assert_eq!(rest, first, "and it stays there");
+        assert_eq!(cx.update(|window, app| window.simulate_next_frame(app)), 0);
+
+        chat.update(cx, |chat, cx| {
+            chat.replace_timeline(Vec::new());
+            cx.notify();
+        });
+        cx.run_until_parked();
+        let back = cx.debug_bounds("composer-box").expect("composer");
+        assert!(
+            (back.top() - hero.top()).abs() < px(1.),
+            "New Task puts it straight back: {hero:?} {back:?}"
+        );
+        assert_eq!(cx.update(|window, app| window.simulate_next_frame(app)), 0);
+        motion::set_test_now(None);
     }
 }

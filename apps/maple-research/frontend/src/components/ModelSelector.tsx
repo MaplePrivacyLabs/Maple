@@ -8,6 +8,7 @@ import {
   DropdownMenuSeparator
 } from "@/components/ui/dropdown-menu";
 import { useBillingState, useModelState } from "@/state/useLocalState";
+import { hasApiAccess } from "@/billing/billingAccess";
 import { useOpenSecret } from "@mapleai/sdk";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { UpgradePromptDialog } from "@/components/UpgradePromptDialog";
@@ -223,10 +224,9 @@ export function ModelSelector() {
       const access = getAccess(modelId);
       if (access === "free") return true;
 
-      const planName = billingStatus?.product_name?.toLowerCase() || "";
-      return planName.includes("pro") || planName.includes("max") || planName.includes("team");
+      return hasApiAccess(billingStatus);
     },
-    [billingStatus?.product_name, getAccess]
+    [billingStatus, getAccess]
   );
 
   const getDisplayLabel = (modelId: string): string => {

@@ -35,6 +35,7 @@ fn stdio_config(command: &str) -> AgentMcpServer {
         timeout_seconds: 5,
         transport: AgentMcpTransport::Stdio {
             command: command.to_string(),
+            argv: Vec::new(),
             environment: Vec::new(),
         },
     }
@@ -553,7 +554,9 @@ async fn stopping_a_stdio_server_ends_everything_it_started() {
     // The shell starts a child, prints its pid and waits; neither reads its
     // input, so only the signal to the process group ends them.
     let command = "sh -c 'sleep 300 & echo $!; wait'";
-    let mut process = server(stdio_config(command)).spawn(command, &[]).unwrap();
+    let mut process = server(stdio_config(command))
+        .spawn(command, &[], &[])
+        .unwrap();
     let mut stdout = process.child.stdout.take().unwrap();
     let mut line = Vec::new();
     let mut byte = [0u8; 1];
@@ -579,4 +582,181 @@ async fn stopping_a_stdio_server_ends_everything_it_started() {
         tokio::time::sleep(Duration::from_millis(20)).await;
     }
     assert!(!alive(sleeper), "the server's child was left running");
+}
+
+/// The inner method and params of one recorded message.
+type SentMessage = (String, Option<serde_json::Map<String, serde_json::Value>>);
+
+/// A scripted MCP-over-ACP server: the inner MCP answers come from a map,
+/// and every message is recorded for the assertions.
+#[derive(Default)]
+struct ScriptedAcpMcpServer {
+    /// Refuse the inner `initialize`, as a broken server would.
+    refuse_initialize: bool,
+    connected: AtomicUsize,
+    disconnected: AtomicUsize,
+    messages: std::sync::Mutex<Vec<SentMessage>>,
+}
+
+impl ScriptedAcpMcpServer {
+    fn calls(&self, method: &str) -> Vec<Option<serde_json::Map<String, serde_json::Value>>> {
+        self.messages
+            .lock()
+            .unwrap()
+            .iter()
+            .filter(|(called, _)| called == method)
+            .map(|(_, params)| params.clone())
+            .collect()
+    }
+}
+
+#[async_trait::async_trait]
+impl super::super::acp_channel::AcpMcpChannel for ScriptedAcpMcpServer {
+    async fn connect(&self) -> Result<String, String> {
+        self.connected.fetch_add(1, Ordering::SeqCst);
+        Ok("bridge-connection-1".to_string())
+    }
+
+    async fn message(
+        &self,
+        connection: &str,
+        method: &str,
+        params: Option<serde_json::Map<String, serde_json::Value>>,
+    ) -> Result<serde_json::Value, String> {
+        assert_eq!(connection, "bridge-connection-1");
+        self.messages
+            .lock()
+            .unwrap()
+            .push((method.to_string(), params.clone()));
+        let text = params
+            .as_ref()
+            .and_then(|params| params.get("arguments"))
+            .and_then(|arguments| arguments.get("text"))
+            .and_then(|value| value.as_str())
+            .unwrap_or_default();
+        match method {
+            "initialize" if self.refuse_initialize => Err("initialize refused".to_string()),
+            "initialize" => Ok(json!({
+                "protocolVersion": "2025-11-25",
+                "capabilities": {"tools": {}},
+                "serverInfo": {"name": "bridge", "version": "1.0"},
+            })),
+            "tools/list" => Ok(json!({
+                "tools": [{
+                    "name": "echo",
+                    "description": "Echo the text",
+                    "inputSchema": {"type": "object", "properties": {"text": {"type": "string"}}},
+                }],
+            })),
+            "tools/call" => Ok(json!({
+                "content": [{"type": "text", "text": format!("Echo: {text}")}],
+            })),
+            other => Err(format!("unexpected inner method {other}")),
+        }
+    }
+
+    async fn notify(
+        &self,
+        connection: &str,
+        method: &str,
+        params: Option<serde_json::Map<String, serde_json::Value>>,
+    ) -> Result<(), String> {
+        assert_eq!(connection, "bridge-connection-1");
+        self.messages
+            .lock()
+            .unwrap()
+            .push((method.to_string(), params));
+        Ok(())
+    }
+
+    async fn disconnect(&self, _connection: &str) {
+        self.disconnected.fetch_add(1, Ordering::SeqCst);
+    }
+}
+
+fn acp_config(channel: &str) -> AgentMcpServer {
+    AgentMcpServer {
+        name: "Bridge".to_string(),
+        description: String::new(),
+        enabled: true,
+        timeout_seconds: 30,
+        transport: AgentMcpTransport::Acp {
+            server_id: "t3-code".to_string(),
+            channel: channel.to_string(),
+        },
+    }
+}
+
+#[tokio::test]
+#[cfg(feature = "acp")]
+async fn an_acp_server_connects_through_its_channel_and_runs_its_tools() {
+    let scripted = Arc::new(ScriptedAcpMcpServer::default());
+    let channel: Arc<dyn super::super::acp_channel::AcpMcpChannel> =
+        Arc::clone(&scripted) as Arc<dyn super::super::acp_channel::AcpMcpChannel>;
+    super::super::acp_channel::register_channel("connection-test-key", &channel);
+    let server = server(acp_config("connection-test-key"));
+
+    let listing = server.connect().await.unwrap();
+    let names: Vec<&str> = listing
+        .tools
+        .iter()
+        .map(|tool| tool.name.as_ref())
+        .collect();
+    assert_eq!(names, ["echo"]);
+
+    let echoed = server
+        .call_tool(
+            "echo",
+            arguments(json!({"text": "hi"})),
+            CancellationToken::new(),
+            pi_agent_core::ToolUpdates::none(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(text(&echoed), "Echo: hi");
+    let calls = scripted.calls("tools/call");
+    assert_eq!(calls.len(), 1, "each tool call is one inner request");
+    assert_eq!(
+        scripted.calls("notifications/initialized").len(),
+        1,
+        "the handshake's notification travels too"
+    );
+
+    server.shutdown().await;
+    assert_eq!(scripted.disconnected.load(Ordering::SeqCst), 1);
+    assert_eq!(scripted.connected.load(Ordering::SeqCst), 1);
+    super::super::acp_channel::remove_channel("connection-test-key");
+}
+
+#[tokio::test]
+#[cfg(feature = "acp")]
+async fn an_acp_server_without_a_live_channel_cannot_connect() {
+    let server = server(acp_config("connection-test-never-registered"));
+    let error = server.connect().await.unwrap_err();
+    assert!(
+        error.contains("no longer attached"),
+        "a task that outlives its ACP session says so: {error}"
+    );
+}
+
+#[tokio::test]
+#[cfg(feature = "acp")]
+async fn an_acp_server_whose_handshake_fails_releases_its_connection() {
+    let scripted = Arc::new(ScriptedAcpMcpServer {
+        refuse_initialize: true,
+        ..Default::default()
+    });
+    let channel: Arc<dyn super::super::acp_channel::AcpMcpChannel> =
+        Arc::clone(&scripted) as Arc<dyn super::super::acp_channel::AcpMcpChannel>;
+    super::super::acp_channel::register_channel("connection-test-refused", &channel);
+    let server = server(acp_config("connection-test-refused"));
+
+    assert!(server.connect().await.is_err());
+    assert_eq!(scripted.connected.load(Ordering::SeqCst), 1);
+    assert_eq!(
+        scripted.disconnected.load(Ordering::SeqCst),
+        1,
+        "the caller's connection is closed, not left to count against its cap"
+    );
+    super::super::acp_channel::remove_channel("connection-test-refused");
 }

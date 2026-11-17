@@ -4,6 +4,12 @@ import { useNavigate } from "@tanstack/react-router";
 import { getBillingService } from "@/billing/billingService";
 import { useAppleBilling } from "@/billing/useAppleBilling";
 import { useAppleProducts } from "@/billing/useAppleProducts";
+import {
+  appleProductIds,
+  appleSizes,
+  type ApplePlan,
+  type AppleSizeOffer
+} from "@/billing/applePricingPolicy";
 import { storeKit } from "@/services/storeKitService";
 import { ApplePricing } from "./ApplePricing";
 import { openUrl } from "@tauri-apps/plugin-opener";
@@ -39,7 +45,30 @@ function AccountPricing({ userId, isGuest }: { userId: string | null; isGuest: b
   }, []);
   const apple = useAppleBilling();
   const navigate = useNavigate();
-  const catalog = useAppleProducts(import.meta.env.VITE_MAPLE_APP_VARIANT);
+  // Billing's product list names the App Store product of every plan it maps.
+  // Without it the paywall still sells Pro and Max from their fixed identifiers.
+  const billingProducts = useQuery({
+    queryKey: ["billingProducts", "applePaywall"],
+    queryFn: () => getBillingService().getProducts(),
+    retry: 1,
+    staleTime: 5 * 60 * 1000
+  });
+  const variant = import.meta.env.VITE_MAPLE_APP_VARIANT;
+  const listed = appleSizes(billingProducts.data, appleProductIds(variant));
+  const catalog = useAppleProducts(
+    variant,
+    undefined,
+    undefined,
+    Object.values(listed).flatMap((sizes) => sizes.map((size) => size.productId))
+  );
+  const sizes: Partial<Record<ApplePlan, AppleSizeOffer[]>> = {};
+  for (const plan of Object.keys(listed) as ApplePlan[]) {
+    const offers = (listed[plan] ?? []).flatMap((size) => {
+      const product = catalog.sizes[size.productId];
+      return product ? [{ ...size, product }] : [];
+    });
+    if (offers.length) sizes[plan] = offers;
+  }
   const status = useQuery({
     queryKey: ["billingStatus", userId],
     queryFn: async () => {
@@ -70,6 +99,7 @@ function AccountPricing({ userId, isGuest }: { userId: string | null; isGuest: b
         busy={apple.busy}
         recoveryError={apple.recoveryError}
         products={catalog.products}
+        sizes={sizes}
         productsLoading={catalog.loading}
         productsError={catalog.error}
         purchase={apple.purchase}

@@ -13,12 +13,17 @@ pub(super) struct SendPreview {
     baseline_user_rows: HashSet<String>,
     snapshot_projected: bool,
     phase: SendPhase,
+    /// When the preview was made: its bubble's entrance starts here.
+    shown: std::time::Instant,
 }
 
 struct PreviewAttachment {
     name: SharedString,
     mime: String,
     size: u64,
+    /// The stored file's id, known once it has uploaded.
+    id: Option<String>,
+    /// The whole picture, as the sent message's thumbnail shows it.
     image: Option<Arc<gpui::Image>>,
 }
 
@@ -43,7 +48,8 @@ impl SendPreview {
                     name: attachment.name.clone().into(),
                     mime: attachment.mime_type.clone(),
                     size: attachment.size,
-                    image: attachment.thumbnail.clone(),
+                    id: None,
+                    image: attachment.picture.clone(),
                 })
                 .collect(),
             show_body: true,
@@ -52,6 +58,7 @@ impl SendPreview {
             baseline_user_rows: HashSet::new(),
             snapshot_projected: false,
             phase: SendPhase::Admitting,
+            shown: motion::now(),
         }
     }
 
@@ -79,6 +86,13 @@ impl SendPreview {
     }
 
     pub(super) fn prepare(&mut self, send: uploads::PreparedSend) {
+        // The upload stores one file for each draft, in the drafts' order.
+        let stored = &send.request.attachments;
+        if stored.len() == self.attachments.len() {
+            for (attachment, id) in self.attachments.iter_mut().zip(stored) {
+                attachment.id = Some(id.clone());
+            }
+        }
         self.phase = SendPhase::Prepared(Box::new(send));
     }
 
@@ -184,6 +198,8 @@ impl ChatScreen {
         let Some(run) = run.filter(|_| is_user_message(item)) else {
             return;
         };
+        let pictures = self.sent_pictures(session, item);
+        let mut handed_off = false;
         for preview in self
             .sending_previews
             .values_mut()
@@ -201,13 +217,61 @@ impl ChatScreen {
             {
                 continue;
             }
+            let showing = preview.body_visible();
             if preview.projected_runs.len() < 8 || preview.acknowledged_run.as_deref() == Some(run)
             {
                 preview.projected_runs.insert(run.to_owned());
             }
+            if showing && !preview.body_visible() {
+                handed_off = true;
+            }
+        }
+        // The row takes the place of the message already on screen; it
+        // must not enter a second time. The transcript files a row under
+        // its view key, which a real host's rows have and which differs
+        // from the id the event names, so hand off under that key.
+        if handed_off {
+            let key = crate::backend::timeline_view_key(item).unwrap_or_else(|| item.id.clone());
+            self.row_motion.hand_off(key);
+        }
+        if self.is_selected(session) {
+            for (id, picture) in pictures {
+                if !self.attachment_images.contains_key(&id) {
+                    self.attachment_previews.insert(id, picture);
+                }
+            }
         }
         self.sending_previews
             .retain(|_, preview| !preview.settled());
+    }
+
+    /// The pictures a message being sent holds for the files this row names,
+    /// so the row shows them from its first frame instead of file names
+    /// until the stored pictures load. A file is matched by its stored id:
+    /// before the send is acknowledged, a row can be another controller's
+    /// message, and it must never show this draft's pictures.
+    fn sent_pictures(
+        &self,
+        session: &str,
+        item: &AgentTimelineItem,
+    ) -> Vec<(String, Arc<gpui::Image>)> {
+        let sent: HashSet<&str> = transcript::image_attachment_refs(item)
+            .map(|(id, _)| id)
+            .collect();
+        if sent.is_empty() {
+            return Vec::new();
+        }
+        self.sending_previews
+            .values()
+            .filter(|preview| preview.session.as_deref() == Some(session))
+            .flat_map(|preview| &preview.attachments)
+            .filter_map(|attachment| {
+                let id = attachment.id.as_ref()?;
+                let picture = attachment.image.as_ref()?;
+                sent.contains(id.as_str())
+                    .then(|| (id.clone(), picture.clone()))
+            })
+            .collect()
     }
 
     pub(super) fn finish_send_preview(&mut self, session: &str, run: &str) {
@@ -289,104 +353,138 @@ impl ChatScreen {
             .retain(|_, preview| !preview.settled());
     }
 
-    pub(super) fn render_send_preview(&self) -> Option<gpui::Stateful<Div>> {
+    /// The message being sent, under the transcript. Its bubble rises in
+    /// from the moment it shows; the status line under it fades in once,
+    /// in the slot the waiting dots use, so the real row that takes over
+    /// lands where the bubble was.
+    pub(super) fn render_send_preview(
+        &self,
+        window: &mut Window,
+        cx: &gpui::App,
+    ) -> Option<gpui::Stateful<Div>> {
+        self.row_motion.preview_body.set(None);
         let preview = self.current_send_preview()?;
-        Some(
-            div()
-                .id("pending-send")
-                .debug_selector(|| "pending-send".to_string())
-                .role(gpui::Role::Status)
-                .aria_label(if self.send_pending() {
-                    tr("chat-sending-message")
-                } else {
-                    tr("chat-waiting-response")
-                })
-                .flex_none()
-                .w_full()
-                .max_w(CONTENT_WIDTH)
-                .mx_auto()
-                .px_6()
-                .pb_2()
-                .flex()
-                .flex_col()
-                .items_end()
-                .gap_1()
-                .when(preview.body_visible(), |row| {
-                    row.child(
-                        crate::ui::typography::chat_reading(div())
-                            .id("pending-send-body")
-                            .debug_selector(|| "pending-send-body".to_string())
-                            .max_w(gpui::relative(0.75))
-                            .max_h(px(180.))
-                            .overflow_y_scroll()
-                            // A long message scrolls inside its bubble; the
-                            // pane must not scroll the transcript as well.
-                            .on_scroll_wheel(|_, _, cx| cx.stop_propagation())
-                            .px_4()
-                            .py_2()
-                            .rounded(theme::RADIUS_MD)
-                            .bg(gpui::rgb(theme::bg_user_bubble()))
-                            .border_1()
-                            .border_color(gpui::rgb(theme::user_bubble_border()))
-                            .text_color(gpui::rgb(theme::text_primary()))
-                            .when(!preview.attachments.is_empty(), |body| {
-                                body.child(div().flex().flex_wrap().gap_2().mb_1().children(
-                                    preview.attachments.iter().map(|attachment| {
-                                        match &attachment.image {
-                                            Some(image) => div().child(
-                                                gpui::img(gpui::ImageSource::Image(image.clone()))
-                                                    .size_16()
-                                                    .rounded(theme::RADIUS_SM),
-                                            ),
-                                            None => div()
-                                                .flex()
-                                                .flex_col()
-                                                .text_xs()
-                                                .gap_1()
-                                                .child(attachment.name.clone())
-                                                .child(
-                                                    div()
-                                                        .text_color(gpui::rgb(theme::text_muted()))
-                                                        .child(
-                                                            attachments::cached_attachment_detail(
-                                                                &attachment.mime,
-                                                                attachment.size,
-                                                                &self.messages,
-                                                            ),
-                                                        ),
-                                                ),
+        let body_visible = preview.body_visible();
+        let entrance = motion::progress(
+            preview.shown,
+            motion::ENTER,
+            motion::now(),
+            cx.reduce_motion(),
+        );
+        if body_visible && entrance < 1. {
+            window.request_animation_frame();
+        }
+        let body_bounds = self.row_motion.preview_body.clone();
+        let row = div()
+            .on_children_prepainted(move |bounds, _, _| {
+                body_bounds.set(bounds.first().copied().filter(|_| body_visible));
+            })
+            .id("pending-send")
+            .debug_selector(|| "pending-send".to_string())
+            .role(gpui::Role::Status)
+            .aria_label(if self.send_pending() {
+                tr("chat-sending-message")
+            } else {
+                tr("chat-waiting-response")
+            })
+            .flex_none()
+            .w_full()
+            .max_w(CONTENT_WIDTH)
+            .mx_auto()
+            .px_6()
+            .flex()
+            .flex_col()
+            .items_end()
+            .gap(transcript::PREVIEW_GAP)
+            .when(body_visible, |row| {
+                // The same pieces in the same places as the row that takes
+                // over: the attachments in their own row, the text in a
+                // bubble under it, and no bubble without text.
+                let bubble = (!preview.text.trim().is_empty()).then(|| {
+                    crate::ui::typography::chat_reading(div())
+                        .id("pending-send-body")
+                        .debug_selector(|| "pending-send-body".to_string())
+                        .max_w(gpui::relative(0.75))
+                        .max_h(px(180.))
+                        .overflow_y_scroll()
+                        // A long message scrolls inside its bubble; the
+                        // pane must not scroll the transcript as well.
+                        .on_scroll(|_, _, cx| cx.stop_propagation())
+                        .px_4()
+                        .py_2()
+                        .rounded(theme::RADIUS_MD)
+                        .bg(gpui::rgb(theme::bg_user_bubble()))
+                        .border_1()
+                        .border_color(gpui::rgb(theme::user_bubble_border()))
+                        .text_color(gpui::rgb(theme::text_primary()))
+                        .child(preview.text.clone())
+                });
+                let body = div()
+                    .debug_selector(|| "pending-send-message".to_string())
+                    .w_full()
+                    .flex()
+                    .flex_col()
+                    .items_end()
+                    .gap_0p5()
+                    .when(!preview.attachments.is_empty(), |body| {
+                        body.child(
+                            transcript::attachment_row().children(
+                                preview.attachments.iter().enumerate().map(
+                                    |(index, attachment)| match &attachment.image {
+                                        Some(image) => {
+                                            transcript::attachment_thumbnail(image.clone())
+                                                .debug_selector(move || {
+                                                    format!("pending-send-thumbnail-{index}")
+                                                })
                                         }
-                                    }),
-                                ))
-                            })
-                            .child(preview.text.clone()),
-                    )
+                                        None => transcript::attachment_chip(
+                                            attachment.name.clone(),
+                                            attachments::cached_attachment_detail(
+                                                &attachment.mime,
+                                                attachment.size,
+                                                &self.messages,
+                                            ),
+                                        ),
+                                    },
+                                ),
+                            ),
+                        )
+                    })
+                    .children(bubble);
+                row.child(if entrance < 1. {
+                    motion::arrive(body, entrance).into_any_element()
+                } else {
+                    body.into_any_element()
                 })
-                .child(
-                    div()
-                        .flex()
-                        .items_center()
-                        .gap_1()
-                        .text_xs()
-                        .text_color(gpui::rgb(theme::text_muted()))
-                        .child(spinner(
-                            "pending-send-spinner",
-                            px(12.),
-                            theme::text_muted(),
-                        ))
-                        .child(
-                            self.selected_upload()
-                                .map(|(_, upload)| upload.label.clone())
-                                .unwrap_or_else(|| {
-                                    if self.send_pending() {
-                                        UiText::key("chat-sending")
-                                    } else {
-                                        UiText::key("chat-waiting-response-progress")
-                                    }
-                                }),
-                        ),
-                ),
-        )
+            })
+            .child(motion::fade_in(
+                div()
+                    .debug_selector(|| "pending-send-status".to_string())
+                    .h(transcript::WAITING_ROW_HEIGHT)
+                    .flex()
+                    .items_center()
+                    .gap_1()
+                    .text_xs()
+                    .text_color(gpui::rgb(theme::text_muted()))
+                    .child(spinner(
+                        "pending-send-spinner",
+                        px(12.),
+                        theme::text_muted(),
+                    ))
+                    .child(
+                        self.selected_upload()
+                            .map(|(_, upload)| upload.label.clone())
+                            .unwrap_or_else(|| {
+                                if self.send_pending() {
+                                    UiText::key("chat-sending")
+                                } else {
+                                    UiText::key("chat-waiting-response-progress")
+                                }
+                            }),
+                    ),
+                "pending-send-status-reveal",
+            ));
+        Some(row)
     }
 }
 

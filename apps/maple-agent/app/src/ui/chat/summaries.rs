@@ -429,7 +429,7 @@ impl ChatScreen {
         self.request_attachments(wanted, cx);
     }
 
-    fn request_attachments(&mut self, wanted: Vec<String>, cx: &mut Context<Self>) {
+    pub(super) fn request_attachments(&mut self, wanted: Vec<String>, cx: &mut Context<Self>) {
         for id in wanted {
             if self.attachment_requests.insert(id.clone()) {
                 self.attachment_queue.push_back(id);
@@ -467,6 +467,7 @@ impl ChatScreen {
                         match result {
                             Ok(image) => this.insert_attachment_image(&id, image, cx),
                             Err(_) => {
+                                this.attachment_previews.remove(&id);
                                 this.attachment_failures.insert(id.clone());
                                 let rows: Vec<_> = this.timeline.iter().enumerate().filter(|(_, item)|
                                     image_attachment_refs(item).any(|(candidate, _)| candidate == id))
@@ -484,7 +485,7 @@ impl ChatScreen {
         }
     }
 
-    fn insert_attachment_image(
+    pub(super) fn insert_attachment_image(
         &mut self,
         id: &str,
         image: Arc<gpui::Image>,
@@ -531,6 +532,12 @@ impl ChatScreen {
                 self.attachment_requests.remove(&candidate);
                 changed.insert(candidate);
             }
+        }
+        // The stored picture replaces the draft's stand-in, in the row and
+        // in the open preview.
+        self.attachment_previews.remove(id);
+        if self.lightbox.is_some() && self.lightbox_attachment.as_deref() == Some(id) {
+            self.lightbox = Some(Arc::clone(&image));
         }
         self.attachment_images.insert(id.to_string(), image);
         // Re-measure only rows at the viewport; an offscreen evicted image is

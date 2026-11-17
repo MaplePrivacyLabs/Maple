@@ -212,6 +212,8 @@ enum CompletionLocale {
     Spanish,
     #[cfg(feature = "desktop")]
     German,
+    #[cfg(feature = "desktop")]
+    Korean,
 }
 
 impl CompletionLocale {
@@ -224,6 +226,10 @@ impl CompletionLocale {
         if locale == "de" {
             return Self::German;
         }
+        #[cfg(feature = "desktop")]
+        if locale == "ko" {
+            return Self::Korean;
+        }
         let _ = locale;
         Self::English
     }
@@ -235,6 +241,8 @@ impl CompletionLocale {
             Self::Spanish => "es",
             #[cfg(feature = "desktop")]
             Self::German => "de",
+            #[cfg(feature = "desktop")]
+            Self::Korean => "ko",
         }
     }
 }
@@ -358,6 +366,26 @@ mod tests {
             assert!(response.contains("<html lang=\"de\">"));
             assert!(response.contains(expected));
             assert!(!response.contains("flows-oauth-"));
+            let (headers, body) = response.split_once("\r\n\r\n").unwrap();
+            assert!(headers.contains(&format!("Content-Length: {}", body.len())));
+        }
+    }
+
+    #[cfg(feature = "desktop")]
+    #[test]
+    fn korean_completion_formats_every_outcome() {
+        let locale = CompletionLocale::from_requested("ko");
+        assert_eq!(locale.tag(), "ko");
+        for (outcome, expected) in [
+            (Ok(true), "로그인됨"),
+            (Ok(false), "세션을 저장하지 못했어요."),
+            (Err(()), "로그인을 완료하지 못했어요"),
+        ] {
+            let response = completion_response(outcome, locale);
+            assert!(response.contains("<html lang=\"ko\">"));
+            assert!(response.contains(expected));
+            assert!(!response.contains("flows-oauth-"));
+            // Content-Length counts bytes; Hangul is three bytes per syllable.
             let (headers, body) = response.split_once("\r\n\r\n").unwrap();
             assert!(headers.contains(&format!("Content-Length: {}", body.len())));
         }

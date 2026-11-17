@@ -10,6 +10,7 @@ fn stdio(name: &str, command: &str, enabled: bool) -> AgentMcpServer {
         timeout_seconds: 30,
         transport: AgentMcpTransport::Stdio {
             command: command.to_string(),
+            argv: Vec::new(),
             environment: Vec::new(),
         },
     }

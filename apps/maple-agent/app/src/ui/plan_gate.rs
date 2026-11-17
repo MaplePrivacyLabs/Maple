@@ -123,15 +123,16 @@ impl Render for PlanGate {
         }
         let busy = self.checking || self.signing_out;
         let width = (window.viewport_size().width - px(48.)).clamp(px(0.), px(500.));
-        let button =
-            |button: gpui::Stateful<gpui::Div>, selector: &'static str, label: SharedString| {
-                button
-                    .debug_selector(move || selector.to_string())
-                    .aria_label(label.clone())
-                    .py_1p5()
-                    .when(busy, |button| button.opacity(0.6))
-                    .child(label)
-            };
+        let button = |button: crate::ui::motion::HoverBackground,
+                      selector: &'static str,
+                      label: SharedString| {
+            button
+                .debug_selector(move || selector.to_string())
+                .aria_label(label.clone())
+                .py_1p5()
+                .when(busy, |button| button.opacity(0.6))
+                .child(label)
+        };
         div()
             .relative()
             .flex_1()

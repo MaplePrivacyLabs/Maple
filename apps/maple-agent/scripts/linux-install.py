@@ -187,6 +187,15 @@ def exclusive_write(path, data, mode):
         raise
 
 
+def refresh_icon_theme(home):
+    """Running GTK/GNOME Shell icon caches rescan a theme only when its directory mtime changes.
+
+    Writing into an existing size directory does not touch hicolor itself, so bump it like
+    `xdg-icon-resource` does; otherwise the menu shows a fallback icon until the next login.
+    """
+    os.utime(home / ".local/share/icons/hicolor")
+
+
 def desktop_argument(value):
     # Desktop Entry Exec quoting is distinct from shell quoting; percent is a field code.
     value = value.replace("%", "%%")
@@ -225,6 +234,7 @@ def install(source, home):
             for kind, (data, mode) in outputs.items():
                 exclusive_write(paths[kind], data, mode)
                 created.append((paths[kind], hashlib.sha256(data).hexdigest()))
+            refresh_icon_theme(home)
             receipt = {"format": "maple-agent-user-install-v1", "profile": profile, "bundle_id": bundle_id,
                        "files": {kind: hashlib.sha256(data).hexdigest() for kind, (data, _) in outputs.items()}}
             exclusive_write(paths["receipt"], (json.dumps(receipt, sort_keys=True) + "\n").encode(), 0o600)
