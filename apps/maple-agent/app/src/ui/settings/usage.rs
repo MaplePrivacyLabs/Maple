@@ -166,6 +166,15 @@ pub(super) struct UsageData {
     unpriced: Vec<(String, String)>,
 }
 
+impl UsageData {
+    fn named_models(&self) -> &[String] {
+        self.range
+            .as_ref()
+            .map(|range| range.chart.named_models.as_slice())
+            .unwrap_or_default()
+    }
+}
+
 impl SettingsScreen {
     /// Ask whether this account sees the full page: once, or again after a
     /// failed read.
@@ -746,8 +755,14 @@ mod tests {
             );
             this.usage.summary = Some(UsageSummary {
                 days: vec![
-                    day(today - Days::new(1), "glm-5-3", Some("work"), "plan", 200.0),
-                    day(today, "kimi-k3", None, "extra", 40.0),
+                    day(
+                        today - Days::new(1),
+                        "historical",
+                        Some("work"),
+                        "plan",
+                        200.0,
+                    ),
+                    day(today, "free", None, "extra", 0.0),
                 ],
                 current_period: Some(UsageCurrentPeriod::default()),
                 ..UsageSummary::default()
@@ -776,9 +791,34 @@ mod tests {
         assert!(cx.debug_bounds("usage-total-credits").is_some());
         assert!(cx.debug_bounds("usage-daily-29").is_some(), "30 daily bars");
         assert!(cx.debug_bounds("usage-split-pool").is_some());
+        click(cx, "usage-split-pool");
+        settings.update(cx, |this, _| {
+            let data = this.usage.data.as_ref().unwrap();
+            assert_eq!(data.named_models(), ["historical"]);
+            assert_eq!(
+                palette::model("historical", data.named_models()),
+                palette::series(SeriesKey::Model(0))
+            );
+            assert_eq!(
+                palette::model("free", data.named_models()),
+                palette::series(SeriesKey::MoreModels)
+            );
+        });
 
         click(cx, "usage-metric-tokens");
-        settings.update(cx, |this, _| assert_eq!(this.usage.split, Split::Token));
+        settings.update(cx, |this, _| {
+            assert_eq!(this.usage.split, Split::Token);
+            let data = this.usage.data.as_ref().unwrap();
+            assert_eq!(data.named_models(), ["free", "historical"]);
+            assert_eq!(
+                palette::model("historical", data.named_models()),
+                palette::series(SeriesKey::Model(1))
+            );
+            assert_eq!(
+                palette::model("free", data.named_models()),
+                palette::series(SeriesKey::Model(0))
+            );
+        });
         assert!(cx.debug_bounds("usage-split-token").is_some());
         assert!(
             cx.debug_bounds("usage-split-pool").is_none(),
@@ -790,10 +830,24 @@ mod tests {
         settings.update(cx, |this, _| {
             assert_eq!(this.usage.metric, Metric::Requests);
             assert_eq!(this.usage.split, Split::Origin, "App still splits requests");
+            let data = this.usage.data.as_ref().unwrap();
+            assert_eq!(data.named_models(), ["free", "historical"]);
+            assert_eq!(
+                palette::model("historical", data.named_models()),
+                palette::series(SeriesKey::Model(1))
+            );
         });
         click(cx, "usage-metric-tokens");
         click(cx, "usage-metric-credits");
-        settings.update(cx, |this, _| assert_eq!(this.usage.split, Split::Model));
+        settings.update(cx, |this, _| {
+            assert_eq!(this.usage.split, Split::Model);
+            let data = this.usage.data.as_ref().unwrap();
+            assert_eq!(data.named_models(), ["historical"]);
+            assert_eq!(
+                palette::model("free", data.named_models()),
+                palette::series(SeriesKey::MoreModels)
+            );
+        });
     }
 
     #[gpui::test]
