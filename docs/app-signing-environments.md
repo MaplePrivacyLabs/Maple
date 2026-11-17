@@ -10,12 +10,10 @@ Branch protection on `master` alone does not protect repository-level secrets.
 | `apple-signing` | `APPLE_API_ISSUER`, `APPLE_API_KEY`, `APPLE_API_PRIVATE_KEY`, `APPLE_TEAM_ID` | Shared production iOS and Maple Dev builds and TestFlight submission |
 | `android-signing` | `ANDROID_KEYSTORE_BASE64`, `ANDROID_KEY_ALIAS`, `ANDROID_KEY_PASSWORD` | Android master and release builds |
 | `windows-signing` | `AZURE_*` signing configuration and both `TAURI_SIGNING_PRIVATE_KEY*` secrets | Research Windows master/release builds; Agent Windows Dev/Prod packages from trusted master |
-| `zapstore-publishing` | `ZAPSTORE_SIGN_WITH` | Existing best-effort publisher after a successful release |
 
 Configure each environment with **selected branches and tags**: branch `master`
 and tags `v*`. The existing branch and release-tag rulesets must continue to
 protect those refs. Do not add a branch wildcard or allow PR merge refs.
-Zapstore runs its trusted workflow from `master` after the release completes.
 
 `desktop-signing`, `android-signing`, and `windows-signing` use the selected-ref
 restrictions above without required reviewers. Reviewed code admitted to
@@ -67,8 +65,8 @@ Apple or updater signing secrets. For master packages, they require provenance
 from this workflow, `master`, and the exact source commit. See
 [Agent desktop builds](../apps/maple-agent/docs/desktop-builds.md).
 
-Require release-owner approval for `zapstore-publishing`, `pages-production`,
-and `auth-pages-production`, with self-review allowed and administrator bypass
+Require release-owner approval for `pages-production` and
+`auth-pages-production`, with self-review allowed and administrator bypass
 disabled. Preserve the three Pages/updater publishers' `master`-only branch
 policy and the existing SDK and PCR signing reviewer gates.
 Unsigned PR builds and Pages previews keep their automatic behavior.
@@ -115,9 +113,9 @@ will no longer have signing access; use a current reviewed revision instead.
 `just lane repo` (the root `nix flake check`) checks workflow syntax and the
 signing job boundaries. The manual `Check app signing credentials` workflow
 checks credential availability without signing, building, or publishing
-anything. Only jobs using an environment with required reviewers, such as
-`zapstore-publishing`, pause for approval. Run it on `master`; a run from a
-feature branch should be rejected by the environment policies.
+anything. None of the environments it checks has required reviewers, so it
+runs without an approval prompt. Run it on `master`; a run from a feature
+branch should be rejected by the environment policies.
 
 Server-side environment policies and secret placement must also
 be verified through GitHub; a source test cannot enforce repository settings.

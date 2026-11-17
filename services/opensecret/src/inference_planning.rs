@@ -470,7 +470,7 @@ mod tests {
                         },
                     )
                     .expect("weighted GLM or Flash plan");
-                    let expected = if model == GLM_5_3_FLASH_MODEL_ID || bucket < 75 {
+                    let expected = if model == GLM_5_3_FLASH_MODEL_ID || bucket < 99 {
                         continuum_count += 1;
                         ProviderId::Continuum
                     } else {
@@ -494,7 +494,7 @@ mod tests {
                     if model == GLM_5_3_FLASH_MODEL_ID {
                         100
                     } else {
-                        75
+                        99
                     }
                 );
             }
@@ -556,8 +556,8 @@ mod tests {
     #[test]
     fn remembered_provider_beats_the_bucket_only_when_eligible_and_different() {
         let mut intent = intent(GLM_5_3_MODEL_ID, GLM_5_3_MODEL_ID);
-        intent.account_uuid = Uuid::from_u128(75);
-        // Bucket 75 lands on Tinfoil by weight.
+        intent.account_uuid = Uuid::from_u128(99);
+        // Bucket 99 lands on Tinfoil by weight.
         let weighted = plan_completion_route(
             &PROVIDER_REGISTRY,
             RoutePlanningInput {

@@ -1,4 +1,5 @@
 import type { BillingStatus, BillingSubscription } from "./billingApi";
+import { isPaidPlan, planDisplayName } from "./plan";
 
 export const APPLE_SUBSCRIPTIONS_URL = "https://apps.apple.com/account/subscriptions";
 
@@ -19,15 +20,12 @@ export function subscriptionsForManagement(
 ): BillingSubscription[] {
   if (!status) return [];
   if (status.subscriptions !== undefined) return status.subscriptions;
-  const paid = ["pro", "max", "team"].some((plan) =>
-    status.product_name?.toLowerCase().includes(plan)
-  );
-  if (!paid) return [];
+  if (!isPaidPlan(status)) return [];
   if (status.payment_provider === "apple") {
     return [
       {
         provider: "apple",
-        plan: status.product_name ?? "Apple subscription",
+        plan: planDisplayName(status) ?? "Apple subscription",
         state: status.subscription_status ?? "active",
         renews_at: billingPeriodSeconds(status.current_period_end),
         manage: "app_store",
@@ -39,7 +37,7 @@ export function subscriptionsForManagement(
   return [
     {
       provider: "stripe",
-      plan: status.product_name ?? "Subscription",
+      plan: planDisplayName(status) ?? "Subscription",
       state: status.subscription_status ?? "active",
       renews_at: billingPeriodSeconds(status.current_period_end),
       manage: "portal",

@@ -2,6 +2,7 @@ import { Link } from "@tanstack/react-router";
 import { useOpenSecret } from "@mapleai/sdk";
 import { CreditCard, KeyRound, Sparkles } from "lucide-react";
 import { billingPeriodDate } from "@/billing/subscriptionManagement";
+import { isTeamPlan, planDisplayName, planRank } from "@/billing/plan";
 import { useAppleBilling } from "@/billing/useAppleBilling";
 import { Button } from "@/components/ui/button";
 import { useBillingState } from "@/state/useLocalState";
@@ -15,12 +16,10 @@ export function BillingSettings() {
   const apple = useAppleBilling();
   const accountId = useOpenSecret().auth.user?.user.id ?? "signed-out";
 
-  const productName = billingStatus?.product_name ?? "";
-  const normalizedProductName = productName.toLowerCase();
+  const productName = planDisplayName(billingStatus) ?? "";
+  // Free and the first paid plan have somewhere to go; Team is managed by seats.
   const showUpgrade =
-    !isAndroid() &&
-    !normalizedProductName.includes("max") &&
-    !normalizedProductName.includes("team");
+    !isAndroid() && !isTeamPlan(billingStatus) && (planRank(billingStatus) ?? 0) < 2;
 
   const periodLabel =
     billingStatus?.payment_provider === "subscription_pass" ||

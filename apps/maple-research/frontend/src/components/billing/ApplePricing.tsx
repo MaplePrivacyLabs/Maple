@@ -10,10 +10,13 @@ import { appleBillingErrorMessage } from "@/billing/appleBillingLifecycle";
 import {
   applePurchaseConflict,
   currentApplePlan,
-  type ApplePlan
+  currentAppleSize,
+  type ApplePlan,
+  type AppleSizeOffer
 } from "@/billing/applePricingPolicy";
 import { StoreKitRecoveryError, type StoreKitProduct } from "@/services/storeKitService";
 import { Button } from "@/components/ui/button";
+import { cn } from "@/utils/utils";
 
 interface ApplePricingProps {
   userId: string | null;
@@ -25,6 +28,8 @@ interface ApplePricingProps {
   busy: boolean;
   recoveryError: string | null;
   products: Partial<Record<ApplePlan, StoreKitProduct>>;
+  /** Larger sizes of a plan that billing lists and the App Store returned. */
+  sizes?: Partial<Record<ApplePlan, AppleSizeOffer[]>>;
   productsLoading: boolean;
   productsError: string | null;
   purchase: (productId: string) => Promise<AppleBillingPurchaseResult>;
@@ -48,7 +53,11 @@ export function ApplePricing(props: ApplePricingProps) {
   const [message, setMessage] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
   const feedbackRef = useRef<HTMLParagraphElement>(null);
-  const [pendingPlan, setPendingPlan] = useState<ApplePlan | null>(null);
+  const [pending, setPending] = useState<{ plan: ApplePlan; size: AppleSizeOffer | null } | null>(
+    null
+  );
+  // The size picked on each card: an App Store product, or the plan's own name.
+  const [picked, setPicked] = useState<Partial<Record<ApplePlan, string>>>({});
   const operationLock = useRef(false);
   const active = useRef(true);
   const lifetime = useRef(0);
@@ -71,7 +80,11 @@ export function ApplePricing(props: ApplePricingProps) {
 
   const conflict = applePurchaseConflict(props.status);
   const working = props.busy || operation !== null;
-  const awaitingApproval = pendingPlan !== null && !currentApplePlan(props.status, pendingPlan);
+  const awaitingApproval =
+    pending !== null &&
+    !(pending.size
+      ? currentAppleSize(props.status, pending.size)
+      : currentApplePlan(props.status, pending.plan));
   const purchasesEnabled = props.status?.ios_iap_enabled === true;
 
   async function run(action: string, work: (isCurrent: () => boolean) => Promise<string>) {
@@ -187,8 +200,23 @@ export function ApplePricing(props: ApplePricingProps) {
 
       <div className="grid gap-4 sm:grid-cols-2">
         {(["Pro", "Max"] as const).map((plan) => {
-          const product = props.products[plan];
-          const current = currentApplePlan(props.status, plan);
+          const base = props.products[plan];
+          // A larger size is an option of a plan the App Store is selling.
+          const offers = base ? (props.sizes?.[plan] ?? []) : [];
+          // A subscriber's own size is shown first; a pick on the card wins.
+          const choice =
+            picked[plan] ??
+            offers.find((offer) => currentAppleSize(props.status, offer))?.productId;
+          const size = offers.find((offer) => offer.productId === choice) ?? null;
+          const product = size?.product ?? base;
+          const label = size?.displayName ?? plan;
+          const operationKey = size?.productId ?? plan;
+          const current = size
+            ? currentAppleSize(props.status, size)
+            : currentApplePlan(props.status, plan);
+          const features = size?.credits
+            ? [size.credits, ...planFeatures[plan].slice(1)]
+            : planFeatures[plan];
           const disabled = current
             ? working
             : !!props.userId &&
@@ -204,7 +232,40 @@ export function ApplePricing(props: ApplePricingProps) {
                 !props.status);
           return (
             <section key={plan} className="flex flex-col gap-5 rounded-xl border bg-card p-5">
-              <h2 className="text-2xl font-semibold">Maple {plan}</h2>
+              <h2 className="text-2xl font-semibold">Maple {label}</h2>
+              {offers.length > 0 && base && (
+                <div
+                  role="group"
+                  aria-label={`${plan} sizes`}
+                  className="flex gap-1 rounded-lg border p-1"
+                >
+                  {[null, ...offers].map((offer) => {
+                    const selected = (offer?.productId ?? null) === (size?.productId ?? null);
+                    return (
+                      <button
+                        key={offer?.productId ?? plan}
+                        type="button"
+                        aria-pressed={selected}
+                        disabled={working}
+                        onClick={() =>
+                          setPicked((current) => ({
+                            ...current,
+                            [plan]: offer?.productId ?? plan
+                          }))
+                        }
+                        className={cn(
+                          "flex-1 rounded-md px-2 py-2 text-sm font-semibold outline-none transition-colors focus-visible:ring-2 focus-visible:ring-ring",
+                          selected
+                            ? "bg-[hsl(var(--maple-primary-container))] text-[hsl(var(--maple-primary-strong))] dark:bg-[hsl(var(--maple-primary))]/20 dark:text-[hsl(var(--maple-primary))]"
+                            : "text-muted-foreground hover:text-foreground"
+                        )}
+                      >
+                        {(offer?.product ?? base).formattedPrice}
+                      </button>
+                    );
+                  })}
+                </div>
+              )}
               <p className="min-h-8 text-2xl font-semibold">
                 {product ? (
                   <>
@@ -218,7 +279,7 @@ export function ApplePricing(props: ApplePricingProps) {
                 )}
               </p>
               <ul className="flex-1 space-y-2 text-sm">
-                {planFeatures[plan].map((feature) => (
+                {features.map((feature) => (
                   <li key={feature} className="flex gap-2">
                     <Check className="h-4 w-4 shrink-0" />
                     {feature}
@@ -238,26 +299,30 @@ export function ApplePricing(props: ApplePricingProps) {
                     return;
                   }
                   if (disabled || !product) return;
-                  void run(plan, async (isCurrent) => {
+                  void run(operationKey, async (isCurrent) => {
                     const result = await props.purchase(product.productId);
                     if (result.status !== "success") {
                       if (result.status === "cancelled")
                         return "Purchase cancelled. No changes were made.";
-                      if (isCurrent()) setPendingPlan(plan);
+                      if (isCurrent()) setPending({ plan, size });
                       return "Your purchase is awaiting Apple's approval. Maple will update when it is approved; do not purchase again.";
                     }
-                    return currentApplePlan(result.acknowledgement, plan)
-                      ? `Purchase confirmed. Maple ${plan} is your current plan.`
+                    return (
+                      size
+                        ? currentAppleSize(result.acknowledgement, size)
+                        : currentApplePlan(result.acknowledgement, plan)
+                    )
+                      ? `Purchase confirmed. Maple ${label} is your current plan.`
                       : "Purchase confirmed. Review billing to see your current plan and manage your subscriptions.";
                   });
                 }}
               >
-                {operation === plan && <Loader2 className="mr-2 h-4 w-4 animate-spin" />}
+                {operation === operationKey && <Loader2 className="mr-2 h-4 w-4 animate-spin" />}
                 {!props.userId
                   ? "Sign in to subscribe"
                   : current
                     ? "Manage Apple subscription"
-                    : `Subscribe to ${plan}`}
+                    : `Subscribe to ${label}`}
               </Button>
             </section>
           );

@@ -211,7 +211,6 @@ impl LockedKey {
     fn zeroed() -> KeyResult<Self> {
         use windows_sys::Win32::System::Memory::{
             MEM_COMMIT, MEM_RELEASE, MEM_RESERVE, PAGE_READWRITE, VirtualAlloc, VirtualFree,
-            VirtualLock,
         };
         // VirtualAlloc rounds up to the native page size. Lock and wipe exactly
         // this 4 KiB private region; all supported Windows targets use >=4 KiB.
@@ -227,7 +226,7 @@ impl LockedKey {
         let Some(memory) = NonNull::new(mapping.cast::<u8>()) else {
             return Err(KeyError::NotEnoughMemory { required_mib: 1 });
         };
-        if unsafe { VirtualLock(mapping, allocation_len) } == 0 {
+        if !windows_lock(mapping, allocation_len) {
             unsafe { VirtualFree(mapping, 0, MEM_RELEASE) };
             return Err(KeyError::MemoryLock);
         }
@@ -236,6 +235,51 @@ impl LockedKey {
             allocation_len,
         })
     }
+}
+
+/// Lock a key page, raising the process's lock quota when it is used up.
+///
+/// Windows lets a process lock only its minimum working set less a small
+/// overhead: about 40 pages by default, and every key holds one. Without the
+/// raise, a process holding a few dozen keys at once (several open stores and
+/// their replay scratch keys) fails to protect the next one.
+#[cfg(windows)]
+fn windows_lock(mapping: *mut std::ffi::c_void, len: usize) -> bool {
+    use windows_sys::Win32::System::Memory::VirtualLock;
+    static RAISE: std::sync::Mutex<()> = std::sync::Mutex::new(());
+    if unsafe { VirtualLock(mapping, len) } != 0 {
+        return true;
+    }
+    // One raise at a time; another thread's raise may already cover this page.
+    let _raise = RAISE
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner());
+    unsafe {
+        VirtualLock(mapping, len) != 0 || (raise_lock_quota() && VirtualLock(mapping, len) != 0)
+    }
+}
+
+/// Add room for `LOCK_QUOTA_STEP` more locked bytes, up to `LOCK_QUOTA_LIMIT`.
+/// The limit keeps a key leak from pinning memory without bound.
+#[cfg(windows)]
+fn raise_lock_quota() -> bool {
+    use windows_sys::Win32::System::Threading::{
+        GetCurrentProcess, GetProcessWorkingSetSize, SetProcessWorkingSetSize,
+    };
+    const LOCK_QUOTA_STEP: usize = 1024 * 1024;
+    const LOCK_QUOTA_LIMIT: usize = 64 * 1024 * 1024;
+    let process = unsafe { GetCurrentProcess() };
+    let (mut minimum, mut maximum) = (0usize, 0usize);
+    if unsafe { GetProcessWorkingSetSize(process, &mut minimum, &mut maximum) } == 0 {
+        return false;
+    }
+    let minimum = minimum.saturating_add(LOCK_QUOTA_STEP);
+    if minimum > LOCK_QUOTA_LIMIT {
+        return false;
+    }
+    // The maximum must stay above the minimum.
+    let maximum = maximum.max(minimum.saturating_add(LOCK_QUOTA_STEP));
+    unsafe { SetProcessWorkingSetSize(process, minimum, maximum) != 0 }
 }
 
 impl Drop for LockedKey {

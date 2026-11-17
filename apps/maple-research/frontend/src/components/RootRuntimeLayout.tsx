@@ -12,6 +12,7 @@ type RootRuntimeLayoutProps = {
 const OAUTH_CALLBACK_PATH = /^\/auth\/([^/]+)\/callback\/?$/;
 const DESKTOP_AUTH_PATH = /^\/desktop-auth\/?$/;
 const SIGNUP_PATH = /^\/signup\/?$/;
+const PASSWORD_RESET_PATH = /^\/password-reset(?:\/confirm)?\/?$/;
 
 function getAccountScopeKey(userId: string | null): string {
   return userId === null ? "account:signed-out" : `account:user:${userId}`;
@@ -27,6 +28,10 @@ function getRouteScopeKey(pathname: string, accountScopeKey: string): string {
   // signUpGuest transitions auth from signed out to the newly created user.
   if (SIGNUP_PATH.test(pathname)) return "route:signup";
 
+  // V2 reset signs in before resolving; retain the flow to clear its inputs and
+  // show completion instead of remounting the initial request screen.
+  if (PASSWORD_RESET_PATH.test(pathname)) return `route:password-reset:${pathname}`;
+
   return `route:${accountScopeKey}`;
 }
 
@@ -35,7 +40,8 @@ function getRouteScopeKey(pathname: string, accountScopeKey: string): string {
  * ordinary routed content. OAuth callback and desktop-auth routes stay outside
  * that provider so authentication preserves their one-shot flow and account
  * confirmation. Signup also retains its route state long enough to show a newly
- * created anonymous user's Account ID. Global account-scoped UI shares the
+ * created anonymous user's Account ID. Password reset retains its completion
+ * screen while the SDK signs in. Global account-scoped UI shares the
  * Chat runtime while retaining its account-transition remount behavior.
  */
 export function RootRuntimeLayout({
@@ -50,7 +56,8 @@ export function RootRuntimeLayout({
   const isOAuthCallback = OAUTH_CALLBACK_PATH.test(pathname);
   const isDesktopAuth = DESKTOP_AUTH_PATH.test(pathname);
   const isSignup = SIGNUP_PATH.test(pathname);
-  const isAuthTransitionRoute = isOAuthCallback || isDesktopAuth || isSignup;
+  const isPasswordReset = PASSWORD_RESET_PATH.test(pathname);
+  const isAuthTransitionRoute = isOAuthCallback || isDesktopAuth || isSignup || isPasswordReset;
   const keyedRouteContent = <Fragment key={routeScopeKey}>{routeContent}</Fragment>;
 
   return (

@@ -518,7 +518,7 @@ mod tests {
     use crate::model_config::{
         ModelAliasTargets, ModelPlan, AUTO_POWERFUL_MODEL_ID, AUTO_QUICK_MODEL_ID,
         DEEPSEEK_V4_1_FLASH_MODEL_ID, DEEPSEEK_V4_1_FLASH_UNCENSORED_MODEL_ID,
-        GLM_5_3_FLASH_MODEL_ID, GLM_5_3_MODEL_ID, KIMI_K3_MODEL_ID, QUICK_MODEL_ID,
+        GLM_5_3_FLASH_MODEL_ID, GLM_5_3_MODEL_ID, KIMI_K3_1_PRO_MODEL_ID, QUICK_MODEL_ID,
     };
     use crate::provider_registry::{
         MapleInstanceId, DUAL_INSTANCE_TEST_REGISTRY, STOCK_REPLICA_TEST_REGISTRY,
@@ -641,7 +641,7 @@ mod tests {
                 .select_active_completion_route(&proxy_router, &intent)
                 .expect("weighted GLM route");
 
-            let (expected_provider, upstream_model) = if bucket < 75 {
+            let (expected_provider, upstream_model) = if bucket < 99 {
                 continuum_count += 1;
                 (ProviderId::Continuum, "glm-5.3")
             } else {
@@ -655,7 +655,7 @@ mod tests {
             assert_eq!(selected.bucket, Some(bucket));
             assert_eq!(selected.selection_source, RouteSelectionSource::StaticSplit);
         }
-        assert_eq!((tinfoil_count, continuum_count), (25, 75));
+        assert_eq!((tinfoil_count, continuum_count), (1, 99));
     }
 
     #[test]
@@ -686,13 +686,13 @@ mod tests {
     fn single_provider_routing_returns_capacity_without_substituting_a_model() {
         let router = ProviderRouter::default();
         let proxy_router = proxy_router_with_both_providers();
-        let intent = intent(KIMI_K3_MODEL_ID, KIMI_K3_MODEL_ID);
+        let intent = intent(KIMI_K3_1_PRO_MODEL_ID, KIMI_K3_1_PRO_MODEL_ID);
 
         router.observe_attempt_terminal(
             &capacity_terminal(
                 ProviderId::Tinfoil,
-                KIMI_K3_MODEL_ID,
-                KIMI_K3_MODEL_ID,
+                KIMI_K3_1_PRO_MODEL_ID,
+                KIMI_K3_1_PRO_MODEL_ID,
                 429,
                 Duration::from_secs(60),
             ),
@@ -705,7 +705,7 @@ mod tests {
         assert!(matches!(
             error,
             ProviderRoutingError::CapacityUnavailable { model, .. }
-                if model == KIMI_K3_MODEL_ID
+                if model == KIMI_K3_1_PRO_MODEL_ID
         ));
     }
 
@@ -787,22 +787,22 @@ mod tests {
                 expected_source: RouteSelectionSource::StaticSplit,
             },
             Case {
-                name: "explicit K3 is independent of the auto target",
-                selector: KIMI_K3_MODEL_ID,
+                name: "explicit K3.1 Pro is independent of the auto target",
+                selector: KIMI_K3_1_PRO_MODEL_ID,
                 plan: ModelPlan::Paid,
                 bucket: 73,
                 continuum_available: true,
                 expected_access: true,
-                expected_public_model: KIMI_K3_MODEL_ID,
+                expected_public_model: KIMI_K3_1_PRO_MODEL_ID,
                 expected_provider: "tinfoil",
-                expected_provider_model: KIMI_K3_MODEL_ID,
+                expected_provider_model: KIMI_K3_1_PRO_MODEL_ID,
                 expected_source: RouteSelectionSource::StaticSplit,
             },
             Case {
                 name: "explicit GLM 5.3 Tinfoil bucket",
                 selector: GLM_5_3_MODEL_ID,
                 plan: ModelPlan::Paid,
-                bucket: 75,
+                bucket: 99,
                 continuum_available: true,
                 expected_access: true,
                 expected_public_model: GLM_5_3_MODEL_ID,
@@ -826,7 +826,7 @@ mod tests {
                 name: "explicit GLM 5.3 Tinfoil bucket without a Continuum proxy",
                 selector: GLM_5_3_MODEL_ID,
                 plan: ModelPlan::Paid,
-                bucket: 75,
+                bucket: 99,
                 continuum_available: false,
                 expected_access: true,
                 expected_public_model: GLM_5_3_MODEL_ID,
@@ -916,7 +916,7 @@ mod tests {
 
         for proxy_router in [&both, &tinfoil_only] {
             for model in PROVIDER_REGISTRY.completion_models() {
-                for bucket in [0, 29, 30, 69, 70, 74, 75, 99] {
+                for bucket in [0, 29, 30, 69, 70, 74, 75, 98, 99] {
                     let mut intent = intent(model.public_model_id, model.public_model_id);
                     intent.account_uuid = uuid_for_bucket(bucket);
                     let active = router.select_active_completion_route(proxy_router, &intent);
@@ -941,6 +941,7 @@ mod tests {
 
         for model in [
             "unknown-model",
+            "kimi-k3",
             "kimi-k-3",
             "kimi-k3-latest",
             "kimi-k3.1-pro",
@@ -978,7 +979,7 @@ mod tests {
         let router = ProviderRouter::default();
         let proxy_router = proxy_router_with_both_providers();
         let mut intent = intent(GLM_5_3_MODEL_ID, GLM_5_3_MODEL_ID);
-        intent.account_uuid = uuid_for_bucket(75);
+        intent.account_uuid = uuid_for_bucket(99);
         let active_before = router
             .select_active_completion_route(&proxy_router, &intent)
             .expect("active route before health observation");
@@ -1030,7 +1031,7 @@ mod tests {
                 GLM_5_3_MODEL_ID,
             ),
             (
-                75,
+                99,
                 ProviderId::Tinfoil,
                 GLM_5_3_MODEL_ID,
                 ProviderId::Continuum,
@@ -1293,7 +1294,7 @@ mod tests {
         for (bucket, provider, provider_model, alternate) in [
             (0, ProviderId::Continuum, "glm-5.3", ProviderId::Tinfoil),
             (
-                75,
+                99,
                 ProviderId::Tinfoil,
                 GLM_5_3_MODEL_ID,
                 ProviderId::Continuum,
@@ -1396,7 +1397,11 @@ mod tests {
         let proxy_router = proxy_router_with_both_providers();
 
         for (provider, public_model, provider_model) in [
-            (ProviderId::Tinfoil, KIMI_K3_MODEL_ID, KIMI_K3_MODEL_ID),
+            (
+                ProviderId::Tinfoil,
+                KIMI_K3_1_PRO_MODEL_ID,
+                KIMI_K3_1_PRO_MODEL_ID,
+            ),
             (ProviderId::Tinfoil, QUICK_MODEL_ID, QUICK_MODEL_ID),
             (
                 ProviderId::Continuum,
@@ -1575,7 +1580,7 @@ mod tests {
         let router = ProviderRouter::default();
         let proxy_router = proxy_router_with_both_providers();
 
-        for model_id in ["kimi-k3-1-pro", "kimi-k3", "deepseek-v4-1-flash"] {
+        for model_id in ["kimi-k3-1-pro", "deepseek-v4-1-flash"] {
             let mut request = intent(model_id, model_id);
             request.account_uuid = uuid_for_bucket(75);
             let selected = router
@@ -1596,6 +1601,7 @@ mod tests {
         let proxy_router = proxy_router_with_both_providers();
 
         for model_id in [
+            "kimi-k3",
             "kimi-k-3",
             "kimi-k3-latest",
             "kimi-k3.1-pro",
@@ -1765,7 +1771,7 @@ mod tests {
             DEEPSEEK_V4_1_FLASH_MODEL_ID,
             GLM_5_3_FLASH_MODEL_ID,
             GLM_5_3_MODEL_ID,
-            KIMI_K3_MODEL_ID,
+            KIMI_K3_1_PRO_MODEL_ID,
             "unknown-model",
         ];
 
@@ -1869,7 +1875,7 @@ mod tests {
             ModelAvailability::Unavailable { retry_after } if retry_after == Duration::from_secs(45)
         ));
         assert_eq!(
-            after_503[KIMI_K3_MODEL_ID],
+            after_503[KIMI_K3_1_PRO_MODEL_ID],
             ModelAvailability::Available(
                 ConfiguredProviders::none().with_provider(ProviderId::Tinfoil)
             )

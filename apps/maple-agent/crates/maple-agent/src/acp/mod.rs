@@ -10,6 +10,7 @@
 
 mod convert;
 mod handler;
+mod mcp_over_acp;
 mod observer;
 mod paged;
 mod session;
@@ -25,6 +26,7 @@ use convert::{
     text_chunk, timeline_update,
 };
 use handler::MapleAcpHandler;
+use mcp_over_acp::{attach_acp_mcp_channels, remove_attached_channels};
 #[cfg(test)]
 use session::find_acp_session;
 use session::{
@@ -52,7 +54,7 @@ use agent_client_protocol::schema::v1::{
     SetSessionModeResponse, StopReason, TextContent, ToolCall, ToolCallContent, ToolCallStatus,
     ToolKind, UsageUpdate,
 };
-use agent_client_protocol::{Agent as AcpAgent, Client, ConnectionTo, Lines};
+use agent_client_protocol::{Agent as AcpAgent, Client, ConnectionTo, JsonRpcMessage, Lines};
 use futures_util::StreamExt as _;
 use std::collections::HashMap;
 use std::path::Path;
@@ -230,7 +232,10 @@ impl AcpConnectionContext {
             .first()
             .cloned()
             .ok_or_else(|| internal_acp_error("Maple returned no models".to_string()))?;
-        let session_servers = prepare_session_mcp(&request.mcp_servers)?;
+        let prepared = prepare_session_mcp(&request.mcp_servers)?;
+        let mcp_channels = attach_acp_mcp_channels(self, cx, &prepared.acp);
+        let mut session_servers = prepared.direct;
+        session_servers.extend(mcp_channels.iter().map(|attached| attached.config.clone()));
         let created = self
             .agent
             .create_surface_session(
@@ -291,6 +296,7 @@ impl AcpConnectionContext {
                 prompted: false,
                 project_root: project_root.clone(),
                 project_trust_decision: project_trust.decision,
+                mcp_channels,
             },
         );
         drop(operations);
@@ -349,10 +355,11 @@ impl AcpConnectionContext {
             }
             session
         };
-        if let Some(mut session) = session
-            && let Some(lease) = session.lease.take()
-        {
-            lease.release().await;
+        if let Some(mut session) = session {
+            remove_attached_channels(&session.mcp_channels);
+            if let Some(lease) = session.lease.take() {
+                lease.release().await;
+            }
         }
     }
 
@@ -574,7 +581,10 @@ impl AcpConnectionContext {
                 .data("The requested task does not exist in the supplied project directory"));
         }
         let available_models = self.available_models().await?;
-        let session_servers = prepare_session_mcp(&request.mcp_servers)?;
+        let prepared = prepare_session_mcp(&request.mcp_servers)?;
+        let mcp_channels = attach_acp_mcp_channels(self, cx, &prepared.acp);
+        let mut session_servers = prepared.direct;
+        session_servers.extend(mcp_channels.iter().map(|attached| attached.config.clone()));
         let protocol_session_id = SessionId::new(session_id.clone());
         // Rebuilding announces HistoryReplaced. Finish before registering this
         // load; its epoch baseline also filters delayed replacement events.
@@ -659,6 +669,7 @@ impl AcpConnectionContext {
                 prompted: false,
                 project_root: project_root.clone(),
                 project_trust_decision: project_trust.decision,
+                mcp_channels,
             },
         );
         drop(sessions);
@@ -708,6 +719,106 @@ impl AcpConnectionContext {
             .await;
         Ok(LoadSessionResponse::new()
             .config_options(self.refresh_config_options(&session_id).await?))
+    }
+
+    /// `session/new` or `session/load` as raw JSON: the typed response with
+    /// the v1 unstable `models` extension added, which carries every offered
+    /// model's reasoning levels beside the `model` selector.
+    async fn session_setup(
+        self: &Arc<Self>,
+        method: &str,
+        params: &serde_json::Value,
+        cx: &ConnectionTo<Client>,
+    ) -> Result<serde_json::Value, agent_client_protocol::Error> {
+        match method {
+            "session/new" => {
+                let request = NewSessionRequest::parse_message(method, params)?;
+                let response = self.new_session(cx, request).await?;
+                self.session_with_models(response.session_id.0.to_string(), response)
+                    .await
+            }
+            "session/load" => {
+                let request = LoadSessionRequest::parse_message(method, params)?;
+                let session_id = canonical_session_id_text(&request.session_id.0)?;
+                let response = self.load_session(cx, request).await?;
+                self.session_with_models(session_id, response).await
+            }
+            _ => Err(agent_client_protocol::Error::method_not_found()),
+        }
+    }
+
+    /// A typed session-setup response with the `models` extension added.
+    async fn session_with_models<R: serde::Serialize>(
+        self: &Arc<Self>,
+        session_id: String,
+        response: R,
+    ) -> Result<serde_json::Value, agent_client_protocol::Error> {
+        let mut value = serde_json::to_value(response).map_err(|error| {
+            internal_acp_error(format!(
+                "the session response could not be encoded: {error}"
+            ))
+        })?;
+        if let Some(models) = self.session_models_state(&session_id).await {
+            value["models"] = models;
+        }
+        Ok(value)
+    }
+
+    /// The `models` extension: every offered model with its reasoning
+    /// levels in `_meta`, read the same way the `thought_level` option shows
+    /// them, so a caller that probes one session knows every model's
+    /// levels. `None` when the session is already gone.
+    async fn session_models_state(self: &Arc<Self>, session_id: &str) -> Option<serde_json::Value> {
+        let (model, available, thinking) = {
+            let sessions = self.sessions.lock().await;
+            let session = sessions.get(session_id)?;
+            (
+                session.model.clone(),
+                session.available_models.clone(),
+                session.thinking.clone(),
+            )
+        };
+        let mut models = Vec::with_capacity(available.len());
+        for candidate in &available {
+            // The current model's state was just read for its options; the
+            // others read the same way the option would show them.
+            let state = if candidate == &model {
+                thinking.clone()
+            } else {
+                self.agent
+                    .thinking_state(Some(session_id), candidate)
+                    .await
+                    .ok()
+            };
+            let meta = match state {
+                Some(state) if state.levels.len() > 1 => serde_json::json!({
+                    "reasoningEfforts": state
+                        .levels
+                        .iter()
+                        .map(|level| serde_json::json!({"value": level.as_str()}))
+                        .collect::<Vec<_>>(),
+                    "reasoningEffort": state.current.as_str(),
+                }),
+                // A model with a single level has no reasoning to pick.
+                Some(_) => serde_json::json!({"supportsReasoningEffort": false}),
+                None => {
+                    models.push(serde_json::json!({
+                        "modelId": candidate,
+                        "name": candidate,
+                    }));
+                    continue;
+                }
+            };
+            models.push(serde_json::json!({
+                "modelId": candidate,
+                "name": candidate,
+                "_meta": meta,
+            }));
+        }
+        Some(serde_json::json!({
+            "currentModelId": model,
+            "availableModels": models,
+        }))
     }
 
     async fn replay_paged_history(
@@ -1921,6 +2032,7 @@ impl AcpConnectionContext {
             };
             let session = self.sessions.lock().await.remove(&session_id);
             if let Some(session) = session {
+                remove_attached_channels(&session.mcp_channels);
                 let discard = operation_drained && session.created_here && !session.prompted;
                 retired_sessions.push((session, discard));
                 self.stats.active_sessions.fetch_sub(1, Ordering::SeqCst);

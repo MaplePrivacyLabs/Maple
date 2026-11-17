@@ -1217,7 +1217,7 @@ mod tests {
             assert_eq!(snapshot.items[1].prompt_messages[0]["content"], user_text);
             let mut unmatched =
                 vec![json!({"role":"tool", "tool_call_id":client_tool_id,"content":user_text})];
-            normalize_tool_call_ids_for_model(&mut unmatched, "kimi-k3");
+            normalize_tool_call_ids_for_model(&mut unmatched, "kimi-k3-1-pro");
         });
         assert!(logs.contains("responses.recall.snapshot_built"));
         assert!(logs.contains("payload_rows=1"));
@@ -2393,7 +2393,7 @@ mod tests {
         ];
 
         let (messages, total_tokens) =
-            build_prompt_from_chat_messages(msgs, "kimi-k3").expect("build prompt");
+            build_prompt_from_chat_messages(msgs, "kimi-k3-1-pro").expect("build prompt");
 
         assert_eq!(messages[1]["tool_calls"][0]["id"], "functions.web_search:0");
         assert_eq!(messages[2]["tool_call_id"], "functions.web_search:0");
@@ -2424,12 +2424,12 @@ mod tests {
             }),
         ];
 
-        normalize_tool_call_ids_for_model(&mut messages, "kimi-k3");
+        normalize_tool_call_ids_for_model(&mut messages, "kimi-k3-1-pro");
         assert_eq!(messages[0]["tool_calls"][0]["id"], "functions.read_image:0");
         assert_eq!(messages[1]["tool_call_id"], "functions.read_image:0");
 
         let normalized_once = messages.clone();
-        normalize_tool_call_ids_for_model(&mut messages, "kimi-k3");
+        normalize_tool_call_ids_for_model(&mut messages, "kimi-k3-1-pro");
         assert_eq!(messages, normalized_once);
     }
 
@@ -2472,7 +2472,7 @@ mod tests {
         ];
 
         let (messages, total_tokens) =
-            build_prompt_from_chat_messages(msgs, "kimi-k3").expect("build prompt");
+            build_prompt_from_chat_messages(msgs, "kimi-k3-1-pro").expect("build prompt");
 
         assert_eq!(messages[1]["role"], ROLE_ASSISTANT);
         assert_eq!(messages[1]["content"], "");

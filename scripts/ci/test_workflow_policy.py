@@ -16,16 +16,15 @@ ROOT = Path(__file__).resolve().parents[2]
 WORKFLOWS = ROOT / ".github/workflows"
 # Release and publication workflows that stay byte-identical; owner review only.
 SACRED = frozenset({
-    "release.yml", "pages-publish.yml", "proxy-publish.yml", "updates-publish.yml", "zapstore-publish.yml",
+    "release.yml", "pages-publish.yml", "proxy-publish.yml", "updates-publish.yml",
     "sdk-publish-npm.yml", "sdk-publish-rust.yml", "auth-pages-publish.yml",
     "opensecret-eif-release.yml",
 })
 LISTENERS = frozenset({
     "auth-pages-dev-publish.yml", "pages-publish.yml", "proxy-publish.yml", "updates-publish.yml",
-    "zapstore-publish.yml",
 })
-NIX_ACTION = "DeterminateSystems/determinate-nix-action@96c5ee93a9dddf2830d31e1da6ec719077336c28"
-NIX_INPUTS = {"source-tag": "v3.23.3", "github-token": ""}
+NIX_ACTION = "DeterminateSystems/determinate-nix-action@16f94ba7aae399b9f9077c254b6719ec6de7e3e3"
+NIX_INPUTS = {"source-tag": "v3.24.2", "github-token": ""}
 # Installs outside the release and EIF workflows also use HTTP/1.1 for substitution.
 NIX_INPUTS_HTTP1 = {**NIX_INPUTS, "extra-conf": "http2 = false"}
 VERIFY_NIX = "bash scripts/ci/verify-nix-runtime.sh"
@@ -55,7 +54,6 @@ ENVIRONMENTS = {
         "AZURE_ARTIFACT_SIGNING_ENDPOINT", "AZURE_ARTIFACT_SIGNING_EXPECTED_SUBJECT", "AZURE_CLIENT_ID",
         "AZURE_ENDPOINT", "AZURE_PROFILE", "AZURE_SUBSCRIPTION_ID", "AZURE_TENANT_ID",
     }),
-    "zapstore-publishing": frozenset({"ZAPSTORE_SIGN_WITH"}),
     "updates-production": frozenset({"AGENT_UPDATES_BWS_ACCESS_TOKEN"}) | CLOUDFLARE,
     "pages-preview": CLOUDFLARE,
     "pages-production": CLOUDFLARE,

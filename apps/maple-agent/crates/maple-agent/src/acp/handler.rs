@@ -7,8 +7,7 @@ use agent_client_protocol::schema::ProtocolVersion;
 use agent_client_protocol::schema::v1::{
     AgentCapabilities, CancelNotification, CloseSessionRequest, CloseSessionResponse,
     DeleteSessionRequest, DeleteSessionResponse, Implementation, InitializeRequest,
-    InitializeResponse, ListSessionsRequest, ListSessionsResponse, LoadSessionRequest,
-    LoadSessionResponse, McpCapabilities, NewSessionRequest, NewSessionResponse,
+    InitializeResponse, ListSessionsRequest, ListSessionsResponse, McpCapabilities,
     PromptCapabilities, PromptRequest, PromptResponse, SessionCapabilities,
     SessionDeleteCapabilities, SessionListCapabilities, SetSessionConfigOptionRequest,
     SetSessionConfigOptionResponse, SetSessionModeRequest, SetSessionModeResponse,
@@ -64,6 +63,24 @@ impl HandleDispatchFrom<Client> for MapleAcpHandler {
     {
         let context = Arc::clone(&self.context);
         Box::pin(async move {
+            // session/new and session/load answer as raw JSON: their responses
+            // carry the v1 unstable `models` extension beside the typed
+            // fields, which the typed response structs do not model.
+            let message = match message {
+                Dispatch::Request(request, responder)
+                    if matches!(request.method(), "session/new" | "session/load") =>
+                {
+                    let (method, params) = request.into_parts();
+                    let task_context = Arc::clone(&context);
+                    let cx = cx.clone();
+                    respond_in_background(&context, responder, async move {
+                        task_context.session_setup(&method, &params, &cx).await
+                    })
+                    .await?;
+                    return Ok(Handled::Yes);
+                }
+                other => other,
+            };
             MatchDispatchFrom::new(message, &cx)
                 .if_request({
                     let context = Arc::clone(&context);
@@ -82,7 +99,9 @@ impl HandleDispatchFrom<Client> for MapleAcpHandler {
                                     .audio(false)
                                     .embedded_context(false),
                             )
-                            .mcp_capabilities(McpCapabilities::new().http(true))
+                            .mcp_capabilities(
+                                McpCapabilities::new().http(true).acp(true),
+                            )
                             .session_capabilities(
                                 SessionCapabilities::new()
                                     .list(SessionListCapabilities::new())
@@ -97,30 +116,6 @@ impl HandleDispatchFrom<Client> for MapleAcpHandler {
                                 ))
                                 .agent_capabilities(capabilities),
                         )
-                    }
-                })
-                .await
-                .if_request({
-                    let context = Arc::clone(&context);
-                    let cx = cx.clone();
-                    |request: NewSessionRequest, responder: Responder<NewSessionResponse>| async move {
-                        let task_context = Arc::clone(&context);
-                        respond_in_background(&context, responder, async move {
-                            task_context.new_session(&cx, request).await
-                        })
-                        .await
-                    }
-                })
-                .await
-                .if_request({
-                    let context = Arc::clone(&context);
-                    let cx = cx.clone();
-                    |request: LoadSessionRequest, responder: Responder<LoadSessionResponse>| async move {
-                        let task_context = Arc::clone(&context);
-                        respond_in_background(&context, responder, async move {
-                            task_context.load_session(&cx, request).await
-                        })
-                        .await
                     }
                 })
                 .await

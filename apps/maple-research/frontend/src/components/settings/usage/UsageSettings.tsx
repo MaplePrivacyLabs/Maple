@@ -2,6 +2,7 @@ import { useMemo, useState } from "react";
 import { useQuery } from "@tanstack/react-query";
 import { useOpenSecret } from "@mapleai/sdk";
 import { getBillingService } from "@/billing/billingService";
+import { planDisplayName } from "@/billing/plan";
 import type { UsageRange } from "@/billing/usageApi";
 import { useUsageSummary } from "@/billing/useUsage";
 import { SettingsPage, SettingsSection } from "@/components/settings/SettingsPage";
@@ -166,7 +167,7 @@ export function UsageSettings() {
       <PricingTable usedModels={usedModels} />
       <AboutNumbers
         kind={kind}
-        planName={status.product_name}
+        planName={planDisplayName(status)}
         allowance={allowance}
         seats={getTeamSeatCounts(teamStatus).billedSeatCount}
         tz={tz}

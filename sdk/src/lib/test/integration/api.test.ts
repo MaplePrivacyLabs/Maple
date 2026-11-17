@@ -17,9 +17,16 @@ import {
   getInstruction,
   updateInstruction,
   deleteInstruction,
-  setDefaultInstruction
+  setDefaultInstruction,
+  fetchRecoveryCodeStatus,
+  enrollRecoveryCode,
+  rotateRecoveryCode,
+  disableRecoveryCode,
+  fetchPasswordResetOptions,
+  completePasswordReset
 } from "../../api";
 import { readTransportV2Credentials } from "../../transportV2/auth";
+import { RecoveryCodeFormatError, validateRecoveryCode } from "../../recoveryCode";
 
 const TEST_EMAIL = process.env.VITE_TEST_EMAIL;
 const TEST_PASSWORD = process.env.VITE_TEST_PASSWORD;
@@ -431,4 +438,106 @@ test("Instructions API - Error cases", async () => {
   } catch (error: any) {
     expect(error.message).toBeDefined();
   }
+});
+
+async function expectStatus(promise: Promise<unknown>, status: number) {
+  await expect(promise).rejects.toMatchObject({ status });
+}
+
+test("Recovery code enroll, rotate, and disable", async () => {
+  // A fresh account keeps recovery state off the shared test user.
+  const password = `Recovery-test-${crypto.randomUUID()}`;
+  await fetchSignUp(
+    `recovery-${crypto.randomUUID()}@local.test`,
+    password,
+    "",
+    TEST_CLIENT_ID!,
+    null
+  );
+
+  expect(await fetchRecoveryCodeStatus()).toEqual({
+    enrolled: false,
+    issued_at: null,
+    last_used_at: null,
+    use_count: 0
+  });
+
+  await expectStatus(enrollRecoveryCode("not-the-password"), 401);
+  // Rotation needs an existing enrollment.
+  await expectStatus(rotateRecoveryCode(password), 400);
+
+  const enrolled = await enrollRecoveryCode(password);
+  expect(enrolled.recovery_code).toStartWith("MPLRC1-");
+  expect(await validateRecoveryCode(enrolled.recovery_code)).toBe(enrolled.recovery_code);
+  const status = await fetchRecoveryCodeStatus();
+  expect(status.enrolled).toBe(true);
+  expect(status.issued_at).toBeString();
+  expect(status.use_count).toBe(0);
+
+  await expectStatus(enrollRecoveryCode(password), 409);
+
+  const rotated = await rotateRecoveryCode(password);
+  expect(rotated.recovery_code).toStartWith("MPLRC1-");
+  expect(await validateRecoveryCode(rotated.recovery_code)).toBe(rotated.recovery_code);
+  expect(rotated.recovery_code).not.toBe(enrolled.recovery_code);
+
+  await expectStatus(disableRecoveryCode("not-the-password"), 401);
+  await disableRecoveryCode(password);
+  expect((await fetchRecoveryCodeStatus()).enrolled).toBe(false);
+  // Disabling is idempotent.
+  await disableRecoveryCode(password);
+});
+
+test("Guest cannot enroll a recovery code", async () => {
+  await fetchGuestSignUp(TEST_PASSWORD!, "", TEST_CLIENT_ID!);
+
+  await expectStatus(enrollRecoveryCode(TEST_PASSWORD!), 400);
+  expect((await fetchRecoveryCodeStatus()).enrolled).toBe(false);
+});
+
+test("V2 password reset rejects an invalid proof", async () => {
+  const email = `recovery-reset-${crypto.randomUUID()}@local.test`;
+  const before = readTransportV2Credentials(API_URL!, "user");
+
+  await expectStatus(
+    fetchPasswordResetOptions(email, "ABCD1234", "not-a-reset-secret", TEST_CLIENT_ID!),
+    400
+  );
+  for (const completion of [
+    {
+      mode: "preserve",
+      recoveryCode:
+        "MPLRC1-0000-0000-0000-0000-0000-0000-0000-0000-0000-0000-0000-0000-0000-39YZ-VTQZ"
+    },
+    { mode: "destructive", acknowledgeDataLoss: true }
+  ] as const) {
+    await expectStatus(
+      completePasswordReset(
+        email,
+        "ABCD1234",
+        "not-a-reset-secret",
+        "New-password-1234",
+        TEST_CLIENT_ID!,
+        completion
+      ),
+      400
+    );
+  }
+  // A rejected completion leaves the stored credentials unchanged.
+  expect(readTransportV2Credentials(API_URL!, "user")).toEqual(before);
+});
+
+test("V2 password reset rejects a malformed recovery code locally", async () => {
+  const before = readTransportV2Credentials(API_URL!, "user");
+  await expect(
+    completePasswordReset(
+      `recovery-reset-${crypto.randomUUID()}@local.test`,
+      "ABCD1234",
+      "not-a-reset-secret",
+      "New-password-1234",
+      TEST_CLIENT_ID!,
+      { mode: "preserve", recoveryCode: "MPLRC1-0000" }
+    )
+  ).rejects.toBeInstanceOf(RecoveryCodeFormatError);
+  expect(readTransportV2Credentials(API_URL!, "user")).toEqual(before);
 });

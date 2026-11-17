@@ -778,7 +778,7 @@ mod tests {
     async fn safe_upstream_errors_reach_local_chat_callers_without_retrying() {
         for (status, code) in [
             (StatusCode::BAD_REQUEST, "upstream_invalid_request"),
-            (StatusCode::BAD_REQUEST, "upstream_context_limit"),
+            (StatusCode::BAD_REQUEST, "context_length_exceeded"),
             (StatusCode::BAD_GATEWAY, "upstream_provider_error"),
             (StatusCode::GATEWAY_TIMEOUT, "upstream_timeout"),
         ] {

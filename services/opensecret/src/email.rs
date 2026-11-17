@@ -142,15 +142,15 @@ fn account_team_name(project_name: &str, org_name: &str) -> String {
 
 fn account_support_email(project_name: &str) -> &'static str {
     if is_maple_project(project_name) {
-        "support@trymaple.ai"
+        "support@maple.ai"
     } else {
         "support@opensecret.cloud"
     }
 }
 
-/// Maple sends from email.trymaple.ai, which has no inbox, so a reply to that
-/// address bounces. Point replies at support instead. Other projects keep
-/// whatever their own sending address does with replies.
+/// Point Maple account replies at its support inbox rather than relying on
+/// the project-configured sending address to receive mail. Other projects
+/// keep their configured sending address for replies.
 fn account_reply_to(project_name: &str) -> Option<&'static str> {
     is_maple_project(project_name).then_some(account_support_email(project_name))
 }
@@ -165,13 +165,62 @@ fn with_account_reply_to(
     }
 }
 
+/// Notification metadata only: recovery secrets never enter the email layer.
+#[derive(Clone, Copy)]
+pub enum RecoveryCodeEvent {
+    Enrolled,
+    Rotated,
+    Disabled,
+}
+
+impl RecoveryCodeEvent {
+    fn title(self) -> &'static str {
+        match self {
+            Self::Enrolled => "Recovery code enabled",
+            Self::Rotated => "Recovery code replaced",
+            Self::Disabled => "Recovery code disabled",
+        }
+    }
+
+    fn details(self) -> &'static str {
+        match self {
+            Self::Enrolled => "A recovery code was created for your account. Keep it somewhere safe: it can help you reset your password without losing your encrypted data. We will never include your recovery code in an email.",
+            Self::Rotated => "A new recovery code was created for your account. Your previous code no longer works. Keep the new code somewhere safe. We will never include your recovery code in an email.",
+            Self::Disabled => "Your recovery code was removed and no longer works. Without a recovery code, resetting your password will delete your encrypted data. You can create a new recovery code to enable recovery again.",
+        }
+    }
+}
+
+#[derive(Clone, Copy)]
+pub enum PasswordResetRecovery {
+    Removed,
+    Used,
+}
+
+impl PasswordResetRecovery {
+    fn follow_up(self) -> &'static str {
+        match self {
+            Self::Used => "Reset your password using your recovery code and access to your account email, then replace the recovery code. Contact support if you cannot regain access.",
+            Self::Removed => "Change your password again if you suspect any unauthorized access.",
+        }
+    }
+
+    fn details(self) -> &'static str {
+        match self {
+            Self::Removed => "This reset deleted your encrypted data and removed any recovery code on your account. Any previous recovery code no longer works. Create a new recovery code if you want to use recovery again.",
+            Self::Used => "Your recovery code was used to reset your password. Your encrypted data was preserved, and the same recovery code still works.",
+        }
+    }
+}
+
 /// An account email for one of a project's users, with the values it shows.
 #[derive(Clone, Copy)]
 enum AccountEmail<'a> {
     Welcome,
     Verification { url: &'a str, code: &'a str },
     PasswordReset { code: &'a str },
-    PasswordResetConfirmation,
+    PasswordResetConfirmation { recovery: PasswordResetRecovery },
+    RecoveryCodeChange { event: RecoveryCodeEvent },
     AccountDeletion { code: &'a str },
     AccountDeletionConfirmation,
 }
@@ -183,7 +232,7 @@ struct AccountMessage {
 
 /// Build a project's account email, or `None` when the project doesn't send
 /// it. Maple gets the redesigned templates. Every other project keeps its
-/// original subject and HTML, and gets no welcome email. Only the email that
+/// legacy layout and gets no welcome email. Only the email that
 /// will be sent is rendered. Kept free of I/O so tests cover this switch.
 fn account_message(
     email: AccountEmail<'_>,
@@ -212,9 +261,18 @@ fn account_message(
             format!("Reset Your {} Password", project_name),
             legacy_password_reset_html(project_name, &team_name, code),
         ),
-        AccountEmail::PasswordResetConfirmation => (
+        AccountEmail::PasswordResetConfirmation { recovery } => (
             format!("Your {} Password Has Been Reset", project_name),
-            legacy_password_reset_confirmation_html(project_name, &team_name, support_email),
+            legacy_password_reset_confirmation_html(
+                project_name,
+                &team_name,
+                support_email,
+                recovery,
+            ),
+        ),
+        AccountEmail::RecoveryCodeChange { event } => (
+            format!("{} for your {} account", event.title(), project_name),
+            legacy_recovery_code_html(project_name, &team_name, support_email, event),
         ),
         AccountEmail::AccountDeletion { code } => (
             format!("Account Deletion Request for Your {} Account", project_name),
@@ -229,8 +287,8 @@ fn account_message(
 }
 
 // The legacy templates below are the original account emails, still sent by
-// every project except Maple. Each keeps a blank line where the Maple logo
-// used to go, so their HTML stays byte-identical to before.
+// every project except Maple. Reset confirmations add recovery details; the
+// other existing messages keep their original HTML.
 
 fn legacy_verification_html(
     project_name: &str,
@@ -325,6 +383,7 @@ fn legacy_password_reset_confirmation_html(
     project_name: &str,
     team_name: &str,
     support_email: &str,
+    recovery: PasswordResetRecovery,
 ) -> String {
     format!(
         r#"
@@ -345,10 +404,11 @@ fn legacy_password_reset_confirmation_html(
                 
                 <h1>Password Reset Confirmation</h1>
                 <p>Your {} account password has been successfully reset.</p>
+                <p>{}</p>
                 <p>If you did not initiate this password reset, please contact us immediately at <a href="mailto:{}">{}</a>.</p>
                 <p>For security reasons, we recommend that you:</p>
                 <ul>
-                    <li>Change your password again if you suspect any unauthorized access.</li>
+                    <li>{}</li>
                     <li>Review your account activity for any suspicious actions.</li>
                 </ul>
                 <p>If you have any questions or concerns, please don't hesitate to reach out to our support team.</p>
@@ -357,7 +417,33 @@ fn legacy_password_reset_confirmation_html(
         </body>
         </html>
         "#,
-        project_name, support_email, support_email, team_name
+        project_name,
+        recovery.details(),
+        support_email,
+        support_email,
+        recovery.follow_up(),
+        team_name
+    )
+}
+
+fn legacy_recovery_code_html(
+    project_name: &str,
+    team_name: &str,
+    support_email: &str,
+    event: RecoveryCodeEvent,
+) -> String {
+    // Escape project/organization names before placing them in this new template.
+    let project = maple_templates::escape_html(project_name);
+    let team = maple_templates::escape_html(team_name);
+    format!(
+        r#"<!DOCTYPE html>
+<html lang="en"><head><meta charset="UTF-8"><meta name="viewport" content="width=device-width, initial-scale=1.0"><title>{title}</title></head>
+<body style="font-family:ui-sans-serif,system-ui,sans-serif;"><div style="max-width:600px;margin:0 auto;padding:20px;">
+<h1>{title}</h1><p>A security setting changed on your {project} account.</p><p>{details}</p>
+<p>If you did not make this change, change your password and review your recovery settings, then contact us immediately at <a href="mailto:{support_email}">{support_email}</a>.</p>
+<p>Best regards,<br>The {team} Team</p></div></body></html>"#,
+        title = event.title(),
+        details = maple_templates::escape_html(event.details()),
     )
 }
 
@@ -548,6 +634,48 @@ pub async fn send_password_reset_confirmation_email(
     app_state: &crate::AppState,
     project_id: i32,
     to_email: String,
+    recovery: PasswordResetRecovery,
+) -> Result<(), EmailError> {
+    send_account_security_email(
+        app_state,
+        project_id,
+        to_email,
+        AccountEmail::PasswordResetConfirmation { recovery },
+    )
+    .await
+}
+
+/// Called only after the credential mutation commits. Delivery is best effort,
+/// just like reset confirmations; it must not prevent returning a one-time code.
+pub fn notify_recovery_code_changed(
+    app_state: &crate::AppState,
+    user: &crate::models::users::User,
+    event: RecoveryCodeEvent,
+) {
+    let Some(to_email) = user.email.clone() else {
+        return;
+    };
+    let app_state = app_state.clone();
+    let project_id = user.project_id;
+    tokio::spawn(async move {
+        if let Err(e) = send_account_security_email(
+            &app_state,
+            project_id,
+            to_email,
+            AccountEmail::RecoveryCodeChange { event },
+        )
+        .await
+        {
+            error!("Failed to send recovery code notification: {:?}", e);
+        }
+    });
+}
+
+async fn send_account_security_email(
+    app_state: &crate::AppState,
+    project_id: i32,
+    to_email: String,
+    notification: AccountEmail<'_>,
 ) -> Result<(), EmailError> {
     let (api_key, from_email) = get_project_email_settings(app_state, project_id).await?;
     let resend = Resend::new(&api_key);
@@ -569,12 +697,7 @@ pub async fn send_password_reset_confirmation_email(
 
     let to = [to_email];
 
-    let Some(message) = account_message(
-        AccountEmail::PasswordResetConfirmation,
-        &project.name,
-        &org.name,
-    )?
-    else {
+    let Some(message) = account_message(notification, &project.name, &org.name)? else {
         return Ok(());
     };
 
@@ -583,10 +706,10 @@ pub async fn send_password_reset_confirmation_email(
             .with_html(&message.html);
 
     let email = with_account_reply_to(email, &project.name);
-    let _email = resend.emails.send(email).await.map_err(|e| {
-        tracing::error!("Failed to send email: {}", e);
+    resend.emails.send(email).await.map_err(|_| {
+        error!("Account security notification delivery failed");
         EmailError::UnknownError
-    });
+    })?;
     Ok(())
 }
 
@@ -976,13 +1099,12 @@ pub async fn send_account_deletion_confirmation_email(
 mod tests {
     use super::{
         account_message, account_reply_to, maple_templates, sender, with_account_reply_to,
-        AccountEmail, AccountMessage,
+        AccountEmail, AccountMessage, PasswordResetRecovery, RecoveryCodeEvent,
     };
     use resend_rs::types::CreateEmailBaseOptions;
 
     const VERIFY_CODE: &str = "3f6c2d1e-8b4a-4c7e-9f21-5a0d7b6e4c19";
-    const VERIFY_URL: &str =
-        "https://trymaple.ai/verify-email/3f6c2d1e-8b4a-4c7e-9f21-5a0d7b6e4c19";
+    const VERIFY_URL: &str = "https://maple.ai/verify-email/3f6c2d1e-8b4a-4c7e-9f21-5a0d7b6e4c19";
     const RESET_CODE: &str = "7KQ2M9XA";
     const DELETE_CODE: &str = "b81e4f0a-2c6d-4a93-8e57-d1f3a9c20b64";
 
@@ -995,9 +1117,8 @@ mod tests {
         other: Option<(&'static str, &'static str)>,
     }
 
-    /// Every account email, with the values the snapshots were taken with.
-    /// The match is exhaustive, so a new `AccountEmail` variant fails to
-    /// compile here until it has a sample and expectations.
+    /// Existing account emails, with the values used by the legacy snapshots.
+    /// Recovery notifications have separate event and project coverage below.
     fn every_account_email() -> Vec<(AccountEmail<'static>, Expected)> {
         [
             AccountEmail::Welcome,
@@ -1006,7 +1127,9 @@ mod tests {
                 code: VERIFY_CODE,
             },
             AccountEmail::PasswordReset { code: RESET_CODE },
-            AccountEmail::PasswordResetConfirmation,
+            AccountEmail::PasswordResetConfirmation {
+                recovery: PasswordResetRecovery::Removed,
+            },
             AccountEmail::AccountDeletion { code: DELETE_CODE },
             AccountEmail::AccountDeletionConfirmation,
         ]
@@ -1034,7 +1157,7 @@ mod tests {
                         include_str!("email/non_maple_snapshots/password_reset.json"),
                     )),
                 },
-                AccountEmail::PasswordResetConfirmation => Expected {
+                AccountEmail::PasswordResetConfirmation { .. } => Expected {
                     maple_subject: "Your Maple password was changed",
                     maple_campaign: "password-changed",
                     other: Some((
@@ -1042,6 +1165,9 @@ mod tests {
                         include_str!("email/non_maple_snapshots/password_reset_confirmation.json"),
                     )),
                 },
+                AccountEmail::RecoveryCodeChange { .. } => {
+                    unreachable!("tested by recovery_notifications_cover_each_event")
+                }
                 AccountEmail::AccountDeletion { .. } => Expected {
                     maple_subject: "Confirm your Maple account deletion",
                     maple_campaign: "delete-account",
@@ -1073,15 +1199,124 @@ mod tests {
     }
 
     #[test]
+    fn recovery_notifications_cover_each_event() {
+        for (event, title, detail) in [
+            (
+                RecoveryCodeEvent::Enrolled,
+                "Recovery code enabled",
+                "A recovery code was created",
+            ),
+            (
+                RecoveryCodeEvent::Rotated,
+                "Recovery code replaced",
+                "Your previous code no longer works",
+            ),
+            (
+                RecoveryCodeEvent::Disabled,
+                "Recovery code disabled",
+                "resetting your password will delete your encrypted data",
+            ),
+        ] {
+            for (project, org, support) in [
+                ("Maple", "OpenSecret", "support@maple.ai"),
+                ("Other", "Other Org", "support@opensecret.cloud"),
+            ] {
+                let message =
+                    account_message(AccountEmail::RecoveryCodeChange { event }, project, org)
+                        .unwrap()
+                        .unwrap();
+                assert_eq!(
+                    message.subject,
+                    format!("{title} for your {project} account")
+                );
+                assert!(message.html.contains(detail));
+                assert!(
+                    message.html.contains("If you did not") || message.html.contains("Wasn't you?")
+                );
+                assert!(message.html.contains(&format!("mailto:{support}")));
+                assert!(!message.html.contains("{{"));
+                if project == "Maple" {
+                    assert!(message.html.contains("tile-reset-done.png"));
+                    assert!(message.html.contains("The Maple team"));
+                    assert!(!message.html.contains("opensecret.cloud"));
+                    assert!(!message.html.contains("trymaple.ai"));
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn reset_confirmations_distinguish_recovery_use_from_removal() {
+        for project in ["Maple", "Other"] {
+            let render = |recovery| {
+                account_message(
+                    AccountEmail::PasswordResetConfirmation { recovery },
+                    project,
+                    "Other Org",
+                )
+                .unwrap()
+                .unwrap()
+            };
+            let used = render(PasswordResetRecovery::Used);
+            assert!(used.html.contains("recovery code was used"));
+            assert!(used.html.contains("encrypted data was preserved"));
+            assert!(used.html.contains("same recovery code still works"));
+            assert!(used
+                .html
+                .contains("Reset your password using your recovery code"));
+            assert!(used.html.contains("access to your account email"));
+            assert!(used
+                .html
+                .contains("Contact support if you cannot regain access"));
+            assert!(!used.html.contains("Change your password again"));
+            assert!(!used.html.contains("changing your password again"));
+            assert!(!used.html.contains("This reset deleted"));
+            let removed = render(PasswordResetRecovery::Removed);
+            if project == "Maple" {
+                for message in [&used, &removed] {
+                    assert!(message.html.contains("mailto:support@maple.ai"));
+                    assert!(!message.html.contains("trymaple.ai"));
+                }
+            }
+            assert!(removed
+                .html
+                .contains("This reset deleted your encrypted data"));
+            assert!(removed.html.contains("removed any recovery code"));
+            assert!(removed
+                .html
+                .contains("previous recovery code no longer works"));
+            assert!(!removed.html.contains("same recovery code still works"));
+        }
+    }
+
+    #[test]
+    fn recovery_notifications_escape_project_and_team_names() {
+        let message = account_message(
+            AccountEmail::RecoveryCodeChange {
+                event: RecoveryCodeEvent::Enrolled,
+            },
+            "<Project & Co>",
+            "<Team & Co>",
+        )
+        .unwrap()
+        .unwrap();
+        assert!(message.html.contains("&lt;Project &amp; Co&gt;"));
+        assert!(message.html.contains("&lt;Team &amp; Co&gt;"));
+        assert!(!message.html.contains("<Project"));
+        assert!(!message.html.contains("<Team"));
+    }
+
+    #[test]
     fn maple_projects_get_the_redesigned_emails() {
-        assert_eq!(account_reply_to("Maple"), Some("support@trymaple.ai"));
+        assert_eq!(account_reply_to("Maple"), Some("support@maple.ai"));
         for (email, expected) in every_account_email() {
             let message = maple_message(email);
             assert_eq!(message.subject, expected.maple_subject);
             let html = &message.html;
             assert!(html.starts_with("<!DOCTYPE html>"));
             assert!(html.contains(&format!("{}wordmark.png", maple_templates::ASSET_BASE)));
-            assert!(html.contains("support@trymaple.ai"));
+            assert!(html.contains("support@maple.ai"));
+            assert!(!html.contains("trymaple.ai"));
             assert!(!html.contains("OpenSecret") && !html.contains("opensecret.cloud"));
             assert!(!html.contains("{{") && !html.contains("}}"));
             if !matches!(email, AccountEmail::Welcome) {
@@ -1091,7 +1326,7 @@ mod tests {
     }
 
     #[test]
-    fn other_projects_keep_their_original_emails() {
+    fn other_projects_keep_their_legacy_emails() {
         assert_eq!(sender("Other", "hi@acme.test"), "Other <hi@acme.test>");
         assert_eq!(account_reply_to("Other"), None);
         for (email, expected) in every_account_email() {
@@ -1154,7 +1389,7 @@ mod tests {
                 2
             };
             assert_eq!(html.matches("utm_campaign=").count(), tagged);
-            assert!(!html.contains("mailto:support@trymaple.ai?utm_"));
+            assert!(!html.contains("mailto:support@maple.ai?utm_"));
             assert!(!html.contains("x.com/trymapleai?utm_"));
             assert!(!html.contains("MaplePrivacyLabs/Maple?utm_"));
             assert!(!html.contains(&format!("{VERIFY_URL}?utm_")));
@@ -1202,19 +1437,16 @@ mod tests {
     fn account_mail_keeps_sender_reply_to_and_html_payload() {
         let maple = maple_message(AccountEmail::Welcome);
         let email = CreateEmailBaseOptions::new(
-            sender("Maple", "hello@email.trymaple.ai"),
+            sender("Maple", "hello@email.maple.ai"),
             ["you@example.com"],
             maple.subject,
         )
         .with_html(&maple.html)
         .with_scheduled_at("2026-10-08T19:15:00Z");
         let payload = serde_json::to_value(with_account_reply_to(email, "Maple")).unwrap();
-        assert_eq!(payload["from"], "Maple <hello@email.trymaple.ai>");
+        assert_eq!(payload["from"], "Maple <hello@email.maple.ai>");
         assert_eq!(payload["to"], serde_json::json!(["you@example.com"]));
-        assert_eq!(
-            payload["reply_to"],
-            serde_json::json!(["support@trymaple.ai"])
-        );
+        assert_eq!(payload["reply_to"], serde_json::json!(["support@maple.ai"]));
         assert!(payload["html"]
             .as_str()
             .unwrap()
@@ -1248,8 +1480,8 @@ mod tests {
     #[test]
     fn project_mail_is_sent_under_the_project_name() {
         assert_eq!(
-            sender("Maple", "hello@email.trymaple.ai"),
-            "Maple <hello@email.trymaple.ai>"
+            sender("Maple", "hello@email.maple.ai"),
+            "Maple <hello@email.maple.ai>"
         );
         assert_eq!(
             sender("Acme, Inc.", "hi@acme.test"),

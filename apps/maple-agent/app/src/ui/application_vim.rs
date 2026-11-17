@@ -8,8 +8,10 @@
 use gpui::Action;
 
 /// Root application-navigation bindings. The negative child contexts keep
-/// ordinary inputs and an open popup menu in charge while they own focus.
-pub(crate) const ROOT_CONTEXT: &str = "ApplicationVim && !TextInput && !Menu";
+/// ordinary inputs, focused buttons and an open popup menu in charge while
+/// they own focus. In particular, Space activates a button immediately instead
+/// of starting an application-navigation leader sequence.
+pub(crate) const ROOT_CONTEXT: &str = "ApplicationVim && !TextInput && !Button && !Menu";
 /// Vim aliases while an open popup menu owns focus.
 pub(crate) const MENU_CONTEXT: &str = "ApplicationVim && Menu";
 /// Escape from an ordinary field returns to its screen's application proxy.

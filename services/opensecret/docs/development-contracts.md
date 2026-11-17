@@ -143,14 +143,18 @@ changed credential.
 Each reset request allows 5 confirmation attempts for its whole 24-hour life.
 The confirm route first matches the submitted secret to a request of that
 account. A submission whose secret matches none cannot complete anything and is
-refused without being counted. One that matches is charged to that request
-before its code is examined, and the sixth is a generic 429 even with the right
-code. Only the party that started a request holds its secret, so nobody else
-can spend its attempts; the owner of an exhausted request starts a new one.
+refused without being counted. An exhausted budget returns a generic 429 even
+with the right code. Only the party that started a request holds its secret,
+so nobody else can spend its attempts; the owner of an exhausted request
+starts a new one.
 
-Every attempt is charged, including a correct one, which is safe only because a
-correct confirmation consumes its request. A route that verifies the same proof
-without consuming the request must not spend this budget on a correct proof.
+User reset proof verification is shared by legacy confirmation and V2 options
+and completion. Failed proofs with a matching client secret spend the budget;
+valid proofs check availability without spending it. Repeated valid options
+checks and a later completion therefore work within the same budget. An
+exhausted request returns the same generic 429 on all three paths, even with
+the right code. Platform confirmation still counts every admitted attempt,
+including a correct one, since successful confirmation consumes its request.
 
 ### Responses context scope
 
