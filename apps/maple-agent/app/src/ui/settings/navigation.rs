@@ -1788,6 +1788,49 @@ mod tests {
         });
     }
 
+    /// Return in the ERASE field reaches the erase without reading the field
+    /// back while it handles the key, which would panic.
+    #[gpui::test]
+    fn enter_in_the_erase_field_checks_the_word(cx: &mut TestAppContext) {
+        let (settings, cx) = dropdown_window(cx, false);
+        settings.update(cx, |this, cx| {
+            this.select_section(Section::Account, cx);
+            this.advanced.status = Some(
+                serde_json::from_value(serde_json::json!({
+                    "state": {"state": "open"},
+                    "mode": "plain",
+                    "store_id": "current",
+                    "password_settings_available": true
+                }))
+                .expect("store status"),
+            );
+            this.open_erase_dialog(cx);
+        });
+        cx.run_until_parked();
+        cx.update(|window, app| {
+            let field = settings
+                .read(app)
+                .advanced
+                .confirmation
+                .read(app)
+                .focus_handle(app);
+            assert!(field.is_focused(window), "the ERASE field is focused");
+        });
+        for typed in ["", "ERAS"] {
+            settings.update(cx, |this, _| this.advanced.notice = None);
+            cx.simulate_input(typed);
+            cx.simulate_keystrokes("enter");
+            settings.update(cx, |this, cx| {
+                assert_eq!(this.advanced.confirmation.read(cx).text(), typed);
+                assert!(!this.advanced.busy, "a wrong word erases nothing");
+                assert!(
+                    this.advanced.notice.is_some(),
+                    "and the dialog explains why"
+                );
+            });
+        }
+    }
+
     /// Erasing local data confirms in a dialog: the field is focused, the
     /// destructive button is inert until ERASE is typed, Escape and the
     /// backdrop close it and clear the field, and a busy erase ignores close.
