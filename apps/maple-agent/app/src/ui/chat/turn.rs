@@ -55,7 +55,9 @@ impl TurnRow {
 pub(super) struct Chunk {
     end: usize,
     icons: Vec<(&'static str, usize)>,
-    states: [usize; 4],
+    /// How many of the chunk's steps are in each state. A step waiting on
+    /// the user, or refused, still counts by its call's own status.
+    states: [usize; step::StepState::Denied as usize + 1],
 }
 
 impl Chunk {

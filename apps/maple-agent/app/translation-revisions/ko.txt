@@ -2,6 +2,7 @@
 chat-absolute-path a2ba378ac24704c4
 chat-active 196d1c9462f99ad3
 chat-activity-outside dc914a2d8037659c
+chat-activity-steps a12bb21490dd0f51
 chat-agent-task-cancelled e26bb0917a4c240b
 chat-agents-running 15f7861d7b1f2dc3
 chat-all-settings f521b783e34e05d0
@@ -232,6 +233,8 @@ chat-page-settled-retry 7819952f23b4deca
 chat-permission-allow 48955332314aface
 chat-permission-deny 247877b375d74e51
 chat-permission-label 003c13cd34c8664b
+chat-permission-mode-hint 3d0a17c847edd1fc
+chat-permission-note-placeholder c0d5f880b0115262
 chat-permission-reason-changes-outside-project 419d3ad8e0d467ef
 chat-permission-reason-changes-project be40ea472bf88e4c
 chat-permission-reason-destructive 7abdcab1435c106b
@@ -354,7 +357,6 @@ chat-staging-unsafe-directory 13ed7aa88e08c0a8
 chat-starting f00ec83fc396c4b0
 chat-starting-agent 0e61b8da983ef787
 chat-status-allowed 11310a7438dc9e0c
-chat-status-completed f7f8f9dd4adb3a0c
 chat-status-denied deee947bb13482c4
 chat-status-done 54904e435ce0c52e
 chat-status-failed 3aa7979f86ebefa0
