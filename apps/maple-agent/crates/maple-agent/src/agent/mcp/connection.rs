@@ -38,6 +38,7 @@ use tokio::io::AsyncReadExt;
 use tokio_util::sync::CancellationToken;
 
 use super::super::{AgentMcpKeyValue, AgentMcpServer, AgentMcpTransport};
+use super::acp_channel::{self, AcpMcpChannel};
 use super::split_command;
 
 /// How long a stdio server has to exit after its input closes, before SIGTERM.
@@ -49,6 +50,9 @@ const STDERR_TAIL_BYTES: usize = 2_000;
 /// How long after a stateless server's tool-change stream ends before it is
 /// opened again.
 const TOOLS_WATCH_RETRY: Duration = Duration::from_secs(30);
+/// How long a tool call over ACP may take. The ACP bridge carries no
+/// progress, which would otherwise extend the ordinary per-request timeout.
+const ACP_TOOL_CALL_TIMEOUT: Duration = Duration::from_secs(15 * 60);
 
 /// Something to tell the task about a server: its tools changed, or it
 /// connected again and may offer others.
@@ -271,6 +275,15 @@ struct Connection {
     stdio: Option<StdioProcess>,
     tools_watch: Option<tokio::task::JoinHandle<()>>,
     oauth_generation: Option<String>,
+    /// The MCP-over-ACP connection, closed with `mcp/disconnect` when the
+    /// service ends.
+    acp: Option<AcpMcpConnection>,
+}
+
+/// The live channel and connection id an MCP-over-ACP server runs on.
+struct AcpMcpConnection {
+    channel: Arc<dyn AcpMcpChannel>,
+    id: String,
 }
 
 /// One MCP server of a task.
@@ -423,6 +436,7 @@ impl McpServer {
                         stdio: Some(stdio),
                         tools_watch: None,
                         oauth_generation: None,
+                        acp: None,
                     }),
                     Err(error) => Err(stdio.failed(error).await),
                 }
@@ -461,6 +475,7 @@ impl McpServer {
                         stdio: None,
                         tools_watch,
                         oauth_generation,
+                        acp: None,
                     });
                 }
                 let mut custom = HashMap::new();
@@ -494,6 +509,41 @@ impl McpServer {
                     stdio: None,
                     tools_watch,
                     oauth_generation: None,
+                    acp: None,
+                })
+            }
+            AgentMcpTransport::Acp { channel, .. } => {
+                let channel = acp_channel::acp_channel(channel).ok_or_else(|| {
+                    "its ACP connection is no longer attached to this task".to_string()
+                })?;
+                let id = channel
+                    .connect()
+                    .await
+                    .map_err(|error| format!("connecting over ACP failed: {error}"))?;
+                let (sink, stream) = acp_channel::acp_transport(Arc::clone(&channel), id.clone());
+                // The bridge answers each inner request in place, so nothing
+                // arrives that this transport did not send, and tool-list
+                // changes never cross it; there is nothing to watch.
+                let opened = self
+                    .handshake((sink, stream), ClientLifecycleMode::Initialize, &progress)
+                    .await;
+                let (service, listing) = match opened {
+                    Ok(opened) => opened,
+                    Err(error) => {
+                        // The caller's side holds the connection open until
+                        // told otherwise, and caps how many it keeps.
+                        channel.disconnect(&id).await;
+                        return Err(error);
+                    }
+                };
+                Ok(Connection {
+                    service,
+                    progress,
+                    listing,
+                    stdio: None,
+                    tools_watch: None,
+                    oauth_generation: None,
+                    acp: Some(AcpMcpConnection { channel, id }),
                 })
             }
         }
@@ -655,7 +705,15 @@ impl McpServer {
         let request = ClientRequest::CallToolRequest(CallToolRequest::new(
             CallToolRequestParams::new(tool.to_string()).with_arguments(arguments),
         ));
-        let options = PeerRequestOptions::with_timeout(self.timeout()).reset_timeout_on_progress();
+        // The ACP bridge carries no progress, so a long tool call cannot
+        // extend the ordinary timeout; give it room to finish.
+        let options = match &self.config.transport {
+            AgentMcpTransport::Acp { .. } => {
+                PeerRequestOptions::with_timeout(ACP_TOOL_CALL_TIMEOUT)
+            }
+            _ => PeerRequestOptions::with_timeout(self.timeout()),
+        }
+        .reset_timeout_on_progress();
         let handle = peer
             .send_request_with_option(request, options)
             .await
@@ -744,6 +802,9 @@ async fn close(mut open: Connection) {
     let _ = open.service.close_with_timeout(STDIN_CLOSE_GRACE).await;
     if let Some(stdio) = open.stdio.take() {
         stdio.stop().await;
+    }
+    if let Some(acp) = open.acp.take() {
+        acp.channel.disconnect(&acp.id).await;
     }
 }
 

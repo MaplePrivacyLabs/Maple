@@ -179,6 +179,19 @@ instead of waiting indefinitely. Client filesystem and terminal callbacks are
 not used. Host-configured MCP servers stay host-owned. ACP-supplied bindings are
 transient, disabled on detach and require explicit reattachment. Conflicting
 server names are rejected rather than silently replacing another client's tools.
+A session accepts HTTP servers and, through the unstable MCP-over-ACP extension
+(`mcpCapabilities.acp`), `{"type":"acp"}` servers the client itself serves:
+each inner MCP request travels as one `mcp/message` request on the same
+connection, opened with `mcp/connect` and closed with `mcp/disconnect`. Such a
+channel lives as long as its ACP session. Stdio servers are refused, since they
+would run caller-supplied native code on this machine.
+
+`session/new` and `session/load` also answer the v1 unstable `models` field.
+The `model` config option stays the selector; `models.availableModels[]` lists
+the same models with each one's reasoning levels in `_meta`
+(`reasoningEfforts` and `reasoningEffort`, or `supportsReasoningEffort: false`),
+read from the state the `thought_level` option shows for that model. A client
+that probes one session thus learns every model's levels.
 
 ### ACP client setup
 
@@ -213,7 +226,10 @@ wire shims or separate task database are added.
 Add a Local ACP command with the same executable and the single argument `acp`.
 T3 Code runs it directly, without a shell, so give it the unquoted path. Its
 ACP v2 preview is negotiated down to the v1 Maple serves. Settings → ACP follows
-T3 Code's documented flow; live validation against Maple is still pending.
+T3 Code's documented flow. T3 Code attaches its session tools as an
+MCP-over-ACP server and reads other models' reasoning levels from the `models`
+field's `_meta`, and only when the probed session's model has a `thought_level`
+option; live validation against Maple is still pending.
 
 ## Maintenance boundary
 

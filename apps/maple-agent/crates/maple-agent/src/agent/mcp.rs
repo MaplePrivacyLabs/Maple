@@ -15,6 +15,7 @@ use crate::store::records::{
     McpTarget, SecretString,
 };
 
+pub(crate) mod acp_channel;
 pub(crate) mod apps;
 pub(crate) mod catalog;
 mod connection;
@@ -225,7 +226,7 @@ pub(super) fn normalize_mcp_servers(
             ));
         }
 
-        let environment = match &mut server.transport {
+        let environment: &[AgentMcpKeyValue] = match &mut server.transport {
             AgentMcpTransport::Stdio {
                 command,
                 environment,
@@ -247,7 +248,7 @@ pub(super) fn normalize_mcp_servers(
                     ));
                 }
                 validate_key_values(environment, &server.name, "environment variable", false)?;
-                environment
+                &environment[..]
             }
             AgentMcpTransport::StreamableHttp {
                 url,
@@ -263,7 +264,19 @@ pub(super) fn normalize_mcp_servers(
                 }
                 validate_key_values(environment, &server.name, "environment variable", false)?;
                 validate_key_values(headers, &server.name, "HTTP header", true)?;
-                environment
+                &environment[..]
+            }
+            AgentMcpTransport::Acp { server_id, .. } => {
+                *server_id = server_id.trim().to_string();
+                if server_id.is_empty() {
+                    return Err(format!(
+                        "MCP server '{}' requires an ACP server id",
+                        server.name
+                    ));
+                }
+                // An ACP server runs on the caller's connection; it carries no
+                // environment of its own.
+                &[]
             }
         };
         if let Some(entry) = environment.iter().find(|entry| {
@@ -461,9 +474,22 @@ fn save_saved_mcp_servers(
     origin: McpEditOrigin,
 ) -> Result<(), String> {
     let servers = normalize_mcp_servers(servers)?;
+    // A server over the caller's ACP connection belongs to a live session;
+    // it cannot become a saved account server.
+    if servers
+        .iter()
+        .any(|server| matches!(server.transport, AgentMcpTransport::Acp { .. }))
+    {
+        return Err(
+            "An MCP-over-ACP server belongs to a live editor session and cannot be saved".into(),
+        );
+    }
     let previous = load_saved_mcp_servers(paths, user_id)?;
     validate_new_mcp_integration_collisions(&previous, &servers)?;
-    let edits: Vec<_> = servers.into_iter().map(server_to_edit).collect();
+    let edits: Vec<_> = servers
+        .into_iter()
+        .map(server_to_edit)
+        .collect::<Result<Vec<_>, String>>()?;
     let (store, account) = account_store(paths, user_id).map_err(|error| error.to_string())?;
     store
         .save_mcp_definitions(account, &edits, origin)
@@ -555,11 +581,13 @@ fn launch_to_server(launch: McpLaunchSecrets) -> AgentMcpServer {
                 })
                 .collect();
         }
+        // A launch never carries a live ACP session attachment.
+        AgentMcpTransport::Acp { .. } => {}
     }
     server
 }
 
-fn server_to_edit(server: AgentMcpServer) -> McpServerEdit {
+fn server_to_edit(server: AgentMcpServer) -> Result<McpServerEdit, String> {
     let convert = |values: Vec<AgentMcpKeyValue>| {
         values
             .into_iter()
@@ -587,8 +615,14 @@ fn server_to_edit(server: AgentMcpServer) -> McpServerEdit {
             convert(environment),
             convert(headers),
         ),
+        AgentMcpTransport::Acp { .. } => {
+            return Err(
+                "An MCP-over-ACP server belongs to a live editor session and cannot be saved"
+                    .into(),
+            );
+        }
     };
-    McpServerEdit {
+    Ok(McpServerEdit {
         key: name_to_key(&server.name),
         name: server.name,
         description: server.description,
@@ -597,7 +631,7 @@ fn server_to_edit(server: AgentMcpServer) -> McpServerEdit {
         target,
         environment,
         headers,
-    }
+    })
 }
 
 fn edit_to_validation_server(edit: &McpServerEdit) -> AgentMcpServer {
