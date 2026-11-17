@@ -21,12 +21,12 @@ use crate::ui::motion;
 use crate::ui::theme;
 
 /// Gap between two repaints of a running turn's time where loops hold
-/// still: the seconds stay true without the tenths.
+/// still. The time counts whole seconds, so one repaint a second is enough.
 const RUN_TICK: Duration = Duration::from_secs(1);
 
-/// One pass of the sheen across the mark, and of the shine across the
-/// line's words. Different lengths, so the two drift instead of marching.
-const MARK_CYCLE: Duration = Duration::from_millis(1600);
+/// One pass of the pulse along the mark's stroke, and of the shine across
+/// the line's words. Only the words shine; the mark moves instead.
+const MARK_CYCLE: Duration = Duration::from_millis(2000);
 const SHINE_CYCLE: Duration = Duration::from_millis(1900);
 
 /// What a transcript row is to its turn's line.
@@ -217,7 +217,7 @@ pub(super) enum Line {
     Live {
         phase: Phase,
         worked: Option<Duration>,
-        /// Loops hold still: the mark rests and the time drops its tenths.
+        /// Loops hold still: the mark rests.
         still: bool,
     },
     /// The turn is over. `worked` is how long it took, when this window
@@ -244,13 +244,12 @@ fn worked_label(messages: &MessageCache, worked: Option<Duration>) -> SharedStri
     }
 }
 
-/// "6.8s" under a minute, then a clock like the subagent rows.
-pub(super) fn live_elapsed(worked: Duration, tenths: bool) -> String {
+/// "6s" under a minute, then a clock like the subagent rows. A running
+/// time counts whole seconds: tenths are too much movement on a line that
+/// is on screen for the whole turn.
+pub(super) fn live_elapsed(worked: Duration) -> String {
     if worked.as_secs() >= 60 {
         format_subagent_elapsed(worked)
-    } else if tenths {
-        let tenths = worked.as_millis() / 100;
-        format!("{}.{}s", tenths / 10, tenths % 10)
     } else {
         format!("{}s", worked.as_secs())
     }
@@ -258,7 +257,7 @@ pub(super) fn live_elapsed(worked: Duration, tenths: bool) -> String {
 
 #[derive(Clone, Copy)]
 enum Mark {
-    /// A coral sheen crosses the mark.
+    /// The blocks along the M's stroke shrink and grow, one after another.
     Working,
     /// Nothing is running: the mark rests in the running tone.
     Resting,
@@ -267,9 +266,26 @@ enum Mark {
 }
 
 /// The Maple mark on a 5 by 5 grid: a block with the notch of the M cut
-/// from its top edge. `phase` is how far a working mark's sheen is through
-/// its pass.
+/// from its top edge. `phase` is how far a working mark's pulse is along
+/// the stroke.
 fn maple_mark(mark: Mark, phase: f32) -> Div {
+    /// The M as it is drawn, by (row, column): up the left side, through
+    /// the notch, and down the right side.
+    const STROKE: [(usize, usize); 13] = [
+        (4, 0),
+        (3, 0),
+        (2, 0),
+        (1, 0),
+        (0, 0),
+        (1, 1),
+        (2, 2),
+        (1, 3),
+        (0, 4),
+        (1, 4),
+        (2, 4),
+        (3, 4),
+        (4, 4),
+    ];
     const SHAPE: [[bool; 5]; 5] = [
         [true, false, false, false, true],
         [true, true, false, true, true],
@@ -289,23 +305,36 @@ fn maple_mark(mark: Mark, phase: f32) -> Div {
     for (row, cells) in SHAPE.iter().enumerate() {
         let mut line = div().flex().gap(px(1.));
         for (column, on) in cells.iter().enumerate() {
-            let cell = div().size(CELL).rounded(px(0.5));
+            // The box keeps its size so a shrinking block moves nothing.
+            let cell = div().size(CELL).flex().items_center().justify_center();
+            let block = div().rounded(px(0.5));
             line = line.child(if !on {
                 cell
             } else {
                 match mark {
                     Mark::Working => {
-                        // The sheen runs corner to corner, then rests for
-                        // the last fifth of the pass.
-                        let head = -2.2 + (phase / 0.8).min(1.) * 10.8;
-                        let near =
-                            (1. - (column as f32 + row as f32 * 0.6 - head).abs() / 2.).max(0.);
-                        let level = motion::smoothstep(near);
-                        cell.bg(motion::mix(resting, coral, level))
-                            .opacity(0.5 + 0.5 * level)
+                        // The pulse runs the stroke, then rests for the
+                        // last sixth of the pass. Blocks off the stroke
+                        // hold still.
+                        let head = -1. + (phase / 0.84).min(1.) * (STROKE.len() as f32 + 1.);
+                        let level =
+                            STROKE
+                                .iter()
+                                .position(|&at| at == (row, column))
+                                .map_or(0., |index| {
+                                    motion::smoothstep(
+                                        (1. - (index as f32 - head).abs() / 1.5).max(0.),
+                                    )
+                                });
+                        cell.child(
+                            block
+                                .size(CELL * (1. - 0.6 * level))
+                                .bg(resting)
+                                .opacity(0.9),
+                        )
                     }
-                    Mark::Resting => cell.bg(resting).opacity(0.9),
-                    Mark::Waiting => cell.bg(coral),
+                    Mark::Resting => cell.child(block.size(CELL).bg(resting).opacity(0.9)),
+                    Mark::Waiting => cell.child(block.size(CELL).bg(coral)),
                 }
             });
         }
@@ -339,9 +368,7 @@ pub(super) fn render_line(
             };
             // Beside "Waiting for you" the stopped time would read as
             // how long the user has kept Maple waiting.
-            let time = worked
-                .filter(|_| phase != Phase::Waiting)
-                .map(|worked| live_elapsed(worked, !still));
+            let time = worked.filter(|_| phase != Phase::Waiting).map(live_elapsed);
             (phase.label(), mark, time)
         }
         Line::Done { worked } => (worked_label(messages, worked), Mark::Resting, None),
@@ -739,10 +766,10 @@ mod tests {
     }
 
     #[test]
-    fn the_time_reads_in_seconds_then_as_a_clock() {
-        assert_eq!(live_elapsed(Duration::from_millis(6_890), true), "6.8s");
-        assert_eq!(live_elapsed(Duration::from_millis(6_890), false), "6s");
-        assert_eq!(live_elapsed(Duration::from_millis(59_999), true), "59.9s");
-        assert_eq!(live_elapsed(Duration::from_secs(64), true), "1:04");
+    fn a_running_time_counts_whole_seconds_then_reads_as_a_clock() {
+        assert_eq!(live_elapsed(Duration::from_millis(890)), "0s");
+        assert_eq!(live_elapsed(Duration::from_millis(6_890)), "6s");
+        assert_eq!(live_elapsed(Duration::from_millis(59_999)), "59s");
+        assert_eq!(live_elapsed(Duration::from_secs(64)), "1:04");
     }
 }
