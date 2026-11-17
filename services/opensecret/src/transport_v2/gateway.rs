@@ -1907,7 +1907,15 @@ mod tests {
             }
             assert_eq!(
                 serde_json::from_slice::<serde_json::Value>(&body).unwrap(),
-                serde_json::json!({"status": status, "message": error.message()})
+                serde_json::json!({
+                    "status": status,
+                    "message": error.message(),
+                    "error": {
+                        "message": error.message(),
+                        "code": code,
+                        "type": error.error_type(),
+                    },
+                })
             );
             assert!(!String::from_utf8(body).unwrap().contains("private-"));
             assert!(matches!(records.last(), Some(ResponseRecord::End)));
