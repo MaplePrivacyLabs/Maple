@@ -95,6 +95,7 @@ use crate::backend::AgentBackend;
 use crate::settings::{SidebarGroup, SidebarItemKey, SidebarOrder, SidebarSort, SidebarView};
 use crate::ui::i18n::{MessageCache, UiText, tr, tr_args};
 use crate::ui::icons::{icon, wordmark};
+use crate::ui::morph_text::morph_text;
 use crate::ui::motion;
 use crate::ui::popup::{Menu, MenuItem, Placement, Popup};
 use crate::ui::text_input::TextInput;
@@ -4312,9 +4313,16 @@ impl Sidebar {
                     .flex_col()
                     .map(|column| match rename_field {
                         Some(field) => column.child(field),
-                        None => {
-                            column.child(row_line(row.title.clone(), hover_group, row_bg, hover_bg))
-                        }
+                        None => column.child(row_line(
+                            task_title(
+                                &row.title,
+                                activity == Some(SessionActivity::Running),
+                                is_selected,
+                            ),
+                            hover_group,
+                            row_bg,
+                            hover_bg,
+                        )),
                     })
                     .when(self.show_task_metadata(is_pinned, archived), |column| {
                         column.child(
@@ -4493,7 +4501,7 @@ fn one_line(text: &str) -> SharedString {
 
 /// Fade a line into its row background; renames and drags omit the hover group.
 fn row_line(
-    text: SharedString,
+    text: impl IntoElement,
     hover_group: Option<&SharedString>,
     row_bg: u32,
     hover_bg: u32,
@@ -4529,23 +4537,39 @@ fn row_fade_background(color: u32) -> gpui::Background {
     )
 }
 
-/// One breath of the running ring's dot.
-const RUNNING_BREATH: Duration = Duration::from_millis(1600);
+/// One pass of a running task's shine across its title: the pace of the
+/// transcript's "Maple is thinking" line, so the two read as one signal.
+const TITLE_SHINE: Duration = Duration::from_millis(1900);
 
-/// A coral dot while a question waits, a ring with a breathing dot while
-/// the task runs, an alert once a run failed unseen, and a green dot once
-/// one completed unseen. The two dots differ by color; the ring and the
-/// alert differ by shape. The ring runs on the shared low-rate clock, so
-/// any number of running rows cost one repaint per interval; `spinner_id`
-/// is prebuilt so render allocates nothing. Every state sits centered in
-/// one box the size of the largest, so the center stays put as states
-/// change, and one state cross-fades into the next over
-/// [`motion::TOGGLE`]. The box is keyed by `spinner_id`, which names the
-/// task, so an indicator that first appears (a list that loads, a row that
-/// scrolls in) shows its state at once.
+/// A task's title. While the task runs, a brighter band sweeps across the
+/// words, the transcript's thinking shine, and the words rest a step
+/// dimmer under it as the thinking line's do: secondary ink on a selected
+/// row, muted otherwise, as the row's metadata. The band holds still when
+/// loops do, under reduced motion and in a background window.
+fn task_title(title: &SharedString, running: bool, selected: bool) -> AnyElement {
+    if !running {
+        return title.clone().into_any_element();
+    }
+    morph_text("task-title", title.clone())
+        .color(gpui::rgb(if selected {
+            theme::text_secondary()
+        } else {
+            theme::text_muted()
+        }))
+        .shine(TITLE_SHINE, gpui::rgb(theme::text_heading()))
+        .into_any_element()
+}
+
+/// A coral dot while a question waits, an alert once a run failed unseen,
+/// and a green dot once one completed unseen. A running task shows nothing
+/// here: its title shines instead (see [`task_title`]). Every state sits
+/// centered in one box the size of the largest, which a running row keeps
+/// empty, so the title's width stays put as states change, and one state
+/// cross-fades into the next over [`motion::TOGGLE`]. The box is keyed by
+/// `spinner_id`, which names the task, so an indicator that first appears
+/// (a list that loads, a row that scrolls in) shows its state at once.
 fn activity_indicator(spinner_id: &SharedString, activity: SessionActivity) -> AnyElement {
-    let layer = |name: &'static str, state: SessionActivity| {
-        let spinner_id = spinner_id.clone();
+    let layer = |name: &'static str, state: SessionActivity, glyph: fn() -> AnyElement| {
         motion::animated(
             name,
             if activity == state { 1. } else { 0. },
@@ -4554,13 +4578,6 @@ fn activity_indicator(spinner_id: &SharedString, activity: SessionActivity) -> A
                 if shown <= 0. {
                     return div().into_any_element();
                 }
-                let dot = |color: u32| {
-                    div()
-                        .size(px(8.))
-                        .rounded_full()
-                        .bg(gpui::rgb(color))
-                        .into_any_element()
-                };
                 div()
                     .absolute()
                     .inset_0()
@@ -4568,53 +4585,33 @@ fn activity_indicator(spinner_id: &SharedString, activity: SessionActivity) -> A
                     .items_center()
                     .justify_center()
                     .opacity(shown)
-                    .child(match state {
-                        SessionActivity::NeedsYou => dot(theme::accent()),
-                        SessionActivity::Running => running_ring(spinner_id.clone()),
-                        SessionActivity::Failed => {
-                            icon("circle-alert", px(13.), theme::status_error()).into_any_element()
-                        }
-                        SessionActivity::CompletedUnread => dot(theme::status_success()),
-                    })
+                    .child(glyph())
                     .into_any_element()
             },
         )
     };
+    fn dot(color: u32) -> AnyElement {
+        div()
+            .size(px(8.))
+            .rounded_full()
+            .bg(gpui::rgb(color))
+            .into_any_element()
+    }
     div()
         .id(spinner_id.clone())
         .relative()
         .size(px(13.))
         .flex_none()
-        .child(layer("needs-you", SessionActivity::NeedsYou))
-        .child(layer("running", SessionActivity::Running))
-        .child(layer("failed", SessionActivity::Failed))
-        .child(layer("completed", SessionActivity::CompletedUnread))
+        .child(layer("needs-you", SessionActivity::NeedsYou, || {
+            dot(theme::accent())
+        }))
+        .child(layer("failed", SessionActivity::Failed, || {
+            icon("circle-alert", px(13.), theme::status_error()).into_any_element()
+        }))
+        .child(layer("completed", SessionActivity::CompletedUnread, || {
+            dot(theme::status_success())
+        }))
         .into_any_element()
-}
-
-/// The running state: a coral ring whose center dot fades in and out. A
-/// fade reads as smooth at the shared clock's low frame rate, where a
-/// turning arc steps visibly.
-fn running_ring(id: SharedString) -> AnyElement {
-    motion::ticker(id, RUNNING_BREATH, |phase| {
-        div()
-            .size(px(12.))
-            .flex()
-            .items_center()
-            .justify_center()
-            .rounded_full()
-            .border_1()
-            .border_color(gpui::rgb(theme::accent()))
-            .child(
-                div()
-                    .size(px(6.))
-                    .rounded_full()
-                    .bg(gpui::rgb(theme::accent()))
-                    .opacity(motion::pulse(phase, 0., 0.3, 1.)),
-            )
-            .into_any_element()
-    })
-    .into_any_element()
 }
 
 /// The strip over a row's end that holds its hover buttons, with the

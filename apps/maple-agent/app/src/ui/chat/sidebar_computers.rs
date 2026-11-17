@@ -2492,7 +2492,11 @@ impl Sidebar {
                             .map(|column| match rename_field {
                                 Some(field) => column.child(field),
                                 None => column.child(row_line(
-                                    task.title.clone(),
+                                    task_title(
+                                        &task.title,
+                                        task.activity == Some(SessionActivity::Running),
+                                        selected,
+                                    ),
                                     hover_group,
                                     row_bg,
                                     hover_bg,
