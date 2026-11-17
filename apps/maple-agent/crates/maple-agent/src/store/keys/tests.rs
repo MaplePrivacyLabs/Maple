@@ -591,3 +591,18 @@ fn a_key_rename_followed_by_sync_failure_reports_the_installed_password() {
     assert!(!outcome.backup_pending);
     assert!(!outcome.synchronization_pending);
 }
+
+/// Windows locks about 40 pages per process by default and every key holds
+/// one, so parallel tests that each opened a store ran out and failed with a
+/// key-memory-lock error. Far more keys than that must be held at once.
+#[test]
+fn many_keys_can_be_held_at_once() {
+    let keys = (0..512)
+        .map(|_| LockedKey::random())
+        .collect::<KeyResult<Vec<_>>>()
+        .unwrap();
+    assert_eq!(keys.len(), 512);
+    keys[0]
+        .with_sqlcipher_key(|bytes| assert_eq!(bytes.len(), 67))
+        .unwrap();
+}
