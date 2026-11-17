@@ -3718,7 +3718,7 @@ fn completion_failure_payload(failure: &AttemptFailure) -> Value {
         Some(error) => json!({
             "error": {
                 "message": error.message(),
-                "type": if error.status().is_client_error() { "invalid_request_error" } else { "server_error" },
+                "type": error.error_type(),
                 "param": null,
                 "code": error.code(),
             }
@@ -5721,7 +5721,7 @@ mod tests {
                 400,
                 "context_length_exceeded",
                 400,
-                "upstream_context_limit",
+                "context_length_exceeded",
             ),
             (400, "invalid_parameter", 400, "upstream_invalid_parameter"),
             (
@@ -5801,20 +5801,23 @@ mod tests {
                 .as_str()
                 .unwrap()
                 .starts_with("Upstream provider"));
-            assert_eq!(body.as_object().unwrap().len(), 2); // Legacy ErrorResponse shape.
+            // Legacy flat fields plus the OpenAI-compatible error object.
+            assert_eq!(body.as_object().unwrap().len(), 3);
+            assert_eq!(body["error"]["message"], body["message"]);
+            assert_eq!(body["error"]["code"], code);
+            assert!(body["error"].get("param").is_none());
             assert!(!String::from_utf8(bytes.to_vec())
                 .unwrap()
                 .contains("private-"));
             let payload = completion_failure_payload(&failure);
             assert_eq!(payload["error"]["code"], code);
-            assert_eq!(
-                payload["error"]["type"],
-                if public_status < 500 {
-                    "invalid_request_error"
-                } else {
-                    "server_error"
-                }
-            );
+            let error_type = if public_status < 500 {
+                "invalid_request_error"
+            } else {
+                "server_error"
+            };
+            assert_eq!(payload["error"]["type"], error_type);
+            assert_eq!(body["error"]["type"], error_type);
             assert!(payload["error"]["param"].is_null());
             assert!(!payload.to_string().contains("private-"));
         }
