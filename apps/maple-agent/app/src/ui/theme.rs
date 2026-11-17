@@ -300,6 +300,17 @@ pub fn overlay_hover() -> gpui::Hsla {
     }
 }
 
+/// Translucent fill for a pressed control over any surface: one step past
+/// [`overlay_hover`], so a press always reads darker (lighter on dark)
+/// than the hover and the row beneath, whatever that row's own state.
+pub fn overlay_press() -> gpui::Hsla {
+    if is_light() {
+        gpui::hsla(0., 0., 0., 0.11)
+    } else {
+        gpui::hsla(0., 0., 1., 0.14)
+    }
+}
+
 /// Alternate-row tint in markdown tables: a whisper of the hover overlay,
 /// so a long table reads row by row without stripes competing with the
 /// text.
