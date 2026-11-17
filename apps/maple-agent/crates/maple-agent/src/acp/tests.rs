@@ -10,9 +10,9 @@ use super::*;
 use crate::agent::tests::{Harness, eventually};
 use crate::agent::{AgentRunUsage, AgentSessionSummary};
 use agent_client_protocol::schema::v1::{
-    ClientCapabilities, ElicitationCapabilities, ElicitationFormCapabilities, InitializeRequest,
-    McpServer, McpServerAcp, McpServerHttp, McpServerStdio, RequestPermissionOutcome,
-    SelectedPermissionOutcome,
+    ClientCapabilities, ElicitationCapabilities, ElicitationFormCapabilities, EnvVariable,
+    InitializeRequest, McpServer, McpServerAcp, McpServerHttp, McpServerStdio,
+    RequestPermissionOutcome, SelectedPermissionOutcome,
 };
 use pi_ai::AssistantContent;
 use pi_ai::faux::faux_tool_call;
@@ -548,6 +548,86 @@ async fn tool_completion_during_history_replay_updates_the_original_call() {
         && update["update"]["status"] == "completed"));
     client.shutdown().await;
     finish(serving).await;
+}
+
+/// The editor's stdio MCP server is started with the exact program,
+/// arguments and environment it gave, its tools join the run, and it stops
+/// when the editor disconnects.
+#[cfg(unix)]
+#[tokio::test]
+async fn a_client_stdio_mcp_server_joins_a_prompted_session_and_stops_on_disconnect() {
+    // Answers one tool with its second argument and an environment variable,
+    // and leaves its pid behind so the test can see it stop.
+    const SERVER: &str = r#"echo $$ > "$1"
+shown=$(printf '%s' "$2" | sed 's/"/\\"/g')
+while IFS= read -r line; do
+  id=$(printf '%s' "$line" | sed -n 's/.*"id":\([0-9]*\).*/\1/p')
+  case "$line" in
+    *'"initialize"'*) printf '{"jsonrpc":"2.0","id":%s,"result":{"protocolVersion":"2025-11-25","capabilities":{"tools":{}},"serverInfo":{"name":"editor","version":"1"}}}\n' "$id" ;;
+    *'"tools/list"'*) printf '{"jsonrpc":"2.0","id":%s,"result":{"tools":[{"name":"echo","inputSchema":{"type":"object"}}]}}\n' "$id" ;;
+    *'"tools/call"'*) printf '{"jsonrpc":"2.0","id":%s,"result":{"content":[{"type":"text","text":"%s / %s"}]}}\n' "$id" "$shown" "$EDITOR_MCP_VALUE" ;;
+  esac
+done"#;
+    let harness = Harness::new().await;
+    let project = harness.project.path().to_path_buf();
+    let dir = tempfile::tempdir().unwrap();
+    let script = dir.path().join("server.sh");
+    std::fs::write(&script, SERVER).unwrap();
+    let pid_file = dir.path().join("pid");
+    let (mut client, serving) = connect(&harness.handle, no_answers());
+    client.initialize(json!({})).await;
+
+    let session_id = client
+        .new_session_with(json!({
+            "cwd": project,
+            "mcpServers": [{
+                "name": "editor",
+                "command": "/bin/sh",
+                // A typed command line could not carry this argument: it has
+                // a space and both kinds of quote.
+                "args": [script, pid_file, "it's \"exact\""],
+                "env": [{"name": "EDITOR_MCP_VALUE", "value": "from the editor"}],
+            }],
+        }))
+        .await;
+
+    harness
+        .faux
+        .push_message(vec![faux_tool_call("mcp__editor__echo", json!({}))]);
+    harness.faux.push_text("Done.");
+    let result = client.prompt(&session_id, "Use the echo tool.").await;
+    assert_eq!(result["stopReason"], "end_turn", "{result}");
+
+    let requests = harness.faux.requests();
+    let results: Vec<String> = requests[1]
+        .context
+        .messages
+        .iter()
+        .filter_map(|message| match message {
+            pi_ai::Message::ToolResult(result) => Some(pi_ai::content_text(&result.content)),
+            _ => None,
+        })
+        .collect();
+    assert_eq!(results, ["it's \"exact\" / from the editor"]);
+
+    let pid: u32 = std::fs::read_to_string(&pid_file)
+        .unwrap()
+        .trim()
+        .parse()
+        .unwrap();
+    let alive = |pid: u32| {
+        let output = std::process::Command::new("ps")
+            .args(["-o", "stat=", "-p", &pid.to_string()])
+            .output()
+            .unwrap();
+        let state = String::from_utf8_lossy(&output.stdout).trim().to_string();
+        !state.is_empty() && !state.starts_with('Z')
+    };
+    assert!(alive(pid), "the server runs while the editor is attached");
+
+    client.shutdown().await;
+    finish(serving).await;
+    eventually(|| !alive(pid)).await;
 }
 
 /// A connection to `handle`'s runtime, served the way `serve_stdio` serves.
@@ -1160,36 +1240,6 @@ async fn session_setup_reports_every_models_reasoning_levels() {
     assert_eq!(levels_of(&always_on), ["low", "high"]);
     assert_eq!(always_on["reasoningEffort"], "low");
 
-    client.shutdown().await;
-    finish(serving).await;
-}
-
-/// `session/new` keeps refusing a stdio MCP server over the wire, before
-/// any process can start.
-#[tokio::test]
-async fn session_new_rejects_a_stdio_mcp_server_over_the_wire() {
-    let harness = Harness::new().await;
-    let project = harness.project.path().to_path_buf();
-    let (mut client, serving) = connect(&harness.handle, no_answers());
-    client.initialize(json!({})).await;
-    let server = serde_json::to_value(McpServer::Stdio(
-        McpServerStdio::new("untrusted", "/bin/sh")
-            .args(vec!["-c".to_string(), "exit 0".to_string()]),
-    ))
-    .unwrap();
-    let id = client
-        .request(
-            "session/new",
-            json!({"cwd": project, "mcpServers": [server]}),
-        )
-        .await;
-    let response = client.response(id).await;
-    assert!(
-        response["error"]
-            .to_string()
-            .contains("Transient stdio MCP server 'untrusted' is disabled"),
-        "the refusal reaches the caller: {response}"
-    );
     client.shutdown().await;
     finish(serving).await;
 }
@@ -2079,31 +2129,49 @@ fn project_root_rejects_relative_and_missing_paths() {
 }
 
 #[test]
-fn arbitrary_stdio_mcp_is_rejected_before_any_process_can_start() {
+fn a_stdio_mcp_server_keeps_its_exact_words_and_environment() {
     let server = McpServer::Stdio(
-        McpServerStdio::new("untrusted", "/bin/sh")
-            .args(vec!["-c".to_string(), "exit 0".to_string()]),
+        McpServerStdio::new("editor", "/bin/sh")
+            .args(vec![
+                "-c".to_string(),
+                "echo \"it's\" ~/x".to_string(),
+                String::new(),
+            ])
+            .env(vec![EnvVariable::new("EDITOR_TOKEN", "synthetic value")]),
     );
 
-    let error = prepare_session_mcp(&[server]).unwrap_err();
-    assert!(
-        error
-            .to_string()
-            .contains("Transient stdio MCP server 'untrusted' is disabled"),
-        "the refusal names the refusal: {error}"
-    );
+    let prepared = prepare_session_mcp(&[server]).unwrap();
+    assert!(prepared.acp.is_empty());
+    let servers = prepared.direct;
+    assert_eq!(servers.len(), 1);
+    assert_eq!(servers[0].name, "editor");
+    assert!(servers[0].enabled);
+    match &servers[0].transport {
+        crate::agent::AgentMcpTransport::Stdio {
+            command,
+            argv,
+            environment,
+        } => {
+            assert_eq!(command, "/bin/sh", "arguments stay out of the shown line");
+            assert_eq!(argv, &["/bin/sh", "-c", "echo \"it's\" ~/x", ""]);
+            assert_eq!(environment.len(), 1);
+            assert_eq!(environment[0].key, "EDITOR_TOKEN");
+            assert_eq!(environment[0].value, "synthetic value");
+        }
+        other => panic!("a stdio server stays stdio, not {other:?}"),
+    }
 }
 
 #[test]
 fn an_http_mcp_server_runs_beside_the_tasks_own() {
     let server = McpServer::Http(McpServerHttp::new("remote", "https://remote.example/mcp"));
     let prepared = prepare_session_mcp(&[server]).unwrap();
-    assert_eq!(prepared.http.len(), 1);
+    assert_eq!(prepared.direct.len(), 1);
     assert!(prepared.acp.is_empty());
-    assert_eq!(prepared.http[0].name, "remote");
-    assert!(prepared.http[0].enabled);
+    assert_eq!(prepared.direct[0].name, "remote");
+    assert!(prepared.direct[0].enabled);
     assert!(matches!(
-        &prepared.http[0].transport,
+        &prepared.direct[0].transport,
         crate::agent::AgentMcpTransport::StreamableHttp { url, .. } if url == "https://remote.example/mcp"
     ));
 }
@@ -2112,7 +2180,7 @@ fn an_http_mcp_server_runs_beside_the_tasks_own() {
 fn an_acp_mcp_server_is_prepared_for_the_connection_itself() {
     let server = McpServer::Acp(McpServerAcp::new("t3-code", "t3-code"));
     let prepared = prepare_session_mcp(&[server]).unwrap();
-    assert!(prepared.http.is_empty());
+    assert!(prepared.direct.is_empty());
     assert_eq!(prepared.acp.len(), 1);
     assert_eq!(prepared.acp[0].name, "t3-code");
     assert_eq!(prepared.acp[0].server_id, "t3-code");

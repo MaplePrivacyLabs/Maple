@@ -229,19 +229,25 @@ pub(super) fn normalize_mcp_servers(
         let environment: &[AgentMcpKeyValue] = match &mut server.transport {
             AgentMcpTransport::Stdio {
                 command,
+                argv,
                 environment,
             } => {
                 *command = command.trim().to_string();
                 if command.is_empty() {
                     return Err(format!("MCP server '{}' requires a command", server.name));
                 }
-                let words = split_command(command).map_err(|error| {
-                    format!(
-                        "MCP server '{}' has an invalid command: {error}",
-                        server.name
-                    )
-                })?;
-                if words.first().is_none_or(String::is_empty) {
+                // Exact words are used as given; only a typed line is split.
+                let words = if argv.is_empty() {
+                    split_command(command).map_err(|error| {
+                        format!(
+                            "MCP server '{}' has an invalid command: {error}",
+                            server.name
+                        )
+                    })?
+                } else {
+                    argv.clone()
+                };
+                if words.first().is_none_or(|word| word.trim().is_empty()) {
                     return Err(format!(
                         "MCP server '{}' requires an executable",
                         server.name
@@ -528,6 +534,7 @@ fn definition_to_server(definition: McpDefinition) -> AgentMcpServer {
     let transport = match definition.target {
         McpTarget::Stdio { command } => AgentMcpTransport::Stdio {
             command,
+            argv: Vec::new(),
             environment,
         },
         McpTarget::StreamableHttp { url } => AgentMcpTransport::StreamableHttp {
@@ -602,9 +609,12 @@ fn server_to_edit(server: AgentMcpServer) -> Result<McpServerEdit, String> {
             .collect()
     };
     let (target, environment, headers) = match server.transport {
+        // A saved server is a typed command line; exact words belong to a
+        // live session's server, which is never saved.
         AgentMcpTransport::Stdio {
             command,
             environment,
+            ..
         } => (McpTarget::Stdio { command }, convert(environment), vec![]),
         AgentMcpTransport::StreamableHttp {
             url,
@@ -647,6 +657,7 @@ fn edit_to_validation_server(edit: &McpServerEdit) -> AgentMcpServer {
     let transport = match &edit.target {
         McpTarget::Stdio { command } => AgentMcpTransport::Stdio {
             command: command.clone(),
+            argv: Vec::new(),
             environment: values(&edit.environment),
         },
         McpTarget::StreamableHttp { url } => AgentMcpTransport::StreamableHttp {

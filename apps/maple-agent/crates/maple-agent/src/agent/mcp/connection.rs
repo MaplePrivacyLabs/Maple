@@ -415,9 +415,10 @@ impl McpServer {
         match &self.config.transport {
             AgentMcpTransport::Stdio {
                 command,
+                argv,
                 environment,
             } => {
-                let mut stdio = self.spawn(command, environment)?;
+                let mut stdio = self.spawn(command, argv, environment)?;
                 let stdout = stdio.child.stdout.take();
                 let stdin = stdio.child.stdin.take();
                 let (Some(stdout), Some(stdin)) = (stdout, stdin) else {
@@ -613,16 +614,23 @@ impl McpServer {
     }
 
     /// Start a stdio server in the task's folder, in its own process group,
-    /// with the login shell's PATH and the server's environment.
+    /// with the login shell's PATH and the server's environment. `argv`,
+    /// when it has words, is the exact program and arguments; otherwise the
+    /// typed `command` line is split and its `~` expanded.
     fn spawn(
         &self,
         command: &str,
+        argv: &[String],
         environment: &[AgentMcpKeyValue],
     ) -> Result<StdioProcess, String> {
-        let words: Vec<String> = split_command(command)?
-            .iter()
-            .map(|word| expand_home(word))
-            .collect();
+        let words: Vec<String> = if argv.is_empty() {
+            split_command(command)?
+                .iter()
+                .map(|word| expand_home(word))
+                .collect()
+        } else {
+            argv.to_vec()
+        };
         let Some((program, args)) = words.split_first() else {
             return Err("its command is empty".to_string());
         };

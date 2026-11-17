@@ -600,10 +600,12 @@ plain text. Project trust remains an explicit choice. ACP tasks run with Full
 access and there are no session modes; a desktop task loaded over ACP keeps its
 permission mode, and its approvals use the same questions.
 
-Client-supplied HTTP MCP bindings are temporary and become unavailable on
-disconnect. Conflicting server names are refused. Transient stdio MCP injection
-remains disabled; configure local stdio servers in Maple. Tools execute on the
-host's filesystem with its normal login-shell PATH. See [lifecycle and client
+Client-supplied MCP bindings, HTTP and stdio, are temporary and become
+unavailable on disconnect. Conflicting server names are refused. A client's
+stdio server starts in the task's folder with the exact program, arguments and
+environment the client gave, under the same rules as a stdio server configured
+in Maple. Tools execute on the host's filesystem with its normal login-shell
+PATH. See [lifecycle and client
 compatibility](docs/local-host.md) before configuring an ACP launcher.
 
 ### `maple-agent proxy`

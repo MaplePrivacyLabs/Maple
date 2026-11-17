@@ -4667,6 +4667,7 @@ mod state_tests {
             timeout_seconds: 30,
             transport: AgentMcpTransport::Stdio {
                 command: format!("{name}-mcp"),
+                argv: Vec::new(),
                 environment: Vec::new(),
             },
         }
