@@ -1,4 +1,4 @@
-import { useMemo, useState } from "react";
+import { useMemo } from "react";
 import type { UsageRange, UsageResponse } from "@/billing/usageApi";
 import { SettingsSection } from "@/components/settings/SettingsPage";
 import {
@@ -21,12 +21,11 @@ import {
   TOKEN_COLOR,
   TOKEN_KINDS,
   TOKEN_LABEL,
+  type ModelColors,
   type UsageOrigin
 } from "./palette";
 import { ErrorBlock, LoadingBlock, SectionHeader, Segmented, StatTile } from "./ui";
 import {
-  buildDailyChart,
-  dateRange,
   extraCreditSpan,
   fmt,
   fmtCompact,
@@ -39,6 +38,7 @@ import {
   sortModels,
   summarizeDays,
   tokenTotal,
+  type DailyChart as DailyChartData,
   type DayBucket,
   type OriginCredits,
   type Metric,
@@ -256,24 +256,23 @@ const SPLIT_WORD: Record<Split, string> = {
 };
 
 function DailyChart({
-  usage,
-  dates,
+  chart,
   kind,
-  periodStartDate
+  periodStartDate,
+  metric,
+  setMetric,
+  split,
+  setSplit
 }: {
-  usage: UsageResponse;
-  dates: string[];
+  chart: DailyChartData;
   kind: UsagePlanKind;
   periodStartDate: string | null;
+  metric: Metric;
+  setMetric: (metric: Metric) => void;
+  split: Split;
+  setSplit: (split: Split) => void;
 }) {
   const free = kind === "free";
-  const [metric, setMetric] = useState<Metric>(free ? "requests" : "credits");
-  const [split, setSplit] = useState<Split>("model");
-
-  const chart = useMemo(
-    () => buildDailyChart({ dates, rows: usage.days, metric, split, labels: usage.models }),
-    [dates, usage, metric, split]
-  );
   const data: StackDatum[] = chart.days.map((day) => ({
     key: day.date,
     tick: fmtDay(day.date),
@@ -282,7 +281,7 @@ function DailyChart({
     footer: dayFooter(day, metric, free)
   }));
   const markers =
-    !free && periodStartDate && dates.includes(periodStartDate)
+    !free && periodStartDate && chart.days.some((day) => day.date === periodStartDate)
       ? [{ key: periodStartDate, label: "Plan credits reset" }]
       : [];
   const extraSpan = kind === "credits" && metric === "credits" ? extraCreditSpan(chart.days) : null;
@@ -367,7 +366,15 @@ function DailyChart({
   );
 }
 
-function ModelTable({ summary, free }: { summary: RangeSummary; free: boolean }) {
+function ModelTable({
+  summary,
+  free,
+  modelColors
+}: {
+  summary: RangeSummary;
+  free: boolean;
+  modelColors: ModelColors;
+}) {
   const rows = sortModels(summary.byModel, free ? "requests" : "credits");
   const shareOf = (r: (typeof rows)[number]) => (free ? r.requests : r.credits);
   const max = Math.max(...rows.map(shareOf), 1);
@@ -405,7 +412,7 @@ function ModelTable({ summary, free }: { summary: RangeSummary; free: boolean })
             </thead>
             <tbody>
               {rows.map((row) => {
-                const color = modelColor(row.model);
+                const color = modelColor(row.model, modelColors);
                 return (
                   <tr key={row.model} className="border-b border-border/50 last:border-0">
                     <td className="px-4 py-2.5 sm:pl-6">
@@ -460,21 +467,18 @@ function ModelTable({ summary, free }: { summary: RangeSummary; free: boolean })
   );
 }
 
-/** The dates the response covers, up to today (a current month runs to date). */
-function responseDates(usage: UsageResponse, today: string): string[] {
-  const { start_date: start, end_date: end } = usage.range;
-  if (!start || !end) return [];
-  const latestRow = usage.days.reduce((max, d) => (d.date > max ? d.date : max), today);
-  return dateRange(start, end < latestRow ? end : latestRow);
-}
-
 export function UsageExplorer({
   kind,
   range,
   onRangeChange,
   usage,
   today,
-  periodStartDate
+  periodStartDate,
+  chart,
+  metric,
+  setMetric,
+  split,
+  setSplit
 }: {
   kind: UsagePlanKind;
   range: UsageRange;
@@ -482,11 +486,15 @@ export function UsageExplorer({
   usage: UsageState;
   today: string;
   periodStartDate: string | null;
+  chart: DailyChartData;
+  metric: Metric;
+  setMetric: (metric: Metric) => void;
+  split: Split;
+  setSplit: (split: Split) => void;
 }) {
   const label = rangeLabel(range, today);
   const data = usage.data;
   const summary = useMemo(() => (data ? summarizeDays(data.days, data.models) : null), [data]);
-  const dates = useMemo(() => (data ? responseDates(data, today) : []), [data, today]);
 
   return (
     <>
@@ -507,8 +515,16 @@ export function UsageExplorer({
           aria-busy={usage.isPlaceholderData || undefined}
         >
           <StatTiles summary={summary} kind={kind} label={label} />
-          <DailyChart usage={data} dates={dates} kind={kind} periodStartDate={periodStartDate} />
-          <ModelTable summary={summary} free={kind === "free"} />
+          <DailyChart
+            chart={chart}
+            kind={kind}
+            periodStartDate={periodStartDate}
+            metric={metric}
+            setMetric={setMetric}
+            split={split}
+            setSplit={setSplit}
+          />
+          <ModelTable summary={summary} free={kind === "free"} modelColors={chart.modelColors} />
         </div>
       ) : usage.isError ? (
         <ErrorBlock message="Couldn't load usage for this range." onRetry={usage.refetch} />

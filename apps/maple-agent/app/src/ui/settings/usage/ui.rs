@@ -49,7 +49,7 @@ pub(super) fn legend_item(color: u32, label: SharedString) -> Div {
         .text_xs()
         .text_color(gpui::rgb(theme::text_secondary()))
         .child(chart::swatch(color, px(9.)))
-        .child(label)
+        .child(gpui::text!(label))
 }
 
 /// A labelled row of pills where one is chosen.

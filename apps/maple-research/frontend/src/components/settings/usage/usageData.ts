@@ -7,10 +7,11 @@ import type {
   UsageDayRow,
   UsageModelLabels,
   UsageMonthRow,
-  UsageRange
+  UsageRange,
+  UsageResponse
 } from "@/billing/usageApi";
 import {
-  MODEL_SLOTS,
+  MODEL_COLORS,
   MORE_MODELS_COLOR,
   MORE_MODELS_KEY,
   ORIGIN_COLOR,
@@ -22,6 +23,7 @@ import {
   TOKEN_COLOR,
   TOKEN_KINDS,
   TOKEN_LABEL,
+  type ModelColors,
   type TokenKind,
   type UsageOrigin
 } from "./palette";
@@ -416,20 +418,29 @@ export type DayBucket = {
   folded: Array<{ model: string; label: string; value: number }>;
 };
 
-export type DailyChart = { series: SeriesDef[]; days: DayBucket[] };
+export type DailyChart = { series: SeriesDef[]; days: DayBucket[]; modelColors: ModelColors };
 
-const SLOT_ORDER = Object.keys(MODEL_SLOTS);
+/** The dates the response covers, up to today (a current month runs to date). */
+export function responseDates(usage: UsageResponse, today: string): string[] {
+  const { start_date: start, end_date: end } = usage.range;
+  if (!start || !end) return [];
+  const latestRow = usage.days.reduce((max, d) => (d.date > max ? d.date : max), today);
+  return dateRange(start, end < latestRow ? end : latestRow);
+}
 
-function seriesKey(row: UsageDayRow, split: Split): string {
-  if (split === "origin") return usageOrigin(row);
-  if (split === "pool") return row.pool;
-  return row.model in MODEL_SLOTS ? row.model : MORE_MODELS_KEY;
+function compareModelIds(a: string, b: string): number {
+  return a < b ? -1 : a > b ? 1 : 0;
+}
+
+// Keep raw model IDs separate from aggregate keys and Object prototype names.
+function modelSeriesKey(model: string): string {
+  return `model:${model}`;
 }
 
 /**
  * Pivot billing's day × model × source × app × pool rows into stacked series for a
- * metric and split. Only series with usage in the range are returned, in a
- * fixed identity order, so colors and stacking never depend on rank.
+ * metric and split. The largest positive model totals get named slots; raw ID
+ * order keeps colors stable whenever the selected set stays the same.
  */
 export function buildDailyChart({
   dates,
@@ -446,6 +457,20 @@ export function buildDailyChart({
 }): DailyChart {
   const buckets = new Map<string, DayBucket>(
     dates.map((date) => [date, { date, values: {}, requests: 0, extraCredits: 0, folded: [] }])
+  );
+  const modelTotals = new Map<string, number>();
+  for (const row of rows) {
+    if (!buckets.has(row.date)) continue;
+    modelTotals.set(row.model, (modelTotals.get(row.model) ?? 0) + metricOf(row, metric));
+  }
+  const selectedModels = [...modelTotals]
+    .filter(([, total]) => total > 0)
+    .sort(([a, av], [b, bv]) => bv - av || compareModelIds(a, b))
+    .slice(0, MODEL_COLORS.length)
+    .map(([model]) => model)
+    .sort(compareModelIds);
+  const modelColors: ModelColors = new Map(
+    selectedModels.map((model, index) => [model, MODEL_COLORS[index]])
   );
   const totals = new Map<string, number>();
   const foldedModels = new Set<string>();
@@ -466,7 +491,14 @@ export function buildDailyChart({
     }
 
     const value = metricOf(row, metric);
-    const key = seriesKey(row, split);
+    const key =
+      split === "origin"
+        ? usageOrigin(row)
+        : split === "pool"
+          ? row.pool
+          : modelColors.has(row.model)
+            ? modelSeriesKey(row.model)
+            : MORE_MODELS_KEY;
     day.values[key] = (day.values[key] ?? 0) + value;
     totals.set(key, (totals.get(key) ?? 0) + value);
 
@@ -499,10 +531,10 @@ export function buildDailyChart({
       color: POOL_COLOR[p]
     }));
   } else {
-    series = SLOT_ORDER.filter(used).map((m) => ({
-      key: m,
-      label: modelLabel(m, labels),
-      color: MODEL_SLOTS[m]
+    series = selectedModels.map((model) => ({
+      key: modelSeriesKey(model),
+      label: modelLabel(model, labels),
+      color: modelColors.get(model)!
     }));
     if (used(MORE_MODELS_KEY)) {
       // One unslotted model is named outright; only a real fold says "More models".
@@ -519,10 +551,10 @@ export function buildDailyChart({
   for (const day of days) {
     day.folded =
       foldedModels.size > 1
-        ? day.folded.sort((a, b) => b.value - a.value)
+        ? day.folded.sort((a, b) => b.value - a.value || compareModelIds(a.model, b.model))
         : ([] as DayBucket["folded"]);
   }
-  return { series, days };
+  return { series, days, modelColors };
 }
 
 /** First and last day in the range that drew on Extra credits. */
