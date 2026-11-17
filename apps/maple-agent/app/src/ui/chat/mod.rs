@@ -7979,6 +7979,7 @@ impl ChatScreen {
                 .cursor_pointer()
                 .focus_visible(widgets::focus_ring)
                 .hover(|style| style.text_color(gpui::rgb(theme::text_primary())))
+                .hover_bg(gpui::transparent_black())
         } else {
             widgets::ghost_button("open-settings")
         };
