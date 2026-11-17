@@ -24,6 +24,7 @@ from unittest import mock
 import zipfile
 
 import opensecret_release_statement as release
+from test_opensecret_eif_scripts import release_build_candidate
 from test_workflow_policy import workflows
 
 ROOT = Path(__file__).resolve().parents[2]
@@ -158,6 +159,46 @@ def _integrated_time(bundle):
     entry(bundle)["integratedTime"] = "1700000000"
 
 
+def _zero_integrated_time_string(bundle):
+    entry(bundle)["integratedTime"] = "0"
+
+
+def _zero_integrated_time_number(bundle):
+    entry(bundle)["integratedTime"] = 0
+
+
+def _empty_integrated_time(bundle):
+    entry(bundle)["integratedTime"] = ""
+
+
+def _null_integrated_time(bundle):
+    entry(bundle)["integratedTime"] = None
+
+
+def _empty_inclusion_promise(bundle):
+    entry(bundle)["inclusionPromise"] = {}
+
+
+def _unknown_entry_field(bundle):
+    entry(bundle)["extension"] = {}
+
+
+def _unknown_proof_field(bundle):
+    entry(bundle)["inclusionProof"]["integratedTime"] = "0"
+
+
+def _unknown_timestamp_field(bundle):
+    bundle["verificationMaterial"]["timestampVerificationData"]["rfc3161Timestamps"][0]["integratedTime"] = "0"
+
+
+def _unknown_envelope_field(bundle):
+    bundle["dsseEnvelope"]["integratedTime"] = "0"
+
+
+def _unknown_signature_field(bundle):
+    bundle["dsseEnvelope"]["signatures"][0]["certificate"] = "MA=="
+
+
 def _inclusion_promise(bundle):
     entry(bundle)["inclusionPromise"] = {"signedEntryTimestamp": b64(b"set")}
 
@@ -258,6 +299,12 @@ MUTATIONS = {
     "timestamp over another signature": _other_signature_timestamp, "Rekor v1 entry": _rekor_v1_entry,
     "extra v1 entry": _second_v1_entry, "two entries": _duplicate_entry, "v1 log": _v1_log,
     "integrated time": _integrated_time, "inclusion promise": _inclusion_promise,
+    "zero integrated time string": _zero_integrated_time_string,
+    "zero integrated time number": _zero_integrated_time_number, "empty integrated time": _empty_integrated_time,
+    "null integrated time": _null_integrated_time, "empty inclusion promise": _empty_inclusion_promise,
+    "unknown entry field": _unknown_entry_field, "unknown proof field": _unknown_proof_field,
+    "unknown timestamp field": _unknown_timestamp_field, "unknown envelope field": _unknown_envelope_field,
+    "unknown signature field": _unknown_signature_field,
     "tampered statement": _changed_payload, "SHA-256 digest": _sha256_digest,
     "digest of payload, not PAE": _payload_digest, "other signer key": _other_logged_key,
     "P-256 key details": _p256_key_details, "logged signature differs": _other_logged_signature,
@@ -497,8 +544,21 @@ Path(str(target) + ".meta").write_text(json.dumps({{"type": option("--content-ty
     # -- build evidence --------------------------------------------------------
 
     def candidate_files(self, handoff=None, sums=None, files=None):
+        """The real build script's artifact for these files. Only a handoff or checksum
+        list that the build script would never write (a tampered or pre-handoff
+        artifact) is substituted by hand, with checksums recomputed over it."""
         files = dict(files or self.files)
-        files["handoff.json"] = json.dumps(handoff or self.handoff).encode()
+        wanted = handoff or self.handoff
+        produced = {}
+        try:
+            out = release_build_candidate(Path(tempfile.mkdtemp(dir=self.root)), "dev", wanted["source_sha"],
+                                          files["image.eif"], files["pcr.json"])
+            produced = {name: (out / name).read_bytes() for name in (*release.FILES, "SHA256SUMS")}
+        except subprocess.CalledProcessError:
+            pass  # the build script refuses these files; model an artifact it never made
+        if produced and json.loads(produced["handoff.json"]) == wanted and not sums:
+            return produced
+        files["handoff.json"] = json.dumps(wanted).encode()
         names = sums or ("image.eif", "pcr.json", "handoff.json")
         files["SHA256SUMS"] = "".join(f"{hashlib.sha256(files[name]).hexdigest()}  {name}\n"
                                       for name in names).encode()
@@ -551,6 +611,11 @@ class PrepareTests(unittest.TestCase):
     def test_verified_master_build_becomes_the_exact_statement(self):
         self.work.run["run_attempt"] = 2  # a later attempt re-ran only another job
         self.work.prepare()
+        # The candidate is byte-for-byte what build_opensecret_eif.sh wrote.
+        produced = release_build_candidate(Path(tempfile.mkdtemp(dir=self.work.root)), "dev", self.work.source_sha,
+                                           self.work.files["image.eif"], self.work.files["pcr.json"])
+        for name in ("image.eif", "pcr.json", "handoff.json", "SHA256SUMS"):
+            self.assertEqual((self.work.candidate / name).read_bytes(), (produced / name).read_bytes(), name)
         statement = json.loads(self.work.statement())
         self.assertEqual(statement["subject"], [{"name": "image.eif", "digest": {"sha256": self.work.handoff[
             "eif_sha256"]}}])
@@ -775,7 +840,8 @@ class SignTests(unittest.TestCase):
 
     def test_missing_proof_timestamp_or_extra_entries_fail_and_nothing_is_published(self):
         for name in ("no inclusion proof", "no timestamp", "Rekor v1 entry", "extra v1 entry", "inclusion promise",
-                     "tampered statement", "other signer key"):
+                     "zero integrated time string", "zero integrated time number", "tampered statement",
+                     "other signer key"):
             with self.subTest(mutation=name):
                 bundle = self.work.release / "bundle.json"
                 bundle.unlink(missing_ok=True)

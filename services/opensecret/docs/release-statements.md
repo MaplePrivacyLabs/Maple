@@ -68,8 +68,10 @@ for the same artifact. The job then:
    `image.eif`, `pcr.json`, `handoff.json` and `SHA256SUMS`, all matching.
    GitHub's build attestation from that workflow, commit and run must cover
    all three files, and `handoff.json` must say `dev` and agree with the EIF
-   digest and measurements. A different, older or rebuilt artifact is
-   refused rather than substituted.
+   digest and measurements. Any earlier successful master build qualifies,
+   but its artifact is never substituted or rebuilt. Builds from before
+   `handoff.json` was listed in `SHA256SUMS` have no attested build mode and
+   are refused.
 3. **Signs the legacy PCR0 approval** with the existing key, exactly as the
    release workflow's signing job does, so installed clients keep working.
 4. **Signs the release statement** with `cosign attest-blob` and the Dev KMS
@@ -83,6 +85,8 @@ for the same artifact. The job then:
    and the producer requires the evidence profile below.
 6. **Retains** the EIF, its build files and the original bundle as the
    workflow artifact `opensecret-approved-dev-<commit>-<run>-<attempt>`.
+   GitHub keeps it for 90 days at most, so it is not durable rollback
+   retention; copy the EIF and its bundle to deployment storage for that.
 7. **Publishes** the bundle to the `maple-attestations-dev` bucket as
    `<PCR0>.json` with `Content-Type: application/json` and
    `Cache-Control: public, max-age=300`, reads it back from
@@ -120,8 +124,9 @@ job before upload.
 
 Uploads write one object. An identical rerun or an approved build with the
 same PCRs overwrites only `<PCR0>.json`; other objects are never deleted. The
-original bundle stays with its EIF in the retained workflow artifact, so
-deployment can still check the exact EIF digest after a same-PCR replacement.
+original bundle stays with its EIF in the retained workflow artifact (for its
+90 days), so deployment can still check the exact EIF digest after a same-PCR
+replacement.
 A failed upload or a readback that never returns the uploaded bytes fails the
 job and is not reported as published.
 
@@ -148,24 +153,36 @@ holds the Cosign digests, environment mapping, bucket and host.
 
 ## Configuration before the first Dev run
 
-The workflow fails closed until all of these exist:
+The workflow fails closed until all of the following exist.
 
-- In the workflow file: `SIGNING_KEY_ARN`, the Dev KMS key's full ARN
-  (`arn:aws:kms:us-east-1:<account>:key/<key-id>`, never an alias), and
-  `SIGNER_ROLE_ARN`, the `maple-pcr-signer-dev` role in the same account.
-- The reviewed Dev public key, as SPKI PEM, committed at
-  `scripts/ci/opensecret-release/dev-signing-key.pem`.
-- The protected `pcr-signing-dev` environment: required reviewers, deployment
-  branches limited to `master`, administrator bypass disabled.
-- In that environment, secrets `OPENSECRET_PCR_SIGNING_BWS_ACCESS_TOKEN` (reads
-  the existing legacy signing key) and `ATTESTATIONS_R2_BWS_ACCESS_TOKEN` (reads
-  only the Dev bucket's publisher credential), and variables
-  `OPENSECRET_PCR_SIGNING_KEY_ID`, `ATTESTATIONS_R2_ACCOUNT_ID`,
-  `ATTESTATIONS_R2_BUCKET` (`maple-attestations-dev`),
-  `ATTESTATIONS_R2_ACCESS_KEY_ID_SECRET_ID` and
-  `ATTESTATIONS_R2_SECRET_ACCESS_KEY_SECRET_ID`.
-- The signer role trusts only this repository's `pcr-signing-dev` environment
-  OIDC subject; the bucket's custom domain and CORS allow public `GET`/`HEAD`.
+Committed to this repository once the Dev signing resources exist:
+
+| Value | Where |
+| --- | --- |
+| Dev KMS key's full ARN, `arn:aws:kms:us-east-1:<account>:key/<key-id>` (never an alias) | `SIGNING_KEY_ARN` in the workflow's job `env` |
+| Dev signer role ARN, `arn:aws:iam::<same account>:role/maple-pcr-signer-dev` | `SIGNER_ROLE_ARN` in the workflow's job `env` |
+| Reviewed Dev public key, SPKI PEM (P-384) | `scripts/ci/opensecret-release/dev-signing-key.pem` |
+
+The protected GitHub environment `pcr-signing-dev`: required reviewers,
+deployment branches limited to `master`, administrator bypass disabled. It
+holds exactly this one secret and these five variables, all set on the
+environment, not the repository:
+
+| Name | Kind | Value |
+| --- | --- | --- |
+| `OPENSECRET_PCR_SIGNING_BWS_ACCESS_TOKEN` | Secret | A Bitwarden Secrets Manager machine token for Dev only. It can read the existing legacy PCR signing key item and the Dev bucket's two publisher items, and nothing for Production. Same name as the secret in `pcr-signing`, but its own value and grants. |
+| `OPENSECRET_PCR_SIGNING_KEY_ID` | Variable | BWS item ID of the existing legacy PCR signing key |
+| `ATTESTATIONS_R2_ACCOUNT_ID` | Variable | Cloudflare account ID that owns the bucket (32 hex characters) |
+| `ATTESTATIONS_R2_BUCKET` | Variable | `maple-attestations-dev` |
+| `ATTESTATIONS_R2_ACCESS_KEY_ID_SECRET_ID` | Variable | BWS item ID of the Dev bucket publisher's access key ID |
+| `ATTESTATIONS_R2_SECRET_ACCESS_KEY_SECRET_ID` | Variable | BWS item ID of the Dev bucket publisher's secret access key |
+
+Outside this repository: the signer role trusts only this repository's
+`pcr-signing-dev` environment OIDC subject and may sign only with the Dev key;
+the Dev publisher credential can write only `maple-attestations-dev`; and the
+bucket's `attestations-dev.maple.ai` custom domain serves public `GET`/`HEAD`
+with CORS. No zone cache setting may replace the object's
+`Cache-Control: public, max-age=300`, or the readback check fails.
 
 ## Verifying a published bundle
 

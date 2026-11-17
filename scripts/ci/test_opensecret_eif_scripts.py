@@ -23,6 +23,36 @@ ROOT = Path(__file__).resolve().parents[2]
 VALID_MEASUREMENTS = {"HashAlgorithm": "Sha384 { ... }", "PCR0": "a" * 96, "PCR1": "b" * 96, "PCR2": "c" * 96}
 
 
+def release_build_candidate(root, mode, source_sha, image, pcr):
+    """Run the real build_opensecret_eif.sh, with nix replaced by a fixture output,
+    and return its candidate directory: the exact files consumers receive."""
+    repo = root / "producer"
+    (repo / "scripts/ci").mkdir(parents=True)
+    (repo / "services/opensecret").mkdir(parents=True)
+    shutil.copyfile(ROOT / "scripts/ci/build_opensecret_eif.sh", repo / "scripts/ci/build_opensecret_eif.sh")
+    for name in ("pcrDev.json", "pcrProd.json"):
+        (repo / "services/opensecret" / name).write_text(json.dumps(VALID_MEASUREMENTS) + "\n")
+    binaries = root / "producer-bin"
+    binaries.mkdir()
+    for tool in ("dirname", "mktemp", "rm", "ls", "mkdir", "cp", "chmod", "jq", "sha256sum", "cut", "cmp"):
+        (binaries / tool).symlink_to(shutil.which(tool))
+    (binaries / "uname").write_text(f"#!{sys.executable}\nimport sys\n"
+                                    "print('Linux' if sys.argv[1] == '-s' else 'aarch64')\n")
+    (binaries / "nix").write_text(
+        f"#!{sys.executable}\nimport sys\nfrom pathlib import Path\n"
+        "output = Path(sys.argv[sys.argv.index('--out-link') + 1])\noutput.mkdir()\n"
+        f"(output / 'image.eif').write_bytes({image!r})\n(output / 'pcr.json').write_bytes({pcr!r})\n")
+    for tool in ("uname", "nix"):
+        (binaries / tool).chmod(0o755)
+    scratch = root / "producer-tmp"
+    scratch.mkdir()
+    candidate = root / "candidate"
+    subprocess.run([shutil.which("bash"), "--noprofile", "--norc", str(repo / "scripts/ci/build_opensecret_eif.sh"),
+                    mode, str(candidate)], cwd=root, check=True, capture_output=True,
+                   env={"PATH": str(binaries), "HOME": str(root), "TMPDIR": str(scratch), "GITHUB_SHA": source_sha})
+    return candidate
+
+
 class EifReleaseBuildCommandTests(unittest.TestCase):
     def setUp(self):
         self.temporary = tempfile.TemporaryDirectory()
@@ -109,6 +139,8 @@ class EifReleaseBuildCommandTests(unittest.TestCase):
             f"{hashlib.sha256((candidate / name).read_bytes()).hexdigest()}  {name}"
             for name in ("image.eif", "pcr.json", "handoff.json")])
         self.assertEqual((candidate / "SHA256SUMS").read_text().splitlines()[0], f"{digest}  image.eif")
+        # ci_sign_pcr.sh checks the artifact with exactly this command.
+        subprocess.run(["sha256sum", "--check", "--strict", "--quiet", "SHA256SUMS"], cwd=candidate, check=True)
         handoff = json.loads((candidate / "handoff.json").read_text())
         self.assertEqual(handoff, {
             "environment": "dev", "source_sha": "1" * 40, "measurements": VALID_MEASUREMENTS,
@@ -190,33 +222,66 @@ class EifRootfsDiagnosticTests(unittest.TestCase):
             archive.write(self.newc_entry("TRAILER!!!", 0, b""))
 
     def candidate(self):
-        candidate = self.root / "candidate"
-        output = self.root / "nix-output"
-        candidate.mkdir()
-        output.mkdir()
-        measurements = {
-            "HashAlgorithm": "Sha384 { ... }", "PCR0": "a" * 96,
-            "PCR1": "b" * 96, "PCR2": "c" * 96,
-        }
+        # The candidate is the real build script's output, so this consumer is
+        # tested against the producer's actual SHA256SUMS and handoff format.
         image = b"synthetic EIF bytes"
-        pcr = (json.dumps(measurements) + "\n").encode()
-        for directory in (candidate, output):
-            (directory / "image.eif").write_bytes(image)
-            (directory / "pcr.json").write_bytes(pcr)
-        eif_sha = hashlib.sha256(image).hexdigest()
-        pcr_sha = hashlib.sha256(pcr).hexdigest()
-        (candidate / "SHA256SUMS").write_text(
-            f"{eif_sha}  image.eif\n{pcr_sha}  pcr.json\n"
-        )
-        (candidate / "handoff.json").write_text(json.dumps({
-            "environment": "dev", "source_sha": "d" * 40,
-            "eif_sha256": eif_sha, "measurements": measurements,
-            "approval_needed": True,
-        }))
+        pcr = (json.dumps(VALID_MEASUREMENTS) + "\n").encode()
+        candidate = release_build_candidate(self.root, "dev", "d" * 40, image, pcr)
+        output = self.root / "nix-output"
+        output.mkdir()
+        (output / "image.eif").write_bytes(image)
+        (output / "pcr.json").write_bytes(pcr)
         ca_file = self.root / self.ca_store.lstrip("/") / "etc/ssl/certs/ca-bundle.crt"
         ca_file.parent.mkdir(parents=True)
         ca_file.write_bytes(self.ca_bundle)
         return candidate, output
+
+    def verify(self, candidate, output):
+        user_drv = Path("/nix/store/" + "e" * 32 + "-user-initramfs.cpio.gz.drv")
+        with mock.patch.object(rootfs_diagnostic, "eif_derivation",
+                               return_value=(output, self.archive, user_drv)), mock.patch.object(
+                                   rootfs_diagnostic, "realize_user_ramdisk"
+                               ), mock.patch.object(
+                                   rootfs_diagnostic, "fingerprints", return_value={"F" * 64}
+                               ), mock.patch.object(
+                                   rootfs_diagnostic, "verify_aaa_tls_policy", return_value="absent"
+                               ):
+            return rootfs_diagnostic.verify_candidate("dev", candidate, "d" * 40, "openssl", store_root=self.root)
+
+    def test_producer_output_passes_and_any_changed_or_unlisted_handoff_fails(self):
+        candidate, output = self.candidate()
+        self.assertEqual(self.verify(candidate, output)["environment"], "dev")
+        original = {name: (candidate / name).read_bytes() for name in ("handoff.json", "SHA256SUMS")}
+        handoff = json.loads(original["handoff.json"])
+
+        def restore():
+            for name, data in original.items():
+                (candidate / name).write_bytes(data)
+
+        def rehash():
+            (candidate / "SHA256SUMS").write_text("".join(
+                f"{hashlib.sha256((candidate / name).read_bytes()).hexdigest()}  {name}\n"
+                for name in ("image.eif", "pcr.json", "handoff.json")))
+
+        # A handoff changed after the build no longer matches the attested checksums.
+        (candidate / "handoff.json").write_text(json.dumps({**handoff, "approval_needed": False}))
+        with self.assertRaisesRegex(rootfs_diagnostic.VerificationError, "SHA256SUMS mismatch"):
+            self.verify(candidate, output)
+        # Re-hashing a wrong handoff still fails its content checks.
+        for change in ({"environment": "prod"}, {"source_sha": "e" * 40}, {"eif_sha256": "0" * 64},
+                       {"signed_environment": "production"}):
+            with self.subTest(change=change):
+                restore()
+                (candidate / "handoff.json").write_text(json.dumps({**handoff, **change}))
+                rehash()
+                with self.assertRaisesRegex(rootfs_diagnostic.VerificationError, "handoff does not match"):
+                    self.verify(candidate, output)
+        # The pre-handoff two-entry format is no longer a valid candidate.
+        restore()
+        lines = original["SHA256SUMS"].decode().splitlines(keepends=True)
+        (candidate / "SHA256SUMS").write_text("".join(lines[:2]))
+        with self.assertRaisesRegex(rootfs_diagnostic.VerificationError, "SHA256SUMS mismatch"):
+            self.verify(candidate, output)
 
     def test_exact_user_ramdisk_entrypoint_resolves_to_its_archived_ca_bundle(self):
         store, bundle = rootfs_diagnostic.inspect_archive(self.archive)
@@ -458,9 +523,14 @@ class ApprovalPublishCommandTests(unittest.TestCase):
         ).stdout.strip()
 
     def write_handoff(self, **overrides):
-        handoff = {"environment": "dev", "source_sha": self.source_sha,
-                   "measurements": VALID_MEASUREMENTS, "eif_sha256": "f" * 64, **overrides}
-        (self.artifact / "handoff.json").write_text(json.dumps(handoff))
+        # The build script's real handoff; overrides model a mismatched one.
+        produced = release_build_candidate(Path(tempfile.mkdtemp(dir=self.root)), overrides.get("environment", "dev"),
+                                           self.source_sha, b"fixture EIF", json.dumps(VALID_MEASUREMENTS).encode())
+        handoff = json.loads((produced / "handoff.json").read_text())
+        if overrides:
+            (self.artifact / "handoff.json").write_text(json.dumps({**handoff, **overrides}))
+        else:
+            shutil.copyfile(produced / "handoff.json", self.artifact / "handoff.json")
 
     def change_approvals(self, mode="dev"):
         prefix = "pcrDev" if mode == "dev" else "pcrProd"

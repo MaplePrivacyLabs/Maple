@@ -60,9 +60,9 @@ ENVIRONMENTS = {
     "auth-pages-development": CLOUDFLARE,
     "auth-pages-production": CLOUDFLARE,
     "pcr-signing": frozenset({"OPENSECRET_PCR_SIGNING_BWS_ACCESS_TOKEN"}),
-    # The legacy key's read-only token, and a separate token that reads only the
-    # Dev bucket's publisher credential.
-    "pcr-signing-dev": frozenset({"OPENSECRET_PCR_SIGNING_BWS_ACCESS_TOKEN", "ATTESTATIONS_R2_BWS_ACCESS_TOKEN"}),
+    # Same secret name as pcr-signing, but this environment's own value: a Dev-only
+    # machine token for the legacy signing key and the Dev publisher credential.
+    "pcr-signing-dev": frozenset({"OPENSECRET_PCR_SIGNING_BWS_ACCESS_TOKEN"}),
     "sdk-npm": frozenset({"NPM_BOOTSTRAP_TOKEN"}),
     "sdk-crates": frozenset({"CRATES_BOOTSTRAP_TOKEN"}),
 }

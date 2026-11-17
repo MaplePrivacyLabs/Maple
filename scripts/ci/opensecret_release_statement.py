@@ -512,11 +512,15 @@ def check_bundle_profile(data, statement, public_der, services=None):
             "Verification material must identify a managed key, not a certificate")
 
     envelope = bundle["dsseEnvelope"]
-    require(isinstance(envelope, dict) and envelope.get("payloadType") == PAYLOAD_TYPE, "Envelope is not in-toto")
+    require(isinstance(envelope, dict) and set(envelope) == {"payload", "payloadType", "signatures"},
+            "Envelope must hold only a payload, its type and signatures")
+    require(envelope["payloadType"] == PAYLOAD_TYPE, "Envelope is not in-toto")
     payload = b64decode(envelope.get("payload"), "DSSE payload")
     require(payload == statement, "Signed statement differs from the prepared statement")
     signatures = envelope.get("signatures")
     require(isinstance(signatures, list) and len(signatures) == 1, "Envelope must carry exactly one signature")
+    require(isinstance(signatures[0], dict) and "sig" in signatures[0] and set(signatures[0]) <= {"sig", "keyid"},
+            "Envelope signature has unexpected fields")
     signature = b64decode(signatures[0].get("sig"), "DSSE signature")
 
     entries = material["tlogEntries"]
@@ -526,12 +530,18 @@ def check_bundle_profile(data, statement, public_der, services=None):
             "Log entry is not a Rekor v2 hashedrekord 0.0.2 entry")
     require(b64decode((entry.get("logId") or {}).get("keyId"), "log ID") == services["log_key_id"],
             "Log entry is not from the configured Rekor v2 log")
-    require(str(entry.get("integratedTime", "0")) == "0", "Log entry carries an integrated time")
+    # Absence, not a zero value: a Rekor v2 entry carries no integrated time or promise.
+    require(isinstance(entry, dict) and "integratedTime" not in entry, "Log entry carries an integrated time")
     require("inclusionPromise" not in entry, "Log entry carries an inclusion promise")
+    require(set(entry) == {"logIndex", "logId", "kindVersion", "inclusionProof", "canonicalizedBody"},
+            "Log entry has missing or unexpected fields")
     index = entry.get("logIndex")
     require(isinstance(index, str) and index.isdigit(), "Log entry has no index")
     proof = entry.get("inclusionProof")
-    require(isinstance(proof, dict), "Log entry has no inclusion proof")
+    require(isinstance(proof, dict) and set(proof) == {"logIndex", "rootHash", "treeSize", "hashes", "checkpoint"},
+            "Inclusion proof has missing or unexpected fields")
+    require(isinstance(proof["checkpoint"], dict) and set(proof["checkpoint"]) == {"envelope"},
+            "Checkpoint has unexpected fields")
     require(proof.get("logIndex") == index, "Inclusion proof is for another entry")
     tree_size = proof.get("treeSize")
     require(isinstance(tree_size, str) and tree_size.isdigit() and int(tree_size) > int(index),
@@ -564,7 +574,8 @@ def check_bundle_profile(data, statement, public_der, services=None):
             "Timestamp data must be RFC 3161 timestamps only")
     tokens = timestamps["rfc3161Timestamps"]
     require(isinstance(tokens, list) and len(tokens) == 1, "Bundle must carry exactly one RFC 3161 timestamp")
-    token = b64decode((tokens[0] or {}).get("signedTimestamp"), "RFC 3161 timestamp")
+    require(isinstance(tokens[0], dict) and set(tokens[0]) == {"signedTimestamp"}, "Timestamp has unexpected fields")
+    token = b64decode(tokens[0]["signedTimestamp"], "RFC 3161 timestamp")
     # The token's message imprint is an OCTET STRING holding SHA-256 of the signature.
     require(b"\x04\x20" + hashlib.sha256(signature).digest() in token, "Timestamp does not cover this signature")
     return {"logIndex": int(index), "treeSize": int(tree_size), "log": services["log_url"],
