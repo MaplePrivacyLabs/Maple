@@ -20,6 +20,7 @@ use super::turn::TurnRow;
 use crate::ui::i18n::MessageCache;
 use crate::ui::motion::{self, HoverBg as _};
 use crate::ui::theme;
+use crate::ui::widgets;
 
 /// The +/- lines of an edit or a write, as its row derives them.
 type DiffLines = Vec<(char, SharedString)>;
@@ -235,6 +236,9 @@ pub(super) fn render_changes(
                 .role(gpui::Role::DisclosureTriangle)
                 .aria_label(file.path.clone())
                 .aria_expanded(shown)
+                .tab_index(0)
+                .on_key_down(ChatScreen::sidebar_button_key_down)
+                .focus_visible(widgets::focus_ring)
                 .h(ROW)
                 .px_3()
                 .flex()
@@ -255,7 +259,7 @@ pub(super) fn render_changes(
                     div()
                         .flex_none()
                         .text_color(gpui::rgb(theme::text_primary()))
-                        .child(file.name.clone()),
+                        .child(gpui::text!(file.name.clone())),
                 )
                 .child(
                     div()
@@ -263,7 +267,7 @@ pub(super) fn render_changes(
                         .min_w_0()
                         .truncate()
                         .text_color(gpui::rgb(theme::text_muted()))
-                        .child(file.folder.clone()),
+                        .child(gpui::text!(file.folder.clone())),
                 )
                 .child(step::changed(&file.counts))
                 .hover_bg(theme::overlay_hover())

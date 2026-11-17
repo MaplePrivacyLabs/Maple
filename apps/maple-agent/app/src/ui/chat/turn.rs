@@ -200,8 +200,10 @@ impl Turns {
                 self.chunk = None;
             }
             // What Maple says after the turn's steps is its reply, until
-            // it says more or takes another step.
+            // it says more or takes another step. A message with nothing
+            // in it yet draws no row, so it cannot carry the card.
             if let Some(lead) = self.tail
+                && breaks_chunk
                 && item.item_type == "message"
             {
                 if let Some(earlier) = self.tail_reply.replace(index) {
@@ -1110,13 +1112,17 @@ mod tests {
 
     #[test]
     fn a_turns_reply_is_what_maple_says_after_its_last_step() {
+        let said = || AgentTimelineItem {
+            text: Some("Done.".into()),
+            ..item("message", Some("assistant"))
+        };
         let mut turns = Turns::default();
         turns.rebuild(&[
             item("message", Some("user")),
             // Said before any step: not a reply to carry what changed.
-            item("message", Some("assistant")),
+            said(),
             item("tool", None),
-            item("message", Some("assistant")),
+            said(),
         ]);
         assert_eq!(turns.reply_of(1), None);
         assert_eq!(turns.reply_of(3), Some(2));
@@ -1124,13 +1130,23 @@ mod tests {
         // longer its last word.
         turns.push(&item("tool", None));
         assert_eq!(turns.reply_of(3), None);
-        turns.push(&item("message", Some("assistant")));
+        turns.push(&said());
         assert_eq!(turns.reply_of(5), Some(2));
         assert_eq!(turns.tail_reply(), Some(5));
         // A plain turn has no steps, so nothing to list.
         turns.push(&item("message", Some("user")));
-        turns.push(&item("message", Some("assistant")));
+        turns.push(&said());
         assert_eq!(turns.reply_of(7), None);
+        // A message that is still empty draws nothing, so the reply before
+        // it keeps the card.
+        let mut turns = Turns::default();
+        turns.rebuild(&[
+            item("tool", None),
+            said(),
+            item("message", Some("assistant")),
+        ]);
+        assert_eq!(turns.reply_of(1), Some(0));
+        assert_eq!(turns.tail_reply(), Some(1));
     }
 
     #[test]
