@@ -11,6 +11,7 @@ import type { UsageQuery, UsageRequestsPage, UsageResponse } from "@/billing/usa
 import * as localState from "@/state/useLocalState";
 import * as platform from "@/utils/platform";
 import { UsageSettings } from "./UsageSettings";
+import { MORE_MODELS_COLOR } from "./palette";
 
 function textContent(node: ReactTestInstance): string {
   return node.children
@@ -268,6 +269,68 @@ describe("Usage settings page", () => {
       (heading) => content.indexOf(heading)
     );
     expect(order).toEqual([...order].sort((a, b) => a - b));
+  });
+
+  test("metric changes share actual model colors across the legend, table and recent requests", async () => {
+    const model = "free-activity";
+    const label = "Free activity";
+    await mount(
+      {
+        getBillingStatus: () => Promise.resolve(pro),
+        getUsage: () =>
+          Promise.resolve({
+            ...usage,
+            models: { [model]: { display_name: label } },
+            days: [
+              ...["a", "b", "c", "d", "e"].map((id) => ({
+                ...usage.days[0],
+                model: id,
+                credits: 10,
+                requests: 1
+              })),
+              { ...usage.days[0], model, credits: 0, requests: 100 }
+            ]
+          }),
+        getUsageRequests: () =>
+          Promise.resolve({
+            ...requests,
+            models: { [model]: { display_name: label } },
+            requests: [{ ...requests.requests[0], model, credits: 0 }]
+          })
+      },
+      pro
+    );
+    const displayedColors = () =>
+      renderer!.root
+        .findAll(
+          (node) =>
+            (node.type === "span" || node.type === "div") &&
+            textContent(node) === label &&
+            node.findAll((child) => child.type === "span" && child.props["aria-hidden"]).length > 0
+        )
+        .map(
+          (node) =>
+            node.findAll((child) => child.type === "span" && child.props["aria-hidden"])[0].props
+              .style.background
+        );
+    expect(displayedColors()).toEqual([MORE_MODELS_COLOR, MORE_MODELS_COLOR]);
+    act(() => {
+      renderer!.root
+        .findAllByType("button")
+        .find((button) => textContent(button) === "Requests")!
+        .props.onClick();
+    });
+    const colors = displayedColors();
+    expect(colors).toHaveLength(3);
+    expect(colors[0]).not.toBe(MORE_MODELS_COLOR);
+    expect(new Set(colors).size).toBe(1);
+    act(() => {
+      renderer!.root
+        .findAllByType("button")
+        .find((button) => textContent(button) === "Credits")!
+        .props.onClick();
+    });
+    expect(displayedColors()).toEqual([MORE_MODELS_COLOR, MORE_MODELS_COLOR]);
   });
 
   test("recent requests open with 10 rows and load 50 more at a time", async () => {

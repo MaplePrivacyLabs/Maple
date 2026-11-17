@@ -328,17 +328,15 @@ impl SettingsScreen {
                 .text_color(gpui::rgb(theme::text_muted()))
                 .child(tr("settings-usage-no-usage"))
         } else {
-            div()
-                .flex()
-                .flex_wrap()
-                .gap_x_4()
-                .gap_y_1()
-                .children(chart_data.series.iter().map(|series| {
+            div().flex().flex_wrap().gap_x_4().gap_y_1().children(
+                chart_data.series.iter().enumerate().map(|(index, series)| {
                     legend_item(
                         palette::series(series.key),
                         series_name(series.key, series.label.as_deref()),
                     )
-                }))
+                    .id(("usage-daily-legend", index))
+                }),
+            )
         };
         widgets::card_row()
             .p_5()
@@ -464,8 +462,8 @@ impl SettingsScreen {
             .into_iter()
             .map(|(label, column)| (column, header_cell(label))),
         );
-        let rows = models.iter().map(|model| {
-            let color = palette::model(&model.model);
+        let rows = models.iter().enumerate().map(|(index, model)| {
+            let color = palette::model(&model.model, &range.chart.named_models);
             let (mix, more) = &model.mix;
             // One app needs no percentage: `Work`, not `100% Work`.
             let mut mix: Vec<String> = match mix.as_slice() {
@@ -510,7 +508,10 @@ impl SettingsScreen {
                             div()
                                 .truncate()
                                 .text_color(gpui::rgb(theme::text_primary()))
-                                .child(model.label.clone()),
+                                .child(gpui::text!(
+                                    id = ("usage-model", index),
+                                    model.label.clone()
+                                )),
                         )
                         .when(!mix.is_empty(), |cell| {
                             cell.child(
