@@ -72,6 +72,7 @@ impl SettingsScreen {
                             .gap_y_1()
                             .children(used.iter().map(|origin| {
                                 legend_item(palette::origin(*origin), origin_name(*origin))
+                                    .id(("usage-months-legend", origin.index()))
                             })),
                     ),
             )
@@ -129,111 +130,110 @@ impl SettingsScreen {
             .map(|(label, column)| (column, header_cell(label))),
         );
         let mut rows: Vec<gpui::AnyElement> = vec![header.into_any_element()];
-        rows.extend(
-            requests
-                .rows
-                .iter()
-                .zip(&requests.times)
-                .map(|(request, time)| {
-                    let origin = Origin::of(&request.source, request.client_app.as_deref());
-                    let source: SharedString = match origin {
-                        Origin::Api => tr("settings-usage-source-api-key"),
-                        origin if request.source == "api" => self.messages.get(
-                            "settings-usage-source-with-key",
-                            [("app", origin_name(origin).to_string().into())],
+        rows.extend(requests.rows.iter().zip(&requests.times).enumerate().map(
+            |(index, (request, time))| {
+                let origin = Origin::of(&request.source, request.client_app.as_deref());
+                let source: SharedString = match origin {
+                    Origin::Api => tr("settings-usage-source-api-key"),
+                    origin if request.source == "api" => self.messages.get(
+                        "settings-usage-source-with-key",
+                        [("app", origin_name(origin).to_string().into())],
+                    ),
+                    origin => origin_name(origin),
+                };
+                let label = model::model_label(&request.model, &requests.labels);
+                let extra = request.pool == "extra" && kind == PlanKind::Credits;
+                table_row([
+                    (
+                        Column::Time,
+                        div()
+                            .text_color(gpui::rgb(theme::text_secondary()))
+                            .child(self.request_time(*time, now))
+                            .into_any_element(),
+                    ),
+                    (
+                        Column::Name,
+                        div()
+                            .flex()
+                            .items_center()
+                            .gap_2()
+                            .min_w_0()
+                            .child(chart::swatch(
+                                palette::model(&request.model, data.named_models()),
+                                px(8.),
+                            ))
+                            .child(
+                                div()
+                                    .truncate()
+                                    .text_color(gpui::rgb(theme::text_primary()))
+                                    .child(gpui::text!(id = ("usage-request-model", index), label)),
+                            )
+                            .into_any_element(),
+                    ),
+                    (
+                        Column::Source,
+                        div()
+                            .flex()
+                            .items_center()
+                            .gap_1p5()
+                            .min_w_0()
+                            .child(
+                                div()
+                                    .flex_none()
+                                    .size(px(7.))
+                                    .rounded_full()
+                                    .bg(gpui::rgb(palette::origin(origin))),
+                            )
+                            .child(
+                                div()
+                                    .truncate()
+                                    .text_color(gpui::rgb(theme::text_secondary()))
+                                    .child(source),
+                            )
+                            .into_any_element(),
+                    ),
+                    (
+                        Column::Number,
+                        number_cell(fmt_count(request.uncached_input_tokens as f64)),
+                    ),
+                    (
+                        Column::Number,
+                        number_cell(
+                            request
+                                .cached_input_tokens
+                                .map(|cached| fmt_count(cached as f64))
+                                .unwrap_or_else(|| "—".into()),
                         ),
-                        origin => origin_name(origin),
-                    };
-                    let label = model::model_label(&request.model, &requests.labels);
-                    let extra = request.pool == "extra" && kind == PlanKind::Credits;
-                    table_row([
-                        (
-                            Column::Time,
-                            div()
-                                .text_color(gpui::rgb(theme::text_secondary()))
-                                .child(self.request_time(*time, now))
-                                .into_any_element(),
-                        ),
-                        (
-                            Column::Name,
-                            div()
-                                .flex()
-                                .items_center()
-                                .gap_2()
-                                .min_w_0()
-                                .child(chart::swatch(palette::model(&request.model), px(8.)))
-                                .child(
+                    ),
+                    (
+                        Column::Number,
+                        number_cell(fmt_count(request.output_tokens as f64)),
+                    ),
+                    (
+                        Column::Number,
+                        div()
+                            .flex()
+                            .items_center()
+                            .justify_end()
+                            .gap_1p5()
+                            .when(extra, |cell| {
+                                cell.child(
                                     div()
-                                        .truncate()
+                                        .px_1p5()
+                                        .rounded(px(4.))
+                                        .text_size(px(10.))
+                                        .bg(gpui::rgb(theme::accent_container()))
                                         .text_color(gpui::rgb(theme::text_primary()))
-                                        .child(label),
+                                        .child(tr("settings-usage-paid-extra")),
                                 )
-                                .into_any_element(),
-                        ),
-                        (
-                            Column::Source,
-                            div()
-                                .flex()
-                                .items_center()
-                                .gap_1p5()
-                                .min_w_0()
-                                .child(
-                                    div()
-                                        .flex_none()
-                                        .size(px(7.))
-                                        .rounded_full()
-                                        .bg(gpui::rgb(palette::origin(origin))),
-                                )
-                                .child(
-                                    div()
-                                        .truncate()
-                                        .text_color(gpui::rgb(theme::text_secondary()))
-                                        .child(source),
-                                )
-                                .into_any_element(),
-                        ),
-                        (
-                            Column::Number,
-                            number_cell(fmt_count(request.uncached_input_tokens as f64)),
-                        ),
-                        (
-                            Column::Number,
-                            number_cell(
-                                request
-                                    .cached_input_tokens
-                                    .map(|cached| fmt_count(cached as f64))
-                                    .unwrap_or_else(|| "—".into()),
-                            ),
-                        ),
-                        (
-                            Column::Number,
-                            number_cell(fmt_count(request.output_tokens as f64)),
-                        ),
-                        (
-                            Column::Number,
-                            div()
-                                .flex()
-                                .items_center()
-                                .justify_end()
-                                .gap_1p5()
-                                .when(extra, |cell| {
-                                    cell.child(
-                                        div()
-                                            .px_1p5()
-                                            .rounded(px(4.))
-                                            .text_size(px(10.))
-                                            .bg(gpui::rgb(theme::accent_container()))
-                                            .text_color(gpui::rgb(theme::text_primary()))
-                                            .child(tr("settings-usage-paid-extra")),
-                                    )
-                                })
-                                .child(number_cell(fmt_count(request.credits)))
-                                .into_any_element(),
-                        ),
-                    ])
-                    .into_any_element()
-                }),
-        );
+                            })
+                            .child(number_cell(fmt_count(request.credits)))
+                            .into_any_element(),
+                    ),
+                ])
+                .into_any_element()
+            },
+        ));
         section = section.child(widgets::card_stack(rows));
         if requests.more_failed {
             section = section.child(
@@ -308,7 +308,7 @@ impl SettingsScreen {
             .map(|(label, column)| (column, header_cell(label))),
         );
         let mut rows: Vec<gpui::AnyElement> = vec![header.into_any_element()];
-        rows.extend(prices.models.iter().map(|price| {
+        rows.extend(prices.models.iter().enumerate().map(|(index, price)| {
             let name = if price.display_name.trim().is_empty() {
                 price.id.clone()
             } else {
@@ -322,12 +322,15 @@ impl SettingsScreen {
                         .items_center()
                         .gap_2()
                         .min_w_0()
-                        .child(chart::swatch(palette::model(&price.id), px(8.)))
+                        .child(chart::swatch(
+                            palette::model(&price.id, data.named_models()),
+                            px(8.),
+                        ))
                         .child(
                             div()
                                 .truncate()
                                 .text_color(gpui::rgb(theme::text_primary()))
-                                .child(name),
+                                .child(gpui::text!(id = ("usage-price", index), name)),
                         )
                         .when(price.price_may_vary, |cell| {
                             cell.child(div().text_color(gpui::rgb(theme::text_muted())).child("*"))
@@ -351,30 +354,41 @@ impl SettingsScreen {
             ])
             .into_any_element()
         }));
-        rows.extend(data.unpriced.iter().map(|(model, label)| {
-            table_row([
-                (
-                    Column::Name,
-                    div()
-                        .flex()
-                        .items_center()
-                        .gap_2()
-                        .min_w_0()
-                        .child(chart::swatch(palette::model(model), px(8.)))
-                        .child(
+        rows.extend(
+            data.unpriced
+                .iter()
+                .enumerate()
+                .map(|(index, (model, label))| {
+                    table_row([
+                        (
+                            Column::Name,
                             div()
-                                .truncate()
-                                .text_color(gpui::rgb(theme::text_secondary()))
-                                .child(label.clone()),
-                        )
-                        .into_any_element(),
-                ),
-                (Column::Price, number_cell("—".into())),
-                (Column::Price, number_cell("—".into())),
-                (Column::Price, number_cell("—".into())),
-            ])
-            .into_any_element()
-        }));
+                                .flex()
+                                .items_center()
+                                .gap_2()
+                                .min_w_0()
+                                .child(chart::swatch(
+                                    palette::model(model, data.named_models()),
+                                    px(8.),
+                                ))
+                                .child(
+                                    div()
+                                        .truncate()
+                                        .text_color(gpui::rgb(theme::text_secondary()))
+                                        .child(gpui::text!(
+                                            id = ("usage-unpriced", index),
+                                            label.clone()
+                                        )),
+                                )
+                                .into_any_element(),
+                        ),
+                        (Column::Price, number_cell("—".into())),
+                        (Column::Price, number_cell("—".into())),
+                        (Column::Price, number_cell("—".into())),
+                    ])
+                    .into_any_element()
+                }),
+        );
         let mut notes = vec![tr("settings-usage-prices-note")];
         if !data.unpriced.is_empty() {
             notes.push(tr("settings-usage-prices-unlisted"));

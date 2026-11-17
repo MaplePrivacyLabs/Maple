@@ -9,16 +9,8 @@ use crate::billing::{BillingStatus, UsageDayRow, UsageModelLabels, UsageMonthRow
 /// Longest date list built from server-supplied bounds.
 const MAX_DAYS: u64 = 400;
 
-/// Fixed color slots for the current flagship models. A model keeps its
-/// color across ranges; every other model folds into "More models" in
-/// charts, while tables still list it by name.
-pub(crate) const MODEL_SLOTS: [&str; 5] = [
-    "glm-5-3",
-    "kimi-k3",
-    "deepseek-v4-1-flash",
-    "gpt-oss-120b",
-    "glm-5-3-flash",
-];
+/// Name the five largest contributors to the selected usage metric.
+const NAMED_MODELS: usize = 5;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) enum PlanKind {
@@ -291,10 +283,6 @@ pub(crate) fn model_label(model: &str, labels: &UsageModelLabels) -> String {
         .to_string()
 }
 
-pub(crate) fn model_slot(model: &str) -> Option<usize> {
-    MODEL_SLOTS.iter().position(|slot| *slot == model)
-}
-
 #[derive(Clone, Debug, PartialEq)]
 pub(crate) struct ModelSummary {
     pub(crate) model: String,
@@ -360,12 +348,13 @@ pub(crate) fn summarize_days(rows: &[UsageDayRow], labels: &UsageModelLabels) ->
             .total_cmp(&a.counts.credits)
             .then(b.counts.requests.cmp(&a.counts.requests))
             .then_with(|| a.label.cmp(&b.label))
+            .then_with(|| a.model.cmp(&b.model))
     });
     summary.by_model = models;
     summary
 }
 
-/// One series in a stacked chart, in fixed identity order.
+/// One series in a stacked chart; model indices refer to the active palette.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub(crate) enum SeriesKey {
     Model(usize),
@@ -399,14 +388,16 @@ pub(crate) struct ChartDay {
 
 #[derive(Clone, Debug, PartialEq)]
 pub(crate) struct DailyChart {
+    /// Usage-derived IDs in raw ID order, also used outside the model split.
+    pub(crate) named_models: Vec<String>,
     pub(crate) series: Vec<Series>,
     pub(crate) days: Vec<ChartDay>,
     pub(crate) scale: NiceScale,
 }
 
-fn split_keys(split: Split) -> Vec<SeriesKey> {
+fn split_keys(split: Split, named_models: usize) -> Vec<SeriesKey> {
     match split {
-        Split::Model => (0..MODEL_SLOTS.len())
+        Split::Model => (0..named_models)
             .map(SeriesKey::Model)
             .chain([SeriesKey::MoreModels])
             .collect(),
@@ -423,19 +414,36 @@ pub(crate) fn build_daily_chart(
     split: Split,
     labels: &UsageModelLabels,
 ) -> DailyChart {
-    let keys = split_keys(split);
+    let mut totals = std::collections::HashMap::<&str, f64>::new();
+    let rows: Vec<_> = rows
+        .iter()
+        .filter_map(|row| {
+            let day =
+                parse_date(&row.date).and_then(|date| dates.iter().position(|d| *d == date))?;
+            let mut counts = Counts::default();
+            counts.add(&row.counts);
+            let value = counts.metric(metric);
+            *totals.entry(row.model.as_str()).or_default() += value;
+            Some((day, row, value))
+        })
+        .collect();
+    let mut ranked: Vec<_> = totals
+        .into_iter()
+        .filter(|(_, total)| *total > 0.0)
+        .collect();
+    ranked.sort_unstable_by(|a, b| b.1.total_cmp(&a.1).then_with(|| a.0.cmp(b.0)));
+    ranked.truncate(NAMED_MODELS);
+    // Ranking chooses membership; raw ID order keeps a stable set's colors stable.
+    ranked.sort_unstable_by(|a, b| a.0.cmp(b.0));
+    let named_models: Vec<String> = ranked.into_iter().map(|(id, _)| id.to_string()).collect();
+    let keys = split_keys(split, named_models.len());
     let mut values = vec![vec![0.0; keys.len()]; dates.len()];
     let mut requests = vec![0u64; dates.len()];
     let mut extra_credits = vec![0.0; dates.len()];
     // Models behind "More models", by id: two models can share a name.
     let mut folded: Vec<Vec<(&str, f64)>> = vec![Vec::new(); dates.len()];
     let mut folded_models: Vec<&str> = Vec::new();
-    for row in rows {
-        let Some(day) =
-            parse_date(&row.date).and_then(|date| dates.iter().position(|d| *d == date))
-        else {
-            continue;
-        };
+    for (day, row, value) in rows {
         requests[day] += row.counts.requests;
         if row.pool == "extra" {
             extra_credits[day] += row.counts.credits;
@@ -450,11 +458,10 @@ pub(crate) fn build_daily_chart(
             }
             continue;
         }
-        let mut counts = Counts::default();
-        counts.add(&row.counts);
-        let value = counts.metric(metric);
         let key = match split {
-            Split::Model => model_slot(&row.model)
+            Split::Model => named_models
+                .iter()
+                .position(|id| *id == row.model)
                 .map(SeriesKey::Model)
                 .unwrap_or(SeriesKey::MoreModels),
             Split::Origin => SeriesKey::Origin(Origin::of(&row.source, row.client_app.as_deref())),
@@ -486,7 +493,7 @@ pub(crate) fn build_daily_chart(
         .map(|&index| {
             let key = keys[index];
             let label = match key {
-                SeriesKey::Model(slot) => Some(model_label(MODEL_SLOTS[slot], labels)),
+                SeriesKey::Model(slot) => Some(model_label(&named_models[slot], labels)),
                 SeriesKey::MoreModels if folded_models.len() == 1 => {
                     Some(model_label(folded_models[0], labels))
                 }
@@ -503,7 +510,7 @@ pub(crate) fn build_daily_chart(
             let day_values: Vec<f64> = used.iter().map(|&index| values[day][index]).collect();
             let day_folded = if several_folded {
                 let mut models = std::mem::take(&mut folded[day]);
-                models.sort_by(|a, b| b.1.total_cmp(&a.1));
+                models.sort_by(|a, b| b.1.total_cmp(&a.1).then_with(|| a.0.cmp(b.0)));
                 models
                     .into_iter()
                     .map(|(id, value)| (model_label(id, labels), value))
@@ -523,6 +530,7 @@ pub(crate) fn build_daily_chart(
         .collect();
     let peak = days.iter().map(|day| day.total).fold(0.0, f64::max);
     DailyChart {
+        named_models,
         series,
         days,
         scale: nice_scale((peak.max(1.0)) * 1.04),
@@ -858,50 +866,241 @@ mod tests {
     }
 
     #[test]
-    fn daily_chart_folds_unslotted_models_and_names_a_lone_one() {
+    fn daily_chart_names_actual_leaders_after_aggregating_rows_in_range() {
         let dates = date_range(day("2026-10-01"), day("2026-10-03"));
         let rows = [
-            row("2026-10-01", "glm-5-3", "app", None, "plan", 4.0),
-            row("2026-10-02", "llama-x", "app", None, "plan", 3.0),
-            row("2026-09-30", "glm-5-3", "app", None, "plan", 99.0),
+            row("2026-10-01", "historical", "app", None, "plan", 10.0),
+            row(
+                "2026-10-02",
+                "historical",
+                "api",
+                Some("work"),
+                "extra",
+                10.0,
+            ),
+            row("2026-10-01", "a", "app", None, "plan", 15.0),
+            row("2026-10-01", "b", "app", None, "plan", 14.0),
+            row("2026-10-01", "c", "app", None, "plan", 13.0),
+            row("2026-10-01", "d", "app", None, "plan", 12.0),
+            row("2026-10-01", "e", "app", None, "plan", 11.0),
+            row("2026-09-30", "outside", "app", None, "plan", 999.0),
+            row("2026-10-01", "free", "app", None, "plan", 0.0),
         ];
-        let mut labels = UsageModelLabels::default();
-        labels.insert(
-            "llama-x".into(),
+        let labels = UsageModelLabels::from([(
+            "historical".into(),
             maple_billing::UsageModelLabel {
-                display_name: Some("Llama X".into()),
+                display_name: Some("Historical model".into()),
             },
-        );
+        )]);
         let chart = build_daily_chart(&dates, &rows, Metric::Credits, Split::Model, &labels);
-        assert_eq!(
-            chart
-                .series
-                .iter()
-                .map(|s| (s.key, s.label.clone()))
-                .collect::<Vec<_>>(),
-            [
-                (SeriesKey::Model(0), Some("glm-5-3".into())),
-                (SeriesKey::MoreModels, Some("Llama X".into())),
-            ]
-        );
-        assert_eq!(chart.days[0].values, [4.0, 0.0]);
-        assert_eq!(chart.days[1].values, [0.0, 3.0]);
-        // One folded model needs no per-day breakdown.
-        assert!(chart.days[1].folded.is_empty());
+        assert_eq!(chart.named_models, ["a", "b", "c", "d", "historical"]);
+        assert_eq!(chart.series[4].label.as_deref(), Some("Historical model"));
+        assert_eq!(chart.series[5].key, SeriesKey::MoreModels);
+        assert_eq!(chart.series[5].label.as_deref(), Some("e"));
+        assert_eq!(chart.days[0].values, [15.0, 14.0, 13.0, 12.0, 10.0, 11.0]);
+        assert_eq!(chart.days[1].values, [0.0, 0.0, 0.0, 0.0, 10.0, 0.0]);
+        assert!(chart.days.iter().all(|day| day.folded.is_empty()));
         assert_eq!(chart.days[2].total, 0.0);
-
-        let rows = [
-            row("2026-10-02", "llama-x", "app", None, "plan", 3.0),
-            row("2026-10-02", "qwen-y", "app", None, "extra", 5.0),
-        ];
-        let chart = build_daily_chart(&dates, &rows, Metric::Credits, Split::Model, &labels);
-        assert_eq!(chart.series[0].label, None);
-        assert_eq!(
-            chart.days[1].folded,
-            [("qwen-y".to_string(), 5.0), ("Llama X".to_string(), 3.0)]
-        );
-        assert_eq!(chart.days[1].extra_credits, 5.0);
+        assert_eq!(chart.days[1].extra_credits, 10.0);
         assert_eq!(extra_credit_span(&chart.days), Some((1, 1)));
+
+        let shorter = build_daily_chart(&dates[..1], &rows, Metric::Credits, Split::Model, &labels);
+        assert_eq!(shorter.named_models, ["a", "b", "c", "d", "e"]);
+    }
+
+    #[test]
+    fn daily_chart_palette_follows_metric_even_for_other_splits() {
+        let dates = [day("2026-10-01")];
+        let mut rows: Vec<_> = ["a", "b", "c", "d", "e", "free", "tokens"]
+            .into_iter()
+            .enumerate()
+            .map(|(index, id)| {
+                row(
+                    "2026-10-01",
+                    id,
+                    "app",
+                    None,
+                    "plan",
+                    (5 - index.min(5)) as f64,
+                )
+            })
+            .collect();
+        rows[5].counts.requests = 50;
+        rows[6].counts.uncached_input_tokens = 9_000;
+        let labels = UsageModelLabels::default();
+        for split in [Split::Model, Split::Origin, Split::Pool, Split::Token] {
+            for (metric, expected) in [
+                (Metric::Credits, ["a", "b", "c", "d", "e"]),
+                (Metric::Requests, ["a", "b", "c", "d", "free"]),
+                (Metric::Tokens, ["a", "b", "c", "d", "tokens"]),
+            ] {
+                let chart = build_daily_chart(&dates, &rows, metric, split, &labels);
+                assert_eq!(chart.named_models, expected, "{metric:?} {split:?}");
+                let expected_total = if split == Split::Token {
+                    9_670.0
+                } else {
+                    match metric {
+                        Metric::Credits => 15.0,
+                        Metric::Requests => 56.0,
+                        Metric::Tokens => 9_670.0,
+                    }
+                };
+                assert_eq!(chart.days[0].total, expected_total);
+            }
+        }
+    }
+
+    #[test]
+    fn daily_chart_slots_and_ties_use_raw_ids_not_row_order_or_labels() {
+        let dates = [day("2026-10-01")];
+        let mut rows: Vec<_> = ["f", "e", "d", "c", "b", "a"]
+            .into_iter()
+            .map(|id| row("2026-10-01", id, "app", None, "plan", 1.0))
+            .collect();
+        let labels = UsageModelLabels::from([
+            (
+                "a".into(),
+                maple_billing::UsageModelLabel {
+                    display_name: Some("Same".into()),
+                },
+            ),
+            (
+                "b".into(),
+                maple_billing::UsageModelLabel {
+                    display_name: Some("Same".into()),
+                },
+            ),
+            (
+                "c".into(),
+                maple_billing::UsageModelLabel {
+                    display_name: Some("  ".into()),
+                },
+            ),
+        ]);
+        let chart = build_daily_chart(&dates, &rows, Metric::Credits, Split::Model, &labels);
+        assert_eq!(chart.named_models, ["a", "b", "c", "d", "e"]);
+        assert_eq!(chart.series[0].label.as_deref(), Some("Same"));
+        assert_eq!(chart.series[1].label.as_deref(), Some("Same"));
+        assert_ne!(chart.series[0].key, chart.series[1].key);
+        assert_eq!(chart.series[2].label.as_deref(), Some("c"));
+        assert_eq!(chart.series[3].label.as_deref(), Some("d"));
+        rows.reverse();
+        assert_eq!(
+            chart,
+            build_daily_chart(&dates, &rows, Metric::Credits, Split::Model, &labels)
+        );
+        rows[4].counts.credits = 100.0;
+        let reranked = build_daily_chart(&dates, &rows, Metric::Credits, Split::Model, &labels);
+        assert_eq!(chart.named_models, reranked.named_models);
+        assert_eq!(chart.series, reranked.series);
+    }
+
+    #[test]
+    fn daily_chart_overflow_preserves_ids_values_and_deterministic_breakdowns() {
+        let dates = date_range(day("2026-10-01"), day("2026-10-02"));
+        let mut rows: Vec<_> = ["a", "b", "c", "d", "more"]
+            .into_iter()
+            .map(|id| {
+                let mut row = row("2026-10-01", id, "app", None, "plan", 10.0);
+                row.counts.requests = 10;
+                row
+            })
+            .collect();
+        for (id, source, app, pool, credits, tokens) in [
+            ("x", "app", None, "plan", 2.0, 4),
+            ("x", "api", Some("work"), "extra", 1.0, 6),
+            ("y", "app", None, "plan", 3.0, 10),
+            ("z", "app", None, "plan", 5.0, 12),
+            ("free", "app", None, "plan", 0.0, 5),
+        ] {
+            let mut row = row("2026-10-02", id, source, app, pool, credits);
+            row.counts.uncached_input_tokens = tokens;
+            row.counts.output_tokens = 0;
+            rows.push(row);
+        }
+        let labels = UsageModelLabels::from([
+            (
+                "x".into(),
+                maple_billing::UsageModelLabel {
+                    display_name: Some("Same".into()),
+                },
+            ),
+            (
+                "y".into(),
+                maple_billing::UsageModelLabel {
+                    display_name: Some("Same".into()),
+                },
+            ),
+        ]);
+        for (metric, expected) in [
+            (Metric::Credits, vec![("z", 5.0), ("x", 3.0), ("y", 3.0)]),
+            (
+                Metric::Requests,
+                vec![("x", 2.0), ("free", 1.0), ("y", 1.0), ("z", 1.0)],
+            ),
+            (
+                Metric::Tokens,
+                vec![("z", 12.0), ("x", 10.0), ("y", 10.0), ("free", 5.0)],
+            ),
+        ] {
+            let chart = build_daily_chart(&dates, &rows, metric, Split::Model, &labels);
+            assert_eq!(chart.named_models, ["a", "b", "c", "d", "more"]);
+            assert_eq!(chart.series[4].key, SeriesKey::Model(4));
+            assert_eq!(chart.series[4].label.as_deref(), Some("more"));
+            assert_eq!(chart.series[5].key, SeriesKey::MoreModels);
+            assert_eq!(chart.series[5].label, None);
+            let folded = &chart.days[1].folded;
+            assert_eq!(
+                folded,
+                &expected
+                    .into_iter()
+                    .map(|(id, value)| (model_label(id, &labels), value))
+                    .collect::<Vec<_>>()
+            );
+            assert_eq!(
+                folded.iter().filter(|(label, _)| label == "Same").count(),
+                2
+            );
+            assert_eq!(
+                folded.iter().map(|(_, value)| value).sum::<f64>(),
+                chart.days[1].total
+            );
+            assert_eq!(
+                chart.days.iter().map(|day| day.total).sum::<f64>(),
+                summarize_days(&rows, &labels).counts.metric(metric)
+            );
+            let mut reversed = rows.clone();
+            reversed.reverse();
+            assert_eq!(
+                chart,
+                build_daily_chart(&dates, &reversed, metric, Split::Model, &labels)
+            );
+        }
+        let summary = summarize_days(&rows, &labels);
+        assert_eq!(summary.by_model.len(), 9);
+        assert_eq!(
+            summary
+                .by_model
+                .iter()
+                .filter(|model| model.label == "Same")
+                .count(),
+            2
+        );
+        assert_eq!(summary.by_model.last().unwrap().model, "free");
+    }
+
+    #[test]
+    fn daily_chart_with_no_positive_metric_has_no_named_models() {
+        let dates = [day("2026-10-01")];
+        let rows = [row("2026-10-01", "free", "app", None, "plan", 0.0)];
+        let labels = UsageModelLabels::default();
+        for rows in [rows.as_slice(), &[]] {
+            let chart = build_daily_chart(&dates, rows, Metric::Credits, Split::Model, &labels);
+            assert!(chart.named_models.is_empty());
+            assert!(chart.series.is_empty());
+            assert_eq!(chart.days[0].total, 0.0);
+            assert_eq!(chart.days[0].requests, rows.len() as u64);
+        }
     }
 
     #[test]
