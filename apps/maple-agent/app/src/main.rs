@@ -136,6 +136,9 @@ enum Mode {
     Proxy(ProxyArgs),
     /// Sign in with email and password and save the session for `acp`.
     Login(LoginArgs),
+    /// Sign out and remove the saved session. Local tasks, settings and
+    /// remote pairings are kept.
+    Logout,
     /// Unlock Maple local data; the password is prompted on the controlling TTY.
     Unlock,
     /// Start the bundled Python, unpacking it first on Windows, and run one
@@ -617,6 +620,14 @@ fn main() {
                 std::process::exit(1);
             }
         }
+        Some(Mode::Logout) => {
+            init_logging(LogOutput::FileOnly);
+            if let Err(error) = run_logout() {
+                log::error!("{error}");
+                eprintln!("{error}");
+                std::process::exit(1);
+            }
+        }
         None => {
             #[cfg(all(feature = "desktop", target_os = "windows"))]
             windows_integration::start();
@@ -719,9 +730,13 @@ fn run_acp() -> Result<(), String> {
 fn run_login(args: LoginArgs) -> Result<(), String> {
     let backend = AgentBackend::new(configured_api_url(), String::new())?;
     require_open_cli(&backend)?;
-    if let Some(user_id) = backend.saved_user_id() {
-        eprintln!("A Maple sign-in is already saved; signing in again replaces it.");
-        log::info!("login replaces the saved session for account {user_id}");
+    // The host never replaces a saved session in place; account switches go
+    // through an explicit sign-out. Say so before asking for a password.
+    if backend.saved_user_id().is_some() {
+        return Err(
+            "Maple is already signed in. Run `maple-agent logout` first, then sign in again."
+                .into(),
+        );
     }
     let login = match (args.account_id, args.email) {
         (Some(account_id), _) => Err(account_id),
@@ -745,6 +760,26 @@ fn run_login(args: LoginArgs) -> Result<(), String> {
         None => eprintln!("Signed in."),
     }
     eprintln!("`maple-agent acp` and the desktop app will use this sign-in.");
+    Ok(())
+}
+
+/// `maple-agent logout`: the desktop's Sign out from a terminal. Account-scoped
+/// local data and remote pairings stay for the next sign-in to that account.
+fn run_logout() -> Result<(), String> {
+    let backend = AgentBackend::new(configured_api_url(), String::new())?;
+    require_open_cli(&backend)?;
+    let Some(user_id) = backend.saved_user_id() else {
+        eprintln!("Maple is not signed in.");
+        return Ok(());
+    };
+    // The desktop's Sign out sequence: stop the account's runtime, then
+    // report the sign-out and remove the saved session.
+    backend.runtime_handle().block_on(async {
+        backend.stop_runtime(&user_id).await?;
+        backend.logout_and_clear(&user_id).await
+    })?;
+    log::info!("signed out account {user_id} from the command line");
+    eprintln!("Signed out. Run `maple-agent login` to sign in again.");
     Ok(())
 }
 
@@ -1068,6 +1103,13 @@ mod tests {
         );
         assert!(parse(&["login", "--email", "a@b.c", "--account-id", "id"]).is_err());
         assert!(parse(&["login", "--password", "x"]).is_err());
+    }
+
+    #[test]
+    fn logout_takes_no_arguments() {
+        assert_eq!(parse(&["logout"]).unwrap(), Some(Mode::Logout));
+        assert!(parse(&["logout", "--email", "a@b.c"]).is_err());
+        assert!(parse(&["logout", "extra"]).is_err());
     }
 
     #[test]

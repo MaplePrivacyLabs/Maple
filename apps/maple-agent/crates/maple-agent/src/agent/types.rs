@@ -108,6 +108,12 @@ pub struct AgentMcpKeyValue {
 pub enum AgentMcpTransport {
     Stdio {
         command: String,
+        /// The exact program and arguments, when the server came as words
+        /// and not as a typed command line, as an ACP client's does. Empty
+        /// for a saved server, whose `command` is split into words. When
+        /// set, `command` is only the line shown for it.
+        #[serde(default, skip_serializing_if = "Vec::is_empty")]
+        argv: Vec<String>,
         #[serde(default)]
         environment: Vec<AgentMcpKeyValue>,
     },
@@ -117,6 +123,16 @@ pub enum AgentMcpTransport {
         environment: Vec<AgentMcpKeyValue>,
         #[serde(default)]
         headers: Vec<AgentMcpKeyValue>,
+    },
+    /// An MCP server the ACP client serves over the ACP connection itself,
+    /// per the unstable `mcp/connect`/`mcp/message` extension. `server_id` is
+    /// the ACP `serverId`; `channel` names the live connection in
+    /// [`crate::agent::mcp::acp_channel`]'s registry, which the ACP server
+    /// fills for each session attachment.
+    Acp {
+        server_id: String,
+        #[serde(default)]
+        channel: String,
     },
 }
 

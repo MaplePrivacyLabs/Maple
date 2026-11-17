@@ -78,16 +78,12 @@ impl ChatScreen {
             let Some(item) = chat.timeline.get(ix) else {
                 return div().into_any_element();
             };
-            // A turn's first step carries the turn's line. Folded, the line
-            // is all of that row, and the later steps draw nothing.
+            // Each activity chunk has a disclosure; only the first also
+            // carries the overall turn's animated status line.
             let turn = chat.turns.row(ix);
-            let lead = match turn {
-                TurnRow::Plain => None,
-                TurnRow::Lead => Some(ix),
-                TurnRow::Step(lead) => Some(lead),
-            };
-            let open = lead.is_none_or(|lead| chat.turn_open(lead));
-            if !open && turn != TurnRow::Lead {
+            let lead = turn.lead(ix);
+            let open = lead.is_none_or(|lead| chat.chunk_open(lead));
+            if !open && matches!(turn, TurnRow::Step(_)) {
                 return div().into_any_element();
             }
             // A row that arrived live enters, timed from view state so
@@ -107,6 +103,7 @@ impl ChatScreen {
                     markdown_cache: &chat.markdown_cache,
                     derived: &chat.derived,
                     attachment_images: &chat.attachment_images,
+                    attachment_previews: &chat.attachment_previews,
                     attachment_failures: &chat.attachment_failures,
                     chat: &entity,
                     tool_summaries: &chat.tool_summaries,
@@ -161,22 +158,31 @@ impl ChatScreen {
                         }),
                     );
                 }
-                // Steps the line just showed fade in, like any details
-                // the user opens.
+                // Each chunk keeps the existing details reveal timing.
                 let shown = lead.map_or(1., |lead| {
                     chat.row_motion
-                        .turn_disclosure(&chat.timeline[lead].id, now, reduced)
+                        .chunk_disclosure(&chat.timeline[lead].id, now, reduced)
                 });
                 row.when(shown < 1., |row| row.opacity(motion::ease_out_quint(shown)))
             });
-            let line = (turn == TurnRow::Lead).then(|| {
-                turn::render_line(
-                    chat.turn_line(ix, still),
-                    Some((&item.id, open)),
-                    &entity,
-                    &chat.messages,
+            let body = if let Some(chunk) = chat.turns.chunk(ix) {
+                Some(
+                    div()
+                        .child(turn::render_chunk(
+                            &item.id,
+                            chunk,
+                            open,
+                            chat.turn_runs(ix),
+                            &entity,
+                            &chat.messages,
+                        ))
+                        .children(body),
                 )
-            });
+            } else {
+                body
+            };
+            let line = (turn == TurnRow::Lead)
+                .then(|| turn::render_line(chat.turn_line(ix, still), &item.id, &chat.messages));
             let select = |row: Div| {
                 if !chat.application_vim_enabled {
                     return row;
@@ -186,6 +192,11 @@ impl ChatScreen {
                 let application_entity = entity.clone();
                 div()
                     .on_mouse_down(gpui::MouseButton::Left, move |_event, window, cx| {
+                        // A focusable control inside the row owns this
+                        // press; keep its keyboard focus.
+                        if window.default_prevented() {
+                            return;
+                        }
                         let Some(chat_entity) = application_entity.upgrade() else {
                             return;
                         };
@@ -446,8 +457,7 @@ impl ChatScreen {
         let line = self.line_in_slot().then(|| {
             turn::render_line(
                 self.live_line(motion::loops_paused(window, cx)),
-                None,
-                &cx.entity().downgrade(),
+                "slot",
                 &self.messages,
             )
         });
@@ -464,12 +474,15 @@ impl ChatScreen {
         let natural = slot.slot_natural.get().map(f32::from);
         if reduced {
             slot.slot_open = None;
+            slot.slot_since = None;
         } else if appeared {
             // A send opens it; a task switch or history load shows it at
             // once. It opens from the height the composer gave up as it
-            // emptied, so the transcript above does not drop first.
+            // emptied, so the transcript above does not drop first. Only
+            // an opening slot is timed from its appearance: one shown at
+            // once is at rest, and whatever grows it later starts then.
             slot.slot_open = (!snap).then(|| motion::Tween::pixels(freed));
-            slot.slot_since = Some(now);
+            slot.slot_since = (!snap).then_some(now);
         }
         let cap = match (&mut slot.slot_open, natural) {
             (None, None) => None,
@@ -481,6 +494,16 @@ impl ChatScreen {
             }
             // Closed on its first frame while its content is measured.
             (Some(open), None) => {
+                window.request_animation_frame();
+                Some(px(open.value(now)))
+            }
+            // A send while the slot already shows (the waiting dots): the
+            // composer gives up `freed` on this frame and the message is
+            // not measured yet, so the slot takes that height at once and
+            // opens the rest from here, as a slot that appears does.
+            (Some(open), Some(_)) if freed > 0. => {
+                *open = motion::Tween::pixels(open.value(now) + freed);
+                slot.slot_since = Some(now);
                 window.request_animation_frame();
                 Some(px(open.value(now)))
             }
@@ -573,7 +596,7 @@ pub(super) struct RowMotion {
     pub(super) heights: Rc<RefCell<HashMap<String, Pixels>>>,
     /// Rows whose details the user just opened, by item id.
     disclosed: HashMap<String, Instant>,
-    /// Turns whose steps the user just showed, by the id of their lead row.
+    /// Chunks whose steps the user just showed, by their lead row id.
     unfolded: HashMap<String, Instant>,
     /// When another task's transcript landed.
     switched: Option<Instant>,
@@ -717,8 +740,8 @@ impl RowMotion {
         }
     }
 
-    /// The user showed or folded a turn's steps. Folding is immediate.
-    pub(super) fn disclose_turn(&mut self, lead: &str, open: bool, now: Instant) {
+    /// The user showed or folded a chunk. Folding is immediate.
+    pub(super) fn disclose_chunk(&mut self, lead: &str, open: bool, now: Instant) {
         if open {
             self.unfolded.insert(lead.to_owned(), now);
         } else {
@@ -777,7 +800,7 @@ impl RowMotion {
     }
 
     /// Progress of the fade of steps the user just showed.
-    pub(super) fn turn_disclosure(&self, lead: &str, now: Instant, reduced: bool) -> f32 {
+    pub(super) fn chunk_disclosure(&self, lead: &str, now: Instant, reduced: bool) -> f32 {
         self.unfolded
             .get(lead)
             .map_or(1., |at| motion::progress(*at, motion::REVEAL, now, reduced))
@@ -1100,9 +1123,131 @@ fn timestamp_label(item: &AgentTimelineItem, group: &SharedString, messages: &Me
         .child(text)
 }
 
+// Fix both the layout box and the painted image size: max constraints alone
+// let an image's intrinsic dimensions escape the transcript's measured row.
+pub(super) const ATTACHMENT_THUMBNAIL_SIZE: Pixels = px(72.);
+
+/// The row of a user message's attachments, above its text. The message
+/// being sent draws the same row with the same pieces, so the real row
+/// changes nothing on screen when it takes over.
+pub(super) fn attachment_row() -> Div {
+    div()
+        .max_w(gpui::relative(0.75))
+        .flex()
+        .flex_wrap()
+        .justify_end()
+        .gap_2()
+        .mb_1()
+}
+
+/// An image attachment in a message: the whole picture inside a fixed box.
+pub(super) fn attachment_thumbnail(image: Arc<gpui::Image>) -> Div {
+    div()
+        .flex_none()
+        .size(ATTACHMENT_THUMBNAIL_SIZE)
+        .rounded(theme::RADIUS_SM)
+        .overflow_hidden()
+        .bg(gpui::rgb(theme::bg_elevated()))
+        .border_1()
+        .border_color(gpui::rgb(theme::border()))
+        .child(
+            gpui::img(gpui::ImageSource::Image(image))
+                .size_full()
+                .aspect_square()
+                .object_fit(gpui::ObjectFit::Contain)
+                // gpui clips to rectangles, so the picture rounds its own
+                // corners: one that fills the box would poke past the
+                // box's.
+                .rounded(theme::RADIUS_SM),
+        )
+}
+
+/// An attachment with no picture to show: its name and what it is. Long
+/// file names stay within the message.
+pub(super) fn attachment_chip(name: SharedString, detail: SharedString) -> Div {
+    div()
+        .min_w_0()
+        .max_w_full()
+        .flex()
+        .items_center()
+        .gap_1()
+        .px_2()
+        .py_0p5()
+        .rounded(theme::RADIUS_SM)
+        .bg(gpui::rgb(theme::bg_elevated()))
+        .text_xs()
+        .text_color(gpui::rgb(theme::text_secondary()))
+        .child(icon("paperclip", px(12.), theme::text_secondary()))
+        .child(
+            div()
+                .min_w_0()
+                .flex()
+                .flex_col()
+                .gap_0p5()
+                .child(div().truncate().child(gpui::text!(name)))
+                .child(
+                    div()
+                        .text_color(gpui::rgb(theme::text_muted()))
+                        .child(gpui::text!(detail)),
+                ),
+        )
+}
+
+fn render_attachment(
+    attachment: &super::cache::AttachmentDisplay,
+    transcript: &TranscriptCtx,
+) -> gpui::AnyElement {
+    let id = attachment.id.as_str();
+    // A message that was just sent shows the picture its draft had until
+    // the stored one arrives, so the thumbnail never gives way to a name.
+    let image = transcript
+        .attachment_images
+        .get(id)
+        .or_else(|| transcript.attachment_previews.get(id));
+    if let Some(image) = image {
+        let shown = Arc::clone(image);
+        let attachment_id = attachment.id.clone();
+        let chat = transcript.chat.clone();
+        attachment_thumbnail(Arc::clone(image))
+            .id(SharedString::from(format!("attachment-{id}")))
+            .debug_selector({
+                let id = attachment.id.clone();
+                move || format!("attachment-thumbnail-{id}")
+            })
+            .role(gpui::Role::Button)
+            .aria_label(attachment.name.clone())
+            .key_context("Button")
+            .tab_index(0)
+            .focus_visible(widgets::focus_ring)
+            .hover_bg(theme::overlay_hover())
+            .hover(|style| style.cursor_pointer())
+            .on_click(move |_event, _window, cx| {
+                chat.update(cx, |chat, cx| {
+                    chat.open_attachment(&attachment_id, Arc::clone(&shown), cx);
+                })
+                .ok();
+            })
+            .on_key_down(ChatScreen::sidebar_button_key_down)
+            .into_any_element()
+    } else {
+        let unavailable = attachment.unavailable || transcript.attachment_failures.contains(id);
+        // Retain the name and availability while the bytes load, or if the
+        // attachment was removed.
+        attachment_chip(
+            attachment.name.clone(),
+            if unavailable {
+                tr("chat-image-unavailable")
+            } else {
+                attachment.detail.clone()
+            },
+        )
+        .id(SharedString::from(format!("attachment-{id}")))
+        .into_any_element()
+    }
+}
+
 fn render_message(item: &AgentTimelineItem, revision: u64, transcript: &TranscriptCtx) -> Div {
     let ctx = transcript.render;
-    let attachment_images = transcript.attachment_images;
     let chat = transcript.chat;
     let is_user = item.role.as_deref() == Some("user");
     let text = item.text.as_deref().unwrap_or("");
@@ -1132,101 +1277,38 @@ fn render_message(item: &AgentTimelineItem, revision: u64, transcript: &Transcri
             .flex_col()
             .items_end()
             .gap_0p5()
-            .child(
-                typography::chat_reading(div())
-                    .max_w(gpui::relative(0.75))
-                    .px_4()
-                    .py_2()
-                    .rounded(theme::RADIUS_MD)
-                    .bg(gpui::rgb(theme::bg_user_bubble()))
-                    .border_1()
-                    .border_color(gpui::rgb(theme::user_bubble_border()))
-                    .text_color(gpui::rgb(theme::text_primary()))
-                    .when(has_attachments, |bubble| {
-                        bubble.child(div().flex().flex_wrap().gap_2().mb_1().children(
-                            derived.attachments.iter().map(|attachment| {
-                                let id = attachment.id.as_str();
-                                let unavailable = attachment.unavailable
-                                    || transcript.attachment_failures.contains(id);
-                                match attachment_images.get(id) {
-                                    // The picture itself, scaled to fit; click
-                                    // opens it full size. gpui keeps the aspect
-                                    // ratio from the decoded size.
-                                    Some(image) => {
-                                        let click_image = Arc::clone(image);
-                                        let chat = chat.clone();
-                                        div().child(
-                                            div()
-                                                .id(gpui::SharedString::from(format!(
-                                                    "attachment-{id}"
-                                                )))
-                                                .hover(|style| style.cursor_pointer())
-                                                .on_click(
-                                                    move |_event, _window, cx: &mut gpui::App| {
-                                                        chat.update(cx, |chat, cx| {
-                                                            chat.open_lightbox(
-                                                                Arc::clone(&click_image),
-                                                                cx,
-                                                            );
-                                                        })
-                                                        .ok();
-                                                    },
-                                                )
-                                                .child(
-                                                    gpui::img(gpui::ImageSource::Image(
-                                                        Arc::clone(image),
-                                                    ))
-                                                    .max_w(px(320.))
-                                                    .max_h(px(240.))
-                                                    .rounded(theme::RADIUS_SM)
-                                                    .overflow_hidden()
-                                                    .object_fit(gpui::ObjectFit::Contain)
-                                                    .border_1()
-                                                    .border_color(gpui::rgb(theme::border())),
-                                                ),
-                                        )
-                                    }
-                                    // Name chip until the bytes arrive (or if they
-                                    // never do, such as a deleted attachment).
-                                    None => div()
-                                        .flex()
-                                        .items_center()
-                                        .gap_1()
-                                        .px_2()
-                                        .py_0p5()
-                                        .rounded(theme::RADIUS_SM)
-                                        .bg(gpui::rgb(theme::bg_elevated()))
-                                        .text_xs()
-                                        .text_color(gpui::rgb(theme::text_secondary()))
-                                        .child(icon("paperclip", px(12.), theme::text_secondary()))
-                                        .child(
-                                            div()
-                                                .flex()
-                                                .flex_col()
-                                                .gap_0p5()
-                                                .child(attachment.name.clone())
-                                                .child(
-                                                    div()
-                                                        .text_color(gpui::rgb(theme::text_muted()))
-                                                        .child(if unavailable {
-                                                            tr("chat-image-unavailable")
-                                                        } else {
-                                                            attachment.detail.clone()
-                                                        }),
-                                                ),
-                                        ),
-                                }
-                            }),
-                        ))
-                    })
-                    .when(!text.trim().is_empty(), |bubble| {
-                        bubble.child(rich_text::plain_paragraph(
-                            transcript.derived.get(item, revision).text.clone(),
+            .when(has_attachments, |message| {
+                message.child(
+                    attachment_row().children(
+                        derived
+                            .attachments
+                            .iter()
+                            .map(|attachment| render_attachment(attachment, transcript)),
+                    ),
+                )
+            })
+            .when(!text.trim().is_empty(), |message| {
+                message.child(
+                    typography::chat_reading(div())
+                        .debug_selector({
+                            let id = item.id.clone();
+                            move || format!("message-bubble-{id}")
+                        })
+                        .max_w(gpui::relative(0.75))
+                        .px_4()
+                        .py_2()
+                        .rounded(theme::RADIUS_MD)
+                        .bg(gpui::rgb(theme::bg_user_bubble()))
+                        .border_1()
+                        .border_color(gpui::rgb(theme::user_bubble_border()))
+                        .text_color(gpui::rgb(theme::text_primary()))
+                        .child(rich_text::plain_paragraph(
+                            display.clone(),
                             ordinal,
                             &user_ctx,
-                        ))
-                    }),
-            )
+                        )),
+                )
+            })
             .child(
                 div()
                     .flex()
@@ -3523,7 +3605,7 @@ mod motion_tests {
     }
 
     #[gpui::test]
-    fn a_turns_steps_stay_folded_until_its_line_is_clicked(cx: &mut TestAppContext) {
+    fn a_chunks_steps_stay_folded_until_its_header_is_clicked(cx: &mut TestAppContext) {
         let _clock = Clock::start();
         let (chat, cx) = pane(cx, 30);
         // A finished turn after the history: two steps, then the reply.
@@ -3547,6 +3629,13 @@ mod motion_tests {
 
         cx.simulate_click(line.center(), gpui::Modifiers::default());
         redraw(&chat, cx);
+        assert!(
+            cx.debug_bounds("tool-card").is_none(),
+            "the turn line is informational"
+        );
+        let header = bounds(cx, "activity-chunk-call");
+        cx.simulate_click(header.center(), gpui::Modifiers::default());
+        redraw(&chat, cx);
         let call = bounds(cx, "tool-card");
         let thought = bounds(cx, "thinking-title");
         assert_eq!(
@@ -3559,7 +3648,8 @@ mod motion_tests {
             "the steps open under the line, in order: {line:?}, {call:?}, {thought:?}"
         );
 
-        cx.simulate_click(line.center(), gpui::Modifiers::default());
+        let header = bounds(cx, "activity-chunk-call");
+        cx.simulate_click(header.center(), gpui::Modifiers::default());
         redraw(&chat, cx);
         assert!(
             cx.debug_bounds("tool-card").is_none(),
@@ -3588,7 +3678,7 @@ mod motion_tests {
     }
 
     #[gpui::test]
-    fn the_line_keeps_its_place_when_the_turns_first_step_arrives(cx: &mut TestAppContext) {
+    fn the_line_hands_off_without_a_jump_as_the_first_chunk_enters(cx: &mut TestAppContext) {
         let clock = Clock::start();
         let (chat, cx) = pane(cx, 30);
         // A run is going and nothing has come back yet: the line waits
@@ -3613,17 +3703,23 @@ mod motion_tests {
         });
         let tops =
             tops_through_entrance(&chat, &clock, start, &["turn-line", "timeline-row-h29"], cx);
-        assert!(
-            tops[0].iter().all(|top| *top == waiting.origin.y),
-            "the line stays where it waited ({:?}) once a row carries it: {:?}",
-            waiting.origin.y,
-            tops[0]
+        assert_eq!(tops[0][0], waiting.origin.y, "the line hands off in place");
+        assert_eq!(
+            tops[1][0], older.origin.y,
+            "older rows do not jump on handoff"
         );
+        assert_glides(&tops[0], "the line above the arriving chunk header");
+        assert_glides(&tops[1], "the history above the arriving chunk header");
+        for (line, history) in tops[0].iter().zip(&tops[1]) {
+            assert_eq!(
+                *line - *history,
+                waiting.origin.y - older.origin.y,
+                "the header's entrance moves the line and history together"
+            );
+        }
         assert!(
-            tops[1].iter().all(|top| *top == older.origin.y),
-            "older rows hold still: {:?} then {:?}",
-            older.origin.y,
-            tops[1]
+            bounds(cx, "activity-chunk-call").top() >= bounds(cx, "turn-line").bottom(),
+            "the inline disclosure settles below the informational line"
         );
     }
 

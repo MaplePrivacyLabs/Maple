@@ -28,7 +28,6 @@ INERT_FILES = frozenset(
         "README.md",
         "repo.meta.json",
         "setup-hooks.sh",
-        "apps/maple-research/zapstore.yaml",
     }
 )
 INERT_PREFIXES = (".agents/", ".githooks/", "docs/", "apps/maple-research/docs/", "apps/maple-research/.githooks/", "services/updates/", "services/download-tracking/", "services/opensecret/", "apps/maple-agent/", "apps/maple-auth/")

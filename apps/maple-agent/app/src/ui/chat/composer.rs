@@ -666,9 +666,13 @@ impl ChatScreen {
                 let pick = model.to_string();
                 let label = self.model_label(model).to_string();
                 let popular = self.model_sections.is_popular(model);
+                let new = self.model_sections.is_new(model);
                 // The badge is drawn content; the row's name carries it for
                 // assistive technology.
-                let name: SharedString = if popular {
+                let name: SharedString = if new {
+                    self.messages
+                        .get("chat-model-new-row", [("model", label.clone().into())])
+                } else if popular {
                     self.messages
                         .get("chat-model-popular-row", [("model", label.clone().into())])
                 } else {
@@ -682,7 +686,12 @@ impl ChatScreen {
                     },
                 )
                 .current(selected == Some(model));
-                if popular {
+                if popular || new {
+                    let badge = if new {
+                        tr("chat-model-new")
+                    } else {
+                        tr("chat-model-popular")
+                    };
                     row.content(
                         div()
                             .min_w_0()
@@ -690,7 +699,7 @@ impl ChatScreen {
                             .items_center()
                             .gap_2()
                             .child(div().min_w_0().truncate().child(label))
-                            .child(popular_badge()),
+                            .child(model_badge(badge)),
                     )
                 } else {
                     row
@@ -2016,9 +2025,9 @@ fn chip_frame(
         .children(leading.map(|name| icon(name, px(16.), color)))
 }
 
-/// The Popular badge on a model row: coral on dark, grey on light (see
+/// A catalog badge on a model row: coral on dark, grey on light (see
 /// `badge_fill`), held to 4.5:1 by the contrast test.
-fn popular_badge() -> Div {
+fn model_badge(label: SharedString) -> Div {
     div()
         .flex_none()
         .px_1p5()
@@ -2028,11 +2037,11 @@ fn popular_badge() -> Div {
         .text_xs()
         .font_weight(gpui::FontWeight::SEMIBOLD)
         .text_color(gpui::rgb(theme::badge_text()))
-        .child(tr("chat-model-popular"))
+        .child(label)
 }
 
 /// How the catalog presents the models: the panel's sections in display
-/// order, each model's section, and the models it marks Popular. The server
+/// order, each model's section, and its New/Popular model badges. The server
 /// owns all three, so a model deployed without an app release lists where
 /// its release put it.
 #[derive(Clone, Debug, Default)]
@@ -2040,10 +2049,13 @@ pub(super) struct ModelSections {
     groups: Vec<maple_sdk::CatalogGroup>,
     group_of: HashMap<String, String>,
     popular: HashSet<String>,
+    new: HashSet<String>,
 }
 
 /// The badge string the catalog marks a popular model with.
 const POPULAR_BADGE: &str = "Popular";
+/// The badge string the catalog marks a newly launched model with.
+const NEW_BADGE: &str = "New";
 
 impl ModelSections {
     pub(super) fn from_catalog(catalog: &maple_sdk::ModelCatalogResponse) -> Self {
@@ -2053,6 +2065,12 @@ impl ModelSections {
                 .data
                 .iter()
                 .filter_map(|model| Some((model.id.clone(), model.group.clone()?)))
+                .collect(),
+            new: catalog
+                .data
+                .iter()
+                .filter(|model| model.badges.iter().any(|badge| badge == NEW_BADGE))
+                .map(|model| model.id.clone())
                 .collect(),
             popular: catalog
                 .data
@@ -2065,6 +2083,10 @@ impl ModelSections {
 
     pub(super) fn is_popular(&self, model: &str) -> bool {
         self.popular.contains(model)
+    }
+
+    pub(super) fn is_new(&self, model: &str) -> bool {
+        self.new.contains(model)
     }
 
     /// `models` in their sections: the catalog's groups in its order, each
@@ -2455,6 +2477,71 @@ mod resize_tests {
         frame_at(typed + motion::PANEL.settle * 5, cx);
         assert_eq!(newest(cx), last, "settled");
         assert_eq!(cx.update(|window, app| window.simulate_next_frame(app)), 0);
+        motion::set_test_now(None);
+    }
+
+    /// The same send while the waiting dots already show under the thread
+    /// (a second message before the first reply): the slot is on screen at
+    /// rest, so it takes the height the composer gives up on that frame and
+    /// opens the rest over the following frames. The newest row never
+    /// drops, and the slot does not pop to its full height in one frame.
+    #[gpui::test]
+    fn a_send_while_the_dots_show_neither_drops_nor_pops(cx: &mut TestAppContext) {
+        let start = Instant::now();
+        motion::set_test_now(Some(start));
+        cx.update(|cx| cx.set_reduce_motion(false));
+        let (chat, cx) = chat_window(cx, 40);
+        let text = "one\ntwo\nthree\nfour\nfive";
+        chat.update(cx, |chat, cx| {
+            chat.active_runs.insert("s1".into(), "run-1".into());
+            chat.awaiting_first_token = true;
+            let composer = chat.composer.clone().expect("composer");
+            composer.update(cx, |input, cx| input.set_text(text, cx));
+            cx.notify();
+        });
+        cx.run_until_parked();
+        // Long after the dots appeared: a stale start time must not count.
+        let typed = start + Duration::from_secs(5);
+        frame_at(typed, cx);
+        frame_at(typed, cx);
+        let newest = |cx: &mut VisualTestContext| {
+            cx.debug_bounds("timeline-row-m39")
+                .expect("the newest row is on screen")
+                .bottom()
+        };
+        let before = newest(cx);
+
+        chat.update(cx, |chat, cx| {
+            chat.clear_composer_for_send(cx);
+            let preview = crate::ui::chat::sending::SendPreview::new(Some("s1".into()), text, &[])
+                .capture_timeline(&chat.timeline);
+            chat.sending_previews.insert("send-2".into(), preview);
+            cx.notify();
+        });
+        cx.run_until_parked();
+        let first = newest(cx);
+        assert!(
+            first <= before + px(1.),
+            "the newest row does not drop on the send frame: {before:?} then {first:?}"
+        );
+        let mut last = first;
+        let mut steps = 0;
+        for step in 1..=12 {
+            frame_at(typed + motion::ENTER.settle * step / 6, cx);
+            let now = newest(cx);
+            assert!(
+                now <= last + px(0.5),
+                "it only ever moves up: {last:?} then {now:?}"
+            );
+            if now < last - px(0.5) {
+                steps += 1;
+            }
+            last = now;
+        }
+        assert!(
+            steps >= 3,
+            "the slot opens over several frames, not in one: {steps} moves from {first:?} to {last:?}"
+        );
         motion::set_test_now(None);
     }
 

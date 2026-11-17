@@ -1303,7 +1303,7 @@ mod tests {
     #[test]
     fn test_apply_responses_model_defaults_preserves_kimi_reasoning_history() {
         let mut chat_request = json!({
-            "model": "kimi-k3",
+            "model": "kimi-k3-1-pro",
             "chat_template_kwargs": {
                 "foo": "bar"
             }
@@ -1311,8 +1311,8 @@ mod tests {
 
         apply_responses_model_defaults(
             &mut chat_request,
-            crate::model_config::model_config("kimi-k3").responses,
-            "kimi-k3",
+            crate::model_config::model_config("kimi-k3-1-pro").responses,
+            "kimi-k3-1-pro",
             EffectiveReasoningEffort::Unchanged,
         );
 
@@ -1536,7 +1536,12 @@ mod tests {
     #[test]
     fn compaction_keeps_selected_reasoning_and_native_output_allowance() {
         let messages = [json!({"role":"user","content":"Summarize history"})];
-        for model in ["deepseek-v4-1-flash", "glm-5-3", "kimi-k3", "gpt-oss-120b"] {
+        for model in [
+            "deepseek-v4-1-flash",
+            "glm-5-3",
+            "kimi-k3-1-pro",
+            "gpt-oss-120b",
+        ] {
             for effort in [None, Some("low"), Some("high")] {
                 let mut body = match effort {
                     Some(effort) => responses_request_with_effort(model, effort),
@@ -1628,8 +1633,7 @@ mod tests {
         for (model, effort) in [
             ("glm-5-3", "low"),
             ("glm-5-3-flash", "max"),
-            ("kimi-k3", "high"),
-            ("kimi-k3", "none"),
+            ("kimi-k3-1-pro", "high"),
             ("deepseek-v4-1-flash", "xhigh"),
             ("gpt-oss-120b", "medium"),
         ] {
@@ -1701,7 +1705,7 @@ mod tests {
             ("glm-5-3", "medium", ModelSelection::Explicit, false),
             ("glm-5-3", "none", ModelSelection::Explicit, false),
             ("glm-5-3", "medium", ModelSelection::Alias, true),
-            ("kimi-k3", "none", ModelSelection::Explicit, true),
+            ("kimi-k3-1-pro", "none", ModelSelection::Explicit, false),
             ("gpt-oss-120b", "max", ModelSelection::Explicit, false),
             ("gpt-oss-120b", "max", ModelSelection::Alias, true),
         ] {
@@ -1747,7 +1751,7 @@ mod tests {
         // while Auto changes the selected model or a tool step is rebuilt.
         let admitted = ContextPolicy::legacy();
         let later_flag = ContextPolicy::compaction();
-        for model in ["glm-5-3", "kimi-k3", "deepseek-v4-1-flash"] {
+        for model in ["glm-5-3", "kimi-k3-1-pro", "deepseek-v4-1-flash"] {
             let mut body = responses_request_for_model(model);
             for control in [
                 None,
@@ -1874,7 +1878,7 @@ mod tests {
 
     #[test]
     fn test_model_turn_request_does_not_retain_raw_input_or_metadata() {
-        let mut request = responses_request_for_model("kimi-k3");
+        let mut request = responses_request_for_model("kimi-k3-1-pro");
         request.input = InputMessage::Messages(vec![MessageInput {
             role: "user".to_string(),
             content: MessageContent::Parts(vec![MessageContentPart::InputImage {
@@ -1979,7 +1983,7 @@ mod tests {
 
     #[test]
     fn model_turns_preserve_optional_output_limits_without_an_aggregate_budget() {
-        for model in ["llama3-3-70b", "glm-5-3", "kimi-k3"] {
+        for model in ["llama3-3-70b", "glm-5-3", "kimi-k3-1-pro"] {
             for max_output_tokens in [None, Some(16_000), Some(i32::MAX)] {
                 let mut body = responses_request_for_model(model);
                 body.max_output_tokens = max_output_tokens;
@@ -3034,8 +3038,6 @@ mod tests {
             ("gemma4-31b", false, 1.0, 0.95, Some(64)),
             ("kimi-k3-1-pro", false, 1.0, 0.95, None),
             ("kimi-k3-1-pro", true, 1.0, 0.95, None),
-            ("kimi-k3", false, 1.0, 0.95, None),
-            ("kimi-k3", true, 1.0, 1.0, None),
             ("gpt-oss-120b", true, 1.0, 1.0, None),
             ("llama3-3-70b", false, 0.6, 0.9, None),
         ] {
@@ -3070,6 +3072,12 @@ mod tests {
 
     #[test]
     fn test_resolve_responses_models_enforces_plan_gates() {
+        for plan in [ModelPlan::Free, ModelPlan::Paid] {
+            assert!(matches!(
+                resolve_responses_model("kimi-k3", "tinfoil", plan),
+                Err(ApiError::BadRequest)
+            ));
+        }
         let uncensored = crate::model_config::DEEPSEEK_V4_1_FLASH_UNCENSORED_MODEL_ID;
         assert_eq!(
             resolve_responses_model(uncensored, "tinfoil", ModelPlan::Paid).unwrap(),
@@ -3077,14 +3085,6 @@ mod tests {
         );
         assert!(matches!(
             resolve_responses_model(uncensored, "tinfoil", ModelPlan::Free),
-            Err(ApiError::ModelNotAvailableOnPlan)
-        ));
-        assert_eq!(
-            resolve_responses_model("kimi-k3", "tinfoil", ModelPlan::Paid).unwrap(),
-            "kimi-k3"
-        );
-        assert!(matches!(
-            resolve_responses_model("kimi-k3", "tinfoil", ModelPlan::Free),
             Err(ApiError::ModelNotAvailableOnPlan)
         ));
         assert_eq!(
@@ -3166,7 +3166,7 @@ mod tests {
 
     #[test]
     fn test_build_model_turn_request_preserves_explicit_sampling_values() {
-        let mut body = responses_request_for_model("kimi-k3");
+        let mut body = responses_request_for_model("kimi-k3-1-pro");
         body.temperature = Some(0.5);
         body.top_p = Some(0.75);
 
@@ -3391,7 +3391,7 @@ mod tests {
 
     #[test]
     fn test_build_model_turn_request_applies_reasoning_history_template_kwargs() {
-        let kimi = responses_request_for_model("kimi-k3");
+        let kimi = responses_request_for_model("kimi-k3-1-pro");
         let kimi_request =
             build_model_turn_request(&kimi, &[json!({"role": "user", "content": "hello"})], false);
         assert_eq!(
@@ -3461,7 +3461,7 @@ mod tests {
 
     #[test]
     fn test_build_model_turn_request_includes_tools_when_web_search_is_enabled() {
-        let mut body = responses_request_for_model("kimi-k3");
+        let mut body = responses_request_for_model("kimi-k3-1-pro");
         body.tool_choice = Some("auto".to_string());
         body.tools = Some(json!([{ "type": "web_search" }]));
 

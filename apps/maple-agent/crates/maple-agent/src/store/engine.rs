@@ -16,8 +16,8 @@ use super::{DamageReason, Store, StoreError, StorePaths, StoreResult, StoreState
 
 const _: () = assert!(rusqlite::ffi::SQLITE_VERSION_NUMBER >= 3_051_003);
 
-pub const SQLCIPHER_VERSION: &str = "4.19.0 community";
-pub const SQLITE_VERSION: &str = "3.53.4";
+pub const SQLCIPHER_VERSION: &str = "4.20.0 community";
+pub const SQLITE_VERSION: &str = "3.54.1";
 pub const OPENSSL_VERSION: &str = "4.0.3";
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize)]
@@ -144,7 +144,7 @@ pub(super) fn key_connection(connection: &Connection, key: &LockedKey) -> StoreR
 
 /// Attach an export destination without copying the raw-key representation to
 /// SQLite's ordinary binding heap. The fixed SQL contains no secret. SQLCipher
-/// 4.19 accepts the raw-key representation as a BLOB; its ATTACH implementation
+/// 4.20 accepts the raw-key representation as a BLOB; its ATTACH implementation
 /// reads its bytes without string conversion. Keep finalization inside the
 /// locked-mapping callback, including every error and unwind path.
 pub(super) fn attach_keyed(

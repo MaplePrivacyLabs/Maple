@@ -81,7 +81,7 @@ the shared 15 fps `ticker` clock and pause in background windows.
 | Hover on buttons, rows, menu items | background eases in, `HOVER` | eases back, `HOVER` |
 | Menus, dropdowns, popovers | pointer: fade and 4 px slide away from the trigger, `REVEAL`; keyboard: at once | immediate |
 | Tooltips | fade, `REVEAL`, after the existing delay | immediate |
-| Dialogs and confirmations | scrim fades, card fades and rises, `ENTER` | immediate |
+| Dialogs, confirmations and the image preview | scrim fades, card fades and rises, `ENTER` | immediate |
 | Screen change (Chat ↔ Settings) and Settings sections | new content fades in, `REVEAL` | immediate |
 | Empty state ↔ conversation (first message, opening a task, New Task) | the composer changes place at once | at once |
 | Switching tasks | transcript fades in when its snapshot lands, `REVEAL` | immediate |
@@ -90,8 +90,8 @@ the shared 15 fps `ticker` clock and pause in background windows.
 | A step's state | a running step is dim and inks at once when it finishes; nothing on it loops, the turn's line carries the motion | — |
 | Disclosed details (tool output, thinking) | fade in, `REVEAL` | immediate |
 | Streaming text | grows in place, no animation | — |
-| A turn's line ("Maple is thinking", "Worked for 11s") | fades in under the transcript, `REVEAL`, and keeps its place when the turn's first step takes it into the list; a sheen crosses the mark and the words while Maple works, and the words morph when they change | immediate |
-| A turn's steps, shown from its line | fade in, `REVEAL`; the chevron turns, `TOGGLE` | immediate |
+| A turn's line ("Maple is thinking", "Worked for 11s") | fades in under the transcript, `REVEAL`, and keeps its place when the turn's first step takes it into the list; while Maple works a shine crosses the words and the mark's blocks shrink and grow one at a time along the M's stroke, never both shining; the words morph when they change and the time counts whole seconds | immediate |
+| Activity chunks between visible messages, shown from their inline headers | fade in independently, `REVEAL`; each chevron turns, `TOGGLE` | immediate |
 | Notices, queued messages, cards above the composer | fade and rise, `ENTER` | immediate |
 | Files attached to the draft | fade and 6 px rise, `ENTER` | immediate |
 | Composer and multi-line fields | height eases to the new line count, `resize(distance)` | same |
@@ -102,6 +102,12 @@ the shared 15 fps `ticker` clock and pause in background windows.
 | Disclosure chevrons | rotate 90°, `TOGGLE` | same, reversed |
 | Sidebar collapse | width eases, `PANEL` | same, reversed |
 | Task status in the sidebar, project folders | indicators and folder icons cross-fade, `TOGGLE` | same |
+
+The turn's line stays informational and keeps one clock for the whole turn.
+Each activity chunk has its own disclosure; folding one leaves the other
+chunks and the assistant's explanations alone. Tool details keep their own
+disclosure state. Chunk headers use the same hover and chevron motion as
+other controls; they do not add another looping indicator.
 
 Loading spinners for work that usually finishes quickly (opening a task)
 appear only after 300 ms, so fast loads never flash a spinner.
@@ -136,7 +142,9 @@ appear only after 300 ms, so fast loads never flash a spinner.
   id; a new id replays them. `swap_in(element, id, key)` fades content in
   whenever `key` changes but draws its first appearance at once, for
   content that replaces other content in one place (the window's screen, a
-  Settings section).
+  Settings section). At the start of the fade only what is behind the
+  content shows, so its parent must paint an opaque background; the
+  window's own backdrop is black.
 - Fading an ancestor of a cached view (`Entity::cached`, the sidebar) is
   safe: gpui paints a cached view afresh when the opacity it inherits
   changes. A cached view under a fade therefore re-renders on every frame
@@ -159,6 +167,14 @@ appear only after 300 ms, so fast loads never flash a spinner.
   the row under (`timeline_view_key`), which for a real host's rows is not
   the id the event names; test hand-offs with rows that carry a live or
   stored identity.
+- The message being sent is drawn with the sent message's own pieces
+  (`attachment_row`, `attachment_thumbnail`, `attachment_chip` and the
+  same bubble), so the row that takes over changes nothing inside the
+  message: pictures stay above the text at the same size, and a message
+  of pictures only has no bubble before or after. The row shows the
+  draft's picture until the stored one loads, so a thumbnail never gives
+  way to a file name. Anything new a sent message shows must be drawn the
+  same way in the preview.
 - Every animated frame re-renders the window. Keep animations short, request
   frames only while something moves, and never animate inside cached views
   without an element id that is stable across frames.

@@ -85,10 +85,29 @@ impl PublicProviderError {
             Detail::InvalidParameter => "upstream_invalid_parameter",
             Detail::UnsupportedParameter => "upstream_unsupported_parameter",
             Detail::InvalidMessages => "upstream_invalid_messages",
-            Detail::ContextLimit => "upstream_context_limit",
+            // OpenAI's own code for this rejection. Clients match it, or the
+            // wording below, to compact the conversation and retry.
+            Detail::ContextLimit => "context_length_exceeded",
             Detail::PayloadTooLarge => "upstream_payload_too_large",
             Detail::ProviderError => "upstream_provider_error",
             Detail::Timeout => "upstream_timeout",
+        }
+    }
+
+    /// OpenAI's `type` for the error object, before and after streaming starts.
+    pub(crate) fn error_type(self) -> &'static str {
+        if self.status.is_client_error() {
+            "invalid_request_error"
+        } else {
+            "server_error"
+        }
+    }
+
+    #[cfg(test)]
+    pub(crate) fn context_limit_for_test() -> Self {
+        Self {
+            status: StatusCode::BAD_REQUEST,
+            detail: Detail::ContextLimit,
         }
     }
 
@@ -98,7 +117,7 @@ impl PublicProviderError {
             Detail::InvalidParameter => "Upstream provider rejected a parameter value. Check the parameters supported by this model.",
             Detail::UnsupportedParameter => "Upstream provider does not support a request parameter. Check the parameters supported by this model.",
             Detail::InvalidMessages => "Upstream provider rejected the message structure. Check the message roles and ordering supported by this model.",
-            Detail::ContextLimit => "Upstream provider rejected the context or token limit. Reduce the input or requested output tokens.",
+            Detail::ContextLimit => "Upstream provider rejected the request because it exceeds the context window. Reduce the input or requested output tokens.",
             Detail::PayloadTooLarge => "Upstream provider rejected the request size. Reduce the request payload.",
             Detail::ProviderError => "Upstream provider could not complete the request.",
             Detail::Timeout => "Upstream provider timed out while processing the request.",
@@ -132,6 +151,16 @@ mod tests {
             );
             assert!(PublicProviderError::from_failure(&failure).is_none());
         }
+    }
+
+    #[test]
+    fn context_limit_is_recognizable_to_openai_clients() {
+        let error = PublicProviderError::context_limit_for_test();
+        assert_eq!(error.status(), StatusCode::BAD_REQUEST);
+        assert_eq!(error.code(), "context_length_exceeded");
+        assert_eq!(error.error_type(), "invalid_request_error");
+        // Clients that only see the message match this phrase.
+        assert!(error.message().contains("exceeds the context window"));
     }
 
     #[test]

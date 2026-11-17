@@ -7,6 +7,7 @@ import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { useSettingsNavigationLock } from "@/contexts/SettingsNavigationLockContext";
 import { SettingsPage, SettingsSection } from "./SettingsPage";
+import { RecoverySettings } from "./RecoverySettings";
 
 export function SecuritySettings() {
   const os = useOpenSecret();
@@ -16,19 +17,22 @@ export function SecuritySettings() {
   const [isLoading, setIsLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [success, setSuccess] = useState(false);
+  const [recoveryLocked, setRecoveryLocked] = useState(false);
+  const navigationLocked = isLoading || recoveryLocked;
 
   useBlocker({
-    shouldBlockFn: () => isLoading,
-    disabled: !isLoading,
-    enableBeforeUnload: isLoading
+    shouldBlockFn: () => navigationLocked,
+    disabled: !navigationLocked,
+    enableBeforeUnload: navigationLocked
   });
-  useSettingsNavigationLock(isLoading);
+  useSettingsNavigationLock(navigationLocked);
 
   const loginMethod = os.auth.user?.user.login_method?.toLowerCase();
   const canChangePassword = loginMethod === "email" || loginMethod === "guest";
 
   const handleSubmit = async (event: React.FormEvent) => {
     event.preventDefault();
+    if (recoveryLocked) return;
     setError(null);
     setSuccess(false);
 
@@ -122,7 +126,7 @@ export function SecuritySettings() {
               </div>
             </div>
             <div className="flex justify-end">
-              <Button type="submit" disabled={isLoading || success}>
+              <Button type="submit" disabled={isLoading || success || recoveryLocked}>
                 {isLoading ? "Changing password..." : "Change password"}
               </Button>
             </div>
@@ -141,6 +145,15 @@ export function SecuritySettings() {
           </div>
         )}
       </SettingsSection>
+      {loginMethod === "email" && os.auth.user?.user.id && (
+        <RecoverySettings
+          key={os.auth.user.user.id}
+          userId={os.auth.user.user.id}
+          disabled={isLoading}
+          api={os}
+          onLockChange={setRecoveryLocked}
+        />
+      )}
     </SettingsPage>
   );
 }

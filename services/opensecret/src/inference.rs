@@ -359,9 +359,9 @@ mod tests {
     fn route() -> RouteIdentity {
         RouteIdentity::new(
             ProviderId::Tinfoil,
-            "kimi-k3",
-            "kimi-k3",
-            "kimi-k3",
+            "kimi-k3-1-pro",
+            "kimi-k3-1-pro",
+            "kimi-k3-1-pro",
             RouteSelectionSource::StaticSplit,
             None,
         )
@@ -388,8 +388,8 @@ mod tests {
     fn explicit_intent_remains_explicit() {
         let intent = InferenceIntent::new(
             Uuid::nil(),
-            "kimi-k3",
-            "kimi-k3",
+            "kimi-k3-1-pro",
+            "kimi-k3-1-pro",
             ModelPlan::Paid,
             InferenceSurface::ChatCompletions,
             WorkloadClass::Interactive,

@@ -1,11 +1,9 @@
-//! The line a turn's steps fold under.
+//! A turn's status line and independently disclosed activity chunks.
 //!
-//! A turn is what Maple does between two messages from the user. Its
-//! thinking rows and tool calls are its steps. The first step carries the
-//! turn's line: the Maple mark, what Maple is doing, and for how long. The
-//! steps stay folded under the line until it is clicked. Before a turn has
-//! a step, the same line waits in the slot under the transcript.
+//! A turn runs between user messages. Visible messages and notices split
+//! its steps into chunks, without splitting its clock or animated status.
 
+use std::collections::HashMap;
 use std::time::{Duration, Instant};
 
 use gpui::{Context, Div, SharedString, div, prelude::*, px};
@@ -19,36 +17,100 @@ use super::transcript::{
 use crate::ui::i18n::{MessageCache, tr};
 use crate::ui::morph_text::morph_text;
 use crate::ui::motion;
+use crate::ui::motion::HoverBg as _;
 use crate::ui::theme;
+use crate::ui::{icons::icon, widgets};
 
 /// Gap between two repaints of a running turn's time where loops hold
-/// still: the seconds stay true without the tenths.
+/// still. The time counts whole seconds, so one repaint a second is enough.
 const RUN_TICK: Duration = Duration::from_secs(1);
 
-/// One pass of the sheen across the mark, and of the shine across the
-/// line's words. Different lengths, so the two drift instead of marching.
-const MARK_CYCLE: Duration = Duration::from_millis(1600);
+/// One pass of the pulse along the mark's stroke, and of the shine across
+/// the line's words. Only the words shine; the mark moves instead.
+const MARK_CYCLE: Duration = Duration::from_millis(2000);
 const SHINE_CYCLE: Duration = Duration::from_millis(1900);
 
-/// What a transcript row is to its turn's line.
+/// A transcript row's place in its turn and activity chunk.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(super) enum TurnRow {
-    /// A message, a notice, an error: always shown.
     Plain,
-    /// The turn's first step. The line is drawn above it.
+    /// The first chunk also carries the turn's status line.
     Lead,
-    /// A later step, folded under the lead at this index.
+    Chunk,
     Step(usize),
 }
 
-/// Each loaded row's place in its turn, kept beside the timeline so no
-/// frame regroups it.
+impl TurnRow {
+    pub(super) fn lead(self, index: usize) -> Option<usize> {
+        match self {
+            Self::Plain => None,
+            Self::Lead | Self::Chunk => Some(index),
+            Self::Step(lead) => Some(lead),
+        }
+    }
+}
+
+/// Header data maintained on row changes, never derived during rendering.
+#[derive(Default)]
+pub(super) struct Chunk {
+    end: usize,
+    icons: Vec<(&'static str, usize)>,
+    states: [usize; 4],
+}
+
+impl Chunk {
+    fn add_icon(&mut self, icon: &'static str) {
+        if let Some((_, count)) = self.icons.iter_mut().find(|(name, _)| *name == icon) {
+            *count += 1;
+        } else {
+            self.icons.push((icon, 1));
+        }
+    }
+
+    fn add(&mut self, (icon, state): (&'static str, step::StepState)) {
+        self.add_icon(icon);
+        self.states[state as usize] += 1;
+    }
+
+    fn replace(
+        &mut self,
+        before: (&'static str, step::StepState),
+        after: (&'static str, step::StepState),
+    ) {
+        self.states[before.1 as usize] -= 1;
+        self.states[after.1 as usize] += 1;
+        if before.0 != after.0 {
+            for (name, count) in &mut self.icons {
+                if *name == before.0 {
+                    *count -= 1;
+                }
+            }
+            self.icons.retain(|(_, count)| *count > 0);
+            self.add_icon(after.0);
+        }
+    }
+
+    pub(super) fn count(&self) -> usize {
+        self.states.iter().sum()
+    }
+
+    pub(super) fn state(&self, live: bool) -> Option<step::StepState> {
+        use step::StepState;
+        [StepState::Failed, StepState::Running, StepState::Stopped]
+            .into_iter()
+            .find(|state| {
+                self.states[*state as usize] > 0 && (*state != StepState::Running || live)
+            })
+    }
+}
+
 #[derive(Default)]
 pub(super) struct Turns {
     rows: Vec<TurnRow>,
-    /// The lead of the turn at the end of the loaded rows, once that turn
-    /// has a step.
+    chunks: HashMap<usize, Chunk>,
+    /// First step of the latest user turn, kept stable for its clock.
     tail: Option<usize>,
+    chunk: Option<usize>,
 }
 
 fn starts_turn(item: &AgentTimelineItem) -> bool {
@@ -69,16 +131,44 @@ fn is_step(item: &AgentTimelineItem) -> bool {
     matches!(item.item_type.as_str(), "thinking" | "reasoning")
 }
 
-/// What decides a row's place in its turn: whether it starts one, and
-/// whether it is a step.
-pub(super) fn part(item: &AgentTimelineItem) -> (bool, bool) {
-    (starts_turn(item), is_step(item))
+/// Classification changes can move both turn and chunk boundaries.
+pub(super) fn part(item: &AgentTimelineItem) -> (bool, bool, bool) {
+    let step = is_step(item);
+    (
+        starts_turn(item),
+        step,
+        !step && !is_tool(item) && super::navigation::timeline_item_is_navigable(item),
+    )
+}
+
+pub(super) fn step_info(item: &AgentTimelineItem) -> (&'static str, step::StepState) {
+    if is_tool(item) {
+        if has_tool_input(item, "todos") {
+            return ("check", step::StepState::Done);
+        }
+        return (
+            step::tool_icon(item),
+            step::StepState::of(item.status.as_deref()),
+        );
+    }
+    let state = if item
+        .text
+        .as_deref()
+        .is_none_or(|text| text.trim().is_empty())
+    {
+        step::StepState::Running
+    } else {
+        step::StepState::Done
+    };
+    ("brain", state)
 }
 
 impl Turns {
     /// Group a whole timeline: a snapshot, a history page, a trimmed window.
     pub(super) fn rebuild(&mut self, timeline: &[AgentTimelineItem]) {
         self.rows.clear();
+        self.chunks.clear();
+        self.chunk = None;
         self.tail = None;
         for item in timeline {
             self.push(item);
@@ -87,17 +177,35 @@ impl Turns {
 
     /// One row arrived at the end.
     pub(super) fn push(&mut self, item: &AgentTimelineItem) {
-        let row = if starts_turn(item) {
+        let index = self.rows.len();
+        let (starts_turn, is_step, breaks_chunk) = part(item);
+        let row = if starts_turn {
             self.tail = None;
+            self.chunk = None;
             TurnRow::Plain
-        } else if !is_step(item) {
+        } else if !is_step {
+            // Hidden plans and empty streamed messages do not separate
+            // the activities around them.
+            if breaks_chunk {
+                self.chunk = None;
+            }
             TurnRow::Plain
-        } else if let Some(lead) = self.tail {
+        } else if let Some(lead) = self.chunk {
             TurnRow::Step(lead)
         } else {
-            self.tail = Some(self.rows.len());
-            TurnRow::Lead
+            self.chunk = Some(index);
+            if self.tail.is_none() {
+                self.tail = Some(index);
+                TurnRow::Lead
+            } else {
+                TurnRow::Chunk
+            }
         };
+        if let Some(lead) = row.lead(index) {
+            let chunk = self.chunks.entry(lead).or_default();
+            chunk.end = index + 1;
+            chunk.add(step_info(item));
+        }
         self.rows.push(row);
     }
 
@@ -109,17 +217,26 @@ impl Turns {
         self.tail
     }
 
-    /// One past the last step of the turn led by the row at `lead`.
+    pub(super) fn chunk(&self, lead: usize) -> Option<&Chunk> {
+        self.chunks.get(&lead)
+    }
+
     pub(super) fn end(&self, lead: usize) -> usize {
-        let mut end = lead + 1;
-        for (index, row) in self.rows.iter().enumerate().skip(end) {
-            match row {
-                TurnRow::Step(of) if *of == lead => end = index + 1,
-                TurnRow::Lead => break,
-                _ => {}
-            }
+        self.chunk(lead).map_or(lead + 1, |chunk| chunk.end)
+    }
+
+    pub(super) fn update_step(
+        &mut self,
+        index: usize,
+        before: (&'static str, step::StepState),
+        after: (&'static str, step::StepState),
+    ) -> Option<usize> {
+        if before == after {
+            return None;
         }
-        end
+        let lead = self.row(index).lead(index)?;
+        self.chunks.get_mut(&lead)?.replace(before, after);
+        Some(lead)
     }
 }
 
@@ -218,7 +335,7 @@ pub(super) enum Line {
     Live {
         phase: Phase,
         worked: Option<Duration>,
-        /// Loops hold still: the mark rests and the time drops its tenths.
+        /// Loops hold still: the mark rests.
         still: bool,
     },
     /// The turn is over. `worked` is how long it took, when this window
@@ -245,13 +362,12 @@ fn worked_label(messages: &MessageCache, worked: Option<Duration>) -> SharedStri
     }
 }
 
-/// "6.8s" under a minute, then a clock like the subagent rows.
-pub(super) fn live_elapsed(worked: Duration, tenths: bool) -> String {
+/// "6s" under a minute, then a clock like the subagent rows. A running
+/// time counts whole seconds: tenths are too much movement on a line that
+/// is on screen for the whole turn.
+pub(super) fn live_elapsed(worked: Duration) -> String {
     if worked.as_secs() >= 60 {
         format_subagent_elapsed(worked)
-    } else if tenths {
-        let tenths = worked.as_millis() / 100;
-        format!("{}.{}s", tenths / 10, tenths % 10)
     } else {
         format!("{}s", worked.as_secs())
     }
@@ -259,7 +375,7 @@ pub(super) fn live_elapsed(worked: Duration, tenths: bool) -> String {
 
 #[derive(Clone, Copy)]
 enum Mark {
-    /// A coral sheen crosses the mark.
+    /// The blocks along the M's stroke shrink and grow, one after another.
     Working,
     /// Nothing is running: the mark rests in the running tone.
     Resting,
@@ -268,9 +384,26 @@ enum Mark {
 }
 
 /// The Maple mark on a 5 by 5 grid: a block with the notch of the M cut
-/// from its top edge. `phase` is how far a working mark's sheen is through
-/// its pass.
+/// from its top edge. `phase` is how far a working mark's pulse is along
+/// the stroke.
 fn maple_mark(mark: Mark, phase: f32) -> Div {
+    /// The M as it is drawn, by (row, column): up the left side, through
+    /// the notch, and down the right side.
+    const STROKE: [(usize, usize); 13] = [
+        (4, 0),
+        (3, 0),
+        (2, 0),
+        (1, 0),
+        (0, 0),
+        (1, 1),
+        (2, 2),
+        (1, 3),
+        (0, 4),
+        (1, 4),
+        (2, 4),
+        (3, 4),
+        (4, 4),
+    ];
     const SHAPE: [[bool; 5]; 5] = [
         [true, false, false, false, true],
         [true, true, false, true, true],
@@ -290,23 +423,36 @@ fn maple_mark(mark: Mark, phase: f32) -> Div {
     for (row, cells) in SHAPE.iter().enumerate() {
         let mut line = div().flex().gap(px(1.));
         for (column, on) in cells.iter().enumerate() {
-            let cell = div().size(CELL).rounded(px(0.5));
+            // The box keeps its size so a shrinking block moves nothing.
+            let cell = div().size(CELL).flex().items_center().justify_center();
+            let block = div().rounded(px(0.5));
             line = line.child(if !on {
                 cell
             } else {
                 match mark {
                     Mark::Working => {
-                        // The sheen runs corner to corner, then rests for
-                        // the last fifth of the pass.
-                        let head = -2.2 + (phase / 0.8).min(1.) * 10.8;
-                        let near =
-                            (1. - (column as f32 + row as f32 * 0.6 - head).abs() / 2.).max(0.);
-                        let level = motion::smoothstep(near);
-                        cell.bg(motion::mix(resting, coral, level))
-                            .opacity(0.5 + 0.5 * level)
+                        // The pulse runs the stroke, then rests for the
+                        // last sixth of the pass. Blocks off the stroke
+                        // hold still.
+                        let head = -1. + (phase / 0.84).min(1.) * (STROKE.len() as f32 + 1.);
+                        let level =
+                            STROKE
+                                .iter()
+                                .position(|&at| at == (row, column))
+                                .map_or(0., |index| {
+                                    motion::smoothstep(
+                                        (1. - (index as f32 - head).abs() / 1.5).max(0.),
+                                    )
+                                });
+                        cell.child(
+                            block
+                                .size(CELL * (1. - 0.6 * level))
+                                .bg(resting)
+                                .opacity(0.9),
+                        )
                     }
-                    Mark::Resting => cell.bg(resting).opacity(0.9),
-                    Mark::Waiting => cell.bg(coral),
+                    Mark::Resting => cell.child(block.size(CELL).bg(resting).opacity(0.9)),
+                    Mark::Waiting => cell.child(block.size(CELL).bg(coral)),
                 }
             });
         }
@@ -315,17 +461,9 @@ fn maple_mark(mark: Mark, phase: f32) -> Div {
     grid
 }
 
-/// The line, as tall as the slot under the transcript it first shows in,
-/// so taking its place in the list moves nothing. `fold` names the turn's
-/// lead and says whether its steps show; the slot's line has no steps to
-/// open and passes `None`.
-pub(super) fn render_line(
-    line: Line,
-    fold: Option<(&str, bool)>,
-    chat: &gpui::WeakEntity<ChatScreen>,
-    messages: &MessageCache,
-) -> Div {
-    let key = fold.map_or("slot", |(lead, _)| lead);
+/// The summary keeps the same height and identity when it takes over the
+/// waiting slot. Chunk disclosures do not replace or restart its motion.
+pub(super) fn render_line(line: Line, key: &str, messages: &MessageCache) -> Div {
     let id = |part: &str| SharedString::from(format!("turn-{part}-{key}"));
     let (label, mark, time) = match line {
         Line::Live {
@@ -340,9 +478,7 @@ pub(super) fn render_line(
             };
             // Beside "Waiting for you" the stopped time would read as
             // how long the user has kept Maple waiting.
-            let time = worked
-                .filter(|_| phase != Phase::Waiting)
-                .map(|worked| live_elapsed(worked, !still));
+            let time = worked.filter(|_| phase != Phase::Waiting).map(live_elapsed);
             (phase.label(), mark, time)
         }
         Line::Done { worked } => (worked_label(messages, worked), Mark::Resting, None),
@@ -398,31 +534,100 @@ pub(super) fn render_line(
                 .text_color(gpui::rgb(theme::text_muted()))
                 .child(gpui::text!(time))
         }));
-    let row = div().h(WAITING_ROW_HEIGHT).flex().items_center();
-    let Some((lead, open)) = fold else {
-        return row.child(button.role(gpui::Role::Status));
-    };
-    let lead = lead.to_owned();
-    let chat = chat.clone();
-    row.child(
-        button
-            .role(gpui::Role::DisclosureTriangle)
-            .aria_expanded(open)
-            .hover(|style| {
-                style
-                    .cursor_pointer()
-                    .text_color(gpui::rgb(theme::text_primary()))
-            })
-            .child(motion::chevron(
-                id("chevron"),
-                open,
-                px(14.),
-                theme::text_muted(),
-            ))
-            .on_click(move |_event, _window, cx: &mut gpui::App| {
-                chat.update(cx, |chat, cx| chat.toggle_turn(&lead, cx)).ok();
-            }),
-    )
+    div()
+        .h(WAITING_ROW_HEIGHT)
+        .flex()
+        .items_center()
+        .child(button.role(gpui::Role::Status))
+}
+
+pub(super) fn render_chunk(
+    lead: &str,
+    chunk: &Chunk,
+    open: bool,
+    live: bool,
+    chat: &gpui::WeakEntity<ChatScreen>,
+    messages: &MessageCache,
+) -> Div {
+    let label = messages.get("chat-activity-steps", [("count", chunk.count().into())]);
+    let status = chunk.state(live).map(|state| {
+        let (key, ink) = match state {
+            step::StepState::Failed => ("chat-status-failed", theme::status_error()),
+            step::StepState::Stopped => ("chat-status-stopped", theme::text_muted()),
+            _ => ("chat-status-running", theme::text_muted()),
+        };
+        let id = SharedString::from(format!("activity-status-{lead}"));
+        div()
+            .id(id.clone())
+            .debug_selector(move || id.to_string())
+            .role(gpui::Role::Status)
+            .aria_label(tr(key))
+            .text_xs()
+            .text_color(gpui::rgb(ink))
+            .child(gpui::text!(tr(key)))
+    });
+    let debug = format!("activity-chunk-{lead}");
+    let target = chat.clone();
+    let key = lead.to_owned();
+    div()
+        .flex()
+        .when(!open, |row| row.pb_2())
+        .items_start()
+        .child(
+            div()
+                .id(SharedString::from(format!("activity-toggle-{lead}")))
+                .debug_selector(move || debug.clone())
+                .role(gpui::Role::DisclosureTriangle)
+                .aria_label(label.clone())
+                .aria_expanded(open)
+                .tab_index(0)
+                .on_key_down(ChatScreen::sidebar_button_key_down)
+                .focus_visible(widgets::focus_ring)
+                .min_h(px(32.))
+                .max_w_full()
+                .px_2()
+                .ml(px(-8.))
+                .rounded(theme::RADIUS_SM)
+                .flex()
+                .flex_wrap()
+                .items_center()
+                .gap_2p5()
+                .text_sm()
+                .text_color(gpui::rgb(theme::text_secondary()))
+                .hover_bg(theme::overlay_hover())
+                .hover(|style| {
+                    style
+                        .cursor_pointer()
+                        .text_color(gpui::rgb(theme::text_primary()))
+                })
+                .child(
+                    div()
+                        .w(step::NODE)
+                        .flex()
+                        .justify_center()
+                        .child(motion::chevron(
+                            SharedString::from(format!("activity-chevron-{lead}")),
+                            open,
+                            px(14.),
+                            theme::text_muted(),
+                        )),
+                )
+                .child(gpui::text!(label))
+                .child(
+                    div().flex().gap_1p5().children(
+                        chunk
+                            .icons
+                            .iter()
+                            .map(|(name, _)| icon(name, px(12.), theme::text_muted())),
+                    ),
+                )
+                .children(status)
+                .on_click(move |_, _, cx| {
+                    target
+                        .update(cx, |chat, cx| chat.toggle_chunk(&key, cx))
+                        .ok();
+                }),
+        )
 }
 
 impl ChatScreen {
@@ -437,8 +642,8 @@ impl ChatScreen {
     /// earlier one, and the line waits in the slot instead. A window that
     /// is paged back in history, or still lacks the run's newest rows,
     /// does not hold the turn the run works on at all.
-    fn turn_runs(&self, lead: usize) -> bool {
-        self.turns.tail() == Some(lead)
+    pub(super) fn turn_runs(&self, lead: usize) -> bool {
+        self.turns.tail().is_some_and(|turn| lead >= turn)
             && self.is_run_active()
             && !self.awaiting_first_token
             && !self.pages.after
@@ -483,25 +688,24 @@ impl ChatScreen {
         }
     }
 
-    /// Whether the steps of the turn led by the row at `lead` show. "Show
-    /// tool call details" opens every turn; a click on the line inverts
-    /// that for its turn.
-    pub(super) fn turn_open(&self, lead: usize) -> bool {
+    /// The existing details preference is the default; a click changes
+    /// only this chunk, including while more steps arrive in it.
+    pub(super) fn chunk_open(&self, lead: usize) -> bool {
         self.timeline
             .get(lead)
-            .is_some_and(|item| self.tool_details != self.toggled_turns.contains(&item.id))
+            .is_some_and(|item| self.tool_details != self.toggled_chunks.contains(&item.id))
     }
 
-    /// Show or fold a turn's steps and re-measure their rows.
-    pub(super) fn toggle_turn(&mut self, lead_id: &str, cx: &mut Context<Self>) {
+    /// Show or fold one chunk and re-measure only its rows.
+    pub(super) fn toggle_chunk(&mut self, lead_id: &str, cx: &mut Context<Self>) {
         let Some(&(lead, _)) = self.timeline_index.get(lead_id) else {
             return;
         };
-        if !self.toggled_turns.remove(lead_id) {
-            self.toggled_turns.insert(lead_id.to_owned());
+        if !self.toggled_chunks.remove(lead_id) {
+            self.toggled_chunks.insert(lead_id.to_owned());
         }
-        let open = self.turn_open(lead);
-        self.row_motion.disclose_turn(lead_id, open, motion::now());
+        let open = self.chunk_open(lead);
+        self.row_motion.disclose_chunk(lead_id, open, motion::now());
         if !open {
             self.keep_application_selection_shown(lead);
         } else if self.list_state.is_following_tail()
@@ -614,8 +818,8 @@ impl ChatScreen {
     /// A live row took its persisted id; what was kept under the old one
     /// follows it.
     pub(super) fn rekey_turn(&mut self, old: &str, new: &str) {
-        if self.toggled_turns.remove(old) {
-            self.toggled_turns.insert(new.to_owned());
+        if self.toggled_chunks.remove(old) {
+            self.toggled_chunks.insert(new.to_owned());
         }
         if let Some(worked) = self.turn_worked.remove(old) {
             self.turn_worked.insert(new.to_owned(), worked);
@@ -756,11 +960,14 @@ mod tests {
     }
 
     #[test]
-    fn a_turn_folds_its_later_steps_under_its_first() {
+    fn messages_split_chunks_without_splitting_the_turn() {
         let timeline = [
             item("message", Some("user")),
             item("thinking", None),
-            item("message", Some("assistant")),
+            AgentTimelineItem {
+                text: Some("Checking the remaining files.".into()),
+                ..item("message", Some("assistant"))
+            },
             item("tool", None),
             item("error", None),
             item("message", Some("user")),
@@ -776,15 +983,15 @@ mod tests {
                 TurnRow::Plain,
                 TurnRow::Lead,
                 TurnRow::Plain,
-                TurnRow::Step(1),
+                TurnRow::Chunk,
                 TurnRow::Plain,
                 TurnRow::Plain,
                 TurnRow::Plain,
                 TurnRow::Lead,
             ]
         );
-        // The first turn ends at its last step, not at the error after it.
-        assert_eq!(turns.end(1), 4);
+        assert_eq!(turns.end(1), 2);
+        assert_eq!(turns.end(3), 4);
         assert_eq!(turns.end(7), 8);
         assert_eq!(turns.tail(), Some(7));
     }
@@ -814,6 +1021,103 @@ mod tests {
     }
 
     #[test]
+    fn hidden_plans_do_not_split_activity_and_status_updates_stay_in_their_chunk() {
+        let done = AgentTimelineItem {
+            status: Some("completed".into()),
+            ..item("tool", None)
+        };
+        let plan = AgentTimelineItem {
+            input: Some(serde_json::json!({"todos": [{"text": "Read", "status": "pending"}]})),
+            ..item("tool", None)
+        };
+        let mut turns = Turns::default();
+        turns.rebuild(&[done.clone(), plan, done.clone()]);
+        assert_eq!(turns.row(2), TurnRow::Step(0));
+        let chunk = turns.chunk(0).unwrap();
+        assert_eq!(chunk.count(), 2);
+        assert_eq!(chunk.state(true), None);
+        let failed = AgentTimelineItem {
+            status: Some("failed".into()),
+            ..done.clone()
+        };
+        assert_eq!(
+            turns.update_step(2, step_info(&done), step_info(&failed)),
+            Some(0)
+        );
+        assert_eq!(
+            turns.chunk(0).unwrap().state(false),
+            Some(step::StepState::Failed)
+        );
+        turns.update_step(2, step_info(&failed), step_info(&done));
+        assert_eq!(turns.chunk(0).unwrap().state(false), None);
+        assert_eq!(turns.chunk(0).unwrap().count(), 2);
+        turns.push(&AgentTimelineItem {
+            input: Some(serde_json::json!({"todos": [{"text": "Read", "status": "completed"}]})),
+            ..item("tool", None)
+        });
+        assert_eq!(turns.chunk(0).unwrap().count(), 3);
+        assert!(
+            turns
+                .chunk(0)
+                .unwrap()
+                .icons
+                .iter()
+                .any(|(icon, _)| *icon == "check")
+        );
+    }
+
+    #[test]
+    fn empty_messages_and_internal_rows_do_not_split_activity_chunks() {
+        let mut timeline = [
+            item("tool", None),
+            AgentTimelineItem {
+                text: Some("\n\n".into()),
+                ..item("message", Some("assistant"))
+            },
+            item("internal", None),
+            item("tool", None),
+        ];
+        let mut turns = Turns::default();
+        turns.rebuild(&timeline);
+        assert_eq!(turns.row(3), TurnRow::Step(0));
+        assert_eq!(turns.chunk(0).unwrap().count(), 2);
+        let before = part(&timeline[1]);
+        timeline[1].text = Some("Now checking the result.".into());
+        assert_ne!(before, part(&timeline[1]));
+        turns.rebuild(&timeline);
+        assert_eq!(turns.row(3), TurnRow::Chunk);
+        assert_eq!(turns.chunk(0).unwrap().count(), 1);
+        assert_eq!(turns.tail(), Some(0));
+    }
+
+    #[test]
+    fn finished_thinking_clears_its_chunk_status_during_a_live_turn() {
+        let thinking = item("thinking", None);
+        let mut turns = Turns::default();
+        turns.push(&thinking);
+        assert_eq!(
+            turns.chunk(0).unwrap().state(true),
+            Some(step::StepState::Running)
+        );
+        let done = AgentTimelineItem {
+            text: Some("The next action is clear.".into()),
+            ..thinking.clone()
+        };
+        turns.update_step(0, step_info(&thinking), step_info(&done));
+        assert_eq!(turns.chunk(0).unwrap().state(true), None);
+        turns.push(&AgentTimelineItem {
+            text: Some("Applying the change.".into()),
+            ..item("message", Some("assistant"))
+        });
+        turns.push(&item("tool", None));
+        assert_eq!(turns.chunk(0).unwrap().state(true), None);
+        assert_eq!(
+            turns.chunk(2).unwrap().state(true),
+            Some(step::StepState::Running)
+        );
+    }
+
+    #[test]
     fn the_clock_stops_while_a_question_waits() {
         let began = Instant::now();
         let at = |seconds| began + Duration::from_secs(seconds);
@@ -828,10 +1132,10 @@ mod tests {
     }
 
     #[test]
-    fn the_time_reads_in_seconds_then_as_a_clock() {
-        assert_eq!(live_elapsed(Duration::from_millis(6_890), true), "6.8s");
-        assert_eq!(live_elapsed(Duration::from_millis(6_890), false), "6s");
-        assert_eq!(live_elapsed(Duration::from_millis(59_999), true), "59.9s");
-        assert_eq!(live_elapsed(Duration::from_secs(64), true), "1:04");
+    fn a_running_time_counts_whole_seconds_then_reads_as_a_clock() {
+        assert_eq!(live_elapsed(Duration::from_millis(890)), "0s");
+        assert_eq!(live_elapsed(Duration::from_millis(6_890)), "6s");
+        assert_eq!(live_elapsed(Duration::from_millis(59_999)), "59s");
+        assert_eq!(live_elapsed(Duration::from_secs(64)), "1:04");
     }
 }

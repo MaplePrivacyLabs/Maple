@@ -70,7 +70,7 @@ jobs:
       SOURCE_SHA: ${{ github.event_name == 'pull_request' && github.event.pull_request.head.sha || github.sha }}
     steps:
       - name: Checkout preview source
-        uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4.3.1
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           ref: ${{ env.SOURCE_SHA }}
           persist-credentials: false
@@ -78,16 +78,16 @@ jobs:
       - name: Checkout workflow tooling
         # Older PR heads may not contain the deployment tooling yet. This is the
         # unprivileged workflow/merge SHA; the publisher still distrusts its output.
-        uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4.3.1
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           ref: ${{ github.sha }}
           path: .pages-tools
           persist-credentials: false
 
       - name: Install Nix
-        uses: DeterminateSystems/determinate-nix-action@96c5ee93a9dddf2830d31e1da6ec719077336c28 # v3.23.3
+        uses: DeterminateSystems/determinate-nix-action@16f94ba7aae399b9f9077c254b6719ec6de7e3e3 # v3.24.2
         with:
-          source-tag: v3.23.3
+          source-tag: v3.24.2
           github-token: ""
           # HTTP/2 stream resets from cache.nixos.org make Nix resume past
           # the end of a NAR (HTTP 416); HTTP/1.1 avoids the resets.
@@ -115,7 +115,7 @@ jobs:
             --output "$artifact_dir/pages-artifact.json"
 
       - name: Upload the preview artifact
-        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: maple-pages-preview-${{ github.run_id }}-${{ github.run_attempt }}
           path: |

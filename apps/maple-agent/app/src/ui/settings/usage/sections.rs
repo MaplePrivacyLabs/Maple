@@ -401,10 +401,7 @@ impl SettingsScreen {
                 "settings-usage-about-credits-team",
                 [("allowance", fmt_count(allowance).into())],
             ),
-            _ => match status
-                .and_then(|status| status.product_name.clone())
-                .filter(|name| !name.trim().is_empty())
-            {
+            _ => match status.and_then(crate::billing::plan_display_name) {
                 Some(plan) => self.messages.get(
                     "settings-usage-about-credits-plan",
                     [

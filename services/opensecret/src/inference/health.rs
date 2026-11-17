@@ -1169,7 +1169,7 @@ mod tests {
     fn classifier_is_exhaustive_and_only_provider_faults_penalize_health() {
         let state = ShadowHealthState::with_policy(test_policy());
         let now = Instant::now();
-        let kimi = route(ProviderId::Tinfoil, "kimi-k3", "kimi-k3");
+        let kimi = route(ProviderId::Tinfoil, "kimi-k3-1-pro", "kimi-k3-1-pro");
 
         let route_failures = [
             AttemptFailureKind::Connect,
@@ -1309,7 +1309,7 @@ mod tests {
         for status in [429, 503, 529] {
             let state = ShadowHealthState::with_policy(test_policy());
             let start = Instant::now();
-            let k3 = route(ProviderId::Tinfoil, "kimi-k3", "kimi-k3");
+            let k3 = route(ProviderId::Tinfoil, "kimi-k3-1-pro", "kimi-k3-1-pro");
             let key = k3.route_key();
 
             state.observe_terminal_at(
@@ -1441,7 +1441,7 @@ mod tests {
     fn route_health_uses_a_window_threshold_and_terminal_success_reset() {
         let state = ShadowHealthState::with_policy(test_policy());
         let start = Instant::now();
-        let k3 = route(ProviderId::Tinfoil, "kimi-k3", "kimi-k3");
+        let k3 = route(ProviderId::Tinfoil, "kimi-k3-1-pro", "kimi-k3-1-pro");
         let key = k3.route_key();
         let fault = || failed(k3.clone(), AttemptFailureKind::StreamTimeout, None, None);
 
@@ -1538,7 +1538,7 @@ mod tests {
     fn route_health_threshold_uses_one_bounded_rolling_window() {
         let state = ShadowHealthState::with_policy(test_policy());
         let start = Instant::now();
-        let k3 = route(ProviderId::Tinfoil, "kimi-k3", "kimi-k3");
+        let k3 = route(ProviderId::Tinfoil, "kimi-k3-1-pro", "kimi-k3-1-pro");
         let key = k3.route_key();
         let fault = || failed(k3.clone(), AttemptFailureKind::StreamTimeout, None, None);
 
@@ -1577,7 +1577,7 @@ mod tests {
     fn recovered_transport_attempts_are_telemetry_only() {
         let state = ShadowHealthState::with_policy(test_policy());
         let now = Instant::now();
-        let k3 = route(ProviderId::Tinfoil, "kimi-k3", "kimi-k3");
+        let k3 = route(ProviderId::Tinfoil, "kimi-k3-1-pro", "kimi-k3-1-pro");
         let key = k3.route_key();
 
         let recovered = state.observe_terminal_at(
@@ -1612,7 +1612,7 @@ mod tests {
     fn half_open_probe_claim_is_atomic_with_one_winner_at_the_boundary() {
         let state = Arc::new(ShadowHealthState::with_policy(test_policy()));
         let start = Instant::now();
-        let k3 = route(ProviderId::Tinfoil, "kimi-k3", "kimi-k3");
+        let k3 = route(ProviderId::Tinfoil, "kimi-k3-1-pro", "kimi-k3-1-pro");
         let key = k3.route_key();
         state.observe_terminal_at(
             &failed(
@@ -2013,7 +2013,7 @@ mod tests {
         drop(composite_lease);
 
         let tinfoil = ShadowHealthState::with_policy(test_policy());
-        let k3 = route(ProviderId::Tinfoil, "kimi-k3", "kimi-k3");
+        let k3 = route(ProviderId::Tinfoil, "kimi-k3-1-pro", "kimi-k3-1-pro");
         open_route_at(&tinfoil, &k3, start);
         tinfoil.observe_terminal_at(
             &failed(
@@ -2131,7 +2131,7 @@ mod tests {
     fn unleased_success_cannot_heal_an_owned_route_gate() {
         let state = ShadowHealthState::with_policy(test_policy());
         let start = Instant::now();
-        let k3 = route(ProviderId::Tinfoil, "kimi-k3", "kimi-k3");
+        let k3 = route(ProviderId::Tinfoil, "kimi-k3-1-pro", "kimi-k3-1-pro");
         let key = k3.route_key();
         open_route_at(&state, &k3, start);
 
@@ -2162,7 +2162,7 @@ mod tests {
     #[test]
     fn failed_probes_reopen_only_the_classified_route_or_capacity_gate() {
         let start = Instant::now();
-        let k3 = route(ProviderId::Tinfoil, "kimi-k3", "kimi-k3");
+        let k3 = route(ProviderId::Tinfoil, "kimi-k3-1-pro", "kimi-k3-1-pro");
         let route_failure = ShadowHealthState::with_policy(test_policy());
         open_route_at(&route_failure, &k3, start);
         let boundary = start + Duration::from_secs(5);
@@ -2273,7 +2273,7 @@ mod tests {
     fn neutral_terminal_and_raii_drop_release_without_healing() {
         let state = ShadowHealthState::with_policy(test_policy());
         let start = Instant::now();
-        let k3 = route(ProviderId::Tinfoil, "kimi-k3", "kimi-k3");
+        let k3 = route(ProviderId::Tinfoil, "kimi-k3-1-pro", "kimi-k3-1-pro");
         let key = k3.route_key();
         state.observe_terminal_at(
             &failed(
@@ -2322,7 +2322,7 @@ mod tests {
     fn stale_or_duplicate_lease_cannot_release_a_newer_probe() {
         let state = ShadowHealthState::with_policy(test_policy());
         let start = Instant::now();
-        let k3 = route(ProviderId::Tinfoil, "kimi-k3", "kimi-k3");
+        let k3 = route(ProviderId::Tinfoil, "kimi-k3-1-pro", "kimi-k3-1-pro");
         let key = k3.route_key();
         state.observe_terminal_at(
             &failed(
@@ -2380,7 +2380,7 @@ mod tests {
     fn unrelated_success_cannot_heal_a_gate_with_a_live_probe() {
         let state = ShadowHealthState::with_policy(test_policy());
         let start = Instant::now();
-        let k3 = route(ProviderId::Tinfoil, "kimi-k3", "kimi-k3");
+        let k3 = route(ProviderId::Tinfoil, "kimi-k3-1-pro", "kimi-k3-1-pro");
         let key = k3.route_key();
         state.observe_terminal_at(
             &failed(
@@ -2460,7 +2460,7 @@ mod tests {
     fn registry_topology_bounds_state_under_concurrent_observation() {
         let state = Arc::new(ShadowHealthState::with_policy(test_policy()));
         let cardinality = state.cardinality();
-        let terminal = completed(route(ProviderId::Tinfoil, "kimi-k3", "kimi-k3"));
+        let terminal = completed(route(ProviderId::Tinfoil, "kimi-k3-1-pro", "kimi-k3-1-pro"));
 
         let threads = (0..32)
             .map(|_| {

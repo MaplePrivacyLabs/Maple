@@ -16,6 +16,8 @@ mod pdf_extractor;
 mod pdf_ocr;
 #[cfg(desktop)]
 mod proxy;
+#[cfg(desktop)]
+mod recovery_code_export;
 #[cfg(target_os = "ios")]
 mod storekit_experiment;
 #[cfg(desktop)]
@@ -234,6 +236,7 @@ pub fn run() {
         .plugin(tauri_plugin_opener::init())
         .plugin(tauri_plugin_os::init())
         .plugin(tauri_plugin_fs::init())
+        .plugin(tauri_plugin_dialog::init())
         .manage(native_oauth::NativeOAuthState::new())
         .manage(native_transport_root::TransportRootState::new())
         .manage(proxy::ProxyState::new())
@@ -251,6 +254,7 @@ pub fn run() {
             proxy::save_proxy_settings,
             proxy::test_proxy_port,
             pdf_extractor::extract_document_content,
+            recovery_code_export::save_recovery_code,
             restart_for_update,
             get_prepared_update,
             install_pending_update,

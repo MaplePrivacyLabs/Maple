@@ -1336,8 +1336,11 @@ native-installed = Update installed
 native-restart = Restart Maple
 native-keep-open = Keep open
 native-retry-quit = Retry Quit
-native-stop-title = Stop this computer's Maple host?
-native-still-open = Maple is still open
+native-stop-title = Still working…
+native-still-open = Still open.
+# The UnknownActivity prompt's headline: the host could not be asked what is
+# live, so the title must not claim any work is running.
+native-quit-unknown-title = Quit Maple?
 native-unknown-activity = The host could not report its activity. Quitting will attempt to stop any attached editors, tasks and remote connections, and wait for the host to release local data.
 native-keep-open-title = Keep Maple open?
 native-no-tray = This desktop has no available tray to reopen Maple. Keep this window open while Maple holds local data unlocked, or Quit Maple to stop its host.
@@ -1366,8 +1369,44 @@ native-stop-unavailable = Maple cannot retry stopping its host. Keep this proces
 native-stop-failed = Maple could not finish stopping its host: { $error }. Keep this window open and retry stopping the host before relaunching Maple.
 # $error is an external diagnostic, preserved verbatim.
 native-restart-failed = Could not restart Maple: { $error }
-# Counts of $tasks running tasks, $editors attached editors, $controllers remote controllers, $jobs background jobs and $requests API requests.
-native-quit-activity = Quitting stops running tasks ({ $tasks }), attached editors ({ $editors }), remote controllers ({ $controllers }) and background jobs ({ $jobs }). It also stops this computer's local API and its active requests ({ $requests }). Maple waits for them to drain before closing.
+# $count running tasks for the Quit prompt.
+native-quit-item-tasks = { $count } running { $count ->
+    [one] task
+   *[other] tasks
+}
+# $count attached editors for the Quit prompt.
+native-quit-item-editors = { $count } attached { $count ->
+    [one] editor
+   *[other] editors
+}
+# $count remote controllers for the Quit prompt.
+native-quit-item-controllers = { $count } remote { $count ->
+    [one] controller
+   *[other] controllers
+}
+# $count background jobs for the Quit prompt.
+native-quit-item-jobs = { $count } background { $count ->
+    [one] job
+   *[other] jobs
+}
+# $count API requests for the Quit prompt.
+native-quit-item-requests = { $count } API { $count ->
+    [one] request
+   *[other] requests
+}
+# The Quit prompt's body: $count is how many kinds of work are live (at most
+# five), $a, $b, $c, $d and $e are those items, and $api is
+# ", including the local API," or empty when the local API is not running.
+native-quit-activity = { $count ->
+    [1] { $a }. Quitting stops the host{ $api } and then closes.
+    [2] { $a } and { $b }. Quitting stops the host{ $api } and then closes.
+    [3] { $a }, { $b }, and { $c }. Quitting stops the host{ $api } and then closes.
+    [4] { $a }, { $b }, { $c }, and { $d }. Quitting stops the host{ $api } and then closes.
+    [5] { $a }, { $b }, { $c }, { $d }, and { $e }. Quitting stops the host{ $api } and then closes.
+   *[0] Quitting stops the host{ $api } and then closes.
+}
+# The $api clause of native-quit-activity.
+native-quit-api-clause = , including the local API,
 # $version is the app version; $status is the localized updater status.
 native-about-details = Version { $version }
     { $status }
@@ -1486,6 +1525,9 @@ chat-model-group-capable = Most capable
 chat-model-group-uncensored = Uncensored
 chat-model-group-fast = Fast & cheap
 chat-model-group-more = More models
+chat-model-new = New
+# $model is the model display name; include its catalog badge in the accessible row name.
+chat-model-new-row = { $model }, New
 chat-model-popular = Popular
 # $model is the model's name. The model row's accessible name when it carries the Popular badge.
 chat-model-popular-row = { $model }, Popular
@@ -1568,6 +1610,12 @@ chat-turn-worked = Worked
 chat-turn-worked-seconds = Worked for { $seconds }s
 # $minutes is a whole number of minutes; $seconds is the rest, under 60.
 chat-turn-worked-minutes = Worked for { $minutes }m { $seconds }s
+# $count is the number of tool and thinking steps in one activity chunk.
+chat-activity-steps =
+    { $count ->
+        [one] { $count } step
+       *[other] { $count } steps
+    }
 chat-settings = Settings
 chat-usage = Usage
 chat-usage-unavailable = Usage unavailable

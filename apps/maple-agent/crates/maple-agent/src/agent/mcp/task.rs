@@ -160,6 +160,7 @@ fn transport_label(server: &AgentMcpServer) -> &'static str {
     match server.transport {
         AgentMcpTransport::Stdio { .. } => "stdio",
         AgentMcpTransport::StreamableHttp { .. } => "streamable_http",
+        AgentMcpTransport::Acp { .. } => "acp",
     }
 }
 

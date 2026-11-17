@@ -86,7 +86,7 @@ async fn perform_maple_settings_migration(
             "https://opensecret.cloud/verify",
             "https://preview.opensecret.cloud",
         ),
-        AppMode::Prod => ("https://trymaple.ai/verify", "https://trymaple.ai"),
+        AppMode::Prod => ("https://maple.ai/verify", "https://trymaple.ai"),
         AppMode::Custom(_) => (
             "https://preview.opensecret.cloud/verify",
             "https://preview.opensecret.cloud",
@@ -94,11 +94,11 @@ async fn perform_maple_settings_migration(
     };
 
     let send_from = match app_state.app_mode {
-        AppMode::Local => "local@email.trymaple.ai",
-        AppMode::Dev => "dev@email.trymaple.ai",
-        AppMode::Preview => "preview@email.trymaple.ai",
-        AppMode::Prod => "hello@email.trymaple.ai",
-        AppMode::Custom(_) => "preview@email.trymaple.ai",
+        AppMode::Local => "local@email.maple.ai",
+        AppMode::Dev => "dev@email.maple.ai",
+        AppMode::Preview => "preview@email.maple.ai",
+        AppMode::Prod => "hello@email.maple.ai",
+        AppMode::Custom(_) => "preview@email.maple.ai",
     }
     .to_string();
 
