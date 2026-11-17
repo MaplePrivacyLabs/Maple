@@ -2465,6 +2465,10 @@ impl Sidebar {
                     .group(task.id.clone())
                     .role(gpui::Role::ListBoxOption)
                     .aria_label(task.title.clone())
+                    .when_some(
+                        self.activity_description(task.activity, &task.metadata),
+                        |row, text| row.aria_description(text),
+                    )
                     .aria_selected(false)
                     .mx_2()
                     .my(px(1.))

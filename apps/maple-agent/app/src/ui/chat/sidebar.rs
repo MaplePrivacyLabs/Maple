@@ -4290,7 +4290,10 @@ impl Sidebar {
             .role(gpui::Role::ListBoxOption)
             .accessibility_id(row.id.to_string())
             .aria_label(row.title.clone())
-            .aria_description(row.metadata.clone())
+            .when_some(
+                self.activity_description(activity, &row.metadata),
+                |row, text| row.aria_description(text),
+            )
             .aria_selected(is_selected)
             .when(application_selected, |row| row.aria_active_descendant())
             .group(row.group.clone())
@@ -4574,14 +4577,25 @@ fn task_title(title: &SharedString, running: bool, selected: bool) -> AnyElement
         .into_any_element()
 }
 
-/// A coral dot while a question waits, an alert once a run failed unseen,
-/// and a green dot once one completed unseen. A running task shows nothing
-/// here: its title shines instead (see [`task_title`]). Every state sits
-/// centered in one box the size of the largest, which a running row keeps
-/// empty, so the title's width stays put as states change, and one state
-/// cross-fades into the next over [`motion::TOGGLE`]. The box is keyed by
-/// `spinner_id`, which names the task, so an indicator that first appears
-/// (a list that loads, a row that scrolls in) shows its state at once.
+/// One breath of the waiting mark's halo: slower than the title's shine,
+/// so a task that needs you reads as calm rather than urgent. The fade runs
+/// on the shared low-rate clock, where a fade reads smooth.
+const NEEDS_YOU_BREATH: Duration = Duration::from_millis(2400);
+
+/// A coral dot in an edged coral halo while a question waits, an alert
+/// once a run failed unseen, and a plain green dot once one completed
+/// unseen. The halo's edge keeps the waiting and finished marks apart by
+/// shape, not by colour alone, on every row fill, and the halo breathes
+/// (see [`NEEDS_YOU_BREATH`]) so a waiting task draws the eye. The coral is
+/// the ink the transcript's line rests in while Maple waits on you. A
+/// running task shows nothing here: its title shines instead (see
+/// [`task_title`]).
+/// Every state sits centered in one box the size of the largest, which a
+/// running row keeps empty, so the title's width stays put as states
+/// change, and one state cross-fades into the next over
+/// [`motion::TOGGLE`]. The box is keyed by `spinner_id`, which names the
+/// task, so an indicator that first appears (a list that loads, a row that
+/// scrolls in) shows its state at once.
 fn activity_indicator(spinner_id: &SharedString, activity: SessionActivity) -> AnyElement {
     let layer = |name: &'static str, state: SessionActivity, glyph: fn() -> AnyElement| {
         motion::animated(
@@ -4604,28 +4618,79 @@ fn activity_indicator(spinner_id: &SharedString, activity: SessionActivity) -> A
             },
         )
     };
-    fn dot(color: u32) -> AnyElement {
-        div()
-            .size(px(8.))
-            .rounded_full()
-            .bg(gpui::rgb(color))
-            .into_any_element()
+    fn needs_you() -> AnyElement {
+        motion::ticker("needs-you-breath", NEEDS_YOU_BREATH, |phase| {
+            let coral = gpui::rgb(theme::accent_ink());
+            // Centred on the resting look, so a paused loop's rest frame
+            // (phase 0, the wave's midpoint) is the halo as it stands still.
+            let fill = motion::pulse(phase, 0., 0.16, 0.40);
+            let edge = motion::pulse(phase, 0., 0.5, 0.9);
+            div()
+                .size(px(13.))
+                .rounded_full()
+                .bg(coral.alpha(fill))
+                .border_1()
+                .border_color(coral.alpha(edge))
+                .flex()
+                .items_center()
+                .justify_center()
+                .child(div().size(px(5.)).rounded_full().bg(coral))
+                .into_any_element()
+        })
+        .into_any_element()
     }
     div()
         .id(spinner_id.clone())
         .relative()
         .size(px(13.))
         .flex_none()
-        .child(layer("needs-you", SessionActivity::NeedsYou, || {
-            dot(theme::accent())
-        }))
+        .child(layer("needs-you", SessionActivity::NeedsYou, needs_you))
         .child(layer("failed", SessionActivity::Failed, || {
             icon("circle-alert", px(13.), theme::status_error()).into_any_element()
         }))
         .child(layer("completed", SessionActivity::CompletedUnread, || {
-            dot(theme::status_success())
+            div()
+                .size(px(8.))
+                .rounded_full()
+                .bg(gpui::rgb(theme::status_success()))
+                .into_any_element()
         }))
         .into_any_element()
+}
+
+impl Sidebar {
+    /// A task row's accessibility description: its status, which the
+    /// indicator and the title's shine only show, ahead of its project
+    /// details. Nothing when there is neither. Rows render on every shine
+    /// frame, so a cache hit borrows the details and allocates nothing.
+    pub(super) fn activity_description(
+        &self,
+        activity: Option<SessionActivity>,
+        details: &SharedString,
+    ) -> Option<SharedString> {
+        let Some(activity) = activity else {
+            return (!details.is_empty()).then(|| details.clone());
+        };
+        let key = match activity {
+            SessionActivity::Running => "chat-task-running",
+            SessionActivity::NeedsYou => "chat-task-needs-you",
+            SessionActivity::Failed => "chat-task-failed",
+            SessionActivity::CompletedUnread => "chat-task-finished-unseen",
+        };
+        if details.is_empty() {
+            return Some(tr(key));
+        }
+        Some(self.messages.computed(key, details, || {
+            let status = tr(key);
+            tr_args(
+                "chat-task-status-details",
+                [
+                    ("status", status.as_ref().into()),
+                    ("details", details.as_ref().into()),
+                ],
+            )
+        }))
+    }
 }
 
 /// The strip over a row's end that holds its hover buttons, with the
