@@ -1,4 +1,4 @@
-"""Behaviour of the OpenSecret EIF build, rootfs, comparison and approval scripts."""
+"""Behavior of the OpenSecret EIF build, rootfs, comparison and approval scripts."""
 
 import base64
 import gzip
