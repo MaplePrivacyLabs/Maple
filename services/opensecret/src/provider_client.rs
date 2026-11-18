@@ -8,12 +8,14 @@ use std::collections::{BTreeMap, HashSet};
 use std::future::Future;
 use std::pin::Pin;
 use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::{Arc, RwLock, RwLockReadGuard, RwLockWriteGuard};
-use std::time::Duration;
+use std::sync::{Arc, RwLock, RwLockReadGuard, RwLockWriteGuard, Weak};
+use std::time::{Duration, SystemTime};
 use tokio::sync::Mutex;
 use tokio::task::JoinHandle;
 
+mod attested;
 mod diagnostics;
+use attested::{AttestationFailureDiagnostic, AttestedClient, ExecuteFailure};
 pub use diagnostics::UpstreamDiagnostic;
 
 type StandardHttpClient = reqwest::Client;
@@ -22,53 +24,12 @@ type TinfoilRefreshTask = JoinHandle<Result<SecureClientSnapshot, ProviderReques
 const TINFOIL_INITIAL_RETRY_DELAY: Duration = Duration::from_secs(1);
 const TINFOIL_MAX_RETRY_DELAY: Duration = Duration::from_secs(30);
 const TINFOIL_DISCOVERY_ATTEMPT_TIMEOUT: Duration = Duration::from_secs(30);
+// Renew a verification well before its evidence stops vouching for it, so an
+// expiry never takes a healthy route out of service. A renewal that fails, or
+// that returns evidence with the same deadline, is tried again at this pace.
+const ATTESTATION_RENEWAL_LEAD: Duration = Duration::from_secs(60 * 60);
+const ATTESTATION_RENEWAL_RETRY: Duration = Duration::from_secs(5 * 60);
 const TINFOIL_UNINITIALIZED_BASE_URL: &str = "https://in-process.tinfoil.invalid";
-
-#[derive(Debug, PartialEq, Eq)]
-struct AttestationFailureDiagnostic {
-    category: &'static str,
-    reason: &'static str,
-}
-
-fn attestation_failure_diagnostic(error: &tinfoil::Error) -> AttestationFailureDiagnostic {
-    // SDK errors can contain arbitrary response text, URLs, and credentials.
-    // Log only finite labels derived from typed variants, never their payloads.
-    let category = if error.is_configuration() {
-        "configuration"
-    } else if error.is_fetch() {
-        "fetch"
-    } else if error.is_attestation() {
-        "attestation"
-    } else if error.is_api() {
-        "api"
-    } else {
-        "other"
-    };
-    let reason = match error {
-        tinfoil::Error::Configuration(_) => "configuration",
-        tinfoil::Error::Api(_) => "api",
-        tinfoil::Error::AttestationFetch(_) => "attestation_fetch",
-        tinfoil::Error::AttestationVerification(_) => "attestation_verification",
-        tinfoil::Error::CertificateMismatch => "certificate_mismatch",
-        tinfoil::Error::SigstoreVerification(_) => "sigstore_verification",
-        tinfoil::Error::GitHub(_) => "github_fetch",
-        tinfoil::Error::MeasurementMismatch { .. } => "measurement_mismatch",
-        tinfoil::Error::Tls(_) => "tls_verification",
-        tinfoil::Error::Ehbp(_) => "ehbp",
-        tinfoil::Error::EhbpKeyMismatch(_) => "ehbp_key_mismatch",
-        tinfoil::Error::Network(_) => "network",
-        tinfoil::Error::UnsupportedFormat(_) => "unsupported_format",
-        tinfoil::Error::Http(error) if error.is_timeout() => "http_timeout",
-        tinfoil::Error::Http(error) if error.is_connect() => "http_connect",
-        tinfoil::Error::Http(error) if error.is_status() => "http_status",
-        tinfoil::Error::Http(_) => "http",
-        tinfoil::Error::Json(_) => "json",
-        tinfoil::Error::Base64(_) => "base64",
-        tinfoil::Error::Io(_) => "io",
-        _ => "unknown",
-    };
-    AttestationFailureDiagnostic { category, reason }
-}
 
 #[derive(Debug, thiserror::Error)]
 pub enum ProviderClientError {
@@ -252,16 +213,30 @@ fn map_reqwest_send_error(error: reqwest::Error) -> ProviderRequestError {
 // already-executed request is safe to replay. An expiry concurrent with a reset
 // does not prove the upstream failed to accept the POST.
 fn classify_post_execute_failure(
-    is_connect: bool,
+    failure: ExecuteFailure,
     verified_state_current: bool,
-    message: String,
 ) -> (ProviderRequestError, bool) {
-    let error = if is_connect {
-        ProviderRequestError::Connect(message)
-    } else {
-        ProviderRequestError::Send(message)
+    let error = match failure {
+        ExecuteFailure::Refused(label) => ProviderRequestError::Build(label.to_owned()),
+        ExecuteFailure::Unsent(message) => ProviderRequestError::Connect(message),
+        ExecuteFailure::Ambiguous(message) => ProviderRequestError::Send(message),
     };
     (error, !verified_state_current)
+}
+
+/// How long to wait before renewing a verification that expires at `expires`.
+/// `None` once it has expired: recovery then belongs to initialization.
+fn renewal_wait(now: SystemTime, expires: SystemTime, already_tried: bool) -> Option<Duration> {
+    let remaining = expires
+        .duration_since(now)
+        .ok()
+        .filter(|left| !left.is_zero())?;
+    let until_lead = remaining.saturating_sub(ATTESTATION_RENEWAL_LEAD);
+    Some(if already_tried {
+        until_lead.max(ATTESTATION_RENEWAL_RETRY)
+    } else {
+        until_lead
+    })
 }
 
 fn current_slot_client<T>(
@@ -274,12 +249,15 @@ fn current_slot_client<T>(
 
 #[derive(Clone)]
 struct SecureClientSnapshot {
-    client: Arc<tinfoil::Client>,
+    client: Arc<AttestedClient>,
+    // The SDK holds no credential. The transport's own key travels with the
+    // verified client it may be sent to.
+    api_key: Arc<str>,
     refresh_attempt: u64,
 }
 
 struct SecureClientSlot {
-    client: Option<Arc<tinfoil::Client>>,
+    client: Option<Arc<AttestedClient>>,
     refresh_attempt: u64,
 }
 
@@ -289,7 +267,7 @@ enum AttestationTarget {
     MapleDirect {
         instance: MapleInstanceId,
         host: &'static str,
-        policy: tinfoil::DirectPolicy,
+        policy: crate::maple_inference::MaplePolicy,
     },
 }
 
@@ -308,18 +286,18 @@ impl AttestationTarget {
         }
     }
 
-    fn client_is_current(&self, client: &tinfoil::Client) -> bool {
-        match self {
-            Self::SharedRouter => true,
-            Self::MapleDirect { .. } => client.secure_client().is_verified(),
-        }
+    // Every verification has a hard freshness deadline. A client past it is
+    // never handed a request: it is replaced by body-free recovery instead of
+    // being left to verify again while a caller's request waits on it.
+    fn client_is_current(&self, client: &AttestedClient) -> bool {
+        client.is_fresh()
     }
 
-    async fn create_client(&self, api_key: String) -> Result<tinfoil::Client, tinfoil::Error> {
+    async fn create_client(&self) -> Result<AttestedClient, AttestationFailureDiagnostic> {
         match self {
-            Self::SharedRouter => tinfoil::Client::new_default_with_api_key(api_key).await,
+            Self::SharedRouter => AttestedClient::connect_router().await,
             Self::MapleDirect { host, policy, .. } => {
-                tinfoil::Client::new_direct(*host, api_key, policy.clone()).await
+                AttestedClient::connect_maple(host, policy).await
             }
         }
     }
@@ -330,13 +308,14 @@ type TestClientFactory = Arc<
     dyn Fn(
             AttestationTarget,
             String,
-        ) -> Pin<Box<dyn Future<Output = Result<tinfoil::Client, tinfoil::Error>> + Send>>
-        + Send
+        ) -> Pin<
+            Box<dyn Future<Output = Result<AttestedClient, AttestationFailureDiagnostic>> + Send>,
+        > + Send
         + Sync,
 >;
 
 struct SecureTinfoilTransport {
-    api_key: String,
+    api_key: Arc<str>,
     target: AttestationTarget,
     #[cfg(test)]
     client_factory: Option<TestClientFactory>,
@@ -452,7 +431,7 @@ fn spawn_tinfoil_refresh_after_connect_failure(
 impl SecureTinfoilTransport {
     fn new(api_key: String, target: AttestationTarget) -> Self {
         Self {
-            api_key,
+            api_key: api_key.into(),
             target,
             client: RwLock::new(SecureClientSlot {
                 client: None,
@@ -465,12 +444,70 @@ impl SecureTinfoilTransport {
         }
     }
 
-    async fn create_client(&self) -> Result<tinfoil::Client, tinfoil::Error> {
+    async fn create_client(&self) -> Result<AttestedClient, AttestationFailureDiagnostic> {
         #[cfg(test)]
         if let Some(factory) = &self.client_factory {
-            return factory(self.target.clone(), self.api_key.clone()).await;
+            return factory(self.target.clone(), self.api_key.to_string()).await;
         }
-        self.target.create_client(self.api_key.clone()).await
+        self.target.create_client().await
+    }
+
+    /// Install a newly verified client and start renewing it. The caller
+    /// holds the slot's write lock.
+    fn install(
+        self: &Arc<Self>,
+        slot: &mut SecureClientSlot,
+        client: AttestedClient,
+    ) -> Arc<AttestedClient> {
+        let client = Arc::new(client);
+        slot.client = Some(Arc::clone(&client));
+        self.spawn_renewal(Arc::clone(&client));
+        client
+    }
+
+    /// Renew `client`'s verification ahead of its deadline for as long as the
+    /// slot holds it. Renewal carries no request, so nothing waits on it; a
+    /// client that still expires is replaced by initialization as before.
+    fn spawn_renewal(self: &Arc<Self>, client: Arc<AttestedClient>) {
+        let transport: Weak<Self> = Arc::downgrade(self);
+        tokio::spawn(async move {
+            let mut tried_for = None;
+            loop {
+                let Some(expires) = client.freshness_expires_at() else {
+                    return;
+                };
+                let Some(wait) =
+                    renewal_wait(SystemTime::now(), expires, tried_for == Some(expires))
+                else {
+                    return;
+                };
+                tokio::time::sleep(wait).await;
+                let Some(transport) = transport.upgrade() else {
+                    return;
+                };
+                let still_installed = transport
+                    .read_client()
+                    .client
+                    .as_ref()
+                    .is_some_and(|current| Arc::ptr_eq(current, &client));
+                if !still_installed {
+                    return;
+                }
+                tried_for = Some(expires);
+                match client.reverify().await {
+                    Ok(()) => tracing::info!(
+                        provider = transport.target.label(),
+                        "Provider attestation renewed"
+                    ),
+                    Err(diagnostic) => tracing::warn!(
+                        provider = transport.target.label(),
+                        error_category = diagnostic.category,
+                        error_reason = diagnostic.reason,
+                        "Provider attestation renewal failed; keeping the current verification"
+                    ),
+                }
+            }
+        });
     }
 
     fn read_client(&self) -> RwLockReadGuard<'_, SecureClientSlot> {
@@ -492,6 +529,7 @@ impl SecureTinfoilTransport {
         })
         .map(|client| SecureClientSnapshot {
             client,
+            api_key: Arc::clone(&self.api_key),
             refresh_attempt: slot.refresh_attempt,
         })
     }
@@ -519,7 +557,7 @@ impl SecureTinfoilTransport {
         });
     }
 
-    async fn initialize_until_ready(&self, claim: &mut InitializationClaim) {
+    async fn initialize_until_ready(self: &Arc<Self>, claim: &mut InitializationClaim) {
         let mut retry_delay = TINFOIL_INITIAL_RETRY_DELAY;
 
         loop {
@@ -540,7 +578,7 @@ impl SecureTinfoilTransport {
             match discovery {
                 Ok(Ok(client)) => {
                     let mut slot = self.write_client();
-                    slot.client = Some(Arc::new(client));
+                    self.install(&mut slot, client);
                     slot.refresh_attempt = slot.refresh_attempt.wrapping_add(1);
                     // Release the claim while the slot is still write-locked.
                     // A request can only observe the new client after another
@@ -552,15 +590,14 @@ impl SecureTinfoilTransport {
                     );
                     return;
                 }
-                Ok(Err(error)) => {
-                    let diagnostic = attestation_failure_diagnostic(&error);
+                Ok(Err(diagnostic)) => {
                     tracing::warn!(
                         retry_delay_seconds = retry_delay.as_secs(),
                         provider = self.target.label(),
                         error_category = diagnostic.category,
                         error_reason = diagnostic.reason,
-                        error_is_attestation = error.is_attestation(),
-                        error_is_fetch = error.is_fetch(),
+                        error_is_attestation = diagnostic.is_attestation(),
+                        error_is_fetch = diagnostic.is_network(),
                         "Provider attestation failed; retrying in background"
                     );
                 }
@@ -628,20 +665,20 @@ impl SecureTinfoilTransport {
         slot.refresh_attempt = slot.refresh_attempt.wrapping_add(1);
         match refreshed {
             Ok(Ok(client)) => {
-                slot.client = Some(Arc::new(client));
+                let client = self.install(&mut slot, client);
                 Ok(SecureClientSnapshot {
-                    client: Arc::clone(slot.client.as_ref().expect("client was just installed")),
+                    client,
+                    api_key: Arc::clone(&self.api_key),
                     refresh_attempt: slot.refresh_attempt,
                 })
             }
-            Ok(Err(error)) => {
-                let diagnostic = attestation_failure_diagnostic(&error);
+            Ok(Err(diagnostic)) => {
                 tracing::warn!(
                     provider = self.target.label(),
                     error_category = diagnostic.category,
                     error_reason = diagnostic.reason,
-                    error_is_attestation = error.is_attestation(),
-                    error_is_fetch = error.is_fetch(),
+                    error_is_attestation = diagnostic.is_attestation(),
+                    error_is_fetch = diagnostic.is_network(),
                     "Provider attestation refresh failed; transitioning unavailable"
                 );
                 slot.client = None;
@@ -876,7 +913,7 @@ impl ProviderClient {
 
         Ok(Self {
             tinfoil: TinfoilTransport::Secure(Arc::new(SecureTinfoilTransport {
-                api_key: "unused-test-key".to_string(),
+                api_key: "unused-test-key".into(),
                 target: AttestationTarget::SharedRouter,
                 client_factory: None,
                 client: RwLock::new(SecureClientSlot {
@@ -986,30 +1023,20 @@ impl ProviderClient {
         let send = async {
             match attempt {
                 TinfoilAttempt::Secure(failed_snapshot) => {
-                    let http_client = failed_snapshot.client.http_client().map_err(|error| {
-                        if !transport
-                            .secure()
-                            .target
-                            .client_is_current(&failed_snapshot.client)
-                        {
-                            transport.start_background_initialization();
-                            transport.secure().target.unavailable()
-                        } else {
-                            ProviderRequestError::Send(error.to_string())
-                        }
-                    })?;
-                    match http_client.execute(first_request).await {
+                    match failed_snapshot.client.execute(first_request).await {
                         Ok(response) => Ok(response),
-                        // reqwest's typed connect class is limited to connector setup
-                        // (DNS/TCP/TLS). In particular, the SDK's rustls pin mismatch
-                        // arrives here before any HTTP request bytes can be written.
-                        // Request/body/timeout failures are deliberately not replayed by this
-                        // certificate-rotation layer.
-                        Err(error) if error.is_connect() => {
+                        // Proven unsent: the connection was never established
+                        // (DNS/TCP/TLS), or the peer no longer held the attested
+                        // key, which the pinned handshake rejects before any HTTP
+                        // request bytes are written. The SDK has by then already
+                        // verified the same enclave again and tried once more.
+                        // Request/body/timeout failures are deliberately not
+                        // replayed by this certificate-rotation layer.
+                        Err(ExecuteFailure::Unsent(message)) => {
                             prior_failures_for_send
                                 .lock()
                                 .expect("provider attempt trace mutex poisoned")
-                                .push(ProviderRequestError::Connect(error.to_string()));
+                                .push(ProviderRequestError::Connect(message));
                             let refreshed = spawn_tinfoil_refresh_after_connect_failure(
                                 Arc::clone(transport.secure()),
                                 failed_snapshot.clone(),
@@ -1026,29 +1053,15 @@ impl ProviderClient {
                             )?;
                             refreshed
                                 .client
-                                .http_client()
-                                .map_err(|error| {
-                                    if !transport
-                                        .secure()
-                                        .target
-                                        .client_is_current(&refreshed.client)
-                                    {
-                                        transport.start_background_initialization();
-                                        transport.secure().target.unavailable()
-                                    } else {
-                                        ProviderRequestError::Send(error.to_string())
-                                    }
-                                })?
                                 .execute(retry_request)
                                 .await
-                                .map_err(|error| {
+                                .map_err(|failure| {
                                     let (error, recover) = classify_post_execute_failure(
-                                        error.is_connect(),
+                                        failure,
                                         transport
                                             .secure()
                                             .target
                                             .client_is_current(&refreshed.client),
-                                        error.to_string(),
                                     );
                                     if recover {
                                         transport.start_background_initialization();
@@ -1056,14 +1069,13 @@ impl ProviderClient {
                                     error
                                 })
                         }
-                        Err(error) => {
+                        Err(failure) => {
                             let (error, recover) = classify_post_execute_failure(
-                                error.is_connect(),
+                                failure,
                                 transport
                                     .secure()
                                     .target
                                     .client_is_current(&failed_snapshot.client),
-                                error.to_string(),
                             );
                             if recover {
                                 transport.start_background_initialization();
@@ -1132,7 +1144,7 @@ impl ProviderClient {
         let (base_url, api_key) = match attempt {
             TinfoilAttempt::Secure(snapshot) => (
                 format!("https://{}", snapshot.client.enclave()),
-                snapshot.client.secure_client().api_key(),
+                &*snapshot.api_key,
             ),
             #[cfg(test)]
             TinfoilAttempt::Plain {
@@ -1358,133 +1370,52 @@ mod tests {
     }
 
     #[test]
-    fn attestation_failure_diagnostics_preserve_typed_causes_without_payloads() {
-        let sensitive = "Bearer diagnostic-secret https://private.invalid/?token=diagnostic-secret\nforged_log=true";
-        let cases = [
-            (
-                tinfoil::Error::Configuration(sensitive.into()),
-                "configuration",
-                "configuration",
-            ),
-            (
-                tinfoil::Error::AttestationFetch(sensitive.into()),
-                "fetch",
-                "attestation_fetch",
-            ),
-            (
-                tinfoil::Error::AttestationVerification(sensitive.into()),
-                "attestation",
-                "attestation_verification",
-            ),
-            (
-                tinfoil::Error::CertificateMismatch,
-                "attestation",
-                "certificate_mismatch",
-            ),
-            (
-                tinfoil::Error::SigstoreVerification(sensitive.into()),
-                "attestation",
-                "sigstore_verification",
-            ),
-            (
-                tinfoil::Error::GitHub(sensitive.into()),
-                "fetch",
-                "github_fetch",
-            ),
-            (
-                tinfoil::Error::MeasurementMismatch {
-                    expected: sensitive.into(),
-                    actual: sensitive.into(),
-                },
-                "attestation",
-                "measurement_mismatch",
-            ),
-            (
-                tinfoil::Error::Tls(sensitive.into()),
-                "attestation",
-                "tls_verification",
-            ),
-            (
-                tinfoil::Error::Ehbp(sensitive.into()),
-                "attestation",
-                "ehbp",
-            ),
-            (
-                tinfoil::Error::EhbpKeyMismatch(sensitive.into()),
-                "attestation",
-                "ehbp_key_mismatch",
-            ),
-            (
-                tinfoil::Error::Network(sensitive.into()),
-                "fetch",
-                "network",
-            ),
-            (
-                tinfoil::Error::UnsupportedFormat(sensitive.into()),
-                "attestation",
-                "unsupported_format",
-            ),
-            (
-                tinfoil::Error::Io(std::io::Error::other(sensitive)),
-                "fetch",
-                "io",
-            ),
-            (
-                tinfoil::Error::Json(serde_json::from_value::<bool>(json!(sensitive)).unwrap_err()),
-                "attestation",
-                "json",
-            ),
-            (
-                tinfoil::Error::Http(
-                    test_http_client()
-                        .unwrap()
-                        .get("https://private.invalid/?token=diagnostic-secret")
-                        .header("invalid\nheader", sensitive)
-                        .build()
-                        .unwrap_err(),
-                ),
-                "fetch",
-                "http",
-            ),
-        ];
-
-        for (error, category, reason) in cases {
-            let diagnostic = attestation_failure_diagnostic(&error);
-            assert_eq!(
-                diagnostic,
-                AttestationFailureDiagnostic { category, reason }
-            );
-            let rendered = format!("{diagnostic:?}");
-            for forbidden in [
-                "Bearer",
-                "diagnostic-secret",
-                "private.invalid",
-                "forged_log",
-            ] {
-                assert!(!rendered.contains(forbidden));
-            }
-        }
-    }
-
-    #[test]
     fn expiry_during_ambiguous_execute_never_makes_the_request_replay_safe() {
         for verified_state_current in [true, false] {
             let (error, recover) = classify_post_execute_failure(
-                false,
+                ExecuteFailure::Ambiguous("synthetic connection reset after POST".to_owned()),
                 verified_state_current,
-                "synthetic connection reset after POST".to_owned(),
             );
             assert!(matches!(error, ProviderRequestError::Send(_)));
             assert_eq!(recover, !verified_state_current);
         }
-        let (error, _) =
-            classify_post_execute_failure(true, false, "synthetic TLS setup failure".to_owned());
+        let (error, _) = classify_post_execute_failure(
+            ExecuteFailure::Unsent("synthetic TLS setup failure".to_owned()),
+            false,
+        );
         assert!(matches!(error, ProviderRequestError::Connect(_)));
+        let (error, recover) =
+            classify_post_execute_failure(ExecuteFailure::Refused("synthetic refusal"), true);
+        assert!(matches!(error, ProviderRequestError::Build(_)));
+        assert!(!recover);
+    }
+
+    #[test]
+    fn renewal_starts_an_hour_before_expiry_and_paces_its_retries() {
+        let now = SystemTime::UNIX_EPOCH + Duration::from_secs(1_000_000);
+        let hours = |count: u64| Duration::from_secs(count * 60 * 60);
+
+        // Far from the deadline: wait until the lead time.
+        assert_eq!(renewal_wait(now, now + hours(48), false), Some(hours(47)));
+        // Inside the lead time: renew at once, the first time.
+        assert_eq!(
+            renewal_wait(now, now + Duration::from_secs(600), false),
+            Some(Duration::ZERO)
+        );
+        // A renewal that did not move the deadline is not repeated in a loop.
+        assert_eq!(
+            renewal_wait(now, now + Duration::from_secs(600), true),
+            Some(ATTESTATION_RENEWAL_RETRY)
+        );
+        assert_eq!(renewal_wait(now, now + hours(48), true), Some(hours(47)));
+        // Expired evidence is not renewed in place; initialization replaces it.
+        assert_eq!(renewal_wait(now, now, false), None);
+        assert_eq!(renewal_wait(now, now - Duration::from_secs(1), true), None);
     }
 
     #[test]
     fn populated_noncurrent_slot_is_unavailable_and_can_claim_recovery() {
-        // The fork separately exercises actual verified-client expiration.
+        // The SDK separately exercises actual verified-client expiration.
         // This checks the backend slot selection used by snapshot(): presence
         // of an Arc alone must not make expired state ready or block recovery.
         let current = Arc::new(AtomicBool::new(true));
@@ -1707,9 +1638,10 @@ mod tests {
                     .unwrap()
                     .push((instance, host, format!("{policy:?}"), key));
                 Box::pin(async {
-                    Err(tinfoil::Error::Configuration(
-                        "injected verifier failure".to_owned(),
-                    ))
+                    Err(AttestationFailureDiagnostic {
+                        category: "configuration",
+                        reason: "injected_verifier_failure",
+                    })
                 })
             }));
             // The same immutable target is used for initialization and refresh.
@@ -1741,7 +1673,7 @@ mod tests {
     #[tokio::test]
     async fn maple_readiness_and_recovery_are_independent_between_guests() {
         let pending = Arc::new(SecureTinfoilTransport {
-            api_key: "dedicated-test-key".to_owned(),
+            api_key: "dedicated-test-key".into(),
             target: direct_target_for(MapleInstanceId::I01),
             client_factory: None,
             client: RwLock::new(SecureClientSlot {
@@ -1754,7 +1686,7 @@ mod tests {
         let ready_transport = TinfoilTransport::Plain {
             client: test_http_client().unwrap(),
             base_url: "http://127.0.0.1:9".to_owned(),
-            api_key: "dedicated-test-key".to_owned(),
+            api_key: "dedicated-test-key".into(),
         };
         let mut client = ProviderClient::for_test("http://127.0.0.1:9".to_owned()).unwrap();
         client.maple = BTreeMap::from([
@@ -1816,7 +1748,7 @@ mod tests {
                 TinfoilTransport::Plain {
                     client: test_http_client().unwrap(),
                     base_url: format!("http://{address}"),
-                    api_key: "dedicated-test-key".to_owned(),
+                    api_key: "dedicated-test-key".into(),
                 },
             );
             let request = || {
@@ -1950,9 +1882,9 @@ mod tests {
             let first = observed.fetch_add(1, Ordering::SeqCst) == 0;
             Box::pin(async move {
                 if first {
-                    Err(tinfoil::Error::MeasurementMismatch {
-                        expected: "approved-measurement".to_owned(),
-                        actual: "unapproved-measurement".to_owned(),
+                    Err(AttestationFailureDiagnostic {
+                        category: "attestation",
+                        reason: "release_not_approved",
                     })
                 } else {
                     std::future::pending().await
@@ -2054,7 +1986,7 @@ mod tests {
                 TinfoilTransport::Plain {
                     client: test_http_client().unwrap(),
                     base_url: format!("http://{address}"),
-                    api_key: "dedicated-test-key".to_owned(),
+                    api_key: "dedicated-test-key".into(),
                 },
             );
             captures.insert(instance, (address, capture_rx));
@@ -2120,7 +2052,7 @@ mod tests {
 
     fn uninitialized_secure_transport() -> Arc<SecureTinfoilTransport> {
         Arc::new(SecureTinfoilTransport {
-            api_key: "unused-test-key".to_string(),
+            api_key: "unused-test-key".into(),
             target: AttestationTarget::SharedRouter,
             client_factory: None,
             client: RwLock::new(SecureClientSlot {
@@ -2906,26 +2838,11 @@ mod tests {
             .collect();
         model_ids.sort_unstable();
         assert_eq!(models["object"], "list");
-        assert_eq!(
-            model_ids,
-            [
-                "doc-upload",
-                "gemma4-31b",
-                "gpt-oss-120b",
-                "gpt-oss-safeguard-120b",
-                "kimi-k2-6",
-                "llama3-3-70b",
-                "nomic-embed-text",
-                "qwen3-tts",
-                "voxtral-mini-4b-realtime",
-                "voxtral-small-24b",
-                "voxtral-tts",
-                "websearch",
-                "whisper-large-v3-turbo",
-            ]
-        );
+        // Tinfoil's catalog changes without notice; this boundary only needs
+        // the model that the completion requests below use.
+        assert!(model_ids.contains(&"gpt-oss-120b"));
 
-        let completion_body = br#"{"model":"gpt-oss-120b","messages":[{"role":"user","content":"Reply with exactly: parity-ok"}],"temperature":0,"max_tokens":32,"stream":false}"#.to_vec();
+        let completion_body = br#"{"model":"gpt-oss-120b","messages":[{"role":"user","content":"Reply with exactly: parity-ok"}],"temperature":0,"max_tokens":512,"stream":false}"#.to_vec();
         let completion = client
             .send(
                 &provider,
@@ -2956,7 +2873,7 @@ mod tests {
         assert!(completion["usage"]["prompt_tokens"].is_number());
         assert!(completion["usage"]["completion_tokens"].is_number());
 
-        let stream_body = br#"{"model":"gpt-oss-120b","messages":[{"role":"user","content":"Reply with exactly: parity-stream-ok"}],"temperature":0,"max_tokens":32,"stream":true,"stream_options":{"include_usage":true}}"#.to_vec();
+        let stream_body = br#"{"model":"gpt-oss-120b","messages":[{"role":"user","content":"Reply with exactly: parity-stream-ok"}],"temperature":0,"max_tokens":512,"stream":true,"stream_options":{"include_usage":true}}"#.to_vec();
         let stream = client
             .send(
                 &provider,
@@ -3020,7 +2937,7 @@ mod tests {
             .unwrap_or("unknown");
         let manifest = json!({
             "captured_at_unix_seconds": captured_at_unix_seconds,
-            "implementation": "tinfoil-rs v0.2.0 (in-process)",
+            "implementation": "tinfoil-rs v0.3.0-rc.4 (in-process)",
             "revision": revision,
             "working_tree": working_tree_status,
             "credential_label": credential_label,
@@ -3075,5 +2992,105 @@ mod tests {
             "manifest.json",
             serde_json::to_vec_pretty(&manifest).unwrap(),
         );
+    }
+
+    /// Live direct-node attestation through the production transport: each
+    /// guest verifies against its compiled release policy, then serves models,
+    /// one completion and one stream over the pinned connection.
+    #[tokio::test]
+    #[ignore = "requires the live Maple inference credential and network access"]
+    async fn live_maple_guests_attest_and_complete_through_the_direct_transport() {
+        let api_key = std::env::var("MAPLE_INFERENCE_API_KEY").expect("MAPLE_INFERENCE_API_KEY");
+        // The shared transport is not used here; its key is never sent.
+        let client = ProviderClient::new("unused-shared-key".to_owned())
+            .await
+            .unwrap()
+            .with_maple_api_key(Some(api_key))
+            .unwrap();
+        let readiness = client.maple_readiness();
+
+        for instance in MapleInstanceId::ALL {
+            let provider = maple_proxy_for(instance);
+            let deadline = tokio::time::Instant::now() + Duration::from_secs(60);
+            while !readiness.is_ready(instance) {
+                assert!(
+                    tokio::time::Instant::now() < deadline,
+                    "{instance:?} did not attest within the deadline"
+                );
+                tokio::time::sleep(Duration::from_millis(100)).await;
+            }
+
+            let models = client
+                .send(
+                    &provider,
+                    ProviderRequest::new(Method::GET, "/v1/models", Duration::from_secs(30)),
+                )
+                .await
+                .unwrap();
+            assert_eq!(models.status_code(), 200);
+            let models: serde_json::Value =
+                serde_json::from_slice(&models.bytes().await.unwrap()).unwrap();
+            let model = models["data"][0]["id"].as_str().expect("served model id");
+
+            let completion = client
+                .send(
+                    &provider,
+                    ProviderRequest::new(
+                        Method::POST,
+                        "/v1/chat/completions",
+                        Duration::from_secs(120),
+                    )
+                    .content_type("application/json")
+                    .body(
+                        json!({
+                            "model": model,
+                            "messages": [{"role": "user", "content": "Reply with the single word: pong"}],
+                            "max_tokens": 64,
+                        })
+                        .to_string(),
+                    ),
+                )
+                .await
+                .unwrap();
+            assert_eq!(completion.status_code(), 200);
+            let completion: serde_json::Value =
+                serde_json::from_slice(&completion.bytes().await.unwrap()).unwrap();
+            assert_eq!(completion["object"], "chat.completion");
+            assert!(completion["usage"]["completion_tokens"].as_u64().unwrap() > 0);
+
+            let stream = client
+                .send(
+                    &provider,
+                    ProviderRequest::new(
+                        Method::POST,
+                        "/v1/chat/completions",
+                        Duration::from_secs(120),
+                    )
+                    .content_type("application/json")
+                    .body(
+                        json!({
+                            "model": model,
+                            "messages": [{"role": "user", "content": "Reply with the single word: pong"}],
+                            "max_tokens": 64,
+                            "stream": true,
+                            "stream_options": {"include_usage": true},
+                        })
+                        .to_string(),
+                    ),
+                )
+                .await
+                .unwrap();
+            assert_eq!(stream.status_code(), 200);
+            let stream = String::from_utf8(stream.bytes().await.unwrap().to_vec()).unwrap();
+            let data_frames: Vec<&str> = stream
+                .lines()
+                .filter_map(|line| line.strip_prefix("data: "))
+                .collect();
+            assert_eq!(data_frames.last(), Some(&"[DONE]"));
+            assert!(data_frames.len() > 2);
+            assert!(data_frames
+                .iter()
+                .any(|frame| frame.contains("\"usage\":{")));
+        }
     }
 }

@@ -30,6 +30,12 @@ streaming SSE, terminal framing, and numeric usage. Run it only through the
 Tier 3 procedure in
 `.agents/skills/validate-opensecret/SKILL.md`.
 
+`provider_client::tests::live_maple_guests_attest_and_complete_through_the_direct_transport`
+is ignored for the same reason and needs the dedicated Maple inference
+credential. It proves that each dedicated guest verifies against its compiled
+release policy and serves models, one completion and one stream through the
+production transport.
+
 If raw live evidence is needed, keep it outside the repository, use a
 non-secret credential label, and redact authorization and attestation metadata.
 The live test proves that provider and moment only; it does not prove
@@ -39,7 +45,12 @@ provider, EIF identity, or deployment.
 ## Trust and lifecycle
 
 Preserve Tinfoil discovery, attestation, origin-bound TLS, bounded recovery,
-connection reuse, and the no-downgrade rule. Retry only failures known to occur
+connection reuse, and the no-downgrade rule. The SDK verifies V3 attestation
+documents offline and enforces a freshness deadline on every verification;
+OpenSecret renews a verification ahead of that deadline without a request in
+hand, and replaces a client that still expires. The SDK pins a dedicated guest
+to one repository; `src/maple_inference.rs` narrows each verification to the
+approved tag, digest and launch measurement. Retry only failures known to occur
 before request acceptance; do not replay ambiguous completion requests or
 retain request bodies in shared recovery work.
 
