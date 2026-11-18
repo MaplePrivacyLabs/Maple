@@ -1199,6 +1199,7 @@ settings-catalog-summary-monday a375f9945342ea9c
 settings-catalog-summary-notion 9c66158cbdd15cdc
 settings-catalog-summary-paypal 181f6f5e9bdd62e6
 settings-catalog-summary-playwright 8de465c4745d296d
+settings-catalog-summary-privacy 3809422372c8c252
 settings-catalog-summary-sentry 903b394fac92e67c
 settings-catalog-summary-square 637a467c43d8132f
 settings-catalog-summary-stripe b24c394fccc2a665
@@ -1209,6 +1210,7 @@ settings-catalog-summary-vercel 88bbed401e626b82
 settings-catalog-summary-wix 18fbeb60ef920e82
 settings-catalog-summary-wordpress 06b4a0b060a38638
 settings-catalog-summary-xcode 796827f0149a3b13
+settings-catalog-summary-ynab 179d8cdb4f88c5fe
 settings-catalog-summary-zapier d13062f7333f30ec
 settings-catalog-teams 2cbba8524cef96ae
 settings-chat-appearance 8a6f971f023cd5a1

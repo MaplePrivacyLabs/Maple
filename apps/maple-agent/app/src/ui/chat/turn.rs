@@ -25,9 +25,10 @@ use crate::ui::{icons::icon, widgets};
 /// still. The time counts whole seconds, so one repaint a second is enough.
 const RUN_TICK: Duration = Duration::from_secs(1);
 
-/// One pass of the pulse along the mark's stroke, and of the shine across
-/// the line's words. Only the words shine; the mark moves instead.
-const MARK_CYCLE: Duration = Duration::from_millis(2000);
+/// One lap of the pulse around the mark's outline, and one pass of the
+/// shine across the line's words. Only the words shine; the mark moves
+/// instead.
+const MARK_CYCLE: Duration = Duration::from_millis(2400);
 const SHINE_CYCLE: Duration = Duration::from_millis(1900);
 
 /// A transcript row's place in its turn and activity chunk.
@@ -427,7 +428,7 @@ pub(super) fn live_elapsed(worked: Duration) -> String {
 
 #[derive(Clone, Copy)]
 enum Mark {
-    /// The blocks along the M's stroke shrink and grow, one after another.
+    /// The blocks around the M's outline shrink and grow, one after another.
     Working,
     /// Nothing is running: the mark rests in the running tone.
     Resting,
@@ -436,12 +437,13 @@ enum Mark {
 }
 
 /// The Maple mark on a 5 by 5 grid: a block with the notch of the M cut
-/// from its top edge. `phase` is how far a working mark's pulse is along
-/// the stroke.
+/// from its top edge. `phase` is how far a working mark's pulse is around
+/// the outline.
 fn maple_mark(mark: Mark, phase: f32) -> Div {
-    /// The M as it is drawn, by (row, column): up the left side, through
-    /// the notch, and down the right side.
-    const STROKE: [(usize, usize); 13] = [
+    /// The M's outline, by (row, column), all the way around: up the left
+    /// side, through the notch, down the right side, and back along the
+    /// bottom.
+    const OUTLINE: [(usize, usize); 16] = [
         (4, 0),
         (3, 0),
         (2, 0),
@@ -455,6 +457,9 @@ fn maple_mark(mark: Mark, phase: f32) -> Div {
         (2, 4),
         (3, 4),
         (4, 4),
+        (4, 3),
+        (4, 2),
+        (4, 1),
     ];
     const SHAPE: [[bool; 5]; 5] = [
         [true, false, false, false, true],
@@ -483,20 +488,19 @@ fn maple_mark(mark: Mark, phase: f32) -> Div {
             } else {
                 match mark {
                     Mark::Working => {
-                        // The pulse runs the stroke, starting and ending
-                        // clear of it so every block is whole while it
-                        // rests for the last sixth of the pass. Blocks
-                        // off the stroke hold still.
-                        let head = -1.5 + (phase / 0.84).min(1.) * (STROKE.len() as f32 + 2.);
-                        let level =
-                            STROKE
-                                .iter()
-                                .position(|&at| at == (row, column))
-                                .map_or(0., |index| {
-                                    motion::smoothstep(
-                                        (1. - (index as f32 - head).abs() / 1.5).max(0.),
-                                    )
-                                });
+                        // The pulse laps the outline without a rest, so
+                        // it is measured the short way round. Blocks
+                        // inside the outline hold still.
+                        let count = OUTLINE.len() as f32;
+                        let head = phase * count;
+                        let level = OUTLINE.iter().position(|&at| at == (row, column)).map_or(
+                            0.,
+                            |index| {
+                                let apart = (index as f32 - head).abs();
+                                let apart = apart.min(count - apart);
+                                motion::smoothstep((1. - apart / 1.5).max(0.))
+                            },
+                        );
                         cell.child(
                             block
                                 .size(CELL * (1. - 0.6 * level))

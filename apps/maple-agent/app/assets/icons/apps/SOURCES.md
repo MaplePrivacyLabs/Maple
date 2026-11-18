@@ -21,6 +21,7 @@ trademark of its owner and is used only to identify that app. Fetched 2026-11-04
 | notion | https://www.notion.com/front-static/logo-ios.png |
 | paypal | https://www.paypalobjects.com/marketing/web/icons/monogram/pp258.png |
 | playwright | https://playwright.dev/img/playwright-logo.svg |
+| privacy | https://cdn.prod.website-files.com/6356e57a1c98ed8f8e4285ae/636c365b93d67d8ec205c940_webclip.png (the touch icon privacy.com links, fetched 2026-11-16) |
 | sentry | https://github.com/getsentry.png (verified organization) |
 | square | https://squareup.com/apple-touch-icon-180x180.png |
 | stripe | https://images.stripeassets.com/fzn2n1nzq965/1hgcBNd12BfT9VLgbId7By/01d91920114b124fb4cf6d448f9f06eb/favicon.svg |
@@ -31,4 +32,5 @@ trademark of its owner and is used only to identify that app. Fetched 2026-11-04
 | wix | https://www.wix.com/favicon.ico |
 | wordpress | https://0.gravatar.com/blavatar/653166773dc88127bd3afe0b6dfe5ea7?s=114&d=https%3A%2F%2Fs1.wp.com%2Fi%2Fwebclip.png |
 | xcode | `Xcode.icns` inside Xcode 27.1 |
+| ynab | https://app.ynab.com/apple-touch-icon.png (fetched 2026-11-16) |
 | zapier | https://github.com/zapier.png (verified organization) |
