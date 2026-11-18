@@ -36,9 +36,10 @@ module as the authority for inner session/decryption middleware. Use
 `src/web/responses/` for Responses, conversations, tools, persistence, and
 events.
 
-For Transport V2, also trace `src/transport_v2/gateway.rs` and
-`src/transport_v2/session.rs` from the mounted routes in `src/main.rs`.
-V1 and V2 transport coexist; establish which path the actual SDK invokes.
+Transport V2 is the only client transport. Trace
+`src/transport_v2/gateway.rs` and `src/transport_v2/session.rs` from
+`public_routes` in `src/main.rs`: application routes are mounted only inside
+the gateway (`transport_v2_application`), never on the listener.
 Transport V2 and Router V2 are separate mechanisms, so a transport version
 does not establish the selected inference router.
 
@@ -49,7 +50,7 @@ does not establish the selected inference router.
   route-appropriate auth context.
 - A session protects transport; it does not establish user identity, project
   membership, or storage-key ownership. Bodyless protected routes still
-  validate and touch the session.
+  require a live session.
 - JWT and API-key contexts are distinct. Preserve the auth method through
   authorization, persistence eligibility, quota, and usage attribution.
 - Hold the session lease for the complete response body or stream. Successful
@@ -59,8 +60,7 @@ does not establish the selected inference router.
   selected session or auth failures by retrying, so a side-effecting change
   needs explicit idempotency or proof that validation precedes the effect.
 
-Inspect `src/web/attestation_routes.rs`,
-`src/web/encryption_middleware.rs`, session state in `src/main.rs`,
+Inspect `src/web/encryption_middleware.rs`, `src/transport_v2/session.rs`,
 `src/web/openai_auth.rs`, and `src/jwt.rs` when the change reaches those
 boundaries. Do not duplicate their policy inside a handler.
 

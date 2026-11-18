@@ -521,43 +521,34 @@ pub async fn initiate_oauth(
             ApiError::InternalServerError
         })?;
 
-    // V2 adds a provider-verified authorization-code binding. V1 deliberately
-    // retains its existing authorization URL and state behavior.
-    let v2_session_id = session_id.v2_session_id();
-    let (initial_url, csrf_token, code_binding) = if v2_session_id.is_some() {
-        let authorization = match provider_name {
-            "github" => {
-                oauth_provider
-                    .as_github()
-                    .ok_or(ApiError::InternalServerError)?
-                    .generate_bound_authorize_url(&oauth_client)
-                    .await
-            }
-            "google" => {
-                oauth_provider
-                    .as_google()
-                    .ok_or(ApiError::InternalServerError)?
-                    .generate_bound_authorize_url(&oauth_client)
-                    .await
-            }
-            "apple" => {
-                oauth_provider
-                    .as_apple()
-                    .ok_or(ApiError::InternalServerError)?
-                    .generate_bound_authorize_url(&oauth_client)
-                    .await
-            }
-            _ => return Err(ApiError::InternalServerError),
-        };
-        (
-            authorization.auth_url,
-            authorization.csrf_token,
-            Some(authorization.code_binding),
-        )
-    } else {
-        let (auth_url, csrf_token) = oauth_provider.generate_authorize_url(&oauth_client).await;
-        (auth_url, csrf_token, None)
+    // Every authorization carries a provider-verified authorization-code
+    // binding to the transport session that initiated it.
+    let authorization = match provider_name {
+        "github" => {
+            oauth_provider
+                .as_github()
+                .ok_or(ApiError::InternalServerError)?
+                .generate_bound_authorize_url(&oauth_client)
+                .await
+        }
+        "google" => {
+            oauth_provider
+                .as_google()
+                .ok_or(ApiError::InternalServerError)?
+                .generate_bound_authorize_url(&oauth_client)
+                .await
+        }
+        "apple" => {
+            oauth_provider
+                .as_apple()
+                .ok_or(ApiError::InternalServerError)?
+                .generate_bound_authorize_url(&oauth_client)
+                .await
+        }
+        _ => return Err(ApiError::InternalServerError),
     };
+    let initial_url = authorization.auth_url;
+    let csrf_token = authorization.csrf_token;
 
     // Snapshot the actual callback even when the caller omitted redirect_url.
     // Callbacks must not pick up a subsequently changed project default.
@@ -572,25 +563,15 @@ pub async fn initiate_oauth(
     };
 
     // Store the complete state in the provider
-    match (v2_session_id, code_binding) {
-        (Some(session_id), Some(code_binding)) => {
-            oauth_provider
-                .store_state_for_session(
-                    csrf_token.secret(),
-                    state.clone(),
-                    session_id,
-                    code_binding,
-                )
-                .await
-        }
-        (None, None) => {
-            oauth_provider
-                .store_state(csrf_token.secret(), state.clone())
-                .await
-        }
-        _ => return Err(ApiError::InternalServerError),
-    }
-    .map_err(|_| ApiError::TooManyRequests)?;
+    oauth_provider
+        .store_state_for_session(
+            csrf_token.secret(),
+            state.clone(),
+            session_id.session_id(),
+            authorization.code_binding,
+        )
+        .await
+        .map_err(|_| ApiError::TooManyRequests)?;
 
     let state_json = serde_json::to_string(&state).map_err(|_| ApiError::InternalServerError)?;
     let state_base64 = base64::engine::general_purpose::URL_SAFE_NO_PAD.encode(state_json);
@@ -645,26 +626,17 @@ pub async fn oauth_callback(
 
     // Validate and atomically consume the complete state so a successful match is one-time.
     // A mismatched state is left in the store for the legitimate callback.
-    let is_transport_v2 = session_id.is_v2();
-    let code_binding = match session_id.v2_session_id() {
-        Some(session_id) => oauth_provider
-            .consume_state_for_session(&state, session_id)
-            .await
-            .map(Some),
-        None => oauth_provider.consume_state(&state).await.then_some(None),
-    };
-
-    let Some(code_binding) = code_binding else {
+    let Some(code_binding) = oauth_provider
+        .consume_state_for_session(&state, session_id.session_id())
+        .await
+    else {
         error!("Invalid state in {} callback", provider_name);
         return Err(ApiError::BadRequest);
     };
 
-    let (pkce_verifier, apple_nonce) = match (is_transport_v2, provider_name, code_binding) {
-        (false, _, None) => (None, None),
-        (true, "github" | "google", Some(OAuthCodeBinding::Pkce(verifier))) => {
-            (Some(verifier), None)
-        }
-        (true, "apple", Some(OAuthCodeBinding::AppleNonce(nonce))) => (None, Some(nonce)),
+    let (pkce_verifier, apple_nonce) = match (provider_name, code_binding) {
+        ("github" | "google", OAuthCodeBinding::Pkce(verifier)) => (Some(verifier), None),
+        ("apple", OAuthCodeBinding::AppleNonce(nonce)) => (None, Some(nonce)),
         _ => return Err(ApiError::InternalServerError),
     };
 
@@ -1063,8 +1035,7 @@ pub async fn oauth_callback(
         }
     };
 
-    let auth_response =
-        oauth_callback_response(&app_state, &authenticated_user, session_id.is_v2())?;
+    let auth_response = oauth_callback_response(&app_state, &authenticated_user)?;
     encrypt_response(&app_state, &session_id, &auth_response).await
 }
 
@@ -1214,8 +1185,8 @@ async fn fetch_apple_user(
 ) -> Result<AppleUser, ApiError> {
     debug!("Parsing and validating Apple ID token");
 
-    // V2 requires the provider-signed ID token to carry the nonce generated
-    // for this exact state and session. V1 continues without nonce validation.
+    // A redirect callback passes the nonce generated for its exact state and
+    // session; the provider-signed ID token must carry it.
     let claims = validate_apple_native_token(
         &app_state.apple_jwt_verifier,
         id_token,
@@ -1270,11 +1241,10 @@ fn authenticated_oauth_user(
 fn oauth_callback_response(
     app_state: &AppState,
     authenticated_user: &AuthenticatedOAuthUser,
-    is_transport_v2: bool,
 ) -> Result<OAuthCallbackResponse, ApiError> {
     let access_token = NewToken::new_with_auth_context(
         &authenticated_user.user,
-        TokenType::access_for_transport(is_transport_v2),
+        TokenType::TransportV2Access,
         app_state,
         &authenticated_user.auth_context,
     )
@@ -1284,7 +1254,7 @@ fn oauth_callback_response(
     })?;
     let refresh_token = NewToken::new_with_auth_context(
         &authenticated_user.user,
-        TokenType::refresh_for_transport(is_transport_v2),
+        TokenType::TransportV2Refresh,
         app_state,
         &authenticated_user.auth_context,
     )
@@ -1524,8 +1494,7 @@ pub async fn handle_apple_native_signin(
 
         let authenticated_user =
             authenticated_oauth_user(&app_state, user, "apple", &verified_user_id)?;
-        let auth_response =
-            oauth_callback_response(&app_state, &authenticated_user, session_id.is_v2())?;
+        let auth_response = oauth_callback_response(&app_state, &authenticated_user)?;
 
         debug!("Apple sign-in successful for existing user");
         return encrypt_response(&app_state, &session_id, &auth_response).await;
@@ -1590,8 +1559,7 @@ pub async fn handle_apple_native_signin(
     )
     .await?;
 
-    let auth_response =
-        oauth_callback_response(&app_state, &authenticated_user, session_id.is_v2())?;
+    let auth_response = oauth_callback_response(&app_state, &authenticated_user)?;
 
     debug!("Apple native sign-in successful for new user");
     encrypt_response(&app_state, &session_id, &auth_response).await

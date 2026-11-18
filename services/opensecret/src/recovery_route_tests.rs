@@ -157,14 +157,9 @@ fn v2_access_token(
     user: &crate::models::users::User,
     auth_context: &AuthContext,
 ) -> String {
-    NewToken::new_with_auth_context(
-        user,
-        TokenType::access_for_transport(true),
-        app_state,
-        auth_context,
-    )
-    .expect("test v2 access token should issue")
-    .token
+    NewToken::new_with_auth_context(user, TokenType::TransportV2Access, app_state, auth_context)
+        .expect("test v2 access token should issue")
+        .token
 }
 
 /// Reproduces the inner request the transport-v2 gateway hands to the
@@ -191,7 +186,7 @@ fn v2_request(
         .into_parts();
     parts
         .extensions
-        .insert(TransportSession::v2(SessionId::from_bytes([0xAA; 16])));
+        .insert(TransportSession::new(SessionId::from_bytes([0xAA; 16])));
     if let Some(token) = bearer_token {
         parts.extensions.insert(
             Credential::new(crate::transport_v2::envelope::CredentialKind::Bearer, token)
@@ -495,7 +490,7 @@ async fn recovery_rotate_and_disable_lifecycle_behaves_as_documented() {
 
 #[tokio::test]
 #[ignore = "requires RECOVERY_TEST_DATABASE_URL (or AEAD_TAMPER_TEST_DATABASE_URL) pointing at disposable migrated local Postgres"]
-async fn recovery_management_rejects_unauthenticated_api_key_and_v1_contexts() {
+async fn recovery_management_rejects_unauthenticated_api_key_and_gatewayless_contexts() {
     let fixture = authenticated_password_fixture("contexts").await;
     let app_state = &fixture.app_state;
     let app = recovery_router(app_state.clone());
@@ -525,52 +520,20 @@ async fn recovery_management_rejects_unauthenticated_api_key_and_v1_contexts() {
         "API-key contexts must not reach recovery management"
     );
 
-    // v1 transport with a valid user JWT is rejected by the middleware gate
-    // before any recovery logic runs.
-    let v1_token = NewToken::new_with_auth_context(
-        &fixture.user,
-        TokenType::access_for_transport(false),
-        app_state,
-        &fixture.auth_context,
-    )
-    .expect("v1 access token should issue")
-    .token;
-    let v1_request_value = Request::builder()
+    // A valid access token presented in an outer Authorization header, on a
+    // request the gateway never decrypted, is not a credential: no transport
+    // session was established and outer headers are never read.
+    let access_token = v2_access_token(app_state, &fixture.user, &fixture.auth_context);
+    let gatewayless = Request::builder()
         .method("GET")
         .uri("/protected/recovery-code")
-        .header("authorization", format!("Bearer {v1_token}"))
+        .header("authorization", format!("Bearer {access_token}"))
         .body(Body::empty())
         .unwrap();
-    let (mut v1_parts, v1_body) = v1_request_value.into_parts();
-    v1_parts
-        .extensions
-        .insert(TransportSession::v1(Uuid::new_v4()));
-    let v1_transport = Request::from_parts(v1_parts, v1_body);
-    let v1_response = send(app.clone(), v1_transport).await;
     assert_eq!(
-        v1_response.status(),
-        StatusCode::BAD_REQUEST,
-        "v1 transport sessions must be rejected at the middleware boundary"
-    );
-
-    // A v1 session with an unparseable token must still be rejected with 400
-    // (the transport gate), not 401 (the JWT middleware). This pins the
-    // middleware order: the v2-transport gate runs before JWT validation.
-    let garbage_v1 = Request::builder()
-        .method("GET")
-        .uri("/protected/recovery-code")
-        .header("authorization", "Bearer not-a-jwt")
-        .body(Body::empty())
-        .unwrap();
-    let (mut garbage_parts, garbage_body) = garbage_v1.into_parts();
-    garbage_parts
-        .extensions
-        .insert(TransportSession::v1(Uuid::new_v4()));
-    let garbage_transport = Request::from_parts(garbage_parts, garbage_body);
-    assert_eq!(
-        send(app, garbage_transport).await.status(),
-        StatusCode::BAD_REQUEST,
-        "the v2-transport gate must run before the JWT middleware"
+        send(app, gatewayless).await.status(),
+        StatusCode::UNAUTHORIZED,
+        "a request that bypassed the gateway must not reach recovery management"
     );
 
     assert!(
@@ -747,91 +710,6 @@ async fn recovery_management_rejects_guest_and_oauth_only_users() {
 
 #[tokio::test]
 #[ignore = "requires RECOVERY_TEST_DATABASE_URL (or AEAD_TAMPER_TEST_DATABASE_URL) pointing at disposable migrated local Postgres"]
-async fn recovery_handlers_reject_v1_session_before_any_database_side_effect() {
-    let fixture = authenticated_password_fixture("handler-v1").await;
-    let app_state = &fixture.app_state;
-
-    // Bare routes with no middleware: reproduces a mis-wired router where a
-    // v1 session reaches the handler. Each handler must still refuse before
-    // any database work.
-    let bare = |app_state: Arc<AppState>| {
-        axum::Router::new()
-            .route(
-                "/protected/recovery-code",
-                axum::routing::get(crate::web::protected_routes::recovery_status)
-                    .delete(crate::web::protected_routes::disable_recovery),
-            )
-            .route(
-                "/protected/recovery-code/enroll",
-                axum::routing::post(crate::web::protected_routes::enroll_recovery),
-            )
-            .route(
-                "/protected/recovery-code/rotate",
-                axum::routing::post(crate::web::protected_routes::rotate_recovery),
-            )
-            .with_state(app_state)
-    };
-
-    // The decryption middleware stores the raw payload in extensions and the
-    // `Decrypted<T>` extractor wraps it at extraction time.
-    let cases: Vec<(&'static str, &str)> = vec![
-        ("GET", "/protected/recovery-code"),
-        ("DELETE", "/protected/recovery-code"),
-        ("POST", "/protected/recovery-code/enroll"),
-        ("POST", "/protected/recovery-code/rotate"),
-    ];
-
-    for (method, uri) in cases {
-        let (mut parts, request_body) = Request::builder()
-            .method(method)
-            .uri(uri)
-            .body(Body::empty())
-            .unwrap()
-            .into_parts();
-        parts
-            .extensions
-            .insert(TransportSession::v1(Uuid::new_v4()));
-        parts.extensions.insert(fixture.user.clone());
-        parts.extensions.insert(fixture.auth_context.clone());
-        parts
-            .extensions
-            .insert(crate::web::protected_routes::EnrollRecoveryRequest {
-                current_password: fixture.password.to_string(),
-            });
-        parts
-            .extensions
-            .insert(crate::web::protected_routes::RotateRecoveryRequest {
-                current_password: fixture.password.to_string(),
-            });
-        parts
-            .extensions
-            .insert(crate::web::protected_routes::DisableRecoveryRequest {
-                current_password: fixture.password.to_string(),
-            });
-        // Status/disability paths carry no body; enroll/rotate payload types
-        // above cover the two decrypting handlers. Inserting every payload
-        // type is harmless: each handler consumes only its own.
-        let request = Request::from_parts(parts, request_body);
-
-        let response = send(bare(app_state.clone()), request).await;
-        assert_eq!(
-            response.status(),
-            StatusCode::BAD_REQUEST,
-            "{method} {uri}: the handler must independently reject v1 sessions"
-        );
-    }
-
-    assert!(app_state
-        .db
-        .get_recovery_wrap(fixture.user.uuid)
-        .unwrap()
-        .is_none());
-
-    let _ = app_state.db.delete_user(&fixture.user);
-}
-
-#[tokio::test]
-#[ignore = "requires RECOVERY_TEST_DATABASE_URL (or AEAD_TAMPER_TEST_DATABASE_URL) pointing at disposable migrated local Postgres"]
 async fn recovery_error_responses_are_sanitized() {
     use crate::web::{
         encryption_middleware::Decrypted,
@@ -897,7 +775,7 @@ async fn recovery_error_responses_are_sanitized() {
     }
     // Call the handlers with the already-admitted context: running JWT
     // middleware again would reject the retired wrap before reaching step-up.
-    let session = TransportSession::v2(SessionId::from_bytes([0xAA; 16]));
+    let session = TransportSession::new(SessionId::from_bytes([0xAA; 16]));
     for result in [
         enroll_recovery(
             State(app_state.clone()),
@@ -1459,7 +1337,7 @@ async fn password_reset_v2_options_rejects_copied_reset_rows_across_users_and_pr
 
 #[tokio::test]
 #[ignore = "requires RECOVERY_TEST_DATABASE_URL (or AEAD_TAMPER_TEST_DATABASE_URL) pointing at disposable migrated local Postgres"]
-async fn password_reset_v2_options_rejects_v1_and_missing_transport_sessions() {
+async fn password_reset_v2_options_rejects_a_missing_transport_session() {
     let fixture = authenticated_password_fixture("v2-gate").await;
     let app_state = &fixture.app_state;
     let project = first_active_project(app_state);
@@ -1470,22 +1348,9 @@ async fn password_reset_v2_options_rejects_v1_and_missing_transport_sessions() {
         insert_reset_request_fixture(app_state, &project, &fixture.user, "OFFFFF12", secret, 24);
     let proof = proof_fixture(&fixture.email, "OFFFFF12", secret, project.client_id);
 
-    // A v1 transport session presenting the entire valid proof is rejected
-    // before the handler can verify anything or reveal status.
-    let request_value = Request::builder()
-        .method("POST")
-        .uri("/password-reset/v2/options")
-        .body(Body::from(proof.request_body().to_string()))
-        .unwrap();
-    let (mut v1_parts, v1_body) = request_value.into_parts();
-    v1_parts
-        .extensions
-        .insert(TransportSession::v1(Uuid::new_v4()));
-    let v1_response = send(app.clone(), Request::from_parts(v1_parts, v1_body)).await;
-    assert_generic_bad_request(v1_response).await;
-
     // A request that carries no transport session never established
-    // transport security and must not reach the handler either.
+    // transport security: even with the entire valid proof it is rejected
+    // before the handler can verify anything or reveal status.
     let sessionless = Request::builder()
         .method("POST")
         .uri("/password-reset/v2/options")
@@ -2436,7 +2301,7 @@ async fn password_reset_v2_concurrent_destructive_completions_have_exactly_one_w
 
 #[tokio::test]
 #[ignore = "requires RECOVERY_TEST_DATABASE_URL (or AEAD_TAMPER_TEST_DATABASE_URL) pointing at disposable migrated local Postgres"]
-async fn password_reset_v2_completion_rejects_v1_and_missing_transport_sessions() {
+async fn password_reset_v2_completion_rejects_a_missing_transport_session() {
     let fixture = authenticated_password_fixture("v2-complete-gate").await;
     let app_state = &fixture.app_state;
     let project = first_active_project(app_state);
@@ -2448,22 +2313,9 @@ async fn password_reset_v2_completion_rejects_v1_and_missing_transport_sessions(
     let proof = proof_fixture(&fixture.email, "PJJJJJJ1", secret, project.client_id);
     let body = complete_body(&proof, "recovery-gate-password", preserve_mode("MPLRC1"));
 
-    // A v1 transport session presenting the entire valid proof is rejected
-    // before the handler can verify anything or consume state.
-    let request_value = Request::builder()
-        .method("POST")
-        .uri("/password-reset/v2/complete")
-        .body(Body::from(body.to_string()))
-        .unwrap();
-    let (mut v1_parts, v1_body) = request_value.into_parts();
-    v1_parts
-        .extensions
-        .insert(TransportSession::v1(Uuid::new_v4()));
-    let v1_response = send(app.clone(), Request::from_parts(v1_parts, v1_body)).await;
-    assert_generic_bad_request(v1_response).await;
-
     // A request that carries no transport session never established
-    // transport security and must not reach the handler either.
+    // transport security: even with the entire valid proof it is rejected
+    // before the handler can verify anything or consume state.
     let sessionless = Request::builder()
         .method("POST")
         .uri("/password-reset/v2/complete")

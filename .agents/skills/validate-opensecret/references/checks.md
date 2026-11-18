@@ -73,13 +73,14 @@ OPENSECRET_DEV_POSTGRES=0 OPENSECRET_DEV_ENV=0 OPENSECRET_DEV_CONTAINERS=0 \
 
 The helper proves an empty-database migration and the selected local synthetic
 database suites, including OAuth settings preservation, callback selection,
-and Google/GitHub callback completion through the real V1 encryption
-middleware and V2 gateway. Completion tests exchange synthetic credentials
-only with local mock token/user-info endpoints, verify the originally selected
-callback after settings change, and reject replay without another exchange.
-The recovery subset covers recovery-wrap lifecycle, management and V2
-password-reset routes, and a recovery flow through the real V1 middleware and
-V2 gateway; its reset rows use a known code MAC instead of email delivery.
+and Google/GitHub callback completion through the real Transport V2 gateway.
+Completion tests exchange synthetic credentials only with local mock
+token/user-info endpoints, verify the originally selected callback after
+settings change, refuse a callback from another session, and reject replay
+without another exchange. The recovery subset covers recovery-wrap lifecycle,
+management and V2 password-reset routes, and a recovery flow through the real
+gateway that also proves the listener serves no recovery route in plaintext;
+its reset rows use a known code MAC instead of email delivery.
 The `os-sdk-e2e` lane in `ci.yml` runs this helper too. These fixtures do not
 prove a live OAuth provider flow, a released SDK or application, or a data
 conversion from representative old rows.

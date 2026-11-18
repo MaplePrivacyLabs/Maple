@@ -50,8 +50,7 @@ enabled flags and other provider settings retain their existing semantics.
 
 The decrypted request body for `/auth/github`, `/auth/google`, and
 `/auth/apple` accepts an optional `redirect_url` alongside the existing
-`client_id`. The same contract applies through both
-Transport V1 and Transport V2.
+`client_id`.
 
 When absent or `null`, the provider's default `redirect_url` is used. When
 present, the value must exactly match the default or one of that provider's

@@ -528,8 +528,8 @@ fn refresh_route_preserves_signed_auth_context_without_recomputing_binding() {
     for required_pattern in [
         "AuthContext::from_claims(&claims)",
         "verify_seed_wrap_for_auth_context(&user, &auth_context)",
-        "TokenType::access_for_transport(session_id.is_v2())",
-        "TokenType::refresh_for_transport(session_id.is_v2())",
+        "TokenType::TransportV2Access",
+        "TokenType::TransportV2Refresh",
     ] {
         assert!(
             refresh_body.contains(required_pattern),
@@ -894,8 +894,8 @@ fn password_credential_lifecycle_rewraps_seed_and_reissues_tokens() {
         ".update_user_password_and_seed_wrap(",
         "&auth_context",
         "NewToken::new_with_auth_context(",
-        "TokenType::access_for_transport(session_id.is_v2())",
-        "TokenType::refresh_for_transport(session_id.is_v2())",
+        "TokenType::TransportV2Access",
+        "TokenType::TransportV2Refresh",
         "&new_auth_context",
     ] {
         assert!(
@@ -1091,8 +1091,8 @@ fn password_registration_and_login_issue_tokens_only_after_seed_wrap_verificatio
     for required_pattern in [
         ".authenticate_user(",
         "NewToken::new_with_auth_context(",
-        "TokenType::access_for_transport(is_transport_v2)",
-        "TokenType::refresh_for_transport(is_transport_v2)",
+        "TokenType::TransportV2Access",
+        "TokenType::TransportV2Refresh",
         "&authenticated_user.auth_context",
     ] {
         assert!(
@@ -1517,15 +1517,8 @@ fn assert_patterns_in_order(source: &str, patterns: &[&str]) {
     }
 }
 
-const RECOVERY_MANAGEMENT_HANDLERS: &[&str] = &[
-    "recovery_status",
-    "enroll_recovery",
-    "rotate_recovery",
-    "disable_recovery",
-];
-
 #[test]
-fn recovery_management_routes_require_jwt_and_v2_transport() {
+fn recovery_management_routes_require_jwt_and_encrypted_requests() {
     let protected_routes =
         Path::new(env!("CARGO_MANIFEST_DIR")).join("src/web/protected_routes.rs");
     let contents =
@@ -1566,12 +1559,6 @@ fn recovery_management_routes_require_jwt_and_v2_transport() {
         );
     }
 
-    // The v2-transport gate is part of the recovery sub-router itself, so v1
-    // sessions are rejected before user JWT validation touches the database.
-    assert!(
-        router_body.contains("from_fn(require_transport_v2)"),
-        "the recovery sub-router must apply the v2-transport gate"
-    );
     assert!(
         router_body.contains("from_fn_with_state(app_state.clone(), validate_jwt)"),
         "the recovery sub-router must apply the user-JWT middleware"
@@ -1588,32 +1575,96 @@ fn recovery_management_routes_require_jwt_and_v2_transport() {
     );
 }
 
+/// The listener serves the application only through the Transport V2 gateway.
+/// A router that mounted an application route directly would hand a plaintext
+/// HTTP caller a route whose handlers assume an authenticated, decrypted
+/// envelope.
 #[test]
-fn recovery_handlers_enforce_transport_and_user_guards_before_any_logic() {
-    let protected_routes =
-        Path::new(env!("CARGO_MANIFEST_DIR")).join("src/web/protected_routes.rs");
-    let contents =
-        fs::read_to_string(&protected_routes).expect("protected routes source should be readable");
+fn application_routes_are_served_only_behind_the_transport_v2_gateway() {
+    let main_contents =
+        fs::read_to_string(Path::new(env!("CARGO_MANIFEST_DIR")).join("src/main.rs"))
+            .expect("main source should be readable");
 
-    for handler in RECOVERY_MANAGEMENT_HANDLERS {
-        let signature = format!("pub async fn {handler}(");
-        let body = extract_function_body(&contents, &signature);
-
-        let do_recovery_work =
-            body.contains("encrypt_response") || body.contains("db.get_recovery_wrap");
-        if !do_recovery_work {
-            continue;
-        }
-
-        let guard_index = body
-            .find("require_v2_transport_session(&transport_session)?;")
-            .unwrap_or_else(|| panic!("{handler} must call the v2-transport guard first"));
-        let logic_index = body
-            .find("db.")
-            .unwrap_or_else(|| body.rfind("await").expect("handler should await work"));
+    let public_body = extract_function_body(&main_contents, "fn public_routes");
+    for required_pattern in [
+        "health_routes()",
+        "attestation_routes::router(",
+        "web::remote::relay::router(",
+        "transport_v2_gateway.router()",
+    ] {
         assert!(
-            guard_index < logic_index,
-            "{handler} must reject non-v2 transports before opening or writing recovery state"
+            public_body.contains(required_pattern),
+            "the listener's router must serve `{required_pattern}`"
+        );
+    }
+    assert_eq!(
+        public_body.matches(".merge(").count(),
+        3,
+        "the listener's router must serve exactly its four plaintext surfaces"
+    );
+    for forbidden_pattern in [
+        "application_routes(",
+        "transport_v2_application(",
+        "native_handoff_routes(",
+        "_routes(app_state",
+    ] {
+        assert!(
+            !public_body.contains(forbidden_pattern),
+            "the listener's router must not mount `{forbidden_pattern}` in plaintext"
+        );
+    }
+
+    // The application is composed once, for the gateway, and nothing else
+    // turns it into a served router.
+    assert_eq!(
+        main_contents.matches("application_routes(").count(),
+        2,
+        "application_routes must be defined once and used only by the gateway application"
+    );
+    let gateway_application_body =
+        extract_function_body(&main_contents, "fn transport_v2_application");
+    assert!(gateway_application_body.contains("application_routes(app_state.clone())"));
+    assert_eq!(
+        main_contents.matches("transport_v2_application(").count(),
+        2,
+        "the gateway application must be built once, for the gateway"
+    );
+    let main_body = extract_function_body(&main_contents, "async fn main");
+    assert_patterns_in_order(
+        main_body,
+        &[
+            "TransportV2Gateway::new(",
+            "transport_v2_application(app_state.clone())",
+            "public_routes(app_state.clone(), &transport_v2_gateway)",
+            "axum::serve(listener, app.into_make_service())",
+        ],
+    );
+
+    // The application's own boundary fails closed without the gateway's
+    // session marker, and its authentication reads only envelope credentials.
+    let middleware = fs::read_to_string(
+        Path::new(env!("CARGO_MANIFEST_DIR")).join("src/web/encryption_middleware.rs"),
+    )
+    .expect("encryption middleware source should be readable");
+    let decrypt_body = extract_function_body(&middleware, "pub async fn decrypt_request");
+    assert_patterns_in_order(
+        decrypt_body,
+        &[
+            "request.extensions().get::<TransportSession>().is_none()",
+            "return Err(ApiError::BadRequest);",
+            "next.run(request)",
+        ],
+    );
+    for (path, forbidden_pattern) in [
+        ("src/jwt.rs", "header::AUTHORIZATION"),
+        ("src/web/openai_auth.rs", "header::AUTHORIZATION"),
+        ("src/web/encryption_middleware.rs", "x-session-id"),
+    ] {
+        let source = fs::read_to_string(Path::new(env!("CARGO_MANIFEST_DIR")).join(path))
+            .expect("source should be readable");
+        assert!(
+            !source.contains(forbidden_pattern),
+            "{path} must not read a plaintext `{forbidden_pattern}`"
         );
     }
 }
@@ -1706,7 +1757,7 @@ fn recovery_stepup_gates_before_seed_open_and_insert() {
 }
 
 #[test]
-fn password_reset_v2_options_requires_v2_transport_and_shared_readonly_proof() {
+fn password_reset_v2_options_requires_shared_readonly_proof() {
     let login_routes = Path::new(env!("CARGO_MANIFEST_DIR")).join("src/web/login_routes.rs");
     let contents =
         fs::read_to_string(&login_routes).expect("login route source should be readable");
@@ -1735,37 +1786,21 @@ fn password_reset_v2_options_requires_v2_transport_and_shared_readonly_proof() {
         !sub_router_body.contains(".with_state("),
         "the options sub-router must keep its typed state until the login router erases it"
     );
-    // The v2-transport gate must be the outermost layer on the sub-router:
-    // the route is declared with its encrypted-request layer, and the
-    // v2-transport gate is applied after it, so a v1 session is rejected
-    // before any request body is decrypted or proof is verified.
-    assert!(
-        sub_router_body.contains("from_fn(require_transport_v2)"),
-        "the options sub-router must apply the v2-transport gate"
-    );
     assert_patterns_in_order(
         sub_router_body,
         &[
             "post(password_reset_v2_options)",
             "decrypt_request::<PasswordResetV2OptionsRequest>",
-            ".route_layer(from_fn(require_transport_v2))",
         ],
     );
 
     let handler_body = extract_function_body(&contents, "pub async fn password_reset_v2_options");
-    let guard_index = handler_body
-        .find("require_v2_transport_session(&transport_session)?;")
-        .expect("the v2 options handler must call the v2-transport guard first");
     let proof_index = handler_body
         .find("verify_password_reset_proof(")
         .expect("the v2 options handler must reuse the shared proof verification");
     let reveal_index = handler_body
         .find("recovery_wrap_exists")
         .expect("the v2 options handler must reveal recovery enrollment");
-    assert!(
-        guard_index < proof_index,
-        "the v2 options handler must reject non-v2 transports before proof verification"
-    );
     assert!(
         proof_index < reveal_index,
         "the v2 options handler must reveal recovery enrollment only after the proof"
@@ -1808,7 +1843,7 @@ fn password_reset_v2_options_requires_v2_transport_and_shared_readonly_proof() {
 }
 
 #[test]
-fn password_reset_v2_complete_requires_v2_transport_and_guarded_completion() {
+fn password_reset_v2_complete_requires_guarded_completion() {
     let login_routes = Path::new(env!("CARGO_MANIFEST_DIR")).join("src/web/login_routes.rs");
     let contents =
         fs::read_to_string(&login_routes).expect("login route source should be readable");
@@ -1825,22 +1860,15 @@ fn password_reset_v2_complete_requires_v2_transport_and_guarded_completion() {
             && sub_router_body.contains("decrypt_request::<CompletePasswordResetV2Request>"),
         "the completion sub-router must wire the route with its encrypted-request layer"
     );
-    // The v2-transport gate must be the outermost layer on the sub-router so
-    // a v1 session is rejected before any request body is decrypted or proof
-    // is verified.
     assert_patterns_in_order(
         sub_router_body,
         &[
             "post(password_reset_v2_complete)",
             "decrypt_request::<CompletePasswordResetV2Request>",
-            ".route_layer(from_fn(require_transport_v2))",
         ],
     );
 
     let handler_body = extract_function_body(&contents, "pub async fn password_reset_v2_complete");
-    let guard_index = handler_body
-        .find("require_v2_transport_session(&transport_session)?;")
-        .expect("the completion handler must call the v2-transport guard first");
     let acknowledge_index = handler_body
         .find("acknowledge_data_loss")
         .expect("the completion handler must gate destructive reset on an explicit acknowledgment");
@@ -1850,10 +1878,6 @@ fn password_reset_v2_complete_requires_v2_transport_and_guarded_completion() {
     let proof_index = handler_body
         .find("verify_password_reset_proof(")
         .expect("the completion handler must reuse the shared proof verification");
-    assert!(
-        guard_index < acknowledge_index,
-        "the completion handler must reject non-v2 transports before mode dispatch"
-    );
     assert!(
         acknowledge_index < project_index,
         "the completion handler must require the destructive acknowledgment before any account lookup"

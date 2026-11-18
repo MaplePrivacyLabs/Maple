@@ -88,7 +88,7 @@ OPENSECRET_DEV_POSTGRES=0 OPENSECRET_DEV_ENV=0 OPENSECRET_DEV_CONTAINERS=0 \
 
 The Rust unit-test job does not run ignored tests. The SDK integration job
 also runs the disposable-database helper, including OAuth settings and
-encrypted V1/V2 callback-selection checks. Live-provider tests remain separate. Use the
+encrypted callback-selection checks. Live-provider tests remain separate. Use the
 [`validate-opensecret`](../../.agents/skills/validate-opensecret/SKILL.md) workflow
 for disposable PostgreSQL tests, authorized provider checks, encrypted-client
 smoke tests, Nix checks, and release-only EIF/PCR evidence. Report those layers
