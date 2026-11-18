@@ -44,12 +44,11 @@ release.
 Research and Auth resolve transitive `zod` dependencies to `4.6.7` for
 [GHSA-mrhx-c7xc-m3w5](https://github.com/advisories/GHSA-mrhx-c7xc-m3w5).
 This removes Zod 3 from their installed dependency graphs, but older published
-`@mapleai/sdk` versions and Research's legacy `@opensecret/react-v1` package
-also embed Zod 3 in their JavaScript bundles. A consumer resolution cannot
-replace that embedded code. A clean Bun audit therefore proves only the
-resolved graph; complete remediation requires rebuilding and publishing the
-SDK with the patched dependency, then updating Auth's pin. Preserve legacy
-authentication compatibility when preparing that separate upgrade.
+`@mapleai/sdk` versions also embed Zod 3 in their JavaScript bundles. A
+consumer resolution cannot replace that embedded code. A clean Bun audit
+therefore proves only the resolved graph; complete remediation requires
+rebuilding and publishing the SDK with the patched dependency, then updating
+Auth's pin.
 
 Before releasing a client, proxy, or CLI, inspect what that consumer will
 actually ship. For Research's frontend, confirm the `@mapleai/sdk` entry in both
