@@ -739,8 +739,10 @@ decrypt: only the gateway can attach the in-process session marker, and
 authentication reads only the credential the envelope carried, never an outer
 header.
 
-A released V1 client fails at `POST /key_exchange`, which no longer exists, and
-must be updated. V1 access and refresh tokens are accepted nowhere; a V2 client
+A released V1 client can neither establish nor use a session and must be
+updated: the attestation document carries no key, `POST /key_exchange` does not
+exist, and a request it sends under a session it already held finds no route.
+V1 access and refresh tokens are accepted nowhere; a V2 client
 authenticates afresh through login, registration, OAuth, or native handoff.
 Raw inference-only API keys are unaffected and are presented as an `api_key`
 credential.

@@ -43,7 +43,7 @@ where
 
     /// Inserts a new value, always admitting it. At capacity, an expired oldest
     /// entry is reclaimed first; otherwise the oldest live entry is evicted.
-    /// Duplicate keys retain the historical latest-request-wins behavior.
+    /// A duplicate key replaces its existing value.
     pub(crate) fn insert_evicting_at(&mut self, key: K, value: V, now: Instant) -> InsertOutcome {
         let expires_at = now
             .checked_add(self.ttl)
@@ -108,8 +108,7 @@ where
 mod tests {
     use super::*;
     use std::sync::atomic::{AtomicUsize, Ordering};
-    use std::sync::Arc;
-    use tokio::sync::RwLock;
+    use std::sync::{Arc, Mutex};
 
     fn cache<K, V>(capacity: usize, ttl: Duration) -> BoundedTtlCache<K, V>
     where
@@ -243,25 +242,27 @@ mod tests {
         assert_eq!(drops.load(Ordering::SeqCst), 4, "cache destruction");
     }
 
-    #[tokio::test]
-    async fn actual_locking_pattern_never_exceeds_capacity() {
-        let cache = Arc::new(RwLock::new(cache(32, Duration::from_secs(300))));
-        let mut tasks = Vec::new();
+    #[test]
+    fn concurrent_inserts_under_a_mutex_never_exceed_capacity() {
+        let cache = Arc::new(Mutex::new(cache(32, Duration::from_secs(300))));
+        let threads: Vec<_> = (0..8)
+            .map(|thread| {
+                let cache = cache.clone();
+                std::thread::spawn(move || {
+                    for key in (thread * 64)..((thread + 1) * 64) {
+                        cache
+                            .lock()
+                            .unwrap()
+                            .insert_evicting_at(key, key, Instant::now());
+                    }
+                })
+            })
+            .collect();
 
-        for key in 0..512 {
-            let cache = cache.clone();
-            tasks.push(tokio::spawn(async move {
-                cache
-                    .write()
-                    .await
-                    .insert_evicting_at(key, key, Instant::now());
-            }));
+        for thread in threads {
+            thread.join().unwrap();
         }
-
-        for task in tasks {
-            task.await.unwrap();
-        }
-        assert_eq!(cache.read().await.len(), 32);
+        assert_eq!(cache.lock().unwrap().len(), 32);
     }
 
     #[test]

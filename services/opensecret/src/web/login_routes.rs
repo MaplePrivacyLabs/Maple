@@ -208,7 +208,7 @@ pub struct AuthResponse {
     pub refresh_token: String,
 }
 
-#[derive(Deserialize, Clone)]
+#[derive(Clone)]
 pub struct RefreshRequest {
     refresh_token: String,
 }
@@ -838,8 +838,7 @@ pub async fn password_reset_v2_complete(
         }
     };
 
-    // Tokens are bound to the new password credential, matching the session
-    // transport the completion arrived on.
+    // Tokens are bound to the new password credential.
     let access_token = NewToken::new_with_auth_context(
         &user,
         TokenType::TransportV2Access,

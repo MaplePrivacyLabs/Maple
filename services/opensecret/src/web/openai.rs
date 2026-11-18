@@ -3608,7 +3608,7 @@ async fn encrypt_sse_event(
     _transport_session: &TransportSession,
     json: &Value,
 ) -> Result<Event, ApiError> {
-    Ok(sse_event_from_encoded_data(&json.to_string()))
+    Ok(sse_data_event(&json.to_string()))
 }
 
 /// OpenAI-style error payload for encrypted in-stream failures. Clients
@@ -3639,7 +3639,7 @@ fn completion_failure_payload(failure: &AttemptFailure) -> Value {
     }
 }
 
-fn sse_event_from_encoded_data(event_data: &str) -> Event {
+fn sse_data_event(event_data: &str) -> Event {
     Event::default().data(event_data)
 }
 
@@ -6168,7 +6168,7 @@ mod tests {
         let payload = completion_error_payload("Inference provider request failed");
         let plaintext = payload.to_string();
 
-        let event = sse_event_from_encoded_data(&plaintext);
+        let event = sse_data_event(&plaintext);
         let response =
             Sse::new(futures::stream::iter([Ok::<Event, Infallible>(event)])).into_response();
         let body = to_bytes(response.into_body(), 4096)

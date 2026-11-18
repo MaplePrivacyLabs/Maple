@@ -70,7 +70,7 @@ pub struct PlatformAuthResponse {
     pub refresh_token: String,
 }
 
-#[derive(Deserialize, Clone, Validate)]
+#[derive(Clone, Validate)]
 pub struct PlatformRefreshRequest {
     #[validate(length(min = 1, message = "Refresh token cannot be empty"))]
     pub refresh_token: String,

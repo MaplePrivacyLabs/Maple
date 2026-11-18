@@ -854,13 +854,10 @@ pub async fn oauth_callback(
                 error!("Failed to build OAuth HTTP client: {:?}", e);
                 ApiError::InternalServerError
             })?;
-        let exchange =
-            oauth_client.exchange_code(AuthorizationCode::new(callback_request.code.clone()));
-        let exchange = if let Some(verifier) = pkce_verifier {
-            exchange.set_pkce_verifier(verifier)
-        } else {
-            exchange
-        };
+        // The code is exchanged only with this session's PKCE verifier.
+        let exchange = oauth_client
+            .exchange_code(AuthorizationCode::new(callback_request.code.clone()))
+            .set_pkce_verifier(pkce_verifier.ok_or(ApiError::InternalServerError)?);
         let token = exchange.request_async(&http_client).await.map_err(|e| {
             match &e {
                 // The raw body may hold tokens; log only where parsing failed.
@@ -997,7 +994,10 @@ pub async fn oauth_callback(
                 &app_state,
                 &id_token,
                 &client_id,
-                apple_nonce.as_ref().map(|nonce| nonce.as_str()),
+                apple_nonce
+                    .as_ref()
+                    .ok_or(ApiError::InternalServerError)?
+                    .as_str(),
             )
             .await
             {
@@ -1181,7 +1181,7 @@ async fn fetch_apple_user(
     app_state: &AppState,
     id_token: &str,
     client_id: &str,
-    expected_nonce: Option<&str>,
+    expected_nonce: &str,
 ) -> Result<AppleUser, ApiError> {
     debug!("Parsing and validating Apple ID token");
 
@@ -1191,7 +1191,7 @@ async fn fetch_apple_user(
         &app_state.apple_jwt_verifier,
         id_token,
         client_id,
-        expected_nonce,
+        Some(expected_nonce),
     )
     .await?;
 

@@ -53,9 +53,9 @@ does not establish the selected inference router.
   require a live session.
 - JWT and API-key contexts are distinct. Preserve the auth method through
   authorization, persistence eligibility, quota, and usage attribution.
-- Hold the session lease for the complete response body or stream. Successful
-  protected responses and ordinary stream events remain encrypted according to
-  the established client protocol.
+- The gateway encrypts the complete logical response, including every stream
+  record and its terminal record. A handler returns ordinary JSON or SSE, and a
+  stream must end with an explicit terminal event.
 - Validate provider-free input before writes. Pinned clients may recover from
   selected session or auth failures by retrying, so a side-effecting change
   needs explicit idempotency or proof that validation precedes the effect.

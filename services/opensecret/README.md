@@ -49,8 +49,7 @@ protected environment variables. Billing and feature flags are optional
 external HTTP APIs whose administrative credentials remain in the backend;
 their server implementations are not part of this repository setup.
 
-Protected routes require OpenSecret attestation/key exchange and encrypted
-sessions. “OpenAI-shaped” describes decrypted payloads, not a plaintext
+Protected routes require an attested Transport V2 session. “OpenAI-shaped” describes decrypted payloads, not a plaintext
 OpenAI-compatible wire endpoint. Use an OpenSecret SDK or Maple for
 protected-route integration tests; plain `curl` is suitable only for public
 health probes.
