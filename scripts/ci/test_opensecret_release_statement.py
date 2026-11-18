@@ -1,4 +1,4 @@
-"""Behaviour of the OpenSecret release statement producer (opensecret_release_statement.py).
+"""Behavior of the OpenSecret release statement producer (opensecret_release_statement.py).
 
 GitHub, Cosign, KMS and R2 are replaced by local fakes; a real Cosign-produced
 bundle checks the evidence profile against actual Rekor v2 output.
@@ -11,7 +11,6 @@ import contextlib
 import hashlib
 import http.server
 import io
-import itertools
 import json
 import os
 from pathlib import Path
@@ -24,23 +23,33 @@ from unittest import mock
 import zipfile
 
 import opensecret_release_statement as release
-from test_opensecret_eif_scripts import release_build_candidate
+from test_opensecret_eif_scripts import VALID_MEASUREMENTS, release_build_candidate
 from test_workflow_policy import workflows
 
 ROOT = Path(__file__).resolve().parents[2]
 FIXTURE = ROOT / "scripts/ci/fixtures/opensecret-release/cosign-v3.1.4-rekor-v2.bundle.json"
-MEASUREMENTS = {"HashAlgorithm": "Sha384 { ... }", "PCR0": "a" * 96, "PCR1": "b" * 96, "PCR2": "c" * 96}
 REVIEWED_DER = release.P384_SPKI_PREFIX + b"\x04" + bytes(range(1, 97))
 OTHER_DER = release.P384_SPKI_PREFIX + b"\x04" + bytes(range(2, 98))
 ACCOUNT = "123456789012"
 KEY_ARN = f"arn:aws:kms:us-east-1:{ACCOUNT}:key/0f1e2d3c-4b5a-6978-8796-a5b4c3d2e1f0"
 ROLE_ARN = f"arn:aws:iam::{ACCOUNT}:role/maple-pcr-signer-dev"
 R2_ACCOUNT = "e" * 32
+DEV_PUBLIC_KEY = "scripts/ci/opensecret-release/dev-signing-key.pem"
+# Sigstore's production Rekor v1 log, which a Rekor v2 profile must never accept.
+REKOR_V1_LOG_ID = "wNI9atQGlz+VWfO6LRygH4QUfY/8W4RFwiT5i5WRgB0="
 
 
 def pem(der):
     body = base64.encodebytes(der).decode()
     return f"-----BEGIN PUBLIC KEY-----\n{body}-----END PUBLIC KEY-----\n"
+
+
+def b64(data):
+    return base64.b64encode(data).decode()
+
+
+def sha256_hex(data):
+    return hashlib.sha256(data).hexdigest()
 
 
 def git(*arguments, cwd):
@@ -49,47 +58,77 @@ def git(*arguments, cwd):
                           cwd=cwd, check=True, capture_output=True, text=True).stdout.strip()
 
 
-def executable(path, source):
-    path.write_text(f"#!{sys.executable}\n{source}")
-    path.chmod(0o755)
-    return path
+# --- Bundles ----------------------------------------------------------------
+
+# Byte strings with the shape the pinned Cosign writes. The profile reads their
+# structure only; Cosign, which these tests replace, checks the cryptography.
+FAKE_SIGNATURE = b"0d\x02\x30" + b"\x11" * 98  # an ECDSA-Sig-Value header, then filler
+FAKE_ROOT_HASH = hashlib.sha256(b"fixture tree").digest()
+FAKE_LOG_INDEX = "7"
+FAKE_TREE_SIZE = "20"
 
 
-def b64(data):
-    return base64.b64encode(data).decode()
+def fake_timestamp_token(signature):
+    """Filler around the one part the profile reads: the imprint OCTET STRING (04 20, then SHA-256)."""
+    return b"\x30\x82\x02\xca" + b"\x05" * 40 + b"\x04\x20" + hashlib.sha256(signature).digest() + b"\x06" * 40
 
 
-def make_bundle(statement, der=REVIEWED_DER, signature=b"0d\x02\x30" + b"\x11" * 98):
-    """A bundle with the exact shape the pinned Cosign writes, without real signatures."""
-    services = release.signing_services()
-    root_hash = hashlib.sha256(b"fixture tree").digest()
-    log_signature = b64(services["log_key_id"][:4] + b"\x22" * 64)
+def fake_checkpoint(origin, key_id):
+    """A signed note for the fake tree: the log's own signature line, then a witness cosignature."""
+    log_signature = b64(key_id[:release.NOTE_KEY_HASH_BYTES] + b"\x22" * 64)
     witness_signature = b64(b"\x01\x02\x03\x04" + b"\x33" * 72)
-    checkpoint = (f"{services['log_origin']}\n20\n{b64(root_hash)}\n\n"
-                  f"\u2014 {services['log_origin']} {log_signature}\n"
-                  f"\u2014 witness.example {witness_signature}\n")
-    payload_pae = release.pae(release.PAYLOAD_TYPE, statement)
-    body = {"apiVersion": "0.0.2", "kind": "hashedrekord", "spec": {"hashedRekordV002": {
-        "data": {"algorithm": "SHA2_384", "digest": b64(hashlib.sha384(payload_pae).digest())},
-        "signature": {"content": b64(signature), "verifier": {
-            "keyDetails": "PKIX_ECDSA_P384_SHA_384", "publicKey": {"rawBytes": b64(der)}}}}}}
-    token = b"\x30\x82\x02\xca" + b"\x05" * 40 + b"\x04\x20" + hashlib.sha256(signature).digest() + b"\x06" * 40
+    return (f"{origin}\n{FAKE_TREE_SIZE}\n{b64(FAKE_ROOT_HASH)}\n\n"
+            f"— {origin} {log_signature}\n"
+            f"— witness.example {witness_signature}\n")
+
+
+def hashedrekord_body(statement):
+    envelope_digest = hashlib.sha384(release.pae(release.PAYLOAD_TYPE, statement)).digest()
+    return {
+        "apiVersion": "0.0.2",
+        "kind": "hashedrekord",
+        "spec": {
+            "hashedRekordV002": {
+                "data": {"algorithm": "SHA2_384", "digest": b64(envelope_digest)},
+                "signature": {
+                    "content": b64(FAKE_SIGNATURE),
+                    "verifier": {"keyDetails": "PKIX_ECDSA_P384_SHA_384", "publicKey": {"rawBytes": b64(REVIEWED_DER)}},
+                },
+            },
+        },
+    }
+
+
+def make_bundle(statement):
+    """A bundle with the exact shape the pinned Cosign writes for the reviewed key, without real signatures."""
+    services = release.signing_services()
+    log_entry = {
+        "logIndex": FAKE_LOG_INDEX,
+        "logId": {"keyId": b64(services["log_key_id"])},
+        "kindVersion": {"kind": "hashedrekord", "version": "0.0.2"},
+        "inclusionProof": {
+            "logIndex": FAKE_LOG_INDEX,
+            "rootHash": b64(FAKE_ROOT_HASH),
+            "treeSize": FAKE_TREE_SIZE,
+            "hashes": [b64(bytes([n]) * 32) for n in range(5)],
+            "checkpoint": {"envelope": fake_checkpoint(services["log_origin"], services["log_key_id"])},
+        },
+        "canonicalizedBody": b64(json.dumps(hashedrekord_body(statement)).encode()),
+    }
     return {
         "mediaType": release.BUNDLE_MEDIA_TYPE,
         "verificationMaterial": {
-            "publicKey": {"hint": b64(hashlib.sha256(der).digest())},
-            "tlogEntries": [{
-                "logIndex": "7", "logId": {"keyId": b64(services["log_key_id"])},
-                "kindVersion": {"kind": "hashedrekord", "version": "0.0.2"},
-                "inclusionProof": {"logIndex": "7", "rootHash": b64(root_hash), "treeSize": "20",
-                                   "hashes": [b64(bytes([n]) * 32) for n in range(5)],
-                                   "checkpoint": {"envelope": checkpoint}},
-                "canonicalizedBody": b64(json.dumps(body).encode()),
-            }],
-            "timestampVerificationData": {"rfc3161Timestamps": [{"signedTimestamp": b64(token)}]},
+            "publicKey": {"hint": b64(hashlib.sha256(REVIEWED_DER).digest())},
+            "tlogEntries": [log_entry],
+            "timestampVerificationData": {
+                "rfc3161Timestamps": [{"signedTimestamp": b64(fake_timestamp_token(FAKE_SIGNATURE))}],
+            },
         },
-        "dsseEnvelope": {"payload": b64(statement), "payloadType": release.PAYLOAD_TYPE,
-                         "signatures": [{"sig": b64(signature), "keyid": ""}]},
+        "dsseEnvelope": {
+            "payload": b64(statement),
+            "payloadType": release.PAYLOAD_TYPE,
+            "signatures": [{"sig": b64(FAKE_SIGNATURE), "keyid": ""}],
+        },
     }
 
 
@@ -97,254 +136,306 @@ def encode(bundle):
     return json.dumps(bundle).encode()
 
 
-def entry(bundle):
+def log_entry(bundle):
     return bundle["verificationMaterial"]["tlogEntries"][0]
 
 
+def timestamps(bundle):
+    return bundle["verificationMaterial"]["timestampVerificationData"]["rfc3161Timestamps"]
+
+
 def logged_body(bundle):
-    return json.loads(base64.b64decode(entry(bundle)["canonicalizedBody"]))
+    return json.loads(base64.b64decode(log_entry(bundle)["canonicalizedBody"]))
 
 
-def set_logged_body(bundle, body):
-    entry(bundle)["canonicalizedBody"] = b64(json.dumps(body).encode())
-
-
-# Single mutations of a passing bundle, each of which the profile must reject.
-def _drop_proof(bundle):
-    del entry(bundle)["inclusionProof"]
-
-
-def _drop_checkpoint(bundle):
-    del entry(bundle)["inclusionProof"]["checkpoint"]
-
-
-def _drop_timestamp(bundle):
-    bundle["verificationMaterial"]["timestampVerificationData"]["rfc3161Timestamps"] = []
-
-
-def _drop_timestamp_data(bundle):
-    del bundle["verificationMaterial"]["timestampVerificationData"]
-
-
-def _two_timestamps(bundle):
-    stamps = bundle["verificationMaterial"]["timestampVerificationData"]["rfc3161Timestamps"]
-    stamps.append(dict(stamps[0]))
-
-
-def _other_signature_timestamp(bundle):
-    stamps = bundle["verificationMaterial"]["timestampVerificationData"]["rfc3161Timestamps"]
-    stamps[0]["signedTimestamp"] = b64(b"\x30\x82" + b"\x04\x20" + hashlib.sha256(b"other").digest())
-
-
-def _rekor_v1_entry(bundle):
-    entry(bundle)["kindVersion"] = {"kind": "hashedrekord", "version": "0.0.1"}
-
-
-def _second_v1_entry(bundle):
-    extra = dict(entry(bundle), kindVersion={"kind": "dsse", "version": "0.0.1"},
-                 logId={"keyId": "wNI9atQGlz+VWfO6LRygH4QUfY/8W4RFwiT5i5WRgB0="}, integratedTime="1700000000",
-                 inclusionPromise={"signedEntryTimestamp": b64(b"set")})
-    bundle["verificationMaterial"]["tlogEntries"].append(extra)
-
-
-def _duplicate_entry(bundle):
-    bundle["verificationMaterial"]["tlogEntries"].append(dict(entry(bundle)))
-
-
-def _v1_log(bundle):
-    entry(bundle)["logId"] = {"keyId": "wNI9atQGlz+VWfO6LRygH4QUfY/8W4RFwiT5i5WRgB0="}
-
-
-def _integrated_time(bundle):
-    entry(bundle)["integratedTime"] = "1700000000"
-
-
-def _zero_integrated_time_string(bundle):
-    entry(bundle)["integratedTime"] = "0"
-
-
-def _zero_integrated_time_number(bundle):
-    entry(bundle)["integratedTime"] = 0
-
-
-def _empty_integrated_time(bundle):
-    entry(bundle)["integratedTime"] = ""
-
-
-def _null_integrated_time(bundle):
-    entry(bundle)["integratedTime"] = None
-
-
-def _empty_inclusion_promise(bundle):
-    entry(bundle)["inclusionPromise"] = {}
-
-
-def _unknown_entry_field(bundle):
-    entry(bundle)["extension"] = {}
-
-
-def _unknown_proof_field(bundle):
-    entry(bundle)["inclusionProof"]["integratedTime"] = "0"
-
-
-def _unknown_timestamp_field(bundle):
-    bundle["verificationMaterial"]["timestampVerificationData"]["rfc3161Timestamps"][0]["integratedTime"] = "0"
-
-
-def _unknown_envelope_field(bundle):
-    bundle["dsseEnvelope"]["integratedTime"] = "0"
-
-
-def _unknown_signature_field(bundle):
-    bundle["dsseEnvelope"]["signatures"][0]["certificate"] = "MA=="
-
-
-def _inclusion_promise(bundle):
-    entry(bundle)["inclusionPromise"] = {"signedEntryTimestamp": b64(b"set")}
-
-
-def _changed_payload(bundle):
-    payload = bytearray(base64.b64decode(bundle["dsseEnvelope"]["payload"]))
-    position = payload.index(b'"PCR0": "') + 9
-    payload[position] = ord("f") if payload[position] != ord("f") else ord("e")
-    bundle["dsseEnvelope"]["payload"] = b64(bytes(payload))
-
-
-def _sha256_digest(bundle):
+@contextlib.contextmanager
+def editing_logged_body(bundle):
+    """Yield the decoded log entry body; the edited body is encoded back on exit."""
     body = logged_body(bundle)
-    data = body["spec"]["hashedRekordV002"]["data"]
-    data["algorithm"] = "SHA2_256"
-    data["digest"] = b64(hashlib.sha256(base64.b64decode(bundle["dsseEnvelope"]["payload"])).digest())
-    set_logged_body(bundle, body)
+    yield body
+    log_entry(bundle)["canonicalizedBody"] = b64(json.dumps(body).encode())
 
 
-def _payload_digest(bundle):
-    body = logged_body(bundle)
-    body["spec"]["hashedRekordV002"]["data"]["digest"] = b64(
-        hashlib.sha384(base64.b64decode(bundle["dsseEnvelope"]["payload"])).digest())
-    set_logged_body(bundle, body)
+def logged_key(bundle):
+    verifier = logged_body(bundle)["spec"]["hashedRekordV002"]["signature"]["verifier"]
+    return base64.b64decode(verifier["publicKey"]["rawBytes"])
 
 
-def _other_logged_key(bundle):
-    body = logged_body(bundle)
-    body["spec"]["hashedRekordV002"]["signature"]["verifier"]["publicKey"]["rawBytes"] = b64(OTHER_DER)
-    set_logged_body(bundle, body)
+# --- Bundle mutations -------------------------------------------------------
+# Each is one change to a passing bundle that the profile must reject.
+
+MUTATIONS = {}
 
 
-def _p256_key_details(bundle):
-    body = logged_body(bundle)
-    body["spec"]["hashedRekordV002"]["signature"]["verifier"]["keyDetails"] = "PKIX_ECDSA_P256_SHA_256"
-    set_logged_body(bundle, body)
+def mutation(name):
+    def register(change):
+        MUTATIONS[name] = change
+        return change
+    return register
 
 
-def _other_logged_signature(bundle):
-    body = logged_body(bundle)
-    body["spec"]["hashedRekordV002"]["signature"]["content"] = b64(b"other signature")
-    set_logged_body(bundle, body)
+# Top-level shape and verification material.
+
+@mutation("bundle v0.2")
+def use_old_media_type(bundle):
+    bundle["mediaType"] = "application/vnd.dev.sigstore.bundle+json;version=0.2"
 
 
-def _dsse_kind(bundle):
-    body = logged_body(bundle)
-    body["kind"] = "dsse"
-    set_logged_body(bundle, body)
+@mutation("message signature")
+def add_message_signature(bundle):
+    bundle["messageSignature"] = {"signature": bundle["dsseEnvelope"]["signatures"][0]["sig"]}
 
 
-def _two_signatures(bundle):
-    signatures = bundle["dsseEnvelope"]["signatures"]
-    signatures.append(dict(signatures[0]))
-
-
-def _certificate(bundle):
+@mutation("certificate added")
+def add_certificate_chain(bundle):
     bundle["verificationMaterial"]["x509CertificateChain"] = {"certificates": [{"rawBytes": b64(b"cert")}]}
 
 
-def _certificate_instead_of_key(bundle):
+@mutation("certificate instead of key")
+def replace_key_with_certificate(bundle):
     material = bundle["verificationMaterial"]
     del material["publicKey"]
     material["certificate"] = {"rawBytes": b64(b"cert")}
 
 
-def _bundle_v02(bundle):
-    bundle["mediaType"] = "application/vnd.dev.sigstore.bundle+json;version=0.2"
+# DSSE envelope.
+
+@mutation("tampered statement")
+def tamper_statement(bundle):
+    payload = bytearray(base64.b64decode(bundle["dsseEnvelope"]["payload"]))
+    position = payload.index(b'"PCR0": "') + len(b'"PCR0": "')
+    payload[position] = ord("f") if payload[position] != ord("f") else ord("e")
+    bundle["dsseEnvelope"]["payload"] = b64(bytes(payload))
 
 
-def _message_signature(bundle):
-    bundle["messageSignature"] = {"signature": bundle["dsseEnvelope"]["signatures"][0]["sig"]}
+@mutation("two DSSE signatures")
+def add_second_signature(bundle):
+    signatures = bundle["dsseEnvelope"]["signatures"]
+    signatures.append(dict(signatures[0]))
 
 
-def _other_checkpoint_origin(bundle):
-    proof = entry(bundle)["inclusionProof"]
-    proof["checkpoint"]["envelope"] = proof["checkpoint"]["envelope"].replace(
-        "log2025-1.rekor.sigstore.dev", "log2099-1.example.invalid")
+@mutation("unknown envelope field")
+def add_envelope_field(bundle):
+    bundle["dsseEnvelope"]["integratedTime"] = "0"
 
 
-def _witness_only_checkpoint(bundle):
-    proof = entry(bundle)["inclusionProof"]
-    head, _, _ = proof["checkpoint"]["envelope"].partition("\n\n")
-    proof["checkpoint"]["envelope"] = head + "\n\n\u2014 witness.example " + b64(b"\x01\x02\x03\x04" + b"\x33" * 64) + "\n"
+@mutation("unknown signature field")
+def add_signature_field(bundle):
+    bundle["dsseEnvelope"]["signatures"][0]["certificate"] = "MA=="
 
 
-def _checkpoint_for_other_tree(bundle):
-    proof = entry(bundle)["inclusionProof"]
-    proof["rootHash"] = b64(hashlib.sha256(b"other tree").digest())
+# Transparency log entries.
+
+@mutation("two entries")
+def duplicate_entry(bundle):
+    bundle["verificationMaterial"]["tlogEntries"].append(dict(log_entry(bundle)))
 
 
-def _proof_for_other_entry(bundle):
-    entry(bundle)["inclusionProof"]["logIndex"] = str(int(entry(bundle)["logIndex"]) + 1)
+@mutation("extra v1 entry")
+def add_rekor_v1_entry(bundle):
+    extra = dict(log_entry(bundle), kindVersion={"kind": "dsse", "version": "0.0.1"},
+                 logId={"keyId": REKOR_V1_LOG_ID}, integratedTime="1700000000",
+                 inclusionPromise={"signedEntryTimestamp": b64(b"set")})
+    bundle["verificationMaterial"]["tlogEntries"].append(extra)
 
 
-MUTATIONS = {
-    "no inclusion proof": _drop_proof, "no checkpoint": _drop_checkpoint, "no timestamp": _drop_timestamp,
-    "no timestamp data": _drop_timestamp_data, "two timestamps": _two_timestamps,
-    "timestamp over another signature": _other_signature_timestamp, "Rekor v1 entry": _rekor_v1_entry,
-    "extra v1 entry": _second_v1_entry, "two entries": _duplicate_entry, "v1 log": _v1_log,
-    "integrated time": _integrated_time, "inclusion promise": _inclusion_promise,
-    "zero integrated time string": _zero_integrated_time_string,
-    "zero integrated time number": _zero_integrated_time_number, "empty integrated time": _empty_integrated_time,
-    "null integrated time": _null_integrated_time, "empty inclusion promise": _empty_inclusion_promise,
-    "unknown entry field": _unknown_entry_field, "unknown proof field": _unknown_proof_field,
-    "unknown timestamp field": _unknown_timestamp_field, "unknown envelope field": _unknown_envelope_field,
-    "unknown signature field": _unknown_signature_field,
-    "tampered statement": _changed_payload, "SHA-256 digest": _sha256_digest,
-    "digest of payload, not PAE": _payload_digest, "other signer key": _other_logged_key,
-    "P-256 key details": _p256_key_details, "logged signature differs": _other_logged_signature,
-    "dsse entry kind": _dsse_kind, "two DSSE signatures": _two_signatures, "certificate added": _certificate,
-    "certificate instead of key": _certificate_instead_of_key, "bundle v0.2": _bundle_v02,
-    "message signature": _message_signature, "checkpoint from another log": _other_checkpoint_origin,
-    "checkpoint without log signature": _witness_only_checkpoint, "proof for another tree": _checkpoint_for_other_tree,
-    "proof for another entry": _proof_for_other_entry,
-}
+@mutation("Rekor v1 entry")
+def downgrade_entry_version(bundle):
+    log_entry(bundle)["kindVersion"] = {"kind": "hashedrekord", "version": "0.0.1"}
+
+
+@mutation("v1 log")
+def use_rekor_v1_log(bundle):
+    log_entry(bundle)["logId"] = {"keyId": REKOR_V1_LOG_ID}
+
+
+@mutation("integrated time")
+def add_integrated_time(bundle):
+    log_entry(bundle)["integratedTime"] = "1700000000"
+
+
+@mutation("zero integrated time string")
+def add_zero_integrated_time_string(bundle):
+    log_entry(bundle)["integratedTime"] = "0"
+
+
+@mutation("zero integrated time number")
+def add_zero_integrated_time_number(bundle):
+    log_entry(bundle)["integratedTime"] = 0
+
+
+@mutation("empty integrated time")
+def add_empty_integrated_time(bundle):
+    log_entry(bundle)["integratedTime"] = ""
+
+
+@mutation("null integrated time")
+def add_null_integrated_time(bundle):
+    log_entry(bundle)["integratedTime"] = None
+
+
+@mutation("inclusion promise")
+def add_inclusion_promise(bundle):
+    log_entry(bundle)["inclusionPromise"] = {"signedEntryTimestamp": b64(b"set")}
+
+
+@mutation("empty inclusion promise")
+def add_empty_inclusion_promise(bundle):
+    log_entry(bundle)["inclusionPromise"] = {}
+
+
+@mutation("unknown entry field")
+def add_entry_field(bundle):
+    log_entry(bundle)["extension"] = {}
+
+
+# Inclusion proof and checkpoint.
+
+@mutation("no inclusion proof")
+def drop_inclusion_proof(bundle):
+    del log_entry(bundle)["inclusionProof"]
+
+
+@mutation("no checkpoint")
+def drop_checkpoint(bundle):
+    del log_entry(bundle)["inclusionProof"]["checkpoint"]
+
+
+@mutation("unknown proof field")
+def add_proof_field(bundle):
+    log_entry(bundle)["inclusionProof"]["integratedTime"] = "0"
+
+
+@mutation("proof for another entry")
+def prove_another_entry(bundle):
+    log_entry(bundle)["inclusionProof"]["logIndex"] = str(int(log_entry(bundle)["logIndex"]) + 1)
+
+
+@mutation("proof for another tree")
+def prove_another_tree(bundle):
+    log_entry(bundle)["inclusionProof"]["rootHash"] = b64(hashlib.sha256(b"other tree").digest())
+
+
+@mutation("checkpoint from another log")
+def move_checkpoint_to_another_log(bundle):
+    checkpoint = log_entry(bundle)["inclusionProof"]["checkpoint"]
+    checkpoint["envelope"] = checkpoint["envelope"].replace("log2025-1.rekor.sigstore.dev", "log2099-1.example.invalid")
+
+
+@mutation("checkpoint without log signature")
+def keep_only_witness_signature(bundle):
+    checkpoint = log_entry(bundle)["inclusionProof"]["checkpoint"]
+    note, _, _ = checkpoint["envelope"].partition("\n\n")
+    witness_signature = b64(b"\x01\x02\x03\x04" + b"\x33" * 64)
+    checkpoint["envelope"] = f"{note}\n\n— witness.example {witness_signature}\n"
+
+
+# Logged hashedrekord body.
+
+@mutation("dsse entry kind")
+def log_as_dsse(bundle):
+    with editing_logged_body(bundle) as body:
+        body["kind"] = "dsse"
+
+
+@mutation("SHA-256 digest")
+def log_sha256_digest(bundle):
+    payload = base64.b64decode(bundle["dsseEnvelope"]["payload"])
+    with editing_logged_body(bundle) as body:
+        data = body["spec"]["hashedRekordV002"]["data"]
+        data["algorithm"] = "SHA2_256"
+        data["digest"] = b64(hashlib.sha256(payload).digest())
+
+
+@mutation("digest of payload, not PAE")
+def log_payload_digest(bundle):
+    payload = base64.b64decode(bundle["dsseEnvelope"]["payload"])
+    with editing_logged_body(bundle) as body:
+        body["spec"]["hashedRekordV002"]["data"]["digest"] = b64(hashlib.sha384(payload).digest())
+
+
+@mutation("logged signature differs")
+def log_other_signature(bundle):
+    with editing_logged_body(bundle) as body:
+        body["spec"]["hashedRekordV002"]["signature"]["content"] = b64(b"other signature")
+
+
+@mutation("other signer key")
+def log_other_key(bundle):
+    with editing_logged_body(bundle) as body:
+        body["spec"]["hashedRekordV002"]["signature"]["verifier"]["publicKey"]["rawBytes"] = b64(OTHER_DER)
+
+
+@mutation("P-256 key details")
+def log_p256_key_details(bundle):
+    with editing_logged_body(bundle) as body:
+        body["spec"]["hashedRekordV002"]["signature"]["verifier"]["keyDetails"] = "PKIX_ECDSA_P256_SHA_256"
+
+
+# RFC 3161 timestamps.
+
+@mutation("no timestamp data")
+def drop_timestamp_data(bundle):
+    del bundle["verificationMaterial"]["timestampVerificationData"]
+
+
+@mutation("no timestamp")
+def drop_timestamp(bundle):
+    timestamps(bundle).clear()
+
+
+@mutation("two timestamps")
+def duplicate_timestamp(bundle):
+    timestamps(bundle).append(dict(timestamps(bundle)[0]))
+
+
+@mutation("timestamp over another signature")
+def timestamp_another_signature(bundle):
+    timestamps(bundle)[0]["signedTimestamp"] = b64(b"\x30\x82" + b"\x04\x20" + hashlib.sha256(b"other").digest())
+
+
+@mutation("unknown timestamp field")
+def add_timestamp_field(bundle):
+    timestamps(bundle)[0]["integratedTime"] = "0"
 
 
 class BundleProfileTests(unittest.TestCase):
     def setUp(self):
-        self.statement = release.statement_bytes("development", "1" * 40, MEASUREMENTS, 42, 1, "d" * 64)
+        self.statement = release.statement_bytes("development", "1" * 40, VALID_MEASUREMENTS, 42, 1, "d" * 64)
 
-    def test_real_cosign_rekor_v2_bundle_meets_the_profile(self):
-        # Pinned Cosign output for a synthetic statement and a throwaway P-384 key,
-        # logged in Sigstore's production Rekor v2 log with a public timestamp.
+    def real_bundle(self):
+        """Pinned Cosign output for a synthetic statement and a throwaway P-384 key,
+        logged in Sigstore's production Rekor v2 log with a public timestamp."""
         data = FIXTURE.read_bytes()
         bundle = json.loads(data)
         statement = base64.b64decode(bundle["dsseEnvelope"]["payload"])
-        key = base64.b64decode(logged_body(bundle)["spec"]["hashedRekordV002"]["signature"]["verifier"]
-                               ["publicKey"]["rawBytes"])
+        return data, statement, logged_key(bundle)
+
+    def test_real_cosign_rekor_v2_bundle_meets_the_profile(self):
+        data, statement, key = self.real_bundle()
         summary = release.check_bundle_profile(data, statement, key)
         self.assertEqual(summary["log"], "https://log2025-1.rekor.sigstore.dev")
         self.assertEqual(summary["timestamps"], 1)
         self.assertEqual(json.loads(statement)["predicateType"], release.PREDICATE_TYPE)
+
+    def test_real_cosign_bundle_is_refused_for_another_reviewed_key(self):
+        data, statement, _ = self.real_bundle()
         with self.assertRaisesRegex(release.EvidenceError, "reviewed signing key"):
             release.check_bundle_profile(data, statement, REVIEWED_DER)
+
+    def test_every_single_mutation_of_the_real_bundle_fails(self):
+        data, statement, key = self.real_bundle()
         for name, mutate in MUTATIONS.items():
-            if name in ("other signer key",):
-                continue
             with self.subTest(mutation=name):
                 changed = json.loads(data)
                 mutate(changed)
                 with self.assertRaises(release.EvidenceError):
                     release.check_bundle_profile(encode(changed), statement, key)
 
-    def test_the_synthetic_shape_passes_and_every_single_mutation_fails(self):
+    def test_synthetic_bundle_meets_the_profile(self):
         release.check_bundle_profile(encode(make_bundle(self.statement)), self.statement, REVIEWED_DER)
+
+    def test_every_single_mutation_of_the_synthetic_bundle_fails(self):
         for name, mutate in MUTATIONS.items():
             with self.subTest(mutation=name):
                 bundle = make_bundle(self.statement)
@@ -352,14 +443,19 @@ class BundleProfileTests(unittest.TestCase):
                 with self.assertRaises(release.EvidenceError):
                     release.check_bundle_profile(encode(bundle), self.statement, REVIEWED_DER)
 
-    def test_signed_statement_must_be_byte_identical_and_the_json_unambiguous(self):
-        data = encode(make_bundle(self.statement))
+    def test_signed_statement_must_be_byte_identical(self):
         reformatted = json.dumps(json.loads(self.statement)).encode()
         with self.assertRaisesRegex(release.EvidenceError, "differs from the prepared statement"):
-            release.check_bundle_profile(data, reformatted, REVIEWED_DER)
+            release.check_bundle_profile(encode(make_bundle(self.statement)), reformatted, REVIEWED_DER)
+
+    def test_duplicate_json_keys_are_refused(self):
+        data = encode(make_bundle(self.statement))
         duplicate = data.replace(b'"mediaType": ', b'"mediaType": "x", "mediaType": ', 1)
         with self.assertRaisesRegex(release.EvidenceError, "Duplicate JSON key"):
             release.check_bundle_profile(duplicate, self.statement, REVIEWED_DER)
+
+    def test_oversized_bundle_is_refused(self):
+        data = encode(make_bundle(self.statement))
         with self.assertRaisesRegex(release.EvidenceError, "size limit"):
             release.check_bundle_profile(data + b" " * release.MAX_BUNDLE_BYTES, self.statement, REVIEWED_DER)
 
@@ -375,15 +471,15 @@ class BundleProfileTests(unittest.TestCase):
         self.assertEqual(services["log_origin"], "log2025-1.rekor.sigstore.dev")
 
     def test_build_modes_map_explicitly_to_signed_environments_and_fixed_hosts(self):
-        self.assertEqual({mode: (chosen.environment, chosen.bucket, chosen.host)
-                          for mode, chosen in release.TARGETS.items()},
+        self.assertEqual({mode: (target.environment, target.bucket, target.host)
+                          for mode, target in release.TARGETS.items()},
                          {"dev": ("development", "maple-attestations-dev", "attestations-dev.maple.ai"),
                           "prod": ("production", "maple-attestations-prod", "attestations.maple.ai")})
         for mode in ("development", "Dev", "", "staging"):
             with self.subTest(mode=mode), self.assertRaises(release.EvidenceError):
                 release.target_for(mode)
 
-    def test_statement_carries_the_settled_predicate(self):
+    def test_statement_is_an_enclave_release_statement_for_the_eif(self):
         statement = json.loads(self.statement)
         self.assertEqual(statement, {
             "_type": "https://in-toto.io/Statement/v1",
@@ -398,13 +494,106 @@ class BundleProfileTests(unittest.TestCase):
         })
 
 
-class Workspace:
-    """A master checkout, candidate files and fakes for gh, Cosign and aws."""
+# --- Workspace: a master checkout, the build's evidence and fake tools -------
 
-    def __init__(self, test):
-        temporary = tempfile.TemporaryDirectory()
-        test.addCleanup(temporary.cleanup)
-        self.root = Path(temporary.name).resolve()
+# Each fake logs its call under STATE and answers from fixture files there. The
+# paths are written into the scripts because the producer strips the environment.
+FAKE_GH = r'''
+import hashlib, json, sys
+args = sys.argv[1:]
+with (STATE / "gh.log").open("a") as log:
+    log.write(json.dumps(args) + "\n")
+config = json.loads((STATE / "gh.json").read_text())
+if args[:2] == ["attestation", "verify"]:
+    digest = hashlib.sha256(Path(args[2]).read_bytes()).hexdigest()
+    found = [item for item in config["attestations"] if digest in item["digests"]]
+    if not found:
+        sys.exit(1)
+    print(json.dumps([{"verificationResult": {"statement": item["statement"]}} for item in found]))
+elif args[0] == "api" and "--paginate" in args:
+    print(json.dumps(config["artifacts"]))
+elif args[0] == "api" and args[1].endswith("/zip"):
+    sys.stdout.buffer.write((STATE / "artifact.zip").read_bytes())
+elif args[0] == "api":
+    print(json.dumps(config["run"]))
+else:
+    sys.exit("unexpected gh call")
+'''
+
+FAKE_COSIGN = r'''
+import json, os, shutil, sys
+args = sys.argv[1:]
+env = {key: value for key, value in os.environ.items() if key.startswith(("AWS_", "TUF_"))}
+token = env.get("AWS_WEB_IDENTITY_TOKEN_FILE")
+with (STATE / "cosign.log").open("a") as log:
+    log.write(json.dumps({"args": args, "env": env,
+                          "token": Path(token).read_text() if token and Path(token).exists() else None}) + "\n")
+config = json.loads((STATE / "cosign.json").read_text()) if (STATE / "cosign.json").exists() else {}
+if args[0] == "public-key":
+    sys.stdout.write((STATE / "served.pem").read_text())
+elif args[0] == "attest-blob":
+    if config.get("attest_fails"):
+        sys.exit(1)
+    shutil.copyfile(STATE / "signed-bundle.json", args[args.index("--bundle") + 1])
+elif args[0] == "verify-blob-attestation":
+    sys.exit(1 if config.get("verify_fails") else 0)
+else:
+    sys.exit("unexpected cosign call")
+'''
+
+FAKE_AWS = r'''
+import json, os, sys
+args = sys.argv[1:]
+with (STATE / "aws.log").open("a") as log:
+    log.write(json.dumps({"args": args, "env": sorted(key for key in os.environ if key.startswith("AWS_"))}) + "\n")
+if (STATE / "aws-fails").exists():
+    sys.exit(1)
+assert args[:2] == ["s3api", "put-object"], args
+
+
+def option(name):
+    return args[args.index(name) + 1]
+
+
+stored = STORAGE / option("--bucket") / option("--key")
+stored.parent.mkdir(parents=True, exist_ok=True)
+stored.write_bytes(Path(option("--body")).read_bytes())
+metadata = {"type": option("--content-type"), "cache": option("--cache-control")}
+Path(str(stored) + ".meta").write_text(json.dumps(metadata))
+'''
+
+
+def install_fake(path, source, **paths):
+    """Write an executable Python script; each keyword becomes a Path constant at its top."""
+    constants = "".join(f"{name} = Path({str(value)!r})\n" for name, value in paths.items())
+    path.write_text(f"#!{sys.executable}\nfrom pathlib import Path\n{constants}{source}")
+    path.chmod(0o755)
+
+
+@contextlib.contextmanager
+def workspace():
+    """A Workspace whose patches of the producer and the process environment end with it."""
+    with tempfile.TemporaryDirectory() as temporary, contextlib.ExitStack() as patches:
+        work = Workspace(Path(temporary).resolve())
+        for patch in work.patches():
+            patches.enter_context(patch)
+        yield work
+
+
+class Workspace:
+    """A master checkout, the dev build's evidence as GitHub serves it, and fakes for gh, Cosign and aws."""
+
+    def __init__(self, root):
+        self.root = root
+        self.run_id = 4242
+        self.candidate = root / "candidate"
+        self.release = root / "release"
+        self.create_master_checkout()
+        self.describe_build()
+        self.install_fakes()
+
+    def create_master_checkout(self):
+        """The build's commit with a later master commit on top, and the reviewed public key."""
         self.repo = self.root / "repo"
         self.repo.mkdir()
         git("init", "-q", "--initial-branch=master", cwd=self.repo)
@@ -415,127 +604,81 @@ class Workspace:
         (self.repo / "later").write_text("later master change\n")
         git("add", "-A", cwd=self.repo)
         git("commit", "-q", "-m", "later", cwd=self.repo)
-        key = self.repo / "scripts/ci/opensecret-release/dev-signing-key.pem"
+        key = self.repo / DEV_PUBLIC_KEY
         key.parent.mkdir(parents=True)
         key.write_text(pem(REVIEWED_DER))
-        self.bin = self.root / "bin"
-        self.bin.mkdir()
-        self.state = self.root / "state"
-        self.state.mkdir()
-        self.storage = self.root / "storage"
-        self.storage.mkdir()
-        self.candidate = self.root / "candidate"
-        self.release = self.root / "release"
-        self.run_id = 4242
-        self.files = {"image.eif": b"fixture EIF, not a real image", "pcr.json": json.dumps(MEASUREMENTS).encode()}
-        self.handoff = {"environment": "dev", "source_sha": self.source_sha, "measurements": MEASUREMENTS,
-                        "eif_sha256": hashlib.sha256(self.files["image.eif"]).hexdigest(), "approval_needed": True}
-        self.run = {"id": self.run_id, "run_attempt": 1, "path": release.BUILD_WORKFLOW, "event": "workflow_dispatch",
-                    "head_branch": "master", "head_sha": self.source_sha, "status": "completed",
-                    "conclusion": "success", "repository": {"full_name": release.REPOSITORY, "private": False},
-                    "head_repository": {"full_name": release.REPOSITORY}}
-        self.artifact = {"id": 99, "name": f"opensecret-eif-dev-{self.source_sha[:12]}", "expired": False,
-                         "size_in_bytes": 4096, "workflow_run": {"id": self.run_id, "head_sha": self.source_sha}}
-        self.attempt = 1
-        self.attested = None  # defaults to the three candidate files
+
+    def describe_build(self):
+        """The build's files, run, artifact and provenance. Tests change these before staging them."""
+        self.files = {
+            "image.eif": b"fixture EIF, not a real image",
+            "pcr.json": json.dumps(VALID_MEASUREMENTS).encode(),
+        }
+        self.handoff = {
+            "environment": "dev",
+            "source_sha": self.source_sha,
+            "measurements": VALID_MEASUREMENTS,
+            "eif_sha256": sha256_hex(self.files["image.eif"]),
+            "approval_needed": True,
+        }
+        self.run = {
+            "id": self.run_id,
+            "run_attempt": 1,
+            "path": release.BUILD_WORKFLOW,
+            "event": "workflow_dispatch",
+            "head_branch": "master",
+            "head_sha": self.source_sha,
+            "status": "completed",
+            "conclusion": "success",
+            "repository": {"full_name": release.REPOSITORY, "private": False},
+            "head_repository": {"full_name": release.REPOSITORY},
+        }
+        self.artifact = {
+            "id": 99,
+            "name": f"opensecret-eif-dev-{self.source_sha[:12]}",
+            "expired": False,
+            "size_in_bytes": 4096,
+            "workflow_run": {"id": self.run_id, "head_sha": self.source_sha},
+        }
+        # The build provenance covers every file in SHA256SUMS (or attested_names),
+        # from this attempt of this run.
+        self.attested_names = None
+        self.attested_run_id = self.run_id
+        self.attested_attempt = 1
         self.extra_zip_entries = {}
-        self.write_gh()
-        self.write_cosign()
-        self.write_aws()
-        self.environ = {
+
+    def install_fakes(self):
+        self.bin = self.root / "bin"
+        self.state = self.root / "state"
+        self.storage = self.root / "storage"
+        for directory in (self.bin, self.state, self.storage):
+            directory.mkdir()
+        install_fake(self.bin / "gh", FAKE_GH, STATE=self.state)
+        install_fake(self.bin / "cosign", FAKE_COSIGN, STATE=self.state)
+        install_fake(self.bin / "aws", FAKE_AWS, STATE=self.state, STORAGE=self.storage)
+        (self.state / "served.pem").write_text(pem(REVIEWED_DER))
+
+    def patches(self):
+        """The job's environment, this checkout as ROOT and the fake Cosign as the pinned release."""
+        environ = {
             "PATH": f"{self.bin}:{os.environ['PATH']}", "HOME": str(self.root), "TMPDIR": str(self.root),
-            "SIGNING_KEY_ARN": KEY_ARN, "SIGNER_ROLE_ARN": ROLE_ARN,
-            "SIGNING_PUBLIC_KEY": "scripts/ci/opensecret-release/dev-signing-key.pem",
+            "SIGNING_KEY_ARN": KEY_ARN, "SIGNER_ROLE_ARN": ROLE_ARN, "SIGNING_PUBLIC_KEY": DEV_PUBLIC_KEY,
             "GITHUB_RUN_ID": "777", "GITHUB_OUTPUT": str(self.root / "github-output"),
             "GITHUB_STEP_SUMMARY": str(self.root / "summary.md"),
             "ATTESTATIONS_R2_ACCOUNT_ID": R2_ACCOUNT, "ATTESTATIONS_R2_BUCKET": "maple-attestations-dev",
             "AWS_ACCESS_KEY_ID": "fixture-access-key", "AWS_SECRET_ACCESS_KEY": "fixture-secret-key",
+            # Inherited credentials that must never reach a tool.
             "AWS_SESSION_TOKEN": "inherited-session-token", "AWS_PROFILE": "inherited-profile",
         }
-        cosign = self.bin / "cosign"
-        patches = [
+        return [
             mock.patch.object(release, "ROOT", self.repo),
-            mock.patch.dict(os.environ, self.environ, clear=True),
+            mock.patch.dict(os.environ, environ, clear=True),
             mock.patch.object(release, "cosign_platform", return_value="linux-amd64"),
-            mock.patch.dict(release.COSIGN_SHA256, {"linux-amd64": release.sha256_file(cosign)}),
+            mock.patch.dict(release.COSIGN_SHA256, {"linux-amd64": release.sha256_file(self.bin / "cosign")}),
             mock.patch.object(release, "github_oidc_token", return_value="header.claims.signature"),
             mock.patch.object(release, "READBACK_DELAY", 0),
+            contextlib.redirect_stdout(io.StringIO()),
         ]
-        for patch in patches:
-            patch.start()
-            test.addCleanup(patch.stop)
-        test.enterContext(contextlib.redirect_stdout(io.StringIO()))
-
-    # -- fakes ---------------------------------------------------------------
-
-    def write_gh(self):
-        executable(self.bin / "gh", f"""
-import hashlib, json, sys
-from pathlib import Path
-state = Path({str(self.state)!r})
-args = sys.argv[1:]
-with (state / "gh.log").open("a") as log:
-    log.write(json.dumps(args) + "\\n")
-config = json.loads((state / "gh.json").read_text())
-if args[:2] == ["attestation", "verify"]:
-    digest = hashlib.sha256(Path(args[2]).read_bytes()).hexdigest()
-    found = [item for item in config["attestations"] if digest in item["digests"]]
-    if not found:
-        sys.exit(1)
-    print(json.dumps([{{"verificationResult": {{"statement": item["statement"]}}}} for item in found]))
-elif args[0] == "api" and "--paginate" in args:
-    print(json.dumps(config["artifacts"]))
-elif args[0] == "api" and args[1].endswith("/zip"):
-    sys.stdout.buffer.write((state / "artifact.zip").read_bytes())
-elif args[0] == "api":
-    print(json.dumps(config["run"]))
-else:
-    sys.exit("unexpected gh call")
-""")
-
-    def write_cosign(self):
-        executable(self.bin / "cosign", f"""
-import json, os, shutil, sys
-from pathlib import Path
-state = Path({str(self.state)!r})
-args = sys.argv[1:]
-env = {{key: value for key, value in os.environ.items() if key.startswith(("AWS_", "TUF_"))}}
-token = env.get("AWS_WEB_IDENTITY_TOKEN_FILE")
-with (state / "cosign.log").open("a") as log:
-    log.write(json.dumps({{"args": args, "env": env,
-                          "token": Path(token).read_text() if token and Path(token).exists() else None}}) + "\\n")
-config = json.loads((state / "cosign.json").read_text()) if (state / "cosign.json").exists() else {{}}
-if args[0] == "public-key":
-    sys.stdout.write((state / "served.pem").read_text())
-elif args[0] == "attest-blob":
-    if config.get("attest_fails"):
-        sys.exit(1)
-    shutil.copyfile(state / "signed-bundle.json", args[args.index("--bundle") + 1])
-elif args[0] == "verify-blob-attestation":
-    sys.exit(1 if config.get("verify_fails") else 0)
-else:
-    sys.exit("unexpected cosign call")
-""")
-        (self.state / "served.pem").write_text(pem(REVIEWED_DER))
-
-    def write_aws(self):
-        executable(self.bin / "aws", f"""
-import json, os, sys
-from pathlib import Path
-state = Path({str(self.state)!r})
-storage = Path({str(self.storage)!r})
-args = sys.argv[1:]
-with (state / "aws.log").open("a") as log:
-    log.write(json.dumps({{"args": args, "env": sorted(key for key in os.environ if key.startswith("AWS_"))}}) + "\\n")
-if (state / "aws-fails").exists():
-    sys.exit(1)
-option = lambda name: args[args.index(name) + 1]
-assert args[:2] == ["s3api", "put-object"], args
-target = storage / option("--bucket") / option("--key")
-target.parent.mkdir(parents=True, exist_ok=True)
-target.write_bytes(Path(option("--body")).read_bytes())
-Path(str(target) + ".meta").write_text(json.dumps({{"type": option("--content-type"), "cache": option("--cache-control")}}))
-""")
 
     def log(self, tool):
         path = self.state / f"{tool}.log"
@@ -543,58 +686,53 @@ Path(str(target) + ".meta").write_text(json.dumps({{"type": option("--content-ty
 
     # -- build evidence --------------------------------------------------------
 
-    def candidate_files(self, handoff=None, sums=None, files=None):
-        """The real build script's artifact for these files. Only a handoff or checksum
-        list that the build script would never write (a tampered or pre-handoff
-        artifact) is substituted by hand, with checksums recomputed over it."""
+    def built_artifact(self, files=None):
+        """The files build_opensecret_eif.sh writes for this build. A build script failure fails the test."""
+        files = files or self.files
+        output = release_build_candidate(Path(tempfile.mkdtemp(dir=self.root)), mode="dev",
+                                         source_sha=self.handoff["source_sha"], image=files["image.eif"],
+                                         pcr=files["pcr.json"])
+        return {name: (output / name).read_bytes() for name in (*release.FILES, "SHA256SUMS")}
+
+    def forged_artifact(self, handoff=None, checksummed=release.FILES, files=None):
+        """An artifact the build script never writes: this handoff, and SHA256SUMS over `checksummed`."""
         files = dict(files or self.files)
-        wanted = handoff or self.handoff
-        produced = {}
-        try:
-            out = release_build_candidate(Path(tempfile.mkdtemp(dir=self.root)), "dev", wanted["source_sha"],
-                                          files["image.eif"], files["pcr.json"])
-            produced = {name: (out / name).read_bytes() for name in (*release.FILES, "SHA256SUMS")}
-        except subprocess.CalledProcessError:
-            pass  # the build script refuses these files; model an artifact it never made
-        if produced and json.loads(produced["handoff.json"]) == wanted and not sums:
-            return produced
-        files["handoff.json"] = json.dumps(wanted).encode()
-        names = sums or ("image.eif", "pcr.json", "handoff.json")
-        files["SHA256SUMS"] = "".join(f"{hashlib.sha256(files[name]).hexdigest()}  {name}\n"
-                                      for name in names).encode()
+        files["handoff.json"] = json.dumps(handoff or self.handoff).encode()
+        files["SHA256SUMS"] = "".join(f"{sha256_hex(files[name])}  {name}\n" for name in checksummed).encode()
         return files
 
-    def stage(self, handoff=None, sums=None, shipped=None):
-        """Write the gh fixture: what was attested at build time, and what the artifact now holds."""
-        attested = self.candidate_files(handoff, sums)
+    def stage(self, attested=None, shipped=None):
+        """Write the gh fixture: the files the build attested (by default the build script's
+        output) and the files its artifact now holds (by default the same)."""
+        attested = attested or self.built_artifact()
         shipped = shipped or attested
         with zipfile.ZipFile(self.state / "artifact.zip", "w") as archive:
             for name, data in {**shipped, **self.extra_zip_entries}.items():
                 archive.writestr(name, data)
-        names = self.attested or [line.split("  ")[1] for line in attested["SHA256SUMS"].decode().splitlines()]
-        statement = {"_type": release.STATEMENT_TYPE, "predicateType": release.SLSA_TYPE,
-                     "subject": [{"name": name, "digest": {"sha256": hashlib.sha256(attested[name]).hexdigest()}}
-                                 for name in names],
-                     "predicate": {"runDetails": {"metadata": {"invocationId":
-                         f"{release.SOURCE_REPOSITORY}/actions/runs/{self.run_id}/attempts/{self.attempt}"}}}}
+        names = self.attested_names or [line.split("  ")[1] for line in attested["SHA256SUMS"].decode().splitlines()]
+        invocation = f"{release.SOURCE_REPOSITORY}/actions/runs/{self.attested_run_id}/attempts/{self.attested_attempt}"
+        statement = {
+            "_type": release.STATEMENT_TYPE,
+            "predicateType": release.SLSA_TYPE,
+            "subject": [{"name": name, "digest": {"sha256": sha256_hex(attested[name])}} for name in names],
+            "predicate": {"runDetails": {"metadata": {"invocationId": invocation}}},
+        }
         (self.state / "gh.json").write_text(json.dumps({
-            "run": self.run, "artifacts": [{"total_count": 1, "artifacts": [self.artifact]}],
-            "attestations": [{"digests": [item["digest"]["sha256"] for item in statement["subject"]],
-                              "statement": statement}],
+            "run": self.run,
+            "artifacts": [{"total_count": 1, "artifacts": [self.artifact]}],
+            "attestations": [{"digests": [sha256_hex(attested[name]) for name in names], "statement": statement}],
         }))
 
     def prepare(self):
-        self.stage_if_needed()
-        return release.prepare("dev", str(self.run_id), self.candidate, self.release)
-
-    def stage_if_needed(self):
         if not (self.state / "gh.json").exists():
             self.stage()
+        return release.prepare("dev", str(self.run_id), self.candidate, self.release)
 
     def statement(self):
         return (self.release / "statement.json").read_bytes()
 
     def signed_bundle(self, mutate=None):
+        """The bundle the fake Cosign writes: valid for the prepared statement, or with one mutation."""
         bundle = make_bundle(self.statement())
         if mutate:
             mutate(bundle)
@@ -605,78 +743,93 @@ Path(str(target) + ".meta").write_text(json.dumps({{"type": option("--content-ty
 
 
 class PrepareTests(unittest.TestCase):
-    def setUp(self):
-        self.work = Workspace(self)
+    def assert_refused(self, work, message=""):
+        with self.assertRaisesRegex(release.EvidenceError, message):
+            work.prepare()
+        self.assertFalse((work.release / "statement.json").exists())
+
+    def test_candidate_is_exactly_the_build_scripts_output(self):
+        with workspace() as work:
+            work.prepare()
+            produced = release_build_candidate(Path(tempfile.mkdtemp(dir=work.root)), mode="dev",
+                                               source_sha=work.source_sha, image=work.files["image.eif"],
+                                               pcr=work.files["pcr.json"])
+            for name in ("image.eif", "pcr.json", "handoff.json", "SHA256SUMS"):
+                self.assertEqual((work.candidate / name).read_bytes(), (produced / name).read_bytes(), name)
+            self.assertEqual(sorted(path.name for path in work.candidate.iterdir()),
+                             ["SHA256SUMS", "handoff.json", "image.eif", "pcr.json"])
+            self.assertFalse((work.release / "artifact.zip").exists())
 
     def test_verified_master_build_becomes_the_exact_statement(self):
-        self.work.run["run_attempt"] = 2  # a later attempt re-ran only another job
-        self.work.prepare()
-        # The candidate is byte-for-byte what build_opensecret_eif.sh wrote.
-        produced = release_build_candidate(Path(tempfile.mkdtemp(dir=self.work.root)), "dev", self.work.source_sha,
-                                           self.work.files["image.eif"], self.work.files["pcr.json"])
-        for name in ("image.eif", "pcr.json", "handoff.json", "SHA256SUMS"):
-            self.assertEqual((self.work.candidate / name).read_bytes(), (produced / name).read_bytes(), name)
-        statement = json.loads(self.work.statement())
-        self.assertEqual(statement["subject"], [{"name": "image.eif", "digest": {"sha256": self.work.handoff[
-            "eif_sha256"]}}])
-        self.assertEqual(statement["predicate"], {
-            "environment": "development",
-            "source": {"repository": "https://github.com/MaplePrivacyLabs/Maple", "commit": self.work.source_sha},
-            "measurements": {"PCR0": "a" * 96, "PCR1": "b" * 96, "PCR2": "c" * 96},
-            "build": {"runId": str(self.work.run_id), "runAttempt": 1},
-        })
-        self.assertEqual(sorted(p.name for p in self.work.candidate.iterdir()),
-                         ["SHA256SUMS", "handoff.json", "image.eif", "pcr.json"])
-        self.assertFalse((self.work.release / "artifact.zip").exists())
-        outputs = dict(line.split("=", 1) for line in (self.work.root / "github-output").read_text().splitlines())
-        self.assertEqual(outputs, {"source_sha": self.work.source_sha, "eif_sha256": self.work.handoff["eif_sha256"],
-                                   "pcr0": "a" * 96})
-        verify = [args for args in self.work.log("gh") if args[:2] == ["attestation", "verify"]]
-        self.assertEqual(sorted(Path(args[2]).name for args in verify), ["handoff.json", "image.eif", "pcr.json"])
-        for args in verify:
-            options = dict(zip(args[3::2], args[4::2]))
-            self.assertEqual(options, {
-                "--repo": "MaplePrivacyLabs/Maple",
-                "--cert-identity": "https://github.com/MaplePrivacyLabs/Maple/.github/workflows/"
-                                   "opensecret-eif-release.yml@refs/heads/master",
-                "--cert-oidc-issuer": "https://token.actions.githubusercontent.com",
-                "--source-ref": "refs/heads/master", "--source-digest": self.work.source_sha,
-                "--signer-digest": self.work.source_sha, "--predicate-type": "https://slsa.dev/provenance/v1",
-                "--format": "json"})
+        with workspace() as work:
+            work.run["run_attempt"] = 2  # a later attempt re-ran only another job
+            work.prepare()
+            statement = json.loads(work.statement())
+            self.assertEqual(statement["subject"],
+                             [{"name": "image.eif", "digest": {"sha256": work.handoff["eif_sha256"]}}])
+            self.assertEqual(statement["predicate"], {
+                "environment": "development",
+                "source": {"repository": "https://github.com/MaplePrivacyLabs/Maple", "commit": work.source_sha},
+                "measurements": {"PCR0": "a" * 96, "PCR1": "b" * 96, "PCR2": "c" * 96},
+                "build": {"runId": str(work.run_id), "runAttempt": 1},
+            })
 
-    def assert_refused(self, message=None):
-        with self.assertRaises(release.EvidenceError) as caught:
-            self.work.prepare()
-        if message:
-            self.assertRegex(str(caught.exception), message)
-        self.assertFalse((self.work.release / "statement.json").exists())
+    def test_step_outputs_name_the_verified_build(self):
+        with workspace() as work:
+            work.prepare()
+            outputs = dict(line.split("=", 1) for line in (work.root / "github-output").read_text().splitlines())
+            self.assertEqual(outputs, {"source_sha": work.source_sha, "eif_sha256": work.handoff["eif_sha256"],
+                                       "pcr0": "a" * 96})
+
+    def test_every_file_is_checked_against_the_release_workflows_provenance(self):
+        with workspace() as work:
+            work.prepare()
+            verify = [args for args in work.log("gh") if args[:2] == ["attestation", "verify"]]
+            self.assertEqual(sorted(Path(args[2]).name for args in verify), ["handoff.json", "image.eif", "pcr.json"])
+            for args in verify:
+                options = dict(zip(args[3::2], args[4::2]))
+                self.assertEqual(options, {
+                    "--repo": "MaplePrivacyLabs/Maple",
+                    "--cert-identity": "https://github.com/MaplePrivacyLabs/Maple/.github/workflows/"
+                                       "opensecret-eif-release.yml@refs/heads/master",
+                    "--cert-oidc-issuer": "https://token.actions.githubusercontent.com",
+                    "--source-ref": "refs/heads/master",
+                    "--source-digest": work.source_sha,
+                    "--signer-digest": work.source_sha,
+                    "--predicate-type": "https://slsa.dev/provenance/v1",
+                    "--format": "json",
+                })
 
     def test_runs_other_than_a_successful_master_dispatch_of_the_release_workflow_are_refused(self):
         wrong = {
-            "path": ".github/workflows/opensecret-eif.yml", "event": "push", "head_branch": "feature",
-            "conclusion": "failure", "status": "in_progress", "head_sha": "abc",
+            "path": ".github/workflows/opensecret-eif.yml",
+            "event": "push",
+            "head_branch": "feature",
+            "conclusion": "failure",
+            "status": "in_progress",
+            "head_sha": "abc",
             "head_repository": {"full_name": "fork/Maple"},
             "repository": {"full_name": "fork/Maple", "private": False},
         }
         for field, value in wrong.items():
-            with self.subTest(field=field):
-                self.work = Workspace(self)
-                self.work.run[field] = value
-                self.assert_refused()
-                self.assertFalse(self.work.candidate.exists())
+            with self.subTest(field=field), workspace() as work:
+                work.run[field] = value
+                self.assert_refused(work)
+                self.assertFalse(work.candidate.exists())
 
     def test_build_commit_outside_master_history_is_refused(self):
-        git("checkout", "-q", "-b", "side", self.work.source_sha, cwd=self.work.repo)
-        (self.work.repo / "side").write_text("unreviewed\n")
-        git("add", "-A", cwd=self.work.repo)
-        git("commit", "-q", "-m", "side", cwd=self.work.repo)
-        side = git("rev-parse", "HEAD", cwd=self.work.repo)
-        git("checkout", "-q", "master", cwd=self.work.repo)
-        self.work.run["head_sha"] = side
-        self.work.handoff["source_sha"] = side
-        self.work.artifact["workflow_run"]["head_sha"] = side
-        self.work.artifact["name"] = f"opensecret-eif-dev-{side[:12]}"
-        self.assert_refused("not in this master checkout")
+        with workspace() as work:
+            git("checkout", "-q", "-b", "side", work.source_sha, cwd=work.repo)
+            (work.repo / "side").write_text("unreviewed\n")
+            git("add", "-A", cwd=work.repo)
+            git("commit", "-q", "-m", "side", cwd=work.repo)
+            side = git("rev-parse", "HEAD", cwd=work.repo)
+            git("checkout", "-q", "master", cwd=work.repo)
+            work.run["head_sha"] = side
+            work.handoff["source_sha"] = side
+            work.artifact["workflow_run"]["head_sha"] = side
+            work.artifact["name"] = f"opensecret-eif-dev-{side[:12]}"
+            self.assert_refused(work, "not in this master checkout")
 
     def test_artifact_must_be_the_runs_own_unexpired_dev_artifact(self):
         cases = {
@@ -686,71 +839,93 @@ class PrepareTests(unittest.TestCase):
             "prod artifact name": lambda artifact: artifact.update(name=artifact["name"].replace("-dev-", "-prod-")),
         }
         for name, change in cases.items():
-            with self.subTest(case=name):
-                self.work = Workspace(self)
-                change(self.work.artifact)
-                self.assert_refused()
+            with self.subTest(case=name), workspace() as work:
+                change(work.artifact)
+                self.assert_refused(work)
 
-    def test_changed_or_extra_artifact_files_are_refused(self):
-        changed = self.work.candidate_files()
-        changed["image.eif"] = b"substituted EIF"
-        self.work.stage(shipped=changed)
-        self.assert_refused("differ from the build's SHA256SUMS")
-        # A substituted EIF with matching checksums still lacks this run's provenance.
-        self.work = Workspace(self)
-        self.work.stage(shipped=self.work.candidate_files(files={**self.work.files, "image.eif": b"substituted"}))
-        self.assert_refused("provenance for image.eif")
-        self.work = Workspace(self)
-        self.work.extra_zip_entries = {"extra.sh": b"echo"}
-        self.work.stage()
-        self.assert_refused("exactly image.eif")
+    def test_artifact_files_changed_after_the_build_are_refused(self):
+        with workspace() as work:
+            shipped = work.built_artifact()
+            shipped["image.eif"] = b"substituted EIF"
+            work.stage(shipped=shipped)
+            self.assert_refused(work, "differ from the build's SHA256SUMS")
+
+    def test_substituted_eif_with_matching_checksums_lacks_this_runs_provenance(self):
+        with workspace() as work:
+            work.stage(shipped=work.forged_artifact(files={**work.files, "image.eif": b"substituted"}))
+            self.assert_refused(work, "provenance for image.eif")
+
+    def test_extra_artifact_files_are_refused(self):
+        with workspace() as work:
+            work.extra_zip_entries = {"extra.sh": b"echo"}
+            work.stage()
+            self.assert_refused(work, "exactly image.eif")
 
     def test_builds_made_before_the_handoff_was_attested_are_refused(self):
-        self.work.stage(sums=("image.eif", "pcr.json"))
-        self.assert_refused("predates attested handoffs")
+        with workspace() as work:
+            work.stage(attested=work.forged_artifact(checksummed=("image.eif", "pcr.json")))
+            self.assert_refused(work, "predates attested handoffs")
 
-    def test_provenance_must_cover_all_three_files_for_this_run(self):
-        self.work.attested = ["image.eif", "pcr.json"]
-        self.work.stage()
-        self.assert_refused("does not cover")
-        self.work = Workspace(self)
-        self.work.run_id = 5000  # provenance from another run of the same workflow
-        self.work.stage()
-        self.work.run_id = 4242
-        self.assert_refused("does not cover")
-        self.work = Workspace(self)
-        self.work.attempt = 2  # an attempt the selected run never reached
-        self.work.stage()
-        self.assert_refused("does not cover")
+    def test_provenance_must_cover_all_three_files(self):
+        with workspace() as work:
+            work.attested_names = ["image.eif", "pcr.json"]
+            work.stage()
+            self.assert_refused(work, "does not cover")
+
+    def test_provenance_from_another_run_of_the_release_workflow_is_refused(self):
+        with workspace() as work:
+            work.attested_run_id = 5000
+            work.stage()
+            self.assert_refused(work, "does not cover")
+
+    def test_provenance_from_an_attempt_the_run_never_reached_is_refused(self):
+        with workspace() as work:
+            work.attested_attempt = 2
+            work.stage()
+            self.assert_refused(work, "does not cover")
 
     def test_handoff_must_say_dev_and_agree_with_the_artifact(self):
         cases = {
             "prod build": {"environment": "prod"},
             "other commit": {"source_sha": "3" * 40},
             "other EIF": {"eif_sha256": "0" * 64},
-            "other measurements": {"measurements": {**MEASUREMENTS, "PCR1": "e" * 96}},
+            "other measurements": {"measurements": {**VALID_MEASUREMENTS, "PCR1": "e" * 96}},
             "extra field": {"environment": "dev", "signed_environment": "production"},
         }
         for name, change in cases.items():
-            with self.subTest(case=name):
-                self.work = Workspace(self)
-                self.work.stage(handoff={**self.work.handoff, **change})
-                self.assert_refused()
+            with self.subTest(case=name), workspace() as work:
+                work.stage(attested=work.forged_artifact(handoff={**work.handoff, **change}))
+                self.assert_refused(work)
 
     def test_malformed_measurements_are_refused(self):
-        self.work.files["pcr.json"] = json.dumps({**MEASUREMENTS, "PCR0": "0" * 96}).encode()
-        self.work.handoff["measurements"] = json.loads(self.work.files["pcr.json"])
-        self.assert_refused("Invalid PCR0")
+        with workspace() as work:
+            # The build script refuses an all-zero PCR, so only a forged artifact carries one.
+            work.files["pcr.json"] = json.dumps({**VALID_MEASUREMENTS, "PCR0": "0" * 96}).encode()
+            work.handoff["measurements"] = json.loads(work.files["pcr.json"])
+            work.stage(attested=work.forged_artifact())
+            self.assert_refused(work, "Invalid PCR0")
+
+
+# Bundles that sign must refuse, so that publish never uploads them.
+UNPUBLISHABLE = ("no inclusion proof", "no timestamp", "Rekor v1 entry", "extra v1 entry", "inclusion promise",
+                 "zero integrated time string", "zero integrated time number", "tampered statement",
+                 "other signer key")
 
 
 class SignTests(unittest.TestCase):
     def setUp(self):
-        self.work = Workspace(self)
+        self.work = self.enterContext(workspace())
         self.work.prepare()
         self.cosign = self.work.bin / "cosign"
 
     def sign(self):
         return release.sign("dev", self.work.candidate, self.work.release, self.cosign)
+
+    def assert_never_signed(self, message=""):
+        with self.assertRaisesRegex(release.EvidenceError, message):
+            self.sign()
+        self.assertNotIn("attest-blob", [call["args"][0] for call in self.work.log("cosign")])
+        self.assertFalse((self.work.release / "bundle.json").exists())
 
     def test_signs_the_prepared_statement_with_the_fixed_key_and_pinned_configuration(self):
         self.work.signed_bundle()
@@ -762,34 +937,31 @@ class SignTests(unittest.TestCase):
             "attest-blob", "--key", f"awskms:///{KEY_ARN}", "--statement", str(self.work.release / "statement.json"),
             "--signing-config", str(release.SIGNING_CONFIG), "--trusted-root", str(release.TRUSTED_ROOT),
             "--bundle", str(self.work.release / "bundle.json"), "--yes", str(self.work.candidate / "image.eif")])
-        for call in calls[:2]:
-            # Only the role assumed through GitHub's OIDC token reaches KMS.
+        self.assertEqual(calls[2]["args"], [
+            "verify-blob-attestation", "--bundle", str(self.work.release / "bundle.json"),
+            "--key", str(self.work.repo / DEV_PUBLIC_KEY),
+            "--type", release.PREDICATE_TYPE, "--use-signed-timestamps", "--trusted-root", str(release.TRUSTED_ROOT),
+            str(self.work.candidate / "image.eif")])
+
+    def test_only_the_role_assumed_through_github_oidc_reaches_kms(self):
+        self.work.signed_bundle()
+        self.sign()
+        for call in self.work.log("cosign")[:2]:  # public-key and attest-blob
             self.assertEqual(call["env"]["AWS_ROLE_ARN"], ROLE_ARN)
             self.assertEqual(call["env"]["AWS_REGION"], "us-east-1")
             self.assertEqual(call["token"], "header.claims.signature")
             self.assertFalse({"AWS_ACCESS_KEY_ID", "AWS_SECRET_ACCESS_KEY", "AWS_SESSION_TOKEN", "AWS_PROFILE"}
                              & set(call["env"]))
             self.assertFalse(Path(call["env"]["AWS_WEB_IDENTITY_TOKEN_FILE"]).exists())  # removed afterwards
-        self.assertEqual(calls[2]["args"], [
-            "verify-blob-attestation", "--bundle", str(self.work.release / "bundle.json"),
-            "--key", str(self.work.repo / "scripts/ci/opensecret-release/dev-signing-key.pem"),
-            "--type", release.PREDICATE_TYPE, "--use-signed-timestamps", "--trusted-root", str(release.TRUSTED_ROOT),
-            str(self.work.candidate / "image.eif")])
+
+    def test_records_the_cosign_release_and_key_that_signed(self):
+        self.work.signed_bundle()
+        self.sign()
         receipt = json.loads((self.work.release / "bundle.verification.json").read_text())
         self.assertEqual(receipt["cosign"], "v3.1.4")
         self.assertEqual(receipt["keyArn"], KEY_ARN)
 
-    def assert_never_signed(self, message=None):
-        with self.assertRaises(release.EvidenceError) as caught:
-            self.sign()
-        if message:
-            self.assertRegex(str(caught.exception), message)
-        self.assertNotIn("attest-blob", [call["args"][0] for call in self.work.log("cosign")])
-        self.assertFalse((self.work.release / "bundle.json").exists())
-
     def test_placeholder_or_unfixed_identity_never_reaches_cosign(self):
-        workflow = workflows()["opensecret-release-statement-dev.yml"]["jobs"]["sign"]["env"]
-        configured = {name: workflow[name] for name in ("SIGNING_KEY_ARN", "SIGNER_ROLE_ARN", "SIGNING_PUBLIC_KEY")}
         cases = {
             "placeholder key": {"SIGNING_KEY_ARN": "arn:aws:kms:us-east-1:REPLACE_ME_SIGNING_ACCOUNT_ID:key/"
                                                   "REPLACE_ME_DEV_KEY_ID"},
@@ -804,10 +976,12 @@ class SignTests(unittest.TestCase):
             "uncommitted public key": {"SIGNING_PUBLIC_KEY": "scripts/ci/opensecret-release/missing.pem"},
             "public key outside the repository": {"SIGNING_PUBLIC_KEY": "../outside.pem"},
         }
-        # The workflow's own values either form a complete identity or are refused here too.
-        complete = not any("REPLACE" in value for value in configured.values()) and (
-            ROOT / configured["SIGNING_PUBLIC_KEY"]).is_file()
-        if not complete:
+        # Until the workflow's own identity is complete (no placeholder, public key
+        # committed), it must be refused like the cases above.
+        job_env = workflows()["opensecret-release-statement-dev.yml"]["jobs"]["sign"]["env"]
+        configured = {name: job_env[name] for name in ("SIGNING_KEY_ARN", "SIGNER_ROLE_ARN", "SIGNING_PUBLIC_KEY")}
+        has_placeholder = any("REPLACE" in value for value in configured.values())
+        if has_placeholder or not (ROOT / configured["SIGNING_PUBLIC_KEY"]).is_file():
             cases["the workflow's configured identity"] = configured
         (self.work.root / "outside.pem").write_text(pem(REVIEWED_DER))
         self.work.signed_bundle()
@@ -823,13 +997,14 @@ class SignTests(unittest.TestCase):
         self.work.signed_bundle()
         self.assert_never_signed("differs from the reviewed public key")
 
-    def test_tampered_statement_or_changed_eif_is_refused_before_signing(self):
-        original = self.work.statement()
-        tampered = original.replace(b'"development"', b'"production"')
+    def test_tampered_statement_is_refused_before_signing(self):
+        tampered = self.work.statement().replace(b'"development"', b'"production"')
         (self.work.release / "statement.json").write_bytes(tampered)
         self.work.signed_bundle()
         self.assert_never_signed("statement was modified")
-        (self.work.release / "statement.json").write_bytes(original)
+
+    def test_eif_changed_after_verification_is_refused_before_signing(self):
+        self.work.signed_bundle()
         (self.work.candidate / "image.eif").write_bytes(b"changed after verification")
         self.assert_never_signed("SHA256SUMS")
 
@@ -839,9 +1014,7 @@ class SignTests(unittest.TestCase):
             self.assert_never_signed("not the pinned")
 
     def test_missing_proof_timestamp_or_extra_entries_fail_and_nothing_is_published(self):
-        for name in ("no inclusion proof", "no timestamp", "Rekor v1 entry", "extra v1 entry", "inclusion promise",
-                     "zero integrated time string", "zero integrated time number", "tampered statement",
-                     "other signer key"):
+        for name in UNPUBLISHABLE:
             with self.subTest(mutation=name):
                 bundle = self.work.release / "bundle.json"
                 bundle.unlink(missing_ok=True)
@@ -854,12 +1027,15 @@ class SignTests(unittest.TestCase):
                                     base_url="http://127.0.0.1:9")
                 self.assertEqual(self.work.log("aws"), [])
 
-    def test_cosign_failures_fail_the_job(self):
+    def test_failed_attestation_fails_the_job_without_a_bundle(self):
         self.work.signed_bundle()
         self.work.cosign_config(attest_fails=True)
         with self.assertRaises(subprocess.CalledProcessError):
             self.sign()
         self.assertFalse((self.work.release / "bundle.json").exists())
+
+    def test_failed_cosign_verification_fails_the_job_without_a_receipt(self):
+        self.work.signed_bundle()
         self.work.cosign_config(verify_fails=True)
         with self.assertRaises(subprocess.CalledProcessError):
             self.sign()
@@ -867,7 +1043,11 @@ class SignTests(unittest.TestCase):
 
 
 class Host(http.server.BaseHTTPRequestHandler):
-    """The public bucket host: serves stored objects with their stored metadata."""
+    """The public bucket host: serves stored objects with their stored metadata.
+
+    `overrides` replaces the body, the cache policy or the CORS header, modeling a
+    stale cache or a misconfigured host; `origins` records each request's Origin.
+    """
 
     storage: Path
     overrides: dict = {}
@@ -897,14 +1077,13 @@ class Host(http.server.BaseHTTPRequestHandler):
 
 class PublishTests(unittest.TestCase):
     def setUp(self):
-        self.work = Workspace(self)
+        self.work = self.enterContext(workspace())
         self.work.prepare()
         self.work.signed_bundle()
         self.cosign = self.work.bin / "cosign"
         release.sign("dev", self.work.candidate, self.work.release, self.cosign)
-        handler = type("FixtureHost", (Host,), {"storage": self.work.storage, "overrides": {}, "origins": []})
-        self.handler = handler
-        server = http.server.ThreadingHTTPServer(("127.0.0.1", 0), handler)
+        self.handler = type("FixtureHost", (Host,), {"storage": self.work.storage, "overrides": {}, "origins": []})
+        server = http.server.ThreadingHTTPServer(("127.0.0.1", 0), self.handler)
         thread = threading.Thread(target=server.serve_forever, daemon=True)
         thread.start()
         self.addCleanup(thread.join)
@@ -966,8 +1145,11 @@ class PublishTests(unittest.TestCase):
         self.assertFalse((self.bucket / self.key).exists())
 
     def test_stale_or_unbrowsable_public_bytes_are_not_reported_as_published(self):
-        cases = {"stale bytes": {"body": b"{}"}, "wrong cache policy": {"cache": "public, max-age=31536000, immutable"},
-                 "no CORS": {"cors": False}}
+        cases = {
+            "stale bytes": {"body": b"{}"},
+            "wrong cache policy": {"cache": "public, max-age=31536000, immutable"},
+            "no CORS": {"cors": False},
+        }
         for name, override in cases.items():
             with self.subTest(case=name):
                 self.handler.overrides = override
@@ -975,9 +1157,11 @@ class PublishTests(unittest.TestCase):
         self.assertEqual(len(self.handler.origins), len(cases) * release.READBACK_ATTEMPTS)
 
     def test_publisher_is_bound_to_the_dev_bucket_and_needs_its_credential(self):
-        cases = {"prod bucket": {"ATTESTATIONS_R2_BUCKET": "maple-attestations-prod"},
-                 "bad account": {"ATTESTATIONS_R2_ACCOUNT_ID": "not-an-account"},
-                 "no credential": {"AWS_SECRET_ACCESS_KEY": ""}}
+        cases = {
+            "prod bucket": {"ATTESTATIONS_R2_BUCKET": "maple-attestations-prod"},
+            "bad account": {"ATTESTATIONS_R2_ACCOUNT_ID": "not-an-account"},
+            "no credential": {"AWS_SECRET_ACCESS_KEY": ""},
+        }
         for name, values in cases.items():
             with self.subTest(case=name), mock.patch.dict(os.environ, values):
                 self.assert_not_published("")
@@ -985,7 +1169,7 @@ class PublishTests(unittest.TestCase):
 
     def test_a_bundle_changed_after_signing_is_never_uploaded(self):
         bundle = json.loads((self.work.release / "bundle.json").read_text())
-        _changed_payload(bundle)
+        tamper_statement(bundle)
         (self.work.release / "bundle.json").write_bytes(encode(bundle))
         self.assert_not_published("differs from the prepared statement")
         self.assertEqual(self.work.log("aws"), [])
