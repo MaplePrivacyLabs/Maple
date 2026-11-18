@@ -4330,11 +4330,7 @@ impl Sidebar {
                     .map(|column| match rename_field {
                         Some(field) => column.child(field),
                         None => column.child(row_line(
-                            task_title(
-                                &row.title,
-                                activity == Some(SessionActivity::Running),
-                                is_selected,
-                            ),
+                            task_title(&row.title, activity == Some(SessionActivity::Running)),
                             hover_group,
                             row_bg,
                             hover_bg,
@@ -4554,26 +4550,24 @@ fn row_fade_background(color: u32) -> gpui::Background {
     )
 }
 
-/// One pass of a running task's shine across its title: the pace of the
-/// transcript's "Maple is thinking" line, so the two read as one signal.
-const TITLE_SHINE: Duration = Duration::from_millis(1900);
+/// One pass of a running task's shine across its title. Quicker than the
+/// transcript's "Maple is thinking" line: the sidebar is read at a glance,
+/// and a running row must show itself within a moment of looking.
+const TITLE_SHINE: Duration = Duration::from_millis(1200);
 
-/// A task's title. While the task runs, a brighter band sweeps across the
-/// words, the transcript's thinking shine, and the words rest a step
-/// dimmer under it as the thinking line's do: secondary ink on a selected
-/// row, muted otherwise, as the row's metadata. The band holds still when
-/// loops do, under reduced motion and in a background window.
-fn task_title(title: &SharedString, running: bool, selected: bool) -> AnyElement {
+/// A task's title. While the task runs, the transcript's thinking shine
+/// sweeps across the words in the brightest ink the theme has, over words
+/// that rest in muted ink on every row. A selected row keeps the same
+/// muted rest: in secondary ink, the selected row's band and words were
+/// nearly one colour. The band holds still when loops do, under reduced
+/// motion and in a background window.
+fn task_title(title: &SharedString, running: bool) -> AnyElement {
     if !running {
         return title.clone().into_any_element();
     }
     morph_text("task-title", title.clone())
-        .color(gpui::rgb(if selected {
-            theme::text_secondary()
-        } else {
-            theme::text_muted()
-        }))
-        .shine(TITLE_SHINE, gpui::rgb(theme::text_heading()))
+        .color(gpui::rgb(theme::text_muted()))
+        .shine(TITLE_SHINE, gpui::rgb(theme::activity_shine()))
         .into_any_element()
 }
 

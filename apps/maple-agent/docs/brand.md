@@ -185,6 +185,7 @@ the dark background.
 | `on_accent` | `#f7f7f9` | same | on primary (stays bright so coral stays readable) |
 | `accent_container`, `permission_fill` | `#ffe8e0` Maple 100 | `#3a2118` / `#2a1a14` | primary container |
 | `accent_ink` | `#d04926` Maple 800 | `#ff9771` Maple 500 | coral icon on a primary container, 3:1 or better |
+| `activity_shine` | `#000000` | `#ffffff` | the band that shines across a running task's title, over `text_muted` |
 | `bg_composer_tray` | `#f7f7f9` Pebble 50 | `#222228` | panel docked inside the composer |
 | `bg_default_button`, `text_on_default_button` | `#171717` / `#f7f7f9` | `#e8e8ed` / `#18181c` | `default_button`: the inverted pill, held to 7:1 at rest, hover and press |
 | `link` | `#9e7469` Bark 500 | `#c29a8d` Bark 300 | tertiary |
