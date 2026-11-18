@@ -434,7 +434,8 @@ LANES: Tuple[Lane, ...] = (
     Lane("os-helpers", ("scripts/ci/opensecret-helpers.sh",), opensecret="helpers", job="os-helpers",
          runner=Runner("ubuntu-24.04-arm"),
          run="./scripts/ci/opensecret-helpers.sh", timeout=30),
-    Lane("os-pcr", (), opensecret="pcr", runner=GITHUB, timeout=10,
+    # A cold run builds the pinned Git dependency before checking PCR compatibility.
+    Lane("os-pcr", (), opensecret="pcr", runner=GITHUB, timeout=30,
          run='nix build --no-update-lock-file --no-link'
              ' ".#checks.$(nix eval --impure --raw --expr builtins.currentSystem).pcr-compatibility"'),
     # Not the selector's `audit` output, which CI files also trigger: like the other
