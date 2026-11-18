@@ -90,7 +90,7 @@ the shared 15 fps `ticker` clock and pause in background windows.
 | Tool status | spinner leaves at once, the outcome fades in, `TOGGLE` | — |
 | Disclosed details (tool output, thinking) | fade in, `REVEAL` | immediate |
 | Streaming text | grows in place, no animation | — |
-| A turn's line ("Maple is thinking", "Worked for 11s") | fades in under the transcript, `REVEAL`, and keeps its place when the turn's first step takes it into the list; while Maple works a shine crosses the words and the mark's blocks shrink and grow one at a time along the M's stroke, never both shining; the words morph when they change and the time counts whole seconds | immediate |
+| A turn's line ("Maple is thinking", "Worked for 11s") | fades in under the transcript, `REVEAL`, and keeps its place when the turn's first step takes it into the list; while Maple works a shine crosses the words and the mark's blocks shrink and grow one at a time all the way around the M's outline, never both shining; the words morph when they change and the time counts whole seconds | immediate |
 | A turn's steps, shown from its line | fade in, `REVEAL`; the chevron turns, `TOGGLE` | immediate |
 | Notices, queued messages, cards above the composer | fade and rise, `ENTER` | immediate |
 | Files attached to the draft | fade and 6 px rise, `ENTER` | immediate |
