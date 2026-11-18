@@ -2181,6 +2181,8 @@ settings-catalog-summary-playwright = Navega por sitios web, haz clic en las pá
 settings-catalog-summary-xcode = Compila y prueba tus proyectos de Xcode
 settings-catalog-summary-vana = Usa los datos personales que elijas compartir
 settings-catalog-summary-home-assistant = Consulta y controla tu casa inteligente
+settings-catalog-summary-privacy = Crea y administra tus tarjetas virtuales
+settings-catalog-summary-ynab = Trabaja con tu presupuesto y tus transacciones
 # El campo de la ventana que pregunta dónde está una aplicación. También es su nombre para lectores de pantalla.
 settings-catalog-address = Dirección
 # Título de esa ventana. $name es la aplicación, como Home Assistant.

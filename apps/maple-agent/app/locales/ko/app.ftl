@@ -2300,6 +2300,8 @@ settings-catalog-summary-playwright = 웹사이트 탐색, 페이지 클릭 및 
 settings-catalog-summary-xcode = Xcode 프로젝트 빌드 및 테스트
 settings-catalog-summary-vana = 공유하기로 선택한 개인 데이터 사용
 settings-catalog-summary-home-assistant = 스마트 홈 확인 및 제어
+settings-catalog-summary-privacy = 가상 카드 생성 및 관리
+settings-catalog-summary-ynab = 예산과 거래 내역 작업
 # The field in the pop-up that asks where an app is. Also its screen reader name.
 settings-catalog-address = 주소
 # Title of that pop-up. $name is the app, such as Home Assistant.
