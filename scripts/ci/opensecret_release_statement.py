@@ -218,16 +218,33 @@ def public_key_der(text):
     return der
 
 
+def checkout_git(*arguments):
+    """Run git on ROOT's own checkout.
+
+    Inherited GIT_* variables (GIT_DIR, GIT_WORK_TREE, GIT_INDEX_FILE,
+    GIT_OBJECT_DIRECTORY, GIT_CONFIG_PARAMETERS and the rest) could point git
+    at another repository, so none reach it: git finds the repository from ROOT.
+    """
+    env = {name: value for name, value in os.environ.items() if not name.startswith("GIT_")}
+    try:
+        return subprocess.run(["git", *arguments], cwd=ROOT, env=env, stdout=subprocess.PIPE,
+                              stderr=subprocess.DEVNULL)
+    except FileNotFoundError:
+        raise EvidenceError("Git is not available to read the checked-out commit") from None
+
+
 def committed_file(relative):
     """The bytes HEAD records for a file at this repository path, or None if HEAD has no file there."""
-    listing = subprocess.run(["git", "ls-tree", "-z", "HEAD", "--", relative], cwd=ROOT,
-                             stdout=subprocess.PIPE, stderr=subprocess.DEVNULL)
+    toplevel = checkout_git("rev-parse", "--show-toplevel")
+    require(toplevel.returncode == 0 and Path(os.fsdecode(toplevel.stdout.rstrip(b"\n"))).resolve() == ROOT,
+            "The repository is not a Git checkout of its own")
+    listing = checkout_git("ls-tree", "-z", "HEAD", "--", relative)
     require(listing.returncode == 0, "Cannot read the checked-out commit's tree")
     for entry in listing.stdout.split(b"\0"):
         metadata, _, name = entry.partition(b"\t")
         if name == relative.encode() and metadata.split(b" ")[1:2] == [b"blob"]:
-            blob = subprocess.run(["git", "cat-file", "blob", metadata.split(b" ")[2].decode()], cwd=ROOT,
-                                  stdout=subprocess.PIPE, check=True)
+            blob = checkout_git("cat-file", "blob", metadata.split(b" ")[2].decode())
+            require(blob.returncode == 0, "Cannot read the checked-out commit's tree")
             return blob.stdout
     return None
 

@@ -1027,6 +1027,28 @@ class BuildEvidenceShapeTests(unittest.TestCase):
                 release.validate_run(run, "4242")
 
 
+def foreign_repository(root, keys):
+    """Another repository whose HEAD tracks `keys` (path -> DER), to point inherited Git variables at."""
+    foreign = root / "foreign"
+    foreign.mkdir()
+    git("init", "-q", "--initial-branch=master", cwd=foreign)
+    for configured, der in keys.items():
+        (foreign / configured).parent.mkdir(parents=True, exist_ok=True)
+        (foreign / configured).write_text(pem(der))
+    git("add", "-A", cwd=foreign)
+    git("commit", "-q", "-m", "foreign keys", cwd=foreign)
+    return foreign
+
+
+def git_selectors(foreign):
+    """Inherited Git variables that would make git read `foreign` instead of the checkout."""
+    return {
+        "GIT_DIR": {"GIT_DIR": str(foreign / ".git")},
+        "GIT_DIR and GIT_WORK_TREE": {"GIT_DIR": str(foreign / ".git"), "GIT_WORK_TREE": str(foreign)},
+        "GIT_COMMON_DIR": {"GIT_COMMON_DIR": str(foreign / ".git")},
+    }
+
+
 class ReviewedPublicKeyTests(unittest.TestCase):
     """Cosign verifies against exactly the key file the checked-out commit tracks."""
 
@@ -1079,6 +1101,60 @@ class ReviewedPublicKeyTests(unittest.TestCase):
         (self.work.repo / "keys").symlink_to(Path(DEV_PUBLIC_KEY).parent)
         self.work.commit("a linked key directory")
         self.assert_refused(f"keys/{self.key.name}", "reached through a symlink")
+
+    def test_inherited_git_variables_cannot_make_another_repository_vouch_for_the_key(self):
+        foreign = foreign_repository(self.work.root, {DEV_PUBLIC_KEY: OTHER_DER, UNTRACKED_PUBLIC_KEY: OTHER_DER})
+        (self.work.repo / UNTRACKED_PUBLIC_KEY).write_text(pem(OTHER_DER))
+        for name, selectors in git_selectors(foreign).items():
+            with self.subTest(selectors=name), mock.patch.dict(os.environ, selectors):
+                # The checkout's own tracked key is still the one read.
+                self.assertEqual(release.reviewed_public_key({"SIGNING_PUBLIC_KEY": DEV_PUBLIC_KEY}),
+                                 (self.key, REVIEWED_DER))
+                self.assert_refused(UNTRACKED_PUBLIC_KEY, "is not committed")
+                self.key.write_text(pem(OTHER_DER))
+                self.assert_refused(DEV_PUBLIC_KEY, "differs from its committed content")
+                self.key.write_text(pem(REVIEWED_DER))
+
+    def test_a_linked_worktree_reads_its_own_head(self):
+        linked = self.work.root / "linked"
+        git("worktree", "add", "-q", "--detach", str(linked), "HEAD", cwd=self.work.repo)
+        with mock.patch.object(release, "ROOT", linked):
+            self.assertEqual(release.reviewed_public_key({"SIGNING_PUBLIC_KEY": DEV_PUBLIC_KEY}),
+                             (linked / DEV_PUBLIC_KEY, REVIEWED_DER))
+            (linked / DEV_PUBLIC_KEY).write_text(pem(OTHER_DER))
+            self.assert_refused(DEV_PUBLIC_KEY, "differs from its committed content")
+
+    def test_a_directory_that_is_not_its_own_checkout_is_refused(self):
+        nested = self.work.repo / "nested"
+        (nested / DEV_PUBLIC_KEY).parent.mkdir(parents=True)
+        (nested / DEV_PUBLIC_KEY).write_text(pem(REVIEWED_DER))
+        self.work.commit("a key below a subdirectory")
+        plain = self.work.root / "plain"
+        (plain / DEV_PUBLIC_KEY).parent.mkdir(parents=True)
+        (plain / DEV_PUBLIC_KEY).write_text(pem(REVIEWED_DER))
+        for name, root in (("subdirectory of a checkout", nested), ("no repository", plain)):
+            with self.subTest(case=name), mock.patch.object(release, "ROOT", root):
+                self.assert_refused(DEV_PUBLIC_KEY, "not a Git checkout of its own")
+
+    def test_a_checkout_whose_head_cannot_be_read_is_refused(self):
+        unborn = self.work.root / "unborn"
+        unborn.mkdir()
+        git("init", "-q", cwd=unborn)
+        (unborn / DEV_PUBLIC_KEY).parent.mkdir(parents=True)
+        (unborn / DEV_PUBLIC_KEY).write_text(pem(REVIEWED_DER))
+        with mock.patch.object(release, "ROOT", unborn):
+            self.assert_refused(DEV_PUBLIC_KEY, "Cannot read the checked-out commit's tree")
+
+    def test_a_key_whose_committed_blob_is_missing_is_refused(self):
+        blob = git("rev-parse", f"HEAD:{DEV_PUBLIC_KEY}", cwd=self.work.repo)
+        (self.work.repo / ".git/objects" / blob[:2] / blob[2:]).unlink()
+        self.assert_refused(DEV_PUBLIC_KEY, "Cannot read the checked-out commit's tree")
+
+    def test_missing_git_is_refused(self):
+        empty = self.work.root / "no-tools"
+        empty.mkdir()
+        with mock.patch.dict(os.environ, {"PATH": str(empty)}):
+            self.assert_refused(DEV_PUBLIC_KEY, "Git is not available")
 
 
 # Bundles that sign must refuse, so that publish never uploads them.
@@ -1180,6 +1256,14 @@ class SignTests(unittest.TestCase):
         self.work.signed_bundle()
         for configured in (UNTRACKED_PUBLIC_KEY, LINKED_PUBLIC_KEY):
             with self.subTest(key=configured), mock.patch.dict(os.environ, {"SIGNING_PUBLIC_KEY": configured}):
+                self.assert_refused_before_any_credential()
+
+    def test_a_foreign_repository_cannot_vouch_for_an_edited_key_before_any_credential(self):
+        foreign = foreign_repository(self.work.root, {DEV_PUBLIC_KEY: OTHER_DER})
+        (self.work.repo / DEV_PUBLIC_KEY).write_text(pem(OTHER_DER))
+        self.work.signed_bundle()
+        for name, selectors in git_selectors(foreign).items():
+            with self.subTest(selectors=name), mock.patch.dict(os.environ, selectors):
                 self.assert_refused_before_any_credential()
 
     def test_a_public_key_edited_after_checkout_is_refused_before_any_credential(self):
