@@ -663,40 +663,50 @@ class ContractTests(unittest.TestCase):
         for name in ("SIGNING_KEY_ARN", "SIGNER_ROLE_ARN", "SIGNING_PUBLIC_KEY"):
             self.assertNotIn("${{", sign["env"][name])
         self.assertEqual(sign["env"]["BUILD_RUN_ID"], "${{ inputs.build_run_id }}")
-        steps = sign["steps"]
-        self.assertNotIn("inputs.", json.dumps([step.get("run", "") for step in steps]))
+        self.assertNotIn("inputs.", json.dumps([step.get("run", "") for step in sign["steps"]]))
 
-        def index(predicate):
-            found = [position for position, step in enumerate(steps) if predicate(step)]
+    def test_c5_dev_release_statement_verifies_before_it_signs_publishes_or_pushes(self):
+        steps = workflows()["opensecret-release-statement-dev.yml"]["jobs"]["sign"]["steps"]
+
+        def position(predicate):
+            found = [index for index, step in enumerate(steps) if predicate(step)]
             self.assertEqual(len(found), 1)
             return found[0]
 
-        def runs(command):
-            return lambda step: f"opensecret_release_statement.py {command} dev" in step.get("run", "")
+        def producer(command):
+            return position(lambda step: f"opensecret_release_statement.py {command} dev" in step.get("run", ""))
 
-        preflight, prepare, sign_kms, publish = (index(runs(name)) for name in ("preflight", "prepare", "sign",
-                                                                                 "publish"))
-        legacy = index(lambda step: "ci_sign_pcr.sh dev" in step.get("run", ""))
-        retain = index(lambda step: step.get("uses", "").startswith("actions/upload-artifact@"))
-        branch = index(lambda step: "publish_opensecret_approval.sh dev" in step.get("run", ""))
-        credentials = [position for position, step in enumerate(steps) if "secrets." in json.dumps(step)]
+        preflight = producer("preflight")
+        prepare = producer("prepare")
+        sign_statement = producer("sign")
+        publish = producer("publish")
+        sign_legacy = position(lambda step: "ci_sign_pcr.sh dev" in step.get("run", ""))
+        retain = position(lambda step: step.get("uses", "").startswith("actions/upload-artifact@"))
+        push_branch = position(lambda step: "publish_opensecret_approval.sh dev" in step.get("run", ""))
+        credentials = [index for index, step in enumerate(steps) if "secrets." in json.dumps(step)]
         # Nothing holding a credential or signing runs before the identity check and the
         # verified build; the bundle is verified and retained before it is published,
         # and the legacy branch is pushed only after publication succeeded.
         self.assertLess(preflight, prepare)
-        self.assertTrue(all(prepare < position for position in credentials + [legacy, sign_kms]))
-        self.assertLess(sign_kms, retain)
+        self.assertTrue(all(prepare < index for index in credentials + [sign_legacy, sign_statement]))
+        self.assertLess(sign_statement, retain)
         self.assertLess(retain, publish)
-        self.assertLess(publish, branch)
+        self.assertLess(publish, push_branch)
+
+    def test_c5_dev_release_statement_gives_each_credential_to_one_step(self):
+        steps = workflows()["opensecret-release-statement-dev.yml"]["jobs"]["sign"]["steps"]
+        sign_legacy, = (step for step in steps if "ci_sign_pcr.sh dev" in step.get("run", ""))
+        publish, = (step for step in steps if "opensecret_release_statement.py publish dev" in step.get("run", ""))
+        push_branch, = (step for step in steps if "publish_opensecret_approval.sh dev" in step.get("run", ""))
         key = [step for step in steps if "outputs.SIGNING_PRIVATE_KEY" in json.dumps(step)]
-        self.assertEqual(key, [steps[legacy]])  # the legacy key reaches exactly one step
-        self.assertEqual(steps[legacy]["env"]["EXPECTED_EIF_SHA256"], "${{ steps.candidate.outputs.eif_sha256 }}")
+        self.assertEqual(key, [sign_legacy])  # the legacy key reaches exactly one step
+        self.assertEqual(sign_legacy["env"]["EXPECTED_EIF_SHA256"], "${{ steps.candidate.outputs.eif_sha256 }}")
         publisher = [step for step in steps if "outputs.AWS_SECRET_ACCESS_KEY" in json.dumps(step)]
-        self.assertEqual(publisher, [steps[publish]])  # the bucket credential reaches only the publisher
+        self.assertEqual(publisher, [publish])  # the bucket credential reaches only the publisher
         for step in steps:
             if step.get("uses", "").startswith("bitwarden/sm-action@"):
                 self.assertIs(step["with"]["set_env"], False)
-        self.assertEqual(steps[branch]["env"]["EXPECTED_SOURCE_SHA"], "${{ steps.candidate.outputs.source_sha }}")
+        self.assertEqual(push_branch["env"]["EXPECTED_SOURCE_SHA"], "${{ steps.candidate.outputs.source_sha }}")
 
     def test_c6_protected_environments_have_fixed_consumers(self):
         self.assertEqual({(name, job_id): environment(job) for name, job_id, job in jobs() if environment(job)},
