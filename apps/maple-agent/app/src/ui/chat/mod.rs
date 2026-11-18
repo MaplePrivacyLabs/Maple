@@ -7979,7 +7979,9 @@ impl ChatScreen {
                 .cursor_pointer()
                 .focus_visible(widgets::focus_ring)
                 .hover(|style| style.text_color(gpui::rgb(theme::text_primary())))
+                // The same type as the button below, with no plate of its own.
                 .hover_bg(gpui::transparent_black())
+                .highlighted(false)
         } else {
             widgets::ghost_button("open-settings")
         };
@@ -8021,7 +8023,7 @@ impl ChatScreen {
                 this.popup.toggle(ChatPopup::Settings, cx);
             });
         let controls = if expanded {
-            div()
+            let row = div()
                 .id("settings-controls")
                 .debug_selector(|| "settings-controls".to_string())
                 .w_full()
@@ -8030,34 +8032,35 @@ impl ChatScreen {
                 .flex()
                 .items_center()
                 .gap(px(2.))
-                .when(inline, |row| {
-                    row.hover(|style| style.bg(gpui::rgb(theme::bg_sidebar_row_hover())))
-                        .active(|style| style.bg(gpui::rgb(theme::bg_sidebar_pill())))
-                })
-                .when(open, |row| row.bg(gpui::rgb(theme::bg_sidebar_row_hover())))
-                .child(button)
-                .children(update_button)
-                .when(inline, |row| {
-                    // Extend Settings' pointer target without another keyboard stop.
-                    let tail = div()
-                        .id("settings-pointer-extension")
-                        .debug_selector(|| "settings-pointer-extension".to_string())
-                        .flex_1()
-                        .h_full()
-                        .pr_2()
-                        .flex()
-                        .items_center()
-                        .justify_end()
-                        .cursor_pointer()
-                        .child(Self::settings_menu_chevron(open));
-                    row.child(
-                        self.popup
-                            .trigger(ChatPopup::Settings, tail, cx, |this, _, cx| {
-                                this.popup.toggle(ChatPopup::Settings, cx);
-                            }),
-                    )
-                })
-                .into_any_element()
+                .when(open, |row| row.bg(gpui::rgb(theme::bg_sidebar_row_hover())));
+            if inline {
+                // Extend Settings' pointer target without another keyboard stop.
+                let tail = div()
+                    .id("settings-pointer-extension")
+                    .debug_selector(|| "settings-pointer-extension".to_string())
+                    .flex_1()
+                    .h_full()
+                    .pr_2()
+                    .flex()
+                    .items_center()
+                    .justify_end()
+                    .cursor_pointer()
+                    .child(Self::settings_menu_chevron(open));
+                let tail = self
+                    .popup
+                    .trigger(ChatPopup::Settings, tail, cx, |this, _, cx| {
+                        this.popup.toggle(ChatPopup::Settings, cx);
+                    });
+                // One plate for the whole row, eased like every other hover.
+                row.active(|style| style.bg(gpui::rgb(theme::bg_sidebar_pill())))
+                    .hover_bg(gpui::rgb(theme::bg_sidebar_row_hover()))
+                    .child(button)
+                    .children(update_button)
+                    .child(tail)
+                    .into_any_element()
+            } else {
+                row.child(button).children(update_button).into_any_element()
+            }
         } else {
             div()
                 .w_full()
