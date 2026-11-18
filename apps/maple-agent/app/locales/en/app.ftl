@@ -2359,6 +2359,8 @@ settings-catalog-summary-playwright = Browse websites, click through pages and f
 settings-catalog-summary-xcode = Build and test your Xcode projects
 settings-catalog-summary-vana = Use the personal data you choose to share
 settings-catalog-summary-home-assistant = See and control your smart home
+settings-catalog-summary-privacy = Create and manage your virtual cards
+settings-catalog-summary-ynab = Work with your budget and transactions
 # The field in the pop-up that asks where an app is. Also its screen reader name.
 settings-catalog-address = Address
 # Title of that pop-up. $name is the app, such as Home Assistant.
