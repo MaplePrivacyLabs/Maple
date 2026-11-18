@@ -66,7 +66,9 @@ nix develop --no-update-lock-file ./sdk -c bash -euo pipefail -c '
   case "${sdk_kind}" in
     npm)
       bun --no-env-file install --frozen-lockfile --ignore-scripts
-      bun --no-env-file audit --audit-level=high
+      # GHSA-fc5q-39xc-vjpf is an accepted advisory (docs/ci.md, "Accepted
+      # advisories"). nightly.yml carries the same flag: change both together.
+      bun --no-env-file audit --audit-level=high --ignore=GHSA-fc5q-39xc-vjpf
       bun --no-env-file run format:check
       bun --no-env-file run build
       VITE_OPEN_SECRET_API_URL=http://127.0.0.1:3000 \

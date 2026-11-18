@@ -36,7 +36,8 @@ and timeout. `scripts/ci/plan.py` (the `plan` job) selects lanes from the diff:
   through its own manifests; the nightly run reports it. Two gate lanes still
   audit advisories whenever they are selected, CI edits included:
   `agent-supply-chain` (cargo-deny for the Agent targets) and `sdk-ts`
-  (`bun audit` in the SDK publish build).
+  (`bun audit` in the SDK publish build). The Bun audits skip the
+  [accepted advisories](#accepted-advisories).
 
 The `plan` job summary lists each selected lane and why. To preview locally:
 
@@ -160,6 +161,30 @@ neighbours'. An id that names no lane fails `plan`, so a typo cannot
 quarantine nothing; so does `repo`, which enforces the workflow policy and
 release contracts. The nightly report lists every active quarantine; clear the
 variable when the lane is fixed.
+
+## Accepted advisories
+
+Both Bun audits pass `--ignore=GHSA-fc5q-39xc-vjpf`: the one in
+`scripts/ci/build-sdk-publish.sh` (`sdk-ts` and the npm publish build) and the
+nightly one in `nightly.yml`. Every other advisory still fails them.
+
+[GHSA-fc5q-39xc-vjpf](https://github.com/advisories/GHSA-fc5q-39xc-vjpf) is a
+regular-expression denial of service in picomatch: a caller who supplies the
+glob pattern can hang the process that matches it. It covers every release
+through 4.0.7, the latest, so no upgrade clears it. Reviewed on 2026-11-17:
+
+- picomatch is in the SDK, Research frontend and Auth lockfiles only through
+  build and lint tooling: Vite, typescript-eslint, Tailwind, `vite-plugin-dts`
+  and the TanStack router plugin.
+- No source file imports picomatch or another glob matcher, and none of the
+  published SDK's runtime dependencies reach it.
+- The patterns it matches come from this repository's own Vite, Tailwind,
+  TypeScript and ESLint configuration, so changing them takes commit access.
+
+Remove the flag from both places once a fixed picomatch is published and the
+three lockfiles resolve to it. `bun audit --ignore` matches the GHSA id, not
+the CVE id. Record any further accepted advisory here the same way: what it
+is, why it does not reach shipped code, and when the flag comes out.
 
 ## Runners
 
