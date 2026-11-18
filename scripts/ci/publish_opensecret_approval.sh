@@ -1,9 +1,9 @@
 #!/usr/bin/env bash
 # Commit the approval files changed by the signing step to the review branch
-# for this source commit. Both environments' runs share that branch, so one
-# pull request carries every approval for the commit; a later run lands its
-# commit on top of the earlier one. Never writes master, creates a tag, or
-# touches GitHub Releases.
+# for this build commit and checkout. Runs that approve the same build from the
+# same checkout share that branch, so one pull request carries both
+# environments' approvals; a later run lands its commit on top of the earlier
+# one. Never writes master, creates a tag, or touches GitHub Releases.
 set -euo pipefail
 
 if [[ $# -ne 2 ]]; then
@@ -32,7 +32,7 @@ if [[ ! "$source_sha" =~ ^[0-9a-f]{40}$ ]] || ! git merge-base --is-ancestor "$s
   exit 1
 fi
 [[ "$(jq -r .source_sha "$handoff")" == "$source_sha" ]] || {
-  echo "Handoff was built from a different commit than this checkout." >&2
+  echo "Handoff was built from a different commit than the selected build commit." >&2
   exit 1
 }
 [[ "$(jq -r .environment "$handoff")" == "$mode" ]] || {
@@ -80,9 +80,9 @@ git_bot commit --quiet \
     -m "EIF SHA-256: ${eif_sha256}" \
     -m "Signed by the reviewer-gated ${GITHUB_WORKFLOW:-OpenSecret EIF release} workflow run ${GITHUB_RUN_ID:-local}."
 
-# Land this commit on top of whatever the branch already holds for this source
-# commit. A push loses the race only to the other environment's run, which
-# touches different files, so refetch and replay once and try again.
+# Land this commit on top of whatever the branch already holds for this build
+# commit and checkout. A push loses the race only to the other environment's
+# run, which touches different files, so refetch and replay once and try again.
 pushed=0
 for attempt in 1 2 3 4 5; do
   if git_auth fetch --quiet origin "refs/heads/$branch:refs/remotes/origin/$branch" 2>/dev/null; then
@@ -125,8 +125,8 @@ if [[ -n "${GITHUB_STEP_SUMMARY:-}" ]]; then
     echo
     echo "Open the pull request: $compare"
     echo
-    echo "The branch is shared by every environment approved from this source commit;"
-    echo "an existing pull request for it simply gains this approval."
+    echo "The branch is shared by every environment approved for this build commit from"
+    echo "the same checkout; an existing pull request for it simply gains this approval."
     echo
     echo "After it merges, hand deployment the merge commit as \`OPENSECRET_SOURCE_REF\`,"
     echo "the artifact directory added to the Nix store as \`OPENSECRET_EIF_DIR\`, and"
