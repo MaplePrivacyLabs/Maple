@@ -291,6 +291,16 @@ def add_entry_field(bundle):
     log_entry(bundle)["extension"] = {}
 
 
+@mutation("log entry not an object")
+def replace_entry_with_boolean(bundle):
+    bundle["verificationMaterial"]["tlogEntries"][0] = True
+
+
+@mutation("log ID not an object")
+def replace_log_id_with_list(bundle):
+    log_entry(bundle)["logId"] = [log_entry(bundle)["logId"]["keyId"]]
+
+
 # Inclusion proof and checkpoint.
 
 @mutation("no inclusion proof")
@@ -374,6 +384,49 @@ def log_p256_key_details(bundle):
         body["spec"]["hashedRekordV002"]["signature"]["verifier"]["keyDetails"] = "PKIX_ECDSA_P256_SHA_256"
 
 
+# Logged body parts that are not JSON objects: each must fail where it is first read.
+
+@mutation("logged spec not an object")
+def replace_logged_spec_with_list(bundle):
+    with editing_logged_body(bundle) as body:
+        body["spec"] = [1]
+
+
+@mutation("logged hashedrekord not an object")
+def replace_logged_hashedrekord_with_list(bundle):
+    with editing_logged_body(bundle) as body:
+        body["spec"]["hashedRekordV002"] = [1]
+
+
+@mutation("logged data not an object")
+def replace_logged_data_with_string(bundle):
+    with editing_logged_body(bundle) as body:
+        body["spec"]["hashedRekordV002"]["data"] = "SHA2_384"
+
+
+@mutation("logged signature not an object")
+def replace_logged_signature_with_list(bundle):
+    with editing_logged_body(bundle) as body:
+        body["spec"]["hashedRekordV002"]["signature"] = [1]
+
+
+@mutation("logged verifier not an object")
+def replace_logged_verifier_with_boolean(bundle):
+    with editing_logged_body(bundle) as body:
+        body["spec"]["hashedRekordV002"]["signature"]["verifier"] = True
+
+
+@mutation("logged public key not an object")
+def replace_logged_public_key_with_list(bundle):
+    with editing_logged_body(bundle) as body:
+        body["spec"]["hashedRekordV002"]["signature"]["verifier"]["publicKey"] = [1]
+
+
+NOT_AN_OBJECT = ("log entry not an object", "log ID not an object", "logged spec not an object",
+                 "logged hashedrekord not an object", "logged data not an object", "logged signature not an object",
+                 "logged verifier not an object", "logged public key not an object")
+
+
 # RFC 3161 timestamps.
 
 @mutation("no timestamp data")
@@ -443,6 +496,14 @@ class BundleProfileTests(unittest.TestCase):
                 bundle = make_bundle(self.statement)
                 mutate(bundle)
                 with self.assertRaises(release.EvidenceError):
+                    release.check_bundle_profile(encode(bundle), self.statement, REVIEWED_DER)
+
+    def test_parts_that_are_not_json_objects_fail_with_an_evidence_error(self):
+        for name in NOT_AN_OBJECT:
+            with self.subTest(mutation=name):
+                bundle = make_bundle(self.statement)
+                MUTATIONS[name](bundle)
+                with self.assertRaisesRegex(release.EvidenceError, "is not a JSON object"):
                     release.check_bundle_profile(encode(bundle), self.statement, REVIEWED_DER)
 
     def test_signed_statement_must_be_byte_identical(self):
@@ -908,6 +969,62 @@ class PrepareTests(unittest.TestCase):
             work.handoff["measurements"] = json.loads(work.files["pcr.json"])
             work.stage(attested=work.forged_artifact())
             self.assert_refused(work, "Invalid PCR0")
+
+
+class BuildEvidenceShapeTests(unittest.TestCase):
+    """GitHub responses whose parts are not the expected JSON types fail with an evidence error."""
+
+    def setUp(self):
+        self.run = {"id": 4242, "run_attempt": 1, "head_sha": "1" * 40}
+        self.artifact = {"id": 99, "name": f"opensecret-eif-dev-{'1' * 12}", "expired": False, "size_in_bytes": 4096,
+                         "workflow_run": {"id": 4242, "head_sha": "1" * 40}}
+
+    def test_the_well_formed_artifact_listing_is_accepted(self):
+        self.assertEqual(release.select_artifact([{"artifacts": [self.artifact]}], self.run, "dev"), self.artifact)
+
+    def test_pages_with_no_or_empty_artifacts_list_nothing(self):
+        for empty in ({}, {"artifacts": []}, {"artifacts": ""}, {"artifacts": {}}):
+            with self.subTest(page=empty):
+                pages = [empty, {"artifacts": [self.artifact]}]
+                self.assertEqual(release.select_artifact(pages, self.run, "dev"), self.artifact)
+
+    def test_malformed_artifact_listings_are_refused(self):
+        cases = {
+            "page not an object": ([True], "page is not a JSON object"),
+            "artifacts not a list": ([{"artifacts": "opensecret"}], "has no artifact list"),
+            "null artifacts": ([{"artifacts": None}], "has no artifact list"),
+            "artifact not an object": ([{"artifacts": [True, self.artifact]}], "Listed artifact is not a JSON object"),
+            "workflow run not an object": ([{"artifacts": [{**self.artifact, "workflow_run": [4242]}]}],
+                                           "workflow run is not a JSON object"),
+            "size not a number": ([{"artifacts": [{**self.artifact, "size_in_bytes": "4096"}]}],
+                                  "size is out of bounds"),
+        }
+        for name, (pages, message) in cases.items():
+            with self.subTest(case=name), self.assertRaisesRegex(release.EvidenceError, message):
+                release.select_artifact(pages, self.run, "dev")
+
+    def test_malformed_build_provenance_is_refused(self):
+        statement = {"_type": release.STATEMENT_TYPE, "predicateType": release.SLSA_TYPE}
+        cases = {
+            "result not an object": [True],
+            "verification result not an object": [{"verificationResult": [1]}],
+            "statement not an object": [{"verificationResult": {"statement": [1]}}],
+            "predicate not an object": [{"verificationResult": {"statement": {**statement, "predicate": [1]}}}],
+            "run details not an object": [{"verificationResult": {"statement": {
+                **statement, "predicate": {"runDetails": "x"}}}}],
+            "metadata not an object": [{"verificationResult": {"statement": {
+                **statement, "predicate": {"runDetails": {"metadata": [1]}}}}}],
+        }
+        for name, results in cases.items():
+            with self.subTest(case=name), self.assertRaisesRegex(release.EvidenceError, "is not a JSON object"):
+                release.provenance_attempts(results, self.run, {})
+
+    def test_malformed_build_run_repositories_are_refused(self):
+        for field in ("repository", "head_repository"):
+            run = {"id": 4242, "repository": {"full_name": release.REPOSITORY, "private": False},
+                   "head_repository": {"full_name": release.REPOSITORY}, field: [release.REPOSITORY]}
+            with self.subTest(field=field), self.assertRaisesRegex(release.EvidenceError, "is not a JSON object"):
+                release.validate_run(run, "4242")
 
 
 class ReviewedPublicKeyTests(unittest.TestCase):

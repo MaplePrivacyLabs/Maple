@@ -124,6 +124,12 @@ def require(condition, message):
         raise EvidenceError(message)
 
 
+def json_object(value, what):
+    """value as a JSON object. An absent or empty value reads as an empty object; any other value is malformed."""
+    require(isinstance(value, dict) or not value, f"{what} is not a JSON object")
+    return value or {}
+
+
 def is_hex(value, length):
     return isinstance(value, str) and re.fullmatch(f"[0-9a-f]{{{length}}}", value) is not None
 
@@ -289,9 +295,10 @@ def api(path):
 
 def validate_run(run, run_id):
     require(isinstance(run, dict) and str(run.get("id")) == run_id, "Build run ID mismatch")
-    require((run.get("repository") or {}).get("full_name") == REPOSITORY,
+    require(json_object(run.get("repository"), "Build run repository").get("full_name") == REPOSITORY,
             "Build must belong to the canonical repository")
-    require((run.get("head_repository") or {}).get("full_name") == REPOSITORY, "Fork builds cannot be approved")
+    head_repository = json_object(run.get("head_repository"), "Build run head repository")
+    require(head_repository.get("full_name") == REPOSITORY, "Fork builds cannot be approved")
     require(run["repository"].get("private") is False, "Public Sigstore evidence needs the public repository")
     require(run.get("path") == BUILD_WORKFLOW, "Build run is not the OpenSecret EIF release workflow")
     require(run.get("event") == "workflow_dispatch" and run.get("head_branch") == "master",
@@ -305,16 +312,26 @@ def validate_run(run, run_id):
 def select_artifact(pages, run, mode):
     name = f"opensecret-eif-{mode}-{run['head_sha'][:12]}"
     require(isinstance(pages, list), "Unexpected artifact listing")
-    found = [artifact for page in pages for artifact in page.get("artifacts", [])
-             if artifact.get("name") == name]
+    listed = []
+    for page in pages:
+        require(isinstance(page, dict), "Artifact listing page is not a JSON object")
+        artifacts = page.get("artifacts", [])
+        # GitHub sends a list. An empty string or object has always listed nothing,
+        # so it still does; any other non-list value is malformed.
+        require(isinstance(artifacts, list) or artifacts in ("", {}), "Artifact listing page has no artifact list")
+        artifacts = artifacts or []
+        require(all(isinstance(artifact, dict) for artifact in artifacts), "Listed artifact is not a JSON object")
+        listed += artifacts
+    found = [artifact for artifact in listed if artifact.get("name") == name]
     require(len(found) == 1, f"Expected exactly one {name} artifact in the build run")
     artifact = found[0]
     require(artifact.get("expired") is False, "The build artifact has expired")
     require(type(artifact.get("id")) is int and artifact["id"] > 0, "Invalid artifact ID")
-    workflow_run = artifact.get("workflow_run") or {}
+    workflow_run = json_object(artifact.get("workflow_run"), "Artifact workflow run")
     require(workflow_run.get("id") == run["id"] and workflow_run.get("head_sha") == run["head_sha"],
             "Artifact does not belong to the selected build run")
-    require(0 < artifact.get("size_in_bytes", 0) <= MAX_EIF_BYTES, "Artifact size is out of bounds")
+    size = artifact.get("size_in_bytes", 0)
+    require(isinstance(size, (int, float)) and 0 < size <= MAX_EIF_BYTES, "Artifact size is out of bounds")
     return artifact
 
 
@@ -351,9 +368,9 @@ def check_checksums(candidate):
 
 def invocation_attempt(statement, run_id):
     """The attempt of run_id named by a SLSA statement's invocation ID, or None for any other run."""
-    predicate = statement.get("predicate") or {}
-    run_details = predicate.get("runDetails") or {}
-    metadata = run_details.get("metadata") or {}
+    predicate = json_object(statement.get("predicate"), "Build provenance predicate")
+    run_details = json_object(predicate.get("runDetails"), "Build provenance run details")
+    metadata = json_object(run_details.get("metadata"), "Build provenance metadata")
     invocation = metadata.get("invocationId")
     run_url = f"{SOURCE_REPOSITORY}/actions/runs/{run_id}/attempts/"
     match = re.fullmatch(re.escape(run_url) + r"([1-9][0-9]{0,3})", str(invocation))
@@ -373,8 +390,9 @@ def provenance_attempts(results, run, digests):
     require(isinstance(results, list) and results, "No verified build provenance")
     attempts = set()
     for result in results:
-        verification = (result or {}).get("verificationResult") or {}
-        statement = verification.get("statement") or {}
+        result = json_object(result, "Build provenance result")
+        verification = json_object(result.get("verificationResult"), "Build provenance verification result")
+        statement = json_object(verification.get("statement"), "Build provenance statement")
         if statement.get("_type") != STATEMENT_TYPE or statement.get("predicateType") != SLSA_TYPE:
             continue
         attempt = invocation_attempt(statement, run["id"])
@@ -603,12 +621,14 @@ def check_log_entry(entries, services):
     """Exactly one Rekor v2 hashedrekord 0.0.2 entry from the configured log."""
     require(isinstance(entries, list) and len(entries) == 1, "Bundle must carry exactly one transparency log entry")
     entry = entries[0]
+    require(isinstance(entry, dict), "Log entry is not a JSON object")
     require(entry.get("kindVersion") == {"kind": "hashedrekord", "version": "0.0.2"},
             "Log entry is not a Rekor v2 hashedrekord 0.0.2 entry")
-    require(b64decode((entry.get("logId") or {}).get("keyId"), "log ID") == services["log_key_id"],
+    log_id = json_object(entry.get("logId"), "Log entry log ID")
+    require(b64decode(log_id.get("keyId"), "log ID") == services["log_key_id"],
             "Log entry is not from the configured Rekor v2 log")
     # Absence, not a zero value: a Rekor v2 entry carries no integrated time or promise.
-    require(isinstance(entry, dict) and "integratedTime" not in entry, "Log entry carries an integrated time")
+    require("integratedTime" not in entry, "Log entry carries an integrated time")
     require("inclusionPromise" not in entry, "Log entry carries an inclusion promise")
     require(set(entry) == {"logIndex", "logId", "kindVersion", "inclusionProof", "canonicalizedBody"},
             "Log entry has missing or unexpected fields")
@@ -643,17 +663,22 @@ def check_logged_body(entry, payload, signature, public_der):
     body = strict_json(b64decode(entry.get("canonicalizedBody"), "log entry body"))
     require(isinstance(body, dict) and body.get("kind") == "hashedrekord" and body.get("apiVersion") == "0.0.2",
             "Log body is not hashedrekord 0.0.2")
-    spec = (body.get("spec") or {}).get("hashedRekordV002") or {}
-    logged_data, logged_signature = spec.get("data") or {}, spec.get("signature") or {}
+    # Each part is checked where it is first read, so the first failing check
+    # is the same one as for any other malformed body.
+    spec = json_object(json_object(body.get("spec"), "Log body spec").get("hashedRekordV002"),
+                       "Log body hashedrekord spec")
+    logged_data = json_object(spec.get("data"), "Log body data")
     require(logged_data.get("algorithm") == "SHA2_384", "Log body digest is not SHA-384")
     envelope_digest = hashlib.sha384(pae(PAYLOAD_TYPE, payload)).digest()
     require(b64decode(logged_data.get("digest"), "logged digest") == envelope_digest,
             "Log body digest does not bind this envelope")
+    logged_signature = json_object(spec.get("signature"), "Log body signature")
     require(b64decode(logged_signature.get("content"), "logged signature") == signature,
             "Log body signature differs from the envelope signature")
-    verifier = logged_signature.get("verifier") or {}
+    verifier = json_object(logged_signature.get("verifier"), "Log body verifier")
     require(verifier.get("keyDetails") == "PKIX_ECDSA_P384_SHA_384", "Logged key is not P-384")
-    require(b64decode((verifier.get("publicKey") or {}).get("rawBytes"), "logged key") == public_der,
+    logged_key = json_object(verifier.get("publicKey"), "Log body public key")
+    require(b64decode(logged_key.get("rawBytes"), "logged key") == public_der,
             "Logged key is not the reviewed signing key")
 
 
