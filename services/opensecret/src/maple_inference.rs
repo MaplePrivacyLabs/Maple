@@ -4,9 +4,13 @@
 //! node update. DNS, the API credential, or a server-supplied release reference
 //! never authorizes a new measurement. This is ordinary attested HTTPS using
 //! Tinfoil's direct V3 path; it does not use shared-router discovery.
+//!
+//! Tinfoil's verifier authenticates the hardware evidence and proves that the
+//! guest runs a signed release of the pinned repository. [`MaplePolicy`] then
+//! narrows that to the exact releases approved here.
 
 use crate::provider_registry::MapleInstanceId;
-use tinfoil::{ApprovedRelease, DirectPolicy, Measurement, PinnedRelease, PredicateType};
+use tinfoil::verifier::{Measurement, Register, Verification};
 
 /// Backend-owned identity, address, and approved release set for one guest.
 /// Each guest has an independent verifier/client even when its release pins are
@@ -108,23 +112,21 @@ struct ReleasePin {
     repo: &'static str,
     tag: &'static str,
     digest: &'static str,
-    registers: &'static [&'static str],
+    /// The AMD SEV-SNP launch measurement of the release. Both guests are AMD
+    /// hosts; a TDX guest is never approved, so no TDX registers are pinned.
+    snp_launch: &'static str,
 }
 
 // Keep each guest's release pins independent, even while both run the same
 // artifact. A staged i02 update must never broaden i01's attestation policy.
-// These identify the published artifact and full multiplatform measurement,
-// not a cached live quote. Remove retired entries after rollout completes.
+// These identify the published artifact and its launch measurement, not a
+// cached live quote. Remove retired entries after rollout completes.
 // i01 serves the uncensored model; i02 independently serves stock DeepSeek.
 const I01_CURRENT_RELEASE: ReleasePin = ReleasePin {
     repo: "MaplePrivacyLabs/inference-deepseek-uncensored",
     tag: "v0.1.0+b300",
     digest: "6a8e906bc31caaccf5b6bbe84dec99c7213ec1d77aa360df464d531744590ac2",
-    registers: &[
-        "9e01436661dff4702b622a51a7bbcb83ce0a61d0c2bdc2de5a2492fc1dec70bb1997df829147a154e11fdfc6dbe044fe",
-        "758adac43a82a5f3146342660caefea0a7714414dd9055c4a56d1502273d85bbad86d625096a206c9335c23d05df3f99",
-        "898884507ffe6bb1d51aa3bf548d8748043aa8e2018d545424c312e7a39109d75f30760f0d4124ae2cf5c89cf07db8dd",
-    ],
+    snp_launch: "9e01436661dff4702b622a51a7bbcb83ce0a61d0c2bdc2de5a2492fc1dec70bb1997df829147a154e11fdfc6dbe044fe",
 };
 
 // Only the new stock release is approved. The former uncensored i02 release
@@ -133,46 +135,133 @@ const I02_CURRENT_RELEASE: ReleasePin = ReleasePin {
     repo: "MaplePrivacyLabs/inference-deepseek",
     tag: "v0.1.2",
     digest: "4bc5f2119cb55e125c9cc5c57e3fe120df98f8145dc675c8d201ac01882989ec",
-    registers: &[
-        "3f35fb1e92c599564e85e2b9adae8778bf8a9f553a8c936132301f09d4aa31a4a505b1c8f96cef407c53f4df67d23030",
-        "758adac43a82a5f3146342660caefea0a7714414dd9055c4a56d1502273d85bbad86d625096a206c9335c23d05df3f99",
-        "ce37a33da28a5dd43d0d1469903adf8e2589d4ff61f3277ff5796bb5485ba413eac27aee572e0973bde858621a71783b",
-    ],
+    snp_launch: "3f35fb1e92c599564e85e2b9adae8778bf8a9f553a8c936132301f09d4aa31a4a505b1c8f96cef407c53f4df67d23030",
 };
+
+/// One release a guest may run: the repository that published it, the exact
+/// artifact, and the launch measurement the hardware must report.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(crate) struct ApprovedRelease {
+    repo: &'static str,
+    tag: &'static str,
+    digest: &'static str,
+    snp_launch: Register,
+}
+
+/// The complete set of releases one guest may run. It is built once from the
+/// compiled pins and never changes, so initialization, recovery and renewal
+/// all verify against the same list.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(crate) struct MaplePolicy {
+    approved: Vec<ApprovedRelease>,
+}
+
+/// A compiled pin that is not a usable release identity.
+#[derive(Debug, PartialEq, Eq)]
+pub(crate) struct InvalidMaplePolicy;
+
+/// The guest verified, but as a release this policy does not approve.
+#[derive(Debug, thiserror::Error, PartialEq, Eq)]
+#[error("verified release is not approved for this guest")]
+pub(crate) struct ReleaseNotApproved;
+
+impl MaplePolicy {
+    fn new(
+        pins: impl IntoIterator<Item = &'static ReleasePin>,
+    ) -> Result<Self, InvalidMaplePolicy> {
+        let approved = pins
+            .into_iter()
+            .map(|pin| {
+                let well_formed = !pin.repo.is_empty()
+                    && !pin.tag.is_empty()
+                    && pin.digest.len() == 64
+                    && pin
+                        .digest
+                        .bytes()
+                        .all(|byte| matches!(byte, b'0'..=b'9' | b'a'..=b'f'));
+                let snp_launch = pin.snp_launch.parse::<Register>();
+                match (well_formed, snp_launch) {
+                    (true, Ok(snp_launch)) => Ok(ApprovedRelease {
+                        repo: pin.repo,
+                        tag: pin.tag,
+                        digest: pin.digest,
+                        snp_launch,
+                    }),
+                    _ => Err(InvalidMaplePolicy),
+                }
+            })
+            .collect::<Result<Vec<_>, _>>()?;
+        Ok(Self { approved })
+    }
+
+    /// The repositories to verify the guest against, in approval order and
+    /// without repeats. The verifier pins one repository per attempt.
+    pub(crate) fn repos(&self) -> Vec<&'static str> {
+        let mut repos = Vec::new();
+        for release in &self.approved {
+            if !repos.contains(&release.repo) {
+                repos.push(release.repo);
+            }
+        }
+        repos
+    }
+
+    /// Accept a verification only when repository, tag, digest and the
+    /// launch measurement the hardware signed all belong to one approved
+    /// release. Fields of two different releases never combine.
+    pub(crate) fn check(&self, verified: &Verification) -> Result<(), ReleaseNotApproved> {
+        let Measurement::SevSnp { launch } = verified.enclave_measurement() else {
+            return Err(ReleaseNotApproved);
+        };
+        self.check_identity(
+            verified.config_repo(),
+            verified.code_tag(),
+            verified.code_digest(),
+            launch,
+        )
+    }
+
+    fn check_identity(
+        &self,
+        repo: &str,
+        tag: &str,
+        digest: &str,
+        snp_launch: &Register,
+    ) -> Result<(), ReleaseNotApproved> {
+        let digest = digest.strip_prefix("sha256:").unwrap_or(digest);
+        self.approved
+            .iter()
+            .any(|release| {
+                release.repo == repo
+                    && release.tag == tag
+                    && release.digest == digest
+                    && release.snp_launch == *snp_launch
+            })
+            .then_some(())
+            .ok_or(ReleaseNotApproved)
+    }
+}
 
 /// An unconfigured guest has no verifier or network initialization. This is
 /// distinct from a malformed configured policy, which remains a startup error.
 pub(crate) fn direct_policy(
     instance: MapleInstanceId,
-) -> Result<Option<DirectPolicy>, tinfoil::Error> {
-    let approved = approved_releases(endpoint(instance));
-    if approved.is_empty() {
-        return Ok(None);
-    }
-    DirectPolicy::new(approved).map(Some)
+) -> Result<Option<MaplePolicy>, InvalidMaplePolicy> {
+    let endpoint = endpoint(instance);
+    let policy = MaplePolicy::new(
+        endpoint
+            .current_release
+            .into_iter()
+            .chain(endpoint.staged_releases.iter()),
+    )?;
+    Ok((!policy.approved.is_empty()).then_some(policy))
 }
 
-fn approved_releases(endpoint: &MapleEndpoint) -> Vec<ApprovedRelease> {
-    endpoint
-        .current_release
-        .into_iter()
-        .chain(endpoint.staged_releases.iter())
-        .map(|pin| ApprovedRelease {
-            release: PinnedRelease {
-                repo: pin.repo.to_owned(),
-                tag: pin.tag.to_owned(),
-                digest: pin.digest.to_owned(),
-            },
-            measurement: Measurement {
-                type_: PredicateType::SnpTdxMultiPlatformV1,
-                registers: pin
-                    .registers
-                    .iter()
-                    .map(|register| (*register).to_owned())
-                    .collect(),
-            },
-        })
-        .collect()
+#[cfg(test)]
+pub(crate) fn empty_policy_for_test() -> MaplePolicy {
+    MaplePolicy {
+        approved: Vec::new(),
+    }
 }
 
 #[cfg(test)]
@@ -315,6 +404,29 @@ mod tests {
         }
     }
 
+    fn pins(endpoint: &MapleEndpoint) -> Vec<&'static ReleasePin> {
+        endpoint
+            .current_release
+            .into_iter()
+            .chain(endpoint.staged_releases.iter())
+            .collect()
+    }
+
+    fn policy_for(endpoint: &MapleEndpoint) -> MaplePolicy {
+        MaplePolicy::new(pins(endpoint)).expect("compiled pins must form a valid policy")
+    }
+
+    fn approves(policy: &MaplePolicy, pin: &ReleasePin) -> bool {
+        policy
+            .check_identity(
+                pin.repo,
+                pin.tag,
+                pin.digest,
+                &pin.snp_launch.parse().expect("test launch measurement"),
+            )
+            .is_ok()
+    }
+
     #[test]
     fn dedicated_policies_are_complete_and_explicit_for_each_guest() {
         let mut hosts = std::collections::HashSet::new();
@@ -323,19 +435,16 @@ mod tests {
             assert_eq!(endpoint.instance, instance);
             assert!(hosts.insert(endpoint.host));
             let policy = direct_policy(instance)
-                .expect("compiled current/staged pins must form a valid policy");
+                .expect("compiled current/staged pins must form a valid policy")
+                .expect("both guests are configured");
             let serialized = format!("{policy:?}");
-            for pin in endpoint
-                .current_release
-                .into_iter()
-                .chain(endpoint.staged_releases.iter())
-            {
+            for pin in pins(endpoint) {
                 assert!(serialized.contains(pin.repo));
                 assert!(serialized.contains(pin.tag));
                 assert!(serialized.contains(pin.digest));
-                for register in pin.registers {
-                    assert!(serialized.contains(register));
-                }
+                assert!(serialized.contains(pin.snp_launch));
+                assert!(approves(&policy, pin));
+                assert!(policy.repos().contains(&pin.repo));
             }
             let url = reqwest::Url::parse(endpoint.base_url).unwrap();
             assert_eq!(url.scheme(), "https");
@@ -348,13 +457,74 @@ mod tests {
     }
 
     #[test]
+    fn a_release_is_approved_only_as_a_whole() {
+        let policy = policy_for(endpoint(MapleInstanceId::I02));
+        let pin = &I02_CURRENT_RELEASE;
+        let launch: Register = pin.snp_launch.parse().unwrap();
+        let other_launch: Register = I01_CURRENT_RELEASE.snp_launch.parse().unwrap();
+
+        assert!(policy
+            .check_identity(pin.repo, pin.tag, pin.digest, &launch)
+            .is_ok());
+        // The verifier may report the digest with its algorithm prefix.
+        assert!(policy
+            .check_identity(
+                pin.repo,
+                pin.tag,
+                &format!("sha256:{}", pin.digest),
+                &launch
+            )
+            .is_ok());
+
+        for (repo, tag, digest, launch) in [
+            (I01_CURRENT_RELEASE.repo, pin.tag, pin.digest, &launch),
+            (pin.repo, "v0.1.1", pin.digest, &launch),
+            (pin.repo, pin.tag, I01_CURRENT_RELEASE.digest, &launch),
+            (pin.repo, pin.tag, pin.digest, &other_launch),
+            (pin.repo, pin.tag, "", &launch),
+            ("", "", "", &launch),
+        ] {
+            assert_eq!(
+                policy.check_identity(repo, tag, digest, launch),
+                Err(ReleaseNotApproved)
+            );
+        }
+    }
+
+    #[test]
+    fn malformed_pins_are_a_policy_error_and_no_pins_are_no_policy() {
+        const BAD_LAUNCH: ReleasePin = ReleasePin {
+            repo: I02_CURRENT_RELEASE.repo,
+            tag: I02_CURRENT_RELEASE.tag,
+            digest: I02_CURRENT_RELEASE.digest,
+            snp_launch: "not-a-measurement",
+        };
+        const BAD_DIGEST: ReleasePin = ReleasePin {
+            repo: I02_CURRENT_RELEASE.repo,
+            tag: I02_CURRENT_RELEASE.tag,
+            digest: "sha256:4bc5f2119cb55e125c9cc5c57e3fe120df98f8145dc675c8d201ac01882989ec",
+            snp_launch: I02_CURRENT_RELEASE.snp_launch,
+        };
+        const NO_REPO: ReleasePin = ReleasePin {
+            repo: "",
+            tag: I02_CURRENT_RELEASE.tag,
+            digest: I02_CURRENT_RELEASE.digest,
+            snp_launch: I02_CURRENT_RELEASE.snp_launch,
+        };
+        for pin in [&BAD_LAUNCH, &BAD_DIGEST, &NO_REPO] {
+            assert_eq!(MaplePolicy::new([pin]), Err(InvalidMaplePolicy));
+        }
+        assert!(MaplePolicy::new([]).unwrap().repos().is_empty());
+    }
+
+    #[test]
     fn staging_i02_release_does_not_approve_it_for_i01() {
         // Synthetic release identity is local to this test; no endpoint uses it.
         const I02_TEST_STAGE: ReleasePin = ReleasePin {
-            repo: I02_CURRENT_RELEASE.repo,
+            repo: "MaplePrivacyLabs/test-i02-only-stage",
             tag: "test-i02-only-stage",
             digest: I02_CURRENT_RELEASE.digest,
-            registers: I02_CURRENT_RELEASE.registers,
+            snp_launch: I02_CURRENT_RELEASE.snp_launch,
         };
         const STAGED_I02_ENDPOINT: MapleEndpoint = MapleEndpoint {
             instance: MapleInstanceId::I02,
@@ -364,115 +534,88 @@ mod tests {
             staged_releases: &[I02_TEST_STAGE],
         };
 
-        let i01_approved = approved_releases(endpoint(MapleInstanceId::I01));
-        let current_i02_approved = approved_releases(endpoint(MapleInstanceId::I02));
-        let staged_i02_approved = approved_releases(&STAGED_I02_ENDPOINT);
-        assert_eq!(i01_approved.len(), 1);
-        assert_eq!(current_i02_approved.len(), 1);
-        assert_eq!(staged_i02_approved.len(), 2);
-        assert_eq!(staged_i02_approved[1].release.tag, I02_TEST_STAGE.tag);
-        assert!(i01_approved
-            .iter()
-            .all(|approved| approved.release.tag != I02_TEST_STAGE.tag));
-        DirectPolicy::new(i01_approved).expect("i01 current policy remains valid");
-        DirectPolicy::new(staged_i02_approved).expect("i02 staged policy remains valid");
+        let i01 = policy_for(endpoint(MapleInstanceId::I01));
+        let current_i02 = policy_for(endpoint(MapleInstanceId::I02));
+        let staged_i02 = policy_for(&STAGED_I02_ENDPOINT);
+        assert_eq!(i01.approved.len(), 1);
+        assert_eq!(current_i02.approved.len(), 1);
+        assert_eq!(staged_i02.approved.len(), 2);
+        // The current release stays first, so it is the first one verified.
+        assert_eq!(
+            staged_i02.repos(),
+            [I02_CURRENT_RELEASE.repo, I02_TEST_STAGE.repo]
+        );
+        assert!(approves(&staged_i02, &I02_TEST_STAGE));
+        assert!(approves(&staged_i02, &I02_CURRENT_RELEASE));
+        assert!(!approves(&current_i02, &I02_TEST_STAGE));
+        assert!(!approves(&i01, &I02_TEST_STAGE));
     }
 
     #[test]
     fn stock_i02_approves_only_its_new_release() {
-        let approved = approved_releases(endpoint(MapleInstanceId::I02));
-        assert_eq!(approved.len(), 1);
-        let release = &approved[0];
-        assert_eq!(release.release.repo, "MaplePrivacyLabs/inference-deepseek");
-        assert_eq!(release.release.tag, "v0.1.2");
+        let policy = policy_for(endpoint(MapleInstanceId::I02));
+        assert_eq!(policy.approved.len(), 1);
+        let release = &policy.approved[0];
+        assert_eq!(release.repo, "MaplePrivacyLabs/inference-deepseek");
+        assert_eq!(release.tag, "v0.1.2");
         assert_eq!(
-            release.release.digest,
+            release.digest,
             "4bc5f2119cb55e125c9cc5c57e3fe120df98f8145dc675c8d201ac01882989ec"
         );
         assert_eq!(
-            release.measurement.type_,
-            PredicateType::SnpTdxMultiPlatformV1
+            release.snp_launch.to_string(),
+            "3f35fb1e92c599564e85e2b9adae8778bf8a9f553a8c936132301f09d4aa31a4a505b1c8f96cef407c53f4df67d23030"
         );
-        assert_eq!(release.measurement.registers, [
-            "3f35fb1e92c599564e85e2b9adae8778bf8a9f553a8c936132301f09d4aa31a4a505b1c8f96cef407c53f4df67d23030",
-            "758adac43a82a5f3146342660caefea0a7714414dd9055c4a56d1502273d85bbad86d625096a206c9335c23d05df3f99",
-            "ce37a33da28a5dd43d0d1469903adf8e2589d4ff61f3277ff5796bb5485ba413eac27aee572e0973bde858621a71783b",
-        ]);
-        assert!(approved.iter().all(|release| {
-            release.release.repo != I01_CURRENT_RELEASE.repo
-                && release.release.digest != I01_CURRENT_RELEASE.digest
-                && release.measurement.registers[0] != I01_CURRENT_RELEASE.registers[0]
-        }));
+        assert_eq!(policy.repos(), ["MaplePrivacyLabs/inference-deepseek"]);
+        assert!(!approves(&policy, &I01_CURRENT_RELEASE));
         assert!(direct_policy(MapleInstanceId::I02).unwrap().is_some());
         assert!(direct_policy(MapleInstanceId::I01).unwrap().is_some());
     }
 
     #[test]
     fn uncensored_i01_approves_only_its_new_release() {
-        let prepared = approved_releases(endpoint(MapleInstanceId::I01));
-        assert_eq!(prepared.len(), 1);
+        let policy = policy_for(endpoint(MapleInstanceId::I01));
+        assert_eq!(policy.approved.len(), 1);
+        let release = &policy.approved[0];
         assert_eq!(
-            prepared[0].release.repo,
+            release.repo,
             "MaplePrivacyLabs/inference-deepseek-uncensored"
         );
-        assert_eq!(prepared[0].release.tag, "v0.1.0+b300");
+        assert_eq!(release.tag, "v0.1.0+b300");
         assert_eq!(
-            prepared[0].release.digest,
+            release.digest,
             "6a8e906bc31caaccf5b6bbe84dec99c7213ec1d77aa360df464d531744590ac2"
         );
         assert_eq!(
-            prepared[0].measurement.type_,
-            PredicateType::SnpTdxMultiPlatformV1
+            release.snp_launch.to_string(),
+            "9e01436661dff4702b622a51a7bbcb83ce0a61d0c2bdc2de5a2492fc1dec70bb1997df829147a154e11fdfc6dbe044fe"
         );
-        assert_eq!(prepared[0].measurement.registers, [
-            "9e01436661dff4702b622a51a7bbcb83ce0a61d0c2bdc2de5a2492fc1dec70bb1997df829147a154e11fdfc6dbe044fe",
-            "758adac43a82a5f3146342660caefea0a7714414dd9055c4a56d1502273d85bbad86d625096a206c9335c23d05df3f99",
-            "898884507ffe6bb1d51aa3bf548d8748043aa8e2018d545424c312e7a39109d75f30760f0d4124ae2cf5c89cf07db8dd",
-        ]);
-        assert_ne!(prepared[0].release.repo, I02_CURRENT_RELEASE.repo);
-        assert_ne!(prepared[0].release.digest, I02_CURRENT_RELEASE.digest);
-        assert_ne!(
-            prepared[0].measurement.registers[0],
-            I02_CURRENT_RELEASE.registers[0]
+        assert_eq!(
+            policy.repos(),
+            ["MaplePrivacyLabs/inference-deepseek-uncensored"]
         );
+        assert!(!approves(&policy, &I02_CURRENT_RELEASE));
     }
 
     #[test]
-    fn retired_guest_roles_are_not_approved_on_either_endpoint() {
+    fn retired_releases_are_not_approved_on_either_guest() {
         for instance in MapleInstanceId::ALL {
             assert!(endpoint(instance).staged_releases.is_empty());
-            for approved in approved_releases(endpoint(instance)) {
-                for (retired_digest, retired_snp) in [
-                    (
-                        "7f421e8aefdd63181b71b9d202ac6a3b05b976c6ecb156354a20ff691931f5be",
-                        "f645aa2a679cf7ed575bb5d9d2fa18104d24ae545950d6c3669b6af1d81328f099f3437f9129c608ac9ff5a97927d365",
-                    ),
-                    (
-                        "1d92cd06f7b47179bf81612f6a41fdb0a329253affef1803f0cdeb5175cc80c4",
-                        "b391ea9621062080c01c3686bb70e8889148f6d6c7ca71eec6c149f4132b50f7b47e251f113a9a0861f05e546203aa39",
-                    ),
+            for approved in policy_for(endpoint(instance)).approved {
+                assert_ne!(approved.tag, "v0.1.0");
+                for retired_digest in [
+                    "7f421e8aefdd63181b71b9d202ac6a3b05b976c6ecb156354a20ff691931f5be",
+                    "1d92cd06f7b47179bf81612f6a41fdb0a329253affef1803f0cdeb5175cc80c4",
+                    "2d69e8544e5b2706d0e6004bc0ac925dc9abd79cb284f9400c26c9d145e25b00",
                 ] {
-                    assert_ne!(approved.release.digest, retired_digest);
-                    assert_ne!(approved.measurement.registers[0], retired_snp);
+                    assert_ne!(approved.digest, retired_digest);
                 }
-            }
-        }
-    }
-
-    #[test]
-    fn retired_release_is_not_approved_on_either_guest() {
-        for instance in MapleInstanceId::ALL {
-            for approved in approved_releases(endpoint(instance)) {
-                assert_ne!(approved.release.tag, "v0.1.0");
-                assert_ne!(
-                    approved.release.digest,
-                    "2d69e8544e5b2706d0e6004bc0ac925dc9abd79cb284f9400c26c9d145e25b00"
-                );
-                for retired_register in [
+                for retired_launch in [
+                    "f645aa2a679cf7ed575bb5d9d2fa18104d24ae545950d6c3669b6af1d81328f099f3437f9129c608ac9ff5a97927d365",
+                    "b391ea9621062080c01c3686bb70e8889148f6d6c7ca71eec6c149f4132b50f7b47e251f113a9a0861f05e546203aa39",
                     "d4d5fd1166413a3229a83899b99c06fb8cb904badb2ed5b9b8e6cb7414ad110628b6780eddaf10c42cbc996909145541",
-                    "24e53d3e8a77e9aa9182b61bbddc5138050c5dc00628231c51cfe6798431f64d59af20494708190c7aca85b166675550",
                 ] {
-                    assert!(!approved.measurement.registers.iter().any(|register| register == retired_register));
+                    assert_ne!(approved.snp_launch.to_string(), retired_launch);
                 }
             }
         }
