@@ -491,7 +491,7 @@ def check_checkpoint(envelope, origin, tree_size, root_hash, key_id):
             "Checkpoint carries no signature from the configured log key")
 
 
-def check_bundle_profile(data, statement, public_der, services=None):
+def check_bundle_profile(data, statement, public_der):
     """Enforce Maple's release bundle profile; Cosign separately verifies the cryptography.
 
     v0.3 bundle, managed public key, one DSSE in-toto envelope over exactly the
@@ -499,7 +499,7 @@ def check_bundle_profile(data, statement, public_der, services=None):
     configured log with an inclusion proof and signed checkpoint, no integrated
     time or inclusion promise, and exactly one RFC 3161 timestamp over this signature.
     """
-    services = services or signing_services()
+    services = signing_services()
     require(len(data) <= MAX_BUNDLE, "Bundle exceeds its size limit")
     bundle = strict_json(data)
     require(isinstance(bundle, dict) and set(bundle) == {"mediaType", "verificationMaterial", "dsseEnvelope"},
@@ -511,7 +511,17 @@ def check_bundle_profile(data, statement, public_der, services=None):
     require(isinstance(material["publicKey"], dict) and set(material["publicKey"]) <= {"hint"},
             "Verification material must identify a managed key, not a certificate")
 
-    envelope = bundle["dsseEnvelope"]
+    payload, signature = check_envelope(bundle["dsseEnvelope"], statement)
+    entry = check_log_entry(material["tlogEntries"], services)
+    index, tree_size = check_inclusion_proof(entry, services)
+    check_logged_body(entry, payload, signature, public_der)
+    tokens = check_timestamps(material["timestampVerificationData"], signature)
+    return {"logIndex": int(index), "treeSize": int(tree_size), "log": services["log_url"],
+            "timestamps": len(tokens)}
+
+
+def check_envelope(envelope, statement):
+    """One in-toto DSSE envelope over exactly the prepared statement, with one signature."""
     require(isinstance(envelope, dict) and set(envelope) == {"payload", "payloadType", "signatures"},
             "Envelope must hold only a payload, its type and signatures")
     require(envelope["payloadType"] == PAYLOAD_TYPE, "Envelope is not in-toto")
@@ -522,8 +532,11 @@ def check_bundle_profile(data, statement, public_der, services=None):
     require(isinstance(signatures[0], dict) and "sig" in signatures[0] and set(signatures[0]) <= {"sig", "keyid"},
             "Envelope signature has unexpected fields")
     signature = b64decode(signatures[0].get("sig"), "DSSE signature")
+    return payload, signature
 
-    entries = material["tlogEntries"]
+
+def check_log_entry(entries, services):
+    """Exactly one Rekor v2 hashedrekord 0.0.2 entry from the configured log."""
     require(isinstance(entries, list) and len(entries) == 1, "Bundle must carry exactly one transparency log entry")
     entry = entries[0]
     require(entry.get("kindVersion") == {"kind": "hashedrekord", "version": "0.0.2"},
@@ -535,6 +548,11 @@ def check_bundle_profile(data, statement, public_der, services=None):
     require("inclusionPromise" not in entry, "Log entry carries an inclusion promise")
     require(set(entry) == {"logIndex", "logId", "kindVersion", "inclusionProof", "canonicalizedBody"},
             "Log entry has missing or unexpected fields")
+    return entry
+
+
+def check_inclusion_proof(entry, services):
+    """A Merkle inclusion proof for this entry and a checkpoint signed by the log. Returns index and tree size."""
     index = entry.get("logIndex")
     require(isinstance(index, str) and index.isdigit(), "Log entry has no index")
     proof = entry.get("inclusionProof")
@@ -551,35 +569,42 @@ def check_bundle_profile(data, statement, public_der, services=None):
     hashes = proof.get("hashes")
     require(isinstance(hashes, list) and all(len(b64decode(item, "proof hash")) == 32 for item in hashes),
             "Inclusion proof hashes are malformed")
-    check_checkpoint((proof.get("checkpoint") or {}).get("envelope"), services["log_origin"], tree_size, root_hash,
-                     services["log_key_id"])
+    checkpoint = (proof.get("checkpoint") or {}).get("envelope")
+    check_checkpoint(checkpoint, services["log_origin"], tree_size, root_hash, services["log_key_id"])
+    return index, tree_size
 
+
+def check_logged_body(entry, payload, signature, public_der):
+    """The logged hashedrekord binds this envelope, its signature and the reviewed key."""
     body = strict_json(b64decode(entry.get("canonicalizedBody"), "log entry body"))
     require(isinstance(body, dict) and body.get("kind") == "hashedrekord" and body.get("apiVersion") == "0.0.2",
             "Log body is not hashedrekord 0.0.2")
     spec = (body.get("spec") or {}).get("hashedRekordV002") or {}
-    data_spec, logged = spec.get("data") or {}, spec.get("signature") or {}
-    require(data_spec.get("algorithm") == "SHA2_384", "Log body digest is not SHA-384")
-    require(b64decode(data_spec.get("digest"), "logged digest") == hashlib.sha384(pae(PAYLOAD_TYPE, payload)).digest(),
+    logged_data, logged_signature = spec.get("data") or {}, spec.get("signature") or {}
+    require(logged_data.get("algorithm") == "SHA2_384", "Log body digest is not SHA-384")
+    envelope_digest = hashlib.sha384(pae(PAYLOAD_TYPE, payload)).digest()
+    require(b64decode(logged_data.get("digest"), "logged digest") == envelope_digest,
             "Log body digest does not bind this envelope")
-    require(b64decode(logged.get("content"), "logged signature") == signature,
+    require(b64decode(logged_signature.get("content"), "logged signature") == signature,
             "Log body signature differs from the envelope signature")
-    verifier = logged.get("verifier") or {}
+    verifier = logged_signature.get("verifier") or {}
     require(verifier.get("keyDetails") == "PKIX_ECDSA_P384_SHA_384", "Logged key is not P-384")
     require(b64decode((verifier.get("publicKey") or {}).get("rawBytes"), "logged key") == public_der,
             "Logged key is not the reviewed signing key")
 
-    timestamps = material["timestampVerificationData"]
+
+def check_timestamps(timestamps, signature):
+    """Exactly one RFC 3161 timestamp, whose message imprint is this signature."""
     require(isinstance(timestamps, dict) and set(timestamps) == {"rfc3161Timestamps"},
             "Timestamp data must be RFC 3161 timestamps only")
     tokens = timestamps["rfc3161Timestamps"]
     require(isinstance(tokens, list) and len(tokens) == 1, "Bundle must carry exactly one RFC 3161 timestamp")
     require(isinstance(tokens[0], dict) and set(tokens[0]) == {"signedTimestamp"}, "Timestamp has unexpected fields")
     token = b64decode(tokens[0]["signedTimestamp"], "RFC 3161 timestamp")
-    # The token's message imprint is an OCTET STRING holding SHA-256 of the signature.
+    # A byte scan, not verification (Cosign verifies the token): the message
+    # imprint is an OCTET STRING holding SHA-256 of the signature.
     require(b"\x04\x20" + hashlib.sha256(signature).digest() in token, "Timestamp does not cover this signature")
-    return {"logIndex": int(index), "treeSize": int(tree_size), "log": services["log_url"],
-            "timestamps": len(tokens)}
+    return tokens
 
 
 def cosign_verify(cosign, bundle, key_path, eif):
