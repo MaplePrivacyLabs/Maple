@@ -777,7 +777,7 @@ def github_oidc_token(audience="sts.amazonaws.com"):
     request = urllib.request.Request(f"{url}{separator}audience={urllib.parse.quote(audience)}",
                                      headers={"Authorization": f"Bearer {token}"})
     with urllib.request.urlopen(request, timeout=30) as response:
-        value = strict_json(response.read(MAX_SMALL_FILE_BYTES)).get("value")
+        value = json_object(strict_json(response.read(MAX_SMALL_FILE_BYTES)), "GitHub OIDC response").get("value")
     require(isinstance(value, str) and value.count(".") == 2, "GitHub returned no OIDC token")
     return value
 

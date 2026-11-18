@@ -1091,6 +1091,55 @@ def git_selectors(foreign):
     }
 
 
+class TokenEndpoint(http.server.BaseHTTPRequestHandler):
+    """GitHub's OIDC token endpoint, answering every request with `body`."""
+
+    body: bytes = b""
+
+    def do_GET(self):  # noqa: N802 - http.server API
+        self.send_response(200)
+        self.send_header("Content-Type", "application/json")
+        self.send_header("Content-Length", str(len(self.body)))
+        self.end_headers()
+        self.wfile.write(self.body)
+
+    def log_message(self, *args):
+        pass
+
+
+class GitHubOidcTokenTests(unittest.TestCase):
+    def setUp(self):
+        self.handler = type("FixtureTokenEndpoint", (TokenEndpoint,), {})
+        server = http.server.ThreadingHTTPServer(("127.0.0.1", 0), self.handler)
+        thread = threading.Thread(target=server.serve_forever, daemon=True)
+        thread.start()
+        self.addCleanup(thread.join)
+        self.addCleanup(server.server_close)
+        self.addCleanup(server.shutdown)
+        url = f"http://127.0.0.1:{server.server_address[1]}/token"
+        self.enterContext(mock.patch.dict(os.environ, {"ACTIONS_ID_TOKEN_REQUEST_URL": url,
+                                                       "ACTIONS_ID_TOKEN_REQUEST_TOKEN": "fixture-request-token"}))
+
+    def token_for(self, body):
+        self.handler.body = body
+        return release.github_oidc_token()
+
+    def test_the_token_in_githubs_response_is_returned(self):
+        self.assertEqual(self.token_for(b'{"count": 1, "value": "header.claims.signature"}'), "header.claims.signature")
+
+    def test_a_response_without_a_token_is_refused(self):
+        for body in (b"{}", b'{"value": "not-a-jwt"}', b'{"value": 7}', b"[]", b"null", b"false", b'""', b"0"):
+            with self.subTest(body=body):
+                with self.assertRaisesRegex(release.EvidenceError, "GitHub returned no OIDC token"):
+                    self.token_for(body)
+
+    def test_a_response_that_is_not_an_object_is_refused(self):
+        for body in (b"[1]", b'["header.claims.signature"]', b'"header.claims.signature"', b"7", b"true"):
+            with self.subTest(body=body):
+                with self.assertRaisesRegex(release.EvidenceError, "OIDC response is not a JSON object"):
+                    self.token_for(body)
+
+
 class ReviewedPublicKeyTests(unittest.TestCase):
     """Cosign verifies against exactly the key file the checked-out commit tracks."""
 
