@@ -60,7 +60,9 @@ for the same artifact. The job then:
 
 1. **Refuses to start** if the fixed signing identity in the workflow is
    incomplete: the KMS key ARN or signer role ARN is a placeholder or not the
-   expected shape, or the reviewed public key file is not committed.
+   expected shape, or the reviewed public key file is not a file the
+   checked-out commit tracks, differs from that commit's content, is reached
+   through a symlink, or is not a P-384 public key.
 2. **Verifies the build.** The run must be `opensecret-eif-release.yml`,
    dispatched on `master` in this public repository, completed successfully,
    and its commit must be in the checked-out `master` history. The artifact

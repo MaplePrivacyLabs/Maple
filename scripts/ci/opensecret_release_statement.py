@@ -212,16 +212,44 @@ def public_key_der(text):
     return der
 
 
+def committed_file(relative):
+    """The bytes HEAD records for a file at this repository path, or None if HEAD has no file there."""
+    listing = subprocess.run(["git", "ls-tree", "-z", "HEAD", "--", relative], cwd=ROOT,
+                             stdout=subprocess.PIPE, stderr=subprocess.DEVNULL)
+    require(listing.returncode == 0, "Cannot read the checked-out commit's tree")
+    for entry in listing.stdout.split(b"\0"):
+        metadata, _, name = entry.partition(b"\t")
+        if name == relative.encode() and metadata.split(b" ")[1:2] == [b"blob"]:
+            blob = subprocess.run(["git", "cat-file", "blob", metadata.split(b" ")[2].decode()], cwd=ROOT,
+                                  stdout=subprocess.PIPE, check=True)
+            return blob.stdout
+    return None
+
+
 def reviewed_public_key(environ):
-    """The committed, reviewed public key the bundle must verify against."""
+    """The reviewed public key the bundle must verify against.
+
+    It must be a file the checked-out commit tracks, unmodified in the working
+    tree, and reached through no symlink: Cosign reads this path, so it must be
+    exactly the file review approved.
+    """
     configured = environ.get("SIGNING_PUBLIC_KEY", "")
     require(configured and not os.path.isabs(configured), "SIGNING_PUBLIC_KEY must name a repository file")
     path = (ROOT / configured).resolve()
     require(path.is_relative_to(ROOT), "SIGNING_PUBLIC_KEY must stay inside the repository")
-    require(path.is_file() and not path.is_symlink(),
-            f"The reviewed public key {configured} is not committed; refusing to sign")
+    # Check each component as configured: resolving first would follow a link.
+    component = ROOT
+    for part in Path(configured).parts:
+        component /= part
+        require(not component.is_symlink(),
+                f"The reviewed public key {configured} is reached through a symlink; refusing to sign")
+    require(path.is_file(), f"The reviewed public key {configured} is not committed; refusing to sign")
     require(path.stat().st_size <= MAX_PUBLIC_KEY_BYTES, "Public key file is too large")
-    return path, public_key_der(path.read_text())
+    committed = committed_file(path.relative_to(ROOT).as_posix())
+    require(committed is not None, f"The reviewed public key {configured} is not committed; refusing to sign")
+    require(path.read_bytes() == committed,
+            f"The reviewed public key {configured} differs from its committed content; refusing to sign")
+    return path, public_key_der(committed.decode(errors="replace"))
 
 
 def signing_identity(target, environ):

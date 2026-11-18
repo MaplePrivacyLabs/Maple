@@ -35,6 +35,8 @@ KEY_ARN = f"arn:aws:kms:us-east-1:{ACCOUNT}:key/0f1e2d3c-4b5a-6978-8796-a5b4c3d2
 ROLE_ARN = f"arn:aws:iam::{ACCOUNT}:role/maple-pcr-signer-dev"
 R2_ACCOUNT = "e" * 32
 DEV_PUBLIC_KEY = "scripts/ci/opensecret-release/dev-signing-key.pem"
+UNTRACKED_PUBLIC_KEY = "scripts/ci/opensecret-release/untracked.pem"
+LINKED_PUBLIC_KEY = "scripts/ci/opensecret-release/linked.pem"
 # Sigstore's production Rekor v1 log, which a Rekor v2 profile must never accept.
 REKOR_V1_LOG_ID = "wNI9atQGlz+VWfO6LRygH4QUfY/8W4RFwiT5i5WRgB0="
 
@@ -593,20 +595,22 @@ class Workspace:
         self.install_fakes()
 
     def create_master_checkout(self):
-        """The build's commit with a later master commit on top, and the reviewed public key."""
+        """The build's commit, then a later master commit that adds the reviewed public key."""
         self.repo = self.root / "repo"
         self.repo.mkdir()
         git("init", "-q", "--initial-branch=master", cwd=self.repo)
         (self.repo / "source").write_text("build source\n")
-        git("add", "-A", cwd=self.repo)
-        git("commit", "-q", "-m", "build", cwd=self.repo)
+        self.commit("build")
         self.source_sha = git("rev-parse", "HEAD", cwd=self.repo)
         (self.repo / "later").write_text("later master change\n")
-        git("add", "-A", cwd=self.repo)
-        git("commit", "-q", "-m", "later", cwd=self.repo)
         key = self.repo / DEV_PUBLIC_KEY
         key.parent.mkdir(parents=True)
         key.write_text(pem(REVIEWED_DER))
+        self.commit("later")
+
+    def commit(self, message):
+        git("add", "-A", cwd=self.repo)
+        git("commit", "-q", "-m", message, cwd=self.repo)
 
     def describe_build(self):
         """The build's files, run, artifact and provenance. Tests change these before staging them."""
@@ -906,6 +910,60 @@ class PrepareTests(unittest.TestCase):
             self.assert_refused(work, "Invalid PCR0")
 
 
+class ReviewedPublicKeyTests(unittest.TestCase):
+    """Cosign verifies against exactly the key file the checked-out commit tracks."""
+
+    def setUp(self):
+        self.work = self.enterContext(workspace())
+        self.key = self.work.repo / DEV_PUBLIC_KEY
+
+    def assert_refused(self, configured, message):
+        with self.assertRaisesRegex(release.EvidenceError, message):
+            release.reviewed_public_key({"SIGNING_PUBLIC_KEY": configured})
+
+    def test_the_tracked_unmodified_key_is_used(self):
+        self.assertEqual(release.reviewed_public_key({"SIGNING_PUBLIC_KEY": DEV_PUBLIC_KEY}),
+                         (self.key, REVIEWED_DER))
+
+    def test_a_key_the_commit_does_not_track_is_refused(self):
+        (self.work.repo / UNTRACKED_PUBLIC_KEY).write_text(pem(REVIEWED_DER))
+        with self.subTest(case="untracked"):
+            self.assert_refused(UNTRACKED_PUBLIC_KEY, "is not committed")
+        git("add", UNTRACKED_PUBLIC_KEY, cwd=self.work.repo)
+        with self.subTest(case="staged but not committed"):
+            self.assert_refused(UNTRACKED_PUBLIC_KEY, "is not committed")
+
+    def test_a_file_where_the_commit_has_a_directory_is_refused(self):
+        (self.work.repo / "keys").mkdir()
+        (self.work.repo / "keys/inner.pem").write_text(pem(REVIEWED_DER))
+        self.work.commit("a directory of keys")
+        (self.work.repo / "keys/inner.pem").unlink()
+        (self.work.repo / "keys").rmdir()
+        (self.work.repo / "keys").write_text(pem(REVIEWED_DER))
+        self.assert_refused("keys", "is not committed")
+
+    def test_a_key_changed_after_checkout_is_refused(self):
+        self.key.write_text(pem(OTHER_DER))
+        with self.subTest(case="edited"):
+            self.assert_refused(DEV_PUBLIC_KEY, "differs from its committed content")
+        git("add", DEV_PUBLIC_KEY, cwd=self.work.repo)
+        with self.subTest(case="edited and staged"):
+            self.assert_refused(DEV_PUBLIC_KEY, "differs from its committed content")
+
+    def test_a_symlink_to_the_tracked_key_is_refused(self):
+        (self.work.repo / LINKED_PUBLIC_KEY).symlink_to(self.key.name)
+        with self.subTest(case="untracked link"):
+            self.assert_refused(LINKED_PUBLIC_KEY, "reached through a symlink")
+        self.work.commit("a link to the reviewed key")
+        with self.subTest(case="tracked link"):
+            self.assert_refused(LINKED_PUBLIC_KEY, "reached through a symlink")
+
+    def test_a_key_under_a_symlinked_directory_is_refused(self):
+        (self.work.repo / "keys").symlink_to(Path(DEV_PUBLIC_KEY).parent)
+        self.work.commit("a linked key directory")
+        self.assert_refused(f"keys/{self.key.name}", "reached through a symlink")
+
+
 # Bundles that sign must refuse, so that publish never uploads them.
 UNPUBLISHABLE = ("no inclusion proof", "no timestamp", "Rekor v1 entry", "extra v1 entry", "inclusion promise",
                  "zero integrated time string", "zero integrated time number", "tampered statement",
@@ -991,6 +1049,26 @@ class SignTests(unittest.TestCase):
                 self.assertEqual(self.work.log("cosign"), [])
                 with contextlib.redirect_stderr(io.StringIO()):
                     self.assertEqual(release.main(["preflight", "dev"]), 1)
+
+    def assert_refused_before_any_credential(self):
+        self.assert_never_signed("refusing to sign")
+        self.assertEqual(self.work.log("cosign"), [])
+        release.github_oidc_token.assert_not_called()
+        with contextlib.redirect_stderr(io.StringIO()):
+            self.assertEqual(release.main(["preflight", "dev"]), 1)
+
+    def test_an_untracked_or_symlinked_public_key_is_refused_before_any_credential(self):
+        (self.work.repo / UNTRACKED_PUBLIC_KEY).write_text(pem(REVIEWED_DER))
+        (self.work.repo / LINKED_PUBLIC_KEY).symlink_to(Path(DEV_PUBLIC_KEY).name)
+        self.work.signed_bundle()
+        for configured in (UNTRACKED_PUBLIC_KEY, LINKED_PUBLIC_KEY):
+            with self.subTest(key=configured), mock.patch.dict(os.environ, {"SIGNING_PUBLIC_KEY": configured}):
+                self.assert_refused_before_any_credential()
+
+    def test_a_public_key_edited_after_checkout_is_refused_before_any_credential(self):
+        (self.work.repo / DEV_PUBLIC_KEY).write_text(pem(OTHER_DER))
+        self.work.signed_bundle()
+        self.assert_refused_before_any_credential()
 
     def test_kms_key_other_than_the_reviewed_key_is_refused_before_signing(self):
         (self.work.state / "served.pem").write_text(pem(OTHER_DER))
@@ -1165,6 +1243,11 @@ class PublishTests(unittest.TestCase):
         for name, values in cases.items():
             with self.subTest(case=name), mock.patch.dict(os.environ, values):
                 self.assert_not_published("")
+        self.assertEqual(self.work.log("aws"), [])
+
+    def test_a_public_key_edited_after_signing_is_never_uploaded(self):
+        (self.work.repo / DEV_PUBLIC_KEY).write_text(pem(OTHER_DER))
+        self.assert_not_published("differs from its committed content")
         self.assertEqual(self.work.log("aws"), [])
 
     def test_a_bundle_changed_after_signing_is_never_uploaded(self):
