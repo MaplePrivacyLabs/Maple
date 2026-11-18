@@ -2,13 +2,13 @@
 
 An enclave release statement is Maple's signed approval of one OpenSecret EIF
 for one environment. It binds the EIF's SHA-256 digest to the environment it
-was approved for, its source commit and its PCR0, PCR1 and PCR2. Each
-statement is signed with that environment's own AWS KMS key through Cosign,
-recorded in Sigstore's public Rekor v2 transparency log, timestamped by
-Sigstore's public timestamp authority, and published as a standard Sigstore
-bundle at a fixed public URL keyed by PCR0.
+was approved for, its source commit and its PCR0, PCR1 and PCR2. It is signed
+with that environment's own AWS KMS key through Cosign, recorded in Sigstore's
+public Rekor v2 transparency log, timestamped by Sigstore's public timestamp
+authority, and published as a standard Sigstore bundle at a fixed public URL
+keyed by PCR0.
 
-Dev statements are produced by
+Only Dev statements exist so far. They are produced by
 [`opensecret-release-statement-dev.yml`](../../../.github/workflows/opensecret-release-statement-dev.yml)
 (`OpenSecret Dev release statement`). Production approvals still use the
 legacy signing job in `opensecret-eif-release.yml`; see
@@ -18,7 +18,7 @@ legacy signing job in `opensecret-eif-release.yml`; see
 
 The statement is an in-toto v1 statement with one subject, `image.eif` with the
 EIF's SHA-256 digest, and predicate type
-`https://maple.ai/attestations/enclave-release/v1`:
+`https://maple.ai/attestations/enclave-release/v1`. Its predicate:
 
 ```json
 {
@@ -40,10 +40,10 @@ EIF's SHA-256 digest, and predicate type
 ```
 
 Build mode `dev` signs `development` and `prod` signs `production`; the
-mapping is fixed in the producer. Clients choose the public key and host from
-their own configured environment and then check `environment` and the three
-PCRs; they never take the environment from a downloaded bundle. A Dev-key
-statement cannot approve Production even if it claims `production`.
+mapping is fixed in the producer. A client must choose the public key and host
+from its own configured environment, then check `environment` and the three
+PCRs; it must never take the environment from a downloaded bundle. A Dev-key
+statement then cannot approve Production even if it claims `production`.
 `source` and `build` are signed audit data. Every value is derived from the
 verified build artifact and its provenance, never from operator input.
 
@@ -98,9 +98,7 @@ for the same artifact. The job then:
    Signing an earlier build from newer `master` code uses the branch
    `opensecret/pcr-approval-<build commit>-<checkout commit>`.
 
-Any failure stops the job; later steps never run. A build whose measurements
-are already approved is accepted: the legacy step finds nothing to sign, and
-the statement for the new EIF replaces the lookup object for the same PCRs.
+Any failure stops the job; later steps never run.
 
 ### Evidence profile
 
@@ -117,16 +115,14 @@ The producer publishes only a bundle that has all of:
 - no integrated time and no inclusion promise, so no Rekor v1 entry;
 - exactly one RFC 3161 timestamp over this signature.
 
-A missing proof, checkpoint or timestamp, or any extra or v1 entry, fails the
-job before upload.
-
 ### Publication and reruns
 
-Uploads write one object. An identical rerun or an approved build with the
-same PCRs overwrites only `<PCR0>.json`; other objects are never deleted. The
-original bundle stays with its EIF in the retained workflow artifact (for its
-90 days), so deployment can still check the exact EIF digest after a same-PCR
-replacement.
+Uploads write one object, `<PCR0>.json`, and never delete others. A rerun for
+the same build overwrites it with its newly signed bundle. A new build whose
+measurements are already approved is accepted: the legacy step finds nothing
+to sign, and its statement replaces the object for those PCRs. The replaced
+bundle stays with its EIF in the earlier run's retained artifact, so
+deployment can still check the exact EIF digest while that artifact lasts.
 A failed upload or a readback that never returns the uploaded bytes fails the
 job and is not reported as published.
 
