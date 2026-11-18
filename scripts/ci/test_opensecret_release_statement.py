@@ -361,7 +361,7 @@ class BundleProfileTests(unittest.TestCase):
         with self.assertRaisesRegex(release.EvidenceError, "Duplicate JSON key"):
             release.check_bundle_profile(duplicate, self.statement, REVIEWED_DER)
         with self.assertRaisesRegex(release.EvidenceError, "size limit"):
-            release.check_bundle_profile(data + b" " * release.MAX_BUNDLE, self.statement, REVIEWED_DER)
+            release.check_bundle_profile(data + b" " * release.MAX_BUNDLE_BYTES, self.statement, REVIEWED_DER)
 
     def test_pinned_signing_configuration_names_one_rekor_v2_log_and_one_timestamp_authority(self):
         config = json.loads(release.SIGNING_CONFIG.read_text())
@@ -381,7 +381,7 @@ class BundleProfileTests(unittest.TestCase):
                           "prod": ("production", "maple-attestations-prod", "attestations.maple.ai")})
         for mode in ("development", "Dev", "", "staging"):
             with self.subTest(mode=mode), self.assertRaises(release.EvidenceError):
-                release.target(mode)
+                release.target_for(mode)
 
     def test_statement_carries_the_settled_predicate(self):
         statement = json.loads(self.statement)
@@ -915,8 +915,7 @@ class PublishTests(unittest.TestCase):
         self.bucket = self.work.storage / "maple-attestations-dev"
 
     def publish(self):
-        return release.publish("dev", self.work.candidate, self.work.release, self.cosign, base_url=self.base_url,
-                               sleep=lambda _: None)
+        return release.publish("dev", self.work.candidate, self.work.release, self.cosign, base_url=self.base_url)
 
     def test_uploads_one_object_and_confirms_the_public_bytes(self):
         self.publish()

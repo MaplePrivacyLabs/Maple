@@ -65,7 +65,7 @@ BUNDLE_MEDIA_TYPE = "application/vnd.dev.sigstore.bundle.v0.3+json"
 SUBJECT_NAME = "image.eif"
 
 COSIGN_VERSION = "v3.1.4"
-COSIGN_URL = "https://github.com/sigstore/cosign/releases/download/v3.1.4/cosign-{platform}"
+COSIGN_URL = "https://github.com/sigstore/cosign/releases/download/{version}/cosign-{platform}"
 COSIGN_SHA256 = {
     "linux-amd64": "424e2c97d0b45fd7a6b608a87f090f35633f4c23ece5f092d48bba11aaf4bbfa",
     "linux-arm64": "ade83b7aac62e131cacfe96d958948b2150cc9efec46a570a2649b8e27dedad2",
@@ -75,8 +75,12 @@ KMS_REGION = "us-east-1"
 KEY_ARN = re.compile(r"arn:aws:kms:us-east-1:(?P<account>[0-9]{12}):key/"
                      r"[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}")
 ROLE_ARN = re.compile(r"arn:aws:iam::(?P<account>[0-9]{12}):role/(?P<name>[A-Za-z0-9+=,.@_-]+)")
-# DER prefix of a SubjectPublicKeyInfo for an uncompressed P-384 point.
+# DER prefix of a SubjectPublicKeyInfo for an uncompressed P-384 point, and the
+# point itself: 0x04 followed by 48-byte X and Y coordinates.
 P384_SPKI_PREFIX = bytes.fromhex("3076301006072a8648ce3d020106052b81040022036200")
+P384_POINT_BYTES = 1 + 2 * 48
+# A signed-note signature line starts with the first four bytes of the signer's key ID.
+NOTE_KEY_HASH_BYTES = 4
 
 CACHE_CONTROL = "public, max-age=300"
 # The browser origin used for the readback; the bucket's CORS rule allows any.
@@ -86,10 +90,12 @@ READBACK_DELAY = 30
 
 FILES = ("image.eif", "pcr.json", "handoff.json")
 MEASUREMENTS = ("PCR0", "PCR1", "PCR2")
-MAX_EIF = 2 * 1024 * 1024 * 1024
-MAX_SMALL = 64 * 1024
-MAX_BUNDLE = 1024 * 1024
-MAX_COSIGN = 256 * 1024 * 1024
+MAX_EIF_BYTES = 2 * 1024 * 1024 * 1024
+# pcr.json, handoff.json, SHA256SUMS, the recorded candidate and API responses.
+MAX_SMALL_FILE_BYTES = 64 * 1024
+MAX_PUBLIC_KEY_BYTES = 4096
+MAX_BUNDLE_BYTES = 1024 * 1024
+MAX_COSIGN_BYTES = 256 * 1024 * 1024
 
 
 @dataclass(frozen=True)
@@ -146,7 +152,7 @@ def strict_json(data):
         raise EvidenceError(f"Invalid JSON: {error}") from None
 
 
-def read_json(path, limit=MAX_SMALL):
+def read_json(path, limit=MAX_SMALL_FILE_BYTES):
     require(path.is_file() and not path.is_symlink(), f"Expected a regular file: {path.name}")
     require(path.stat().st_size <= limit, f"{path.name} exceeds its size limit")
     return strict_json(path.read_bytes())
@@ -162,6 +168,17 @@ def b64decode(value, what):
         return base64.b64decode(value, validate=True)
     except binascii.Error:
         raise EvidenceError(f"{what} is not base64") from None
+
+
+def clean_env(**extra):
+    """No inherited cloud credentials, profiles or metadata lookups reach a tool."""
+    env = {"PATH": os.environ.get("PATH", "/usr/bin:/bin"), "HOME": os.environ.get("HOME", "/nonexistent"),
+           "AWS_EC2_METADATA_DISABLED": "true", "AWS_CONFIG_FILE": os.devnull,
+           "AWS_SHARED_CREDENTIALS_FILE": os.devnull}
+    if os.environ.get("TMPDIR"):
+        env["TMPDIR"] = os.environ["TMPDIR"]
+    env.update(extra)
+    return env
 
 
 def github_output(**values):
@@ -180,7 +197,7 @@ def step_summary(text):
 # --- Fixed signing identity -------------------------------------------------
 
 
-def target(mode):
+def target_for(mode):
     require(mode in TARGETS, f"Unknown build mode {mode!r}")
     return TARGETS[mode]
 
@@ -190,7 +207,7 @@ def public_key_der(text):
     match = re.fullmatch(r"-----BEGIN PUBLIC KEY-----\n([A-Za-z0-9+/=\n]+)-----END PUBLIC KEY-----\n?", text)
     require(match, "Expected one PEM public key")
     der = b64decode("".join(match.group(1).split()), "public key")
-    require(len(der) == len(P384_SPKI_PREFIX) + 97 and der.startswith(P384_SPKI_PREFIX + b"\x04"),
+    require(len(der) == len(P384_SPKI_PREFIX) + P384_POINT_BYTES and der.startswith(P384_SPKI_PREFIX + b"\x04"),
             "Expected an uncompressed P-384 public key")
     return der
 
@@ -203,11 +220,11 @@ def reviewed_public_key(environ):
     require(path.is_relative_to(ROOT), "SIGNING_PUBLIC_KEY must stay inside the repository")
     require(path.is_file() and not path.is_symlink(),
             f"The reviewed public key {configured} is not committed; refusing to sign")
-    require(path.stat().st_size <= 4096, "Public key file is too large")
+    require(path.stat().st_size <= MAX_PUBLIC_KEY_BYTES, "Public key file is too large")
     return path, public_key_der(path.read_text())
 
 
-def signing_identity(chosen, environ):
+def signing_identity(target, environ):
     """Validate the workflow's fixed key and role. Placeholders and aliases never pass."""
     key_arn = environ.get("SIGNING_KEY_ARN", "")
     role_arn = environ.get("SIGNER_ROLE_ARN", "")
@@ -216,17 +233,17 @@ def signing_identity(chosen, environ):
     key = KEY_ARN.fullmatch(key_arn)
     require(key, f"SIGNING_KEY_ARN must be a full KMS key ARN in {KMS_REGION}, never an alias")
     role = ROLE_ARN.fullmatch(role_arn)
-    require(role and role["name"] == chosen.signer_role,
-            f"SIGNER_ROLE_ARN must be the {chosen.signer_role} role")
+    require(role and role["name"] == target.signer_role,
+            f"SIGNER_ROLE_ARN must be the {target.signer_role} role")
     require(role["account"] == key["account"], "Signer role and key must be in the same account")
     path, der = reviewed_public_key(environ)
     return key_arn, role_arn, path, der
 
 
 def preflight(mode):
-    chosen = target(mode)
-    key_arn, role_arn, path, der = signing_identity(chosen, os.environ)
-    print(f"Signing identity for {chosen.environment}: {key_arn} via {role_arn}; "
+    target = target_for(mode)
+    key_arn, role_arn, path, der = signing_identity(target, os.environ)
+    print(f"Signing identity for {target.environment}: {key_arn} via {role_arn}; "
           f"reviewed key {path.relative_to(ROOT)} (SPKI SHA-256 {hashlib.sha256(der).hexdigest()}).")
 
 
@@ -269,7 +286,7 @@ def select_artifact(pages, run, mode):
     workflow_run = artifact.get("workflow_run") or {}
     require(workflow_run.get("id") == run["id"] and workflow_run.get("head_sha") == run["head_sha"],
             "Artifact does not belong to the selected build run")
-    require(0 < artifact.get("size_in_bytes", 0) <= MAX_EIF, "Artifact size is out of bounds")
+    require(0 < artifact.get("size_in_bytes", 0) <= MAX_EIF_BYTES, "Artifact size is out of bounds")
     return artifact
 
 
@@ -284,7 +301,7 @@ def extract_candidate(archive_path, destination):
         for entry in entries:
             kind = stat.S_IFMT(entry.external_attr >> 16)
             require(kind in (0, stat.S_IFREG), f"{entry.filename} is not a regular file")
-            limit = MAX_EIF if entry.filename == "image.eif" else MAX_SMALL
+            limit = MAX_EIF_BYTES if entry.filename == "image.eif" else MAX_SMALL_FILE_BYTES
             require(0 < entry.file_size <= limit, f"{entry.filename} is empty or too large")
             with archive.open(entry) as source, (destination / entry.filename).open("xb") as output:
                 shutil.copyfileobj(source, output)
@@ -305,10 +322,13 @@ def check_checksums(candidate):
 
 
 def invocation_attempt(statement, run_id):
-    invocation = (((statement.get("predicate") or {}).get("runDetails") or {}).get("metadata") or {}).get(
-        "invocationId")
-    match = re.fullmatch(re.escape(f"{SOURCE_REPOSITORY}/actions/runs/{run_id}/attempts/") + r"([1-9][0-9]{0,3})",
-                         str(invocation))
+    """The attempt of run_id named by a SLSA statement's invocation ID, or None for any other run."""
+    predicate = statement.get("predicate") or {}
+    run_details = predicate.get("runDetails") or {}
+    metadata = run_details.get("metadata") or {}
+    invocation = metadata.get("invocationId")
+    run_url = f"{SOURCE_REPOSITORY}/actions/runs/{run_id}/attempts/"
+    match = re.fullmatch(re.escape(run_url) + r"([1-9][0-9]{0,3})", str(invocation))
     return int(match.group(1)) if match else None
 
 
@@ -325,13 +345,14 @@ def provenance_attempts(results, run, digests):
     require(isinstance(results, list) and results, "No verified build provenance")
     attempts = set()
     for result in results:
-        statement = ((result or {}).get("verificationResult") or {}).get("statement") or {}
+        verification = (result or {}).get("verificationResult") or {}
+        statement = verification.get("statement") or {}
         if statement.get("_type") != STATEMENT_TYPE or statement.get("predicateType") != SLSA_TYPE:
             continue
         attempt = invocation_attempt(statement, run["id"])
         covered = subjects(statement)
-        if attempt and attempt <= run["run_attempt"] and all(
-                covered.get(name) == {digest} for name, digest in digests.items()):
+        covers_every_file = all(covered.get(name) == {digest} for name, digest in digests.items())
+        if attempt and attempt <= run["run_attempt"] and covers_every_file:
             attempts.add(attempt)
     return attempts
 
@@ -393,7 +414,7 @@ def statement_bytes(environment, source_commit, measurements, run_id, run_attemp
 
 
 def prepare(mode, run_id, candidate, release):
-    chosen = target(mode)
+    target = target_for(mode)
     require(re.fullmatch(r"[1-9][0-9]{0,19}", run_id), "Expected a numeric build run ID")
     require(not candidate.exists() and not release.exists(), "Output directories must not exist yet")
     run = api(f"actions/runs/{run_id}")
@@ -405,33 +426,46 @@ def prepare(mode, run_id, candidate, release):
                           f"repos/{REPOSITORY}/actions/runs/{run_id}/artifacts?per_page=100"])
     artifact = select_artifact(pages, run, mode)
     release.mkdir()
-    archive = release / "artifact.zip"
-    with archive.open("xb") as output:
-        subprocess.run(["gh", "api", f"repos/{REPOSITORY}/actions/artifacts/{artifact['id']}/zip"],
-                       stdout=output, check=True)
-    require(archive.stat().st_size <= MAX_EIF + MAX_SMALL, "Downloaded artifact is too large")
-    extract_candidate(archive, candidate)
-    archive.unlink()
+    download_candidate(artifact, release / "artifact.zip", candidate)
     digests = check_checksums(candidate)
+    eif_sha256 = digests["image.eif"]
     attempt, provenance = verify_build_provenance(candidate, run, digests)
-    measurements = validate_handoff(candidate, run, mode, digests["image.eif"])
-    statement = statement_bytes(chosen.environment, run["head_sha"], measurements, run["id"], attempt,
-                                digests["image.eif"])
+    measurements = validate_handoff(candidate, run, mode, eif_sha256)
+    statement = statement_bytes(target.environment, run["head_sha"], measurements, run["id"], attempt, eif_sha256)
     (release / "statement.json").write_bytes(statement)
     write_json(release / "build-provenance.json", provenance)
     write_json(release / "candidate.json", {
-        "mode": mode, "environment": chosen.environment, "sourceCommit": run["head_sha"],
-        "buildRunId": str(run["id"]), "buildRunAttempt": attempt, "artifactId": artifact["id"],
-        "artifactName": artifact["name"], "eifSha256": digests["image.eif"], "measurements": measurements,
+        "mode": mode,
+        "environment": target.environment,
+        "sourceCommit": run["head_sha"],
+        "buildRunId": str(run["id"]),
+        "buildRunAttempt": attempt,
+        "artifactId": artifact["id"],
+        "artifactName": artifact["name"],
+        "eifSha256": eif_sha256,
+        "measurements": measurements,
     })
-    github_output(source_sha=run["head_sha"], eif_sha256=digests["image.eif"], pcr0=measurements["PCR0"])
-    step_summary(
-        f"## Verified OpenSecret {mode} build\n\n| Field | Value |\n| --- | --- |\n"
-        f"| Build run | {run['id']} attempt {attempt} |\n| Source commit | `{run['head_sha']}` |\n"
-        f"| EIF SHA-256 | `{digests['image.eif']}` |\n| PCR0 | `{measurements['PCR0']}` |\n"
-        f"| Signed environment | `{chosen.environment}` |\n\n")
-    print(f"Verified {mode} build run {run['id']} attempt {attempt}: EIF {digests['image.eif']}, "
-          f"PCR0 {measurements['PCR0']}.")
+    github_output(source_sha=run["head_sha"], eif_sha256=eif_sha256, pcr0=measurements["PCR0"])
+    rows = {
+        "Build run": f"{run['id']} attempt {attempt}",
+        "Source commit": f"`{run['head_sha']}`",
+        "EIF SHA-256": f"`{eif_sha256}`",
+        "PCR0": f"`{measurements['PCR0']}`",
+        "Signed environment": f"`{target.environment}`",
+    }
+    table = "".join(f"| {field} | {value} |\n" for field, value in rows.items())
+    step_summary(f"## Verified OpenSecret {mode} build\n\n| Field | Value |\n| --- | --- |\n{table}\n")
+    print(f"Verified {mode} build run {run['id']} attempt {attempt}: EIF {eif_sha256}, PCR0 {measurements['PCR0']}.")
+
+
+def download_candidate(artifact, archive, candidate):
+    """Download the build artifact and unpack it as the candidate directory."""
+    with archive.open("xb") as output:
+        subprocess.run(["gh", "api", f"repos/{REPOSITORY}/actions/artifacts/{artifact['id']}/zip"],
+                       stdout=output, check=True)
+    require(archive.stat().st_size <= MAX_EIF_BYTES + MAX_SMALL_FILE_BYTES, "Downloaded artifact is too large")
+    extract_candidate(archive, candidate)
+    archive.unlink()
 
 
 def expected_statement(candidate, release):
@@ -465,7 +499,7 @@ def signing_services():
     require(len(tsas) == 1 and tsas[0].get("majorApiVersion") == 1, "Signing configuration must name one TSA")
     require(config["rekorTlogConfig"] == {"selector": "EXACT", "count": 1}, "Log selector must be EXACT:1")
     require(config["tsaConfig"] == {"selector": "EXACT", "count": 1}, "TSA selector must be EXACT:1")
-    root = read_json(TRUSTED_ROOT, MAX_BUNDLE)
+    root = read_json(TRUSTED_ROOT, MAX_BUNDLE_BYTES)
     log_url = logs[0]["url"]
     trusted = [log for log in root.get("tlogs", []) if log.get("baseUrl") == log_url]
     require(len(trusted) == 1 and trusted[0]["publicKey"].get("keyDetails") == "PKIX_ED25519",
@@ -487,7 +521,9 @@ def check_checkpoint(envelope, origin, tree_size, root_hash, key_id):
             "Checkpoint does not match the inclusion proof")
     # Witness cosignatures may follow the log's own line; only the log's is required here.
     own = [line for line in signatures.splitlines() if line.startswith(f"\u2014 {origin} ")]
-    require(any(b64decode(line.rsplit(" ", 1)[1], "checkpoint signature")[:4] == key_id[:4] for line in own),
+    key_hash = key_id[:NOTE_KEY_HASH_BYTES]
+    require(any(b64decode(line.rsplit(" ", 1)[1], "checkpoint signature")[:NOTE_KEY_HASH_BYTES] == key_hash
+                for line in own),
             "Checkpoint carries no signature from the configured log key")
 
 
@@ -500,7 +536,7 @@ def check_bundle_profile(data, statement, public_der):
     time or inclusion promise, and exactly one RFC 3161 timestamp over this signature.
     """
     services = signing_services()
-    require(len(data) <= MAX_BUNDLE, "Bundle exceeds its size limit")
+    require(len(data) <= MAX_BUNDLE_BYTES, "Bundle exceeds its size limit")
     bundle = strict_json(data)
     require(isinstance(bundle, dict) and set(bundle) == {"mediaType", "verificationMaterial", "dsseEnvelope"},
             "Bundle must hold only a media type, verification material and one DSSE envelope")
@@ -634,9 +670,10 @@ def install_cosign(destination):
     name = cosign_platform()
     destination.mkdir(parents=True, exist_ok=True)
     partial = destination / "cosign.partial"
-    with urllib.request.urlopen(COSIGN_URL.format(platform=name), timeout=120) as response, partial.open("xb") as out:
+    url = COSIGN_URL.format(version=COSIGN_VERSION, platform=name)
+    with urllib.request.urlopen(url, timeout=120) as response, partial.open("xb") as out:
         while chunk := response.read(1024 * 1024):
-            require(out.tell() + len(chunk) <= MAX_COSIGN, "Cosign download is too large")
+            require(out.tell() + len(chunk) <= MAX_COSIGN_BYTES, "Cosign download is too large")
             out.write(chunk)
     if sha256_file(partial) != COSIGN_SHA256[name]:
         partial.unlink()
@@ -651,17 +688,6 @@ def check_cosign(cosign):
             f"Cosign is not the pinned {COSIGN_VERSION} release")
 
 
-def clean_env(**extra):
-    """No inherited cloud credentials, profiles or metadata lookups reach a tool."""
-    env = {"PATH": os.environ.get("PATH", "/usr/bin:/bin"), "HOME": os.environ.get("HOME", "/nonexistent"),
-           "AWS_EC2_METADATA_DISABLED": "true", "AWS_CONFIG_FILE": os.devnull,
-           "AWS_SHARED_CREDENTIALS_FILE": os.devnull}
-    if os.environ.get("TMPDIR"):
-        env["TMPDIR"] = os.environ["TMPDIR"]
-    env.update(extra)
-    return env
-
-
 def github_oidc_token(audience="sts.amazonaws.com"):
     url = os.environ.get("ACTIONS_ID_TOKEN_REQUEST_URL")
     token = os.environ.get("ACTIONS_ID_TOKEN_REQUEST_TOKEN")
@@ -670,49 +696,64 @@ def github_oidc_token(audience="sts.amazonaws.com"):
     request = urllib.request.Request(f"{url}{separator}audience={urllib.parse.quote(audience)}",
                                      headers={"Authorization": f"Bearer {token}"})
     with urllib.request.urlopen(request, timeout=30) as response:
-        value = strict_json(response.read(MAX_SMALL)).get("value")
+        value = strict_json(response.read(MAX_SMALL_FILE_BYTES)).get("value")
     require(isinstance(value, str) and value.count(".") == 2, "GitHub returned no OIDC token")
     return value
 
 
-def sign(mode, candidate, release, cosign):
-    chosen = target(mode)
-    key_arn, role_arn, key_path, public_der = signing_identity(chosen, os.environ)
-    check_cosign(cosign)
-    recorded, statement = expected_statement(candidate, release)
-    require(recorded["mode"] == mode and recorded["environment"] == chosen.environment,
-            "Prepared candidate is for another environment")
-    bundle = release / "bundle.json"
-    require(not bundle.exists(), "A bundle already exists for this run")
+def attest_with_kms(cosign, mode, *, key_arn, role_arn, public_der, statement, eif, bundle):
+    """Sign the statement with the KMS key as the signer role, assumed with this job's OIDC token.
+
+    The token file and Cosign's TUF cache live in a private directory removed
+    afterwards, and only Cosign receives the role's environment.
+    """
     work = Path(tempfile.mkdtemp(prefix="release-statement-"))
     try:
         token = work / "oidc-token"
         token.touch(mode=0o600)
         token.write_text(github_oidc_token())
         session = f"opensecret-{mode}-{os.environ.get('GITHUB_RUN_ID', 'local')}"
-        aws = clean_env(AWS_ROLE_ARN=role_arn, AWS_WEB_IDENTITY_TOKEN_FILE=str(token),
-                        AWS_ROLE_SESSION_NAME=session, AWS_REGION=KMS_REGION, AWS_DEFAULT_REGION=KMS_REGION,
-                        TUF_ROOT=str(work / "tuf"))
+        signer_env = clean_env(AWS_ROLE_ARN=role_arn, AWS_WEB_IDENTITY_TOKEN_FILE=str(token),
+                               AWS_ROLE_SESSION_NAME=session, AWS_REGION=KMS_REGION, AWS_DEFAULT_REGION=KMS_REGION,
+                               TUF_ROOT=str(work / "tuf"))
         key_uri = f"awskms:///{key_arn}"
         # Refuse before anything reaches the public log if KMS holds a different key.
-        served = subprocess.run([str(cosign), "public-key", "--key", key_uri], env=aws, check=True,
-                                stdout=subprocess.PIPE, text=True).stdout
-        require(public_key_der(served) == public_der, "KMS key differs from the reviewed public key; not signing")
+        kms_public_key = subprocess.run([str(cosign), "public-key", "--key", key_uri], env=signer_env, check=True,
+                                        stdout=subprocess.PIPE, text=True).stdout
+        require(public_key_der(kms_public_key) == public_der,
+                "KMS key differs from the reviewed public key; not signing")
         subprocess.run([
-            str(cosign), "attest-blob", "--key", key_uri, "--statement", str(release / "statement.json"),
+            str(cosign), "attest-blob", "--key", key_uri, "--statement", str(statement),
             "--signing-config", str(SIGNING_CONFIG), "--trusted-root", str(TRUSTED_ROOT),
-            "--bundle", str(bundle), "--yes", str(candidate / "image.eif"),
-        ], env=aws, check=True)
+            "--bundle", str(bundle), "--yes", str(eif),
+        ], env=signer_env, check=True)
     finally:
         shutil.rmtree(work, ignore_errors=True)
+
+
+def sign(mode, candidate, release, cosign):
+    target = target_for(mode)
+    key_arn, role_arn, key_path, public_der = signing_identity(target, os.environ)
+    check_cosign(cosign)
+    recorded, statement = expected_statement(candidate, release)
+    require(recorded["mode"] == mode and recorded["environment"] == target.environment,
+            "Prepared candidate is for another environment")
+    bundle = release / "bundle.json"
+    require(not bundle.exists(), "A bundle already exists for this run")
+    attest_with_kms(cosign, mode, key_arn=key_arn, role_arn=role_arn, public_der=public_der,
+                    statement=release / "statement.json", eif=candidate / "image.eif", bundle=bundle)
     require(bundle.is_file(), "Cosign wrote no bundle")
     summary = verify_bundle(bundle, statement, key_path, public_der, candidate / "image.eif", cosign)
     write_json(release / "bundle.verification.json", {
-        **summary, "bundleSha256": sha256_file(bundle), "cosign": COSIGN_VERSION,
-        "signingConfigSha256": sha256_file(SIGNING_CONFIG), "trustedRootSha256": sha256_file(TRUSTED_ROOT),
-        "keyArn": key_arn, "publicKeySha256": hashlib.sha256(public_der).hexdigest(),
+        **summary,
+        "bundleSha256": sha256_file(bundle),
+        "cosign": COSIGN_VERSION,
+        "signingConfigSha256": sha256_file(SIGNING_CONFIG),
+        "trustedRootSha256": sha256_file(TRUSTED_ROOT),
+        "keyArn": key_arn,
+        "publicKeySha256": hashlib.sha256(public_der).hexdigest(),
     })
-    print(f"Signed and verified the {chosen.environment} release statement: log index {summary['logIndex']}, "
+    print(f"Signed and verified the {target.environment} release statement: log index {summary['logIndex']}, "
           f"bundle SHA-256 {sha256_file(bundle)}.")
 
 
@@ -720,6 +761,8 @@ def sign(mode, candidate, release, cosign):
 
 
 class NoRedirect(urllib.request.HTTPRedirectHandler):
+    """Treat a redirect as a failed read: only the environment's own host may answer."""
+
     def redirect_request(self, req, fp, code, msg, headers, newurl):
         return None
 
@@ -733,34 +776,55 @@ def public_get(url):
         require(response.headers.get("Access-Control-Allow-Origin") in ("*", READBACK_ORIGIN),
                 "Public bundle does not allow browser reads")
         require(response.headers.get("Cache-Control") == CACHE_CONTROL, "Public bundle has the wrong cache policy")
-        body = response.read(MAX_BUNDLE + 1)
-    require(len(body) <= MAX_BUNDLE, "Public bundle exceeds its size limit")
+        body = response.read(MAX_BUNDLE_BYTES + 1)
+    require(len(body) <= MAX_BUNDLE_BYTES, "Public bundle exceeds its size limit")
     return body
 
 
-def upload(chosen, bundle, key):
+def upload(target, bundle, key):
     account = os.environ.get("ATTESTATIONS_R2_ACCOUNT_ID", "")
     require(is_hex(account, 32), "ATTESTATIONS_R2_ACCOUNT_ID must be a Cloudflare account ID")
-    require(os.environ.get("ATTESTATIONS_R2_BUCKET") == chosen.bucket,
-            f"This workflow publishes only to {chosen.bucket}")
+    require(os.environ.get("ATTESTATIONS_R2_BUCKET") == target.bucket,
+            f"This workflow publishes only to {target.bucket}")
     access_key, secret_key = os.environ.get("AWS_ACCESS_KEY_ID"), os.environ.get("AWS_SECRET_ACCESS_KEY")
     require(access_key and secret_key, "Missing the bucket publisher credential")
+    # The CLI adds its own checksums only where an operation requires them;
+    # Content-MD5 lets R2 check the uploaded body.
     md5 = base64.b64encode(hashlib.md5(bundle.read_bytes(), usedforsecurity=False).digest()).decode()
     # One PUT of one key: an identical rerun or approved same-PCR replacement
     # overwrites only this object, and nothing is ever deleted.
     result = subprocess.run([
         "aws", "s3api", "put-object", "--endpoint-url", f"https://{account}.r2.cloudflarestorage.com",
-        "--region", "auto", "--bucket", chosen.bucket, "--key", key, "--body", str(bundle),
+        "--region", "auto", "--bucket", target.bucket, "--key", key, "--body", str(bundle),
         "--content-type", "application/json", "--cache-control", CACHE_CONTROL, "--content-md5", md5,
     ], env=clean_env(AWS_ACCESS_KEY_ID=access_key, AWS_SECRET_ACCESS_KEY=secret_key, AWS_PAGER="",
                      AWS_REQUEST_CHECKSUM_CALCULATION="when_required",
                      AWS_RESPONSE_CHECKSUM_VALIDATION="when_required"),
         stdout=subprocess.DEVNULL)
-    require(result.returncode == 0, f"Upload of {key} to {chosen.bucket} failed; nothing was published")
+    require(result.returncode == 0, f"Upload of {key} to {target.bucket} failed; nothing was published")
 
 
-def publish(mode, candidate, release, cosign, base_url=None, sleep=time.sleep):
-    chosen = target(mode)
+def read_back(url, expected):
+    """Fetch the public bundle until it serves exactly the uploaded bytes.
+
+    An approved same-PCR replacement can be hidden by a cached copy for one
+    cache lifetime; retry past it, but never report stale bytes as published.
+    """
+    last_error = None
+    for attempt in range(READBACK_ATTEMPTS):
+        if attempt:
+            time.sleep(READBACK_DELAY)
+        try:
+            body = public_get(url)
+            require(body == expected, "Public bytes differ from the uploaded bundle")
+            return body
+        except (OSError, EvidenceError) as error:
+            last_error = error
+    raise EvidenceError(f"Public bundle at {url} was not confirmed: {last_error}")
+
+
+def publish(mode, candidate, release, cosign, base_url=None):
+    target = target_for(mode)
     key_path, public_der = reviewed_public_key(os.environ)
     check_cosign(cosign)
     recorded, statement = expected_statement(candidate, release)
@@ -770,31 +834,22 @@ def publish(mode, candidate, release, cosign, base_url=None, sleep=time.sleep):
     pcr0 = recorded["measurements"]["PCR0"]
     require(is_hex(pcr0, 96), "Invalid PCR0 for the object key")
     key = f"{pcr0}.json"
-    upload(chosen, bundle, key)
-    url = f"{base_url or 'https://' + chosen.host}/{key}"
-    expected = bundle.read_bytes()
+    upload(target, bundle, key)
+    url = f"{base_url or 'https://' + target.host}/{key}"
     public = release / "public.bundle.json"
-    # An approved same-PCR replacement can be hidden by a cached copy for one
-    # cache lifetime; retry past it, but never report stale bytes as published.
-    last_error = None
-    for attempt in range(READBACK_ATTEMPTS):
-        if attempt:
-            sleep(READBACK_DELAY)
-        try:
-            body = public_get(url)
-            require(body == expected, "Public bytes differ from the uploaded bundle")
-            break
-        except (OSError, EvidenceError) as error:
-            last_error = error
-    else:
-        raise EvidenceError(f"Public bundle at {url} was not confirmed: {last_error}")
-    public.write_bytes(body)
+    public.write_bytes(read_back(url, bundle.read_bytes()))
     summary = verify_bundle(public, statement, key_path, public_der, candidate / "image.eif", cosign)
-    receipt = {"url": url, "bundleSha256": sha256_file(public), "eifSha256": recorded["eifSha256"],
-               "sourceCommit": recorded["sourceCommit"], "environment": chosen.environment, "pcr0": pcr0,
-               "logIndex": summary["logIndex"]}
+    receipt = {
+        "url": url,
+        "bundleSha256": sha256_file(public),
+        "eifSha256": recorded["eifSha256"],
+        "sourceCommit": recorded["sourceCommit"],
+        "environment": target.environment,
+        "pcr0": pcr0,
+        "logIndex": summary["logIndex"],
+    }
     write_json(release / "publication.json", receipt)
-    step_summary(f"## Published {chosen.environment} release bundle\n\n```json\n{json.dumps(receipt, indent=2)}\n```\n")
+    step_summary(f"## Published {target.environment} release bundle\n\n```json\n{json.dumps(receipt, indent=2)}\n```\n")
     print(json.dumps(receipt))
 
 
@@ -803,20 +858,22 @@ def main(argv=None):
     commands = parser.add_subparsers(dest="command", required=True)
     commands.add_parser("preflight").add_argument("mode")
     prepare_parser = commands.add_parser("prepare")
-    for name in ("mode", "run_id", "candidate", "release"):
-        prepare_parser.add_argument(name)
+    prepare_parser.add_argument("mode")
+    prepare_parser.add_argument("run_id")
+    prepare_parser.add_argument("candidate", type=Path)
+    prepare_parser.add_argument("release", type=Path)
     commands.add_parser("install-cosign").add_argument("destination", type=Path)
     for name in ("sign", "publish"):
-        sub = commands.add_parser(name)
-        sub.add_argument("mode")
+        command = commands.add_parser(name)
+        command.add_argument("mode")
         for path in ("candidate", "release", "cosign"):
-            sub.add_argument(path, type=Path)
+            command.add_argument(path, type=Path)
     args = parser.parse_args(argv)
     try:
         if args.command == "preflight":
             preflight(args.mode)
         elif args.command == "prepare":
-            prepare(args.mode, args.run_id, Path(args.candidate), Path(args.release))
+            prepare(args.mode, args.run_id, args.candidate, args.release)
         elif args.command == "install-cosign":
             install_cosign(args.destination)
         elif args.command == "sign":
