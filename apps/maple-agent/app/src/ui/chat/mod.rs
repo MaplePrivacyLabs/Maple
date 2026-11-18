@@ -881,6 +881,8 @@ pub struct ChatScreen {
     queue_previews: Vec<SharedString>,
     /// The local updater's state; deferred releases leave Settings unmarked.
     update: crate::update::Snapshot,
+    /// Retry was pressed in the Settings menu and its check still runs.
+    update_retry: bool,
     queue_busy: bool,
     queue_edit: Option<QueueEdit>,
     /// Slash commands from the installed skills of the current project root.
@@ -1700,6 +1702,7 @@ impl ChatScreen {
             queue_busy: false,
             queue_edit: None,
             update: crate::update::Snapshot::initial(),
+            update_retry: false,
             slash_commands: Vec::new(),
             slash_selected: None,
             question_focus_pending: false,
@@ -4344,6 +4347,9 @@ impl ChatScreen {
 
     pub fn set_update(&mut self, snapshot: crate::update::Snapshot, cx: &mut Context<Self>) {
         if self.update != snapshot {
+            if snapshot.state != crate::update::State::Checking {
+                self.update_retry = false;
+            }
             self.update = snapshot;
             cx.notify();
         }
@@ -4355,6 +4361,11 @@ impl ChatScreen {
     fn update_notice(&self) -> Option<(SharedString, Option<SharedString>, bool)> {
         use crate::update::State;
         let snapshot = &self.update;
+        // The check a Retry started hides the banner; keep the header so
+        // the menu shows it working instead of dropping its first row.
+        if self.update_retry && snapshot.state == State::Checking {
+            return Some((tr("settings-update-checking"), None, true));
+        }
         if !snapshot.show_banner {
             return None;
         }
@@ -4365,7 +4376,19 @@ impl ChatScreen {
             None => tr(fallback),
         };
         Some(match snapshot.state {
-            State::Error => (tr("chat-update-error"), None, true),
+            State::Error => (
+                tr("chat-update-error"),
+                snapshot.version.as_ref().map(|version| {
+                    self.messages
+                        .computed("chat-update-error-detail", version, || {
+                            tr_args(
+                                "chat-update-error-detail",
+                                [("version", version.as_str().into())],
+                            )
+                        })
+                }),
+                true,
+            ),
             State::RestartRequired => (tr("chat-update-restart"), None, false),
             State::Ready => (
                 titled("chat-update-ready", "chat-update-available"),
@@ -4382,7 +4405,8 @@ impl ChatScreen {
 
     /// A ready update opens the restart confirmation; anything else
     /// (manual download, a failure) opens About, which shows the full
-    /// message and actions.
+    /// message and actions. The shortcut beside Settings does not come
+    /// here for a failure: it opens the menu, whose header offers Retry.
     fn open_update(&mut self, cx: &mut Context<Self>) {
         if self.update.state == crate::update::State::Ready {
             cx.emit(crate::update::UpdateRequested(
@@ -7934,6 +7958,7 @@ impl ChatScreen {
         let notice = self.update_notice();
         let inline = expanded && notice.is_some();
         let stacked = !expanded && notice.is_some();
+        let retryable = notice.as_ref().is_some_and(|(_, _, failed)| *failed);
         let update_button = notice.map(|(title, _, failed)| {
             let ready = self.update.state == crate::update::State::Ready;
             let label = if ready {
@@ -7959,11 +7984,26 @@ impl ChatScreen {
                 .tab_index(if expanded { 7 } else { 6 })
                 .on_key_down(Self::sidebar_button_key_down)
                 .child(update_mark(failed))
-                .on_click(cx.listener(|this, _, _, cx| {
-                    cx.stop_propagation();
-                    this.popup.close(cx);
-                    this.open_update(cx);
-                }))
+                .when(!failed, |button| {
+                    button.on_click(cx.listener(|this, _, _, cx| {
+                        cx.stop_propagation();
+                        this.popup.close(cx);
+                        this.open_update(cx);
+                    }))
+                })
+        });
+        // A failure has nothing to do in one click, so its mark opens the
+        // menu, where the header says what failed and offers Retry.
+        let update_button = update_button.map(|button| {
+            if retryable {
+                self.popup
+                    .trigger(ChatPopup::Settings, button, cx, |this, _, cx| {
+                        this.popup.toggle(ChatPopup::Settings, cx);
+                    })
+                    .into_any_element()
+            } else {
+                button.into_any_element()
+            }
         });
         let button = if inline {
             // The row owns the hover plate; keep Settings' separate target transparent.
@@ -7986,7 +8026,8 @@ impl ChatScreen {
             widgets::ghost_button("open-settings")
         };
         let button = button
-            .aria_label(if self.update.show_banner {
+            // After a failure nothing is available; the mark beside it says so.
+            .aria_label(if self.update.show_banner && !retryable {
                 tr("chat-settings-menu-update")
             } else {
                 tr("chat-settings-menu")
@@ -8231,6 +8272,9 @@ impl ChatScreen {
                     .flex()
                     .items_center()
                     .gap(px(10.))
+                    // As tall with one line as with two, so the menu does
+                    // not change height while a retry checks.
+                    .when(failed, |content| content.min_h(px(50.)))
                     .child(update_mark(failed))
                     .child(
                         div()
@@ -8250,15 +8294,43 @@ impl ChatScreen {
                                     .child(gpui::text!(detail))
                             })),
                     )
-                    .child(icon("chevron-right", px(12.), theme::text_muted()));
-                menu = menu
-                    .item(
-                        MenuItem::new("settings-menu-update", title, |this: &mut Self, _, cx| {
-                            this.open_update(cx);
-                        })
-                        .content(content),
+                    .when(!failed, |content| {
+                        content.child(icon("chevron-right", px(12.), theme::text_muted()))
+                    });
+                let header =
+                    MenuItem::new("settings-menu-update", title, |this: &mut Self, _, cx| {
+                        this.open_update(cx);
+                    })
+                    .content(content);
+                // A failed update can be tried again from here; the row
+                // itself still opens About for the full message.
+                let header = if !failed {
+                    header
+                } else if self.update.state == crate::update::State::Checking {
+                    header.trailing(spinner(
+                        "settings-menu-update-checking",
+                        px(14.),
+                        theme::text_muted(),
+                    ))
+                } else {
+                    header.trailing(
+                        widgets::default_button("settings-menu-update-retry")
+                            .debug_selector(|| "settings-menu-update-retry".to_string())
+                            .text_xs()
+                            .py_1()
+                            .px_3()
+                            .child(gpui::text!(tr("settings-settings-retry")))
+                            .on_click(cx.listener(|this, _, _, cx| {
+                                cx.stop_propagation();
+                                this.update_retry = true;
+                                cx.emit(crate::update::UpdateRequested(
+                                    crate::update::UpdateAction::Check,
+                                ));
+                                cx.notify();
+                            })),
                     )
-                    .separator();
+                };
+                menu = menu.item(header).separator();
             }
             let menu = menu
                 .item(

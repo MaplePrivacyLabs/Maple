@@ -1646,6 +1646,8 @@ chat-settings-menu-update = 설정 메뉴, 업데이트 사용 가능
 chat-settings-menu = 설정 메뉴
 chat-all-settings = 모든 설정
 chat-update-error = 업데이트 실패
+# $version is the application version, not translated.
+chat-update-error-detail = { $version } 설치 실패
 chat-update-restart = 다시 시작하여 업데이트 완료
 chat-update-available = 업데이트 사용 가능
 # $version is the application version, not translated.

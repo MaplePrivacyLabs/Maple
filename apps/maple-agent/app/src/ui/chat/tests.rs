@@ -13811,7 +13811,6 @@ mod state_tests {
         assert_eq!(*actions.borrow(), [crate::update::UpdateAction::Restart; 3]);
 
         for state in [
-            crate::update::State::Error,
             crate::update::State::Available,
             crate::update::State::RestartRequired,
         ] {
@@ -13821,8 +13820,31 @@ mod state_tests {
             press(cx, "open-settings");
             press(cx, "settings-menu-update");
         }
-        assert_eq!(*sections.borrow(), [Section::About; 6]);
+        assert_eq!(*sections.borrow(), [Section::About; 4]);
         assert_eq!(actions.borrow().len(), 3);
+
+        // A failure has no one-click fix: its mark opens the menu, where
+        // Retry checks again and leaves the menu open, and the header row
+        // still leads to About.
+        set(cx, crate::update::State::Error, true);
+        press(cx, "settings-update");
+        assert!(cx.debug_bounds("settings-menu").is_some());
+        assert_eq!(sections.borrow().len(), 4);
+        press(cx, "settings-menu-update-retry");
+        assert_eq!(
+            actions.borrow().last(),
+            Some(&crate::update::UpdateAction::Check)
+        );
+        assert!(cx.debug_bounds("settings-menu").is_some());
+        // While that check runs the header stays, without Retry.
+        set(cx, crate::update::State::Checking, false);
+        assert!(cx.debug_bounds("settings-menu-update").is_some());
+        assert!(cx.debug_bounds("settings-menu-update-retry").is_none());
+        set(cx, crate::update::State::Error, true);
+        press(cx, "settings-menu-update");
+        assert!(cx.debug_bounds("settings-menu").is_none());
+        assert_eq!(*sections.borrow(), [Section::About; 5]);
+        assert_eq!(actions.borrow().len(), 4);
 
         // "Later" in About hides both entry points until the next release.
         set(cx, crate::update::State::Ready, false);

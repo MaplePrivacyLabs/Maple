@@ -41,9 +41,11 @@ The desktop checks at startup and about hourly. Automatic download is on by
 default and can be turned off in Settings. A downloaded update waits for
 **Restart to Update**, which asks for confirmation because it stops active work.
 A pending update adds a shortcut beside Settings, or above the gear in the
-collapsed sidebar. Selecting a ready update opens the same restart confirmation;
-other update states open About. Settings itself still opens its menu, which leads
-with the version and action above Usage.
+collapsed sidebar. Selecting a ready update opens the same restart confirmation,
+and a manual download opens About. After a failure the shortcut opens the
+Settings menu instead, whose header says "Update failed" with a Retry button; the
+header row itself opens About for the full message. Settings itself still opens
+its menu, which leads with the version and action above Usage.
 About, the application menu and the tray also offer update actions. Paired computers can
 show and request updates for each other through the
 [experimental remote update controls](remote-access.md#experimental-remote-updates).

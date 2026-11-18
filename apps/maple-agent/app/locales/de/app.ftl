@@ -1700,6 +1700,8 @@ chat-settings-menu-update = Einstellungsmenü, Update verfügbar
 chat-settings-menu = Einstellungsmenü
 chat-all-settings = Alle Einstellungen
 chat-update-error = Update fehlgeschlagen
+# $version is the application version, not translated.
+chat-update-error-detail = { $version } nicht installiert
 chat-update-restart = Zum Abschließen des Updates neu starten
 chat-update-available = Update verfügbar
 # $version is the application version, not translated.

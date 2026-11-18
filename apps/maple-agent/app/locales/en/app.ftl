@@ -1700,6 +1700,8 @@ chat-settings-menu-update = Settings menu, update available
 chat-settings-menu = Settings menu
 chat-all-settings = All settings
 chat-update-error = Update failed
+# $version is the application version, not translated.
+chat-update-error-detail = Couldn’t install { $version }
 chat-update-restart = Restart to finish update
 chat-update-available = Update available
 # $version is the application version, not translated.
