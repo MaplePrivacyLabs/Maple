@@ -130,6 +130,32 @@
     }
   },
   {
+    "id": "privacy",
+    "name": "Privacy.com",
+    "summary": "Create and manage your virtual cards",
+    "category": "productivity",
+    "connect": {
+      "type": "streamable-http",
+      "url": "https://mcp.privacy.com"
+    },
+    "auth": {
+      "kind": "oauth"
+    }
+  },
+  {
+    "id": "ynab",
+    "name": "YNAB",
+    "summary": "Work with your budget and transactions",
+    "category": "productivity",
+    "connect": {
+      "type": "streamable-http",
+      "url": "https://api.ynab.com/mcp"
+    },
+    "auth": {
+      "kind": "oauth"
+    }
+  },
+  {
     "id": "atlassian",
     "registry": "com.atlassian/atlassian-mcp-server",
     "name": "Jira and Confluence",
