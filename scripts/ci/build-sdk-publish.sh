@@ -66,8 +66,9 @@ nix develop --no-update-lock-file ./sdk -c bash -euo pipefail -c '
   case "${sdk_kind}" in
     npm)
       bun --no-env-file install --frozen-lockfile --ignore-scripts
-      # GHSA-fc5q-39xc-vjpf is an accepted advisory (docs/ci.md, "Accepted
-      # advisories"). nightly.yml carries the same flag: change both together.
+      # GHSA-fc5q-39xc-vjpf: picomatch ReDoS with no fixed release, reached only
+      # through build and lint tooling. Drop the flag here and in nightly.yml
+      # once a fixed picomatch is published.
       bun --no-env-file audit --audit-level=high --ignore=GHSA-fc5q-39xc-vjpf
       bun --no-env-file run format:check
       bun --no-env-file run build

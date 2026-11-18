@@ -31,8 +31,9 @@ jobs:
       - uses: ./.github/actions/setup-nix
       - name: Audit every Bun lockfile
         run: |
-          # GHSA-fc5q-39xc-vjpf is an accepted advisory (docs/ci.md, "Accepted
-          # advisories"). build-sdk-publish.sh carries the same flag: change both together.
+          # GHSA-fc5q-39xc-vjpf: picomatch ReDoS with no fixed release, reached only
+          # through build and lint tooling. Drop the flag here and in
+          # build-sdk-publish.sh once a fixed picomatch is published.
           # shellcheck disable=SC2016 # The child shell expands its own variables.
           nix develop --no-update-lock-file .#ci -c bash -uo pipefail -c '
             status=0
