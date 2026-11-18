@@ -395,10 +395,21 @@ def invocation_attempt(statement, run_id):
 
 
 def subjects(statement):
+    """The SHA-256 digests a SLSA statement lists for each subject name.
+
+    Entries that are not objects with a digest object cover nothing, and a
+    string or object in place of the list has always listed nothing; both are
+    still read that way. A name or digest that is a list or object is malformed.
+    """
+    listed = statement.get("subject") or []
+    require(isinstance(listed, (list, str, dict)), "Build provenance subjects are not a list")
     found = {}
-    for subject in statement.get("subject") or []:
+    for subject in listed if isinstance(listed, list) else []:
         if isinstance(subject, dict) and isinstance(subject.get("digest"), dict):
-            found.setdefault(subject.get("name"), set()).add(subject["digest"].get("sha256"))
+            name, digest = subject.get("name"), subject["digest"].get("sha256")
+            require(not isinstance(name, (list, dict)), "Build provenance subject name is a list or object")
+            require(not isinstance(digest, (list, dict)), "Build provenance subject digest is a list or object")
+            found.setdefault(name, set()).add(digest)
     return found
 
 

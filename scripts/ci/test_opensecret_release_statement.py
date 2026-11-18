@@ -1019,6 +1019,48 @@ class BuildEvidenceShapeTests(unittest.TestCase):
             with self.subTest(case=name), self.assertRaisesRegex(release.EvidenceError, "is not a JSON object"):
                 release.provenance_attempts(results, self.run, {})
 
+    def provenance(self, subject):
+        """A verified result for attempt 1 of this run whose statement lists `subject`."""
+        invocation = f"{release.SOURCE_REPOSITORY}/actions/runs/4242/attempts/1"
+        return {"verificationResult": {"statement": {
+            "_type": release.STATEMENT_TYPE, "predicateType": release.SLSA_TYPE, "subject": subject,
+            "predicate": {"runDetails": {"metadata": {"invocationId": invocation}}}}}}
+
+    def test_malformed_provenance_subjects_are_refused(self):
+        digest = {"sha256": "d" * 64}
+        cases = {
+            "subjects true": True,
+            "subjects a number": 1,
+            "name a list": [{"name": [], "digest": digest}],
+            "name a nonempty list": [{"name": ["image.eif"], "digest": digest}],
+            "name an object": [{"name": {}, "digest": digest}],
+            "name a nonempty object": [{"name": {"x": 1}, "digest": digest}],
+            "digest a list": [{"name": "image.eif", "digest": {"sha256": []}}],
+            "digest a nonempty list": [{"name": "image.eif", "digest": {"sha256": ["d" * 64]}}],
+            "digest an object": [{"name": "image.eif", "digest": {"sha256": {}}}],
+            "digest a nonempty object": [{"name": "image.eif", "digest": {"sha256": {"x": 1}}}],
+        }
+        valid = self.provenance([{"name": "image.eif", "digest": digest}])
+        for name, subject in cases.items():
+            with self.subTest(case=name), self.assertRaisesRegex(release.EvidenceError, "Build provenance subject"):
+                release.provenance_attempts([self.provenance(subject), valid], self.run, {"image.eif": "d" * 64})
+
+    def test_subjects_that_cover_nothing_are_skipped_as_before(self):
+        digest = {"sha256": "d" * 64}
+        cases = {
+            "no subjects": None, "empty list": [], "string": "image.eif", "object": {"image.eif": digest},
+            "string entries": ["image.eif"], "entry without digest": [{"name": "image.eif"}],
+            "digest not an object": [{"name": "image.eif", "digest": ["d" * 64]}],
+            "list name without digest": [{"name": ["image.eif"]}],
+            "numeric name": [{"name": 1, "digest": digest}], "null digest": [{"name": "image.eif", "digest": {}}],
+        }
+        valid = self.provenance([{"name": "image.eif", "digest": digest}])
+        for name, subject in cases.items():
+            with self.subTest(case=name):
+                attempts = release.provenance_attempts([self.provenance(subject), valid], self.run,
+                                                       {"image.eif": "d" * 64})
+                self.assertEqual(attempts, {1})
+
     def test_malformed_build_run_repositories_are_refused(self):
         for field in ("repository", "head_repository"):
             run = {"id": 4242, "repository": {"full_name": release.REPOSITORY, "private": False},
