@@ -1061,6 +1061,25 @@ class BuildEvidenceShapeTests(unittest.TestCase):
                                                        {"image.eif": "d" * 64})
                 self.assertEqual(attempts, {1})
 
+    def test_empty_values_where_provenance_objects_belong_are_skipped(self):
+        valid = self.provenance([{"name": "image.eif", "digest": {"sha256": "d" * 64}}])
+        statement = valid["verificationResult"]["statement"]
+        empties = (None, False, 0, "", [], {})
+        for empty in empties:
+            cases = {
+                "result": empty,
+                "verification result": {"verificationResult": empty},
+                "statement": {"verificationResult": {"statement": empty}},
+                "predicate": {"verificationResult": {"statement": {**statement, "predicate": empty}}},
+                "run details": {"verificationResult": {"statement": {**statement, "predicate": {"runDetails": empty}}}},
+                "metadata": {"verificationResult": {"statement": {
+                    **statement, "predicate": {"runDetails": {"metadata": empty}}}}},
+            }
+            for where, result in cases.items():
+                with self.subTest(where=where, value=empty):
+                    attempts = release.provenance_attempts([result, valid], self.run, {"image.eif": "d" * 64})
+                    self.assertEqual(attempts, {1})
+
     def test_malformed_build_run_repositories_are_refused(self):
         for field in ("repository", "head_repository"):
             run = {"id": 4242, "repository": {"full_name": release.REPOSITORY, "private": False},
