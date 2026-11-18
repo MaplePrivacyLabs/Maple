@@ -1186,6 +1186,14 @@ class ReviewedPublicKeyTests(unittest.TestCase):
         with self.subTest(case="staged but not committed"):
             self.assert_refused(UNTRACKED_PUBLIC_KEY, "is not committed")
 
+    def test_an_oversized_key_file_is_refused(self):
+        # Still one valid PEM key: the parser ignores the extra line breaks in its body.
+        header, body = pem(REVIEWED_DER).split("\n", 1)
+        self.key.write_text(f"{header}\n" + "\n" * release.MAX_PUBLIC_KEY_BYTES + body)
+        self.work.commit("an oversized key file")
+        self.assertGreater(self.key.stat().st_size, release.MAX_PUBLIC_KEY_BYTES)
+        self.assert_refused(DEV_PUBLIC_KEY, "Public key file is too large")
+
     def test_a_file_where_the_commit_has_a_directory_is_refused(self):
         (self.work.repo / "keys").mkdir()
         (self.work.repo / "keys/inner.pem").write_text(pem(REVIEWED_DER))
