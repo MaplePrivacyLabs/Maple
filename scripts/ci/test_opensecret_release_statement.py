@@ -1083,11 +1083,15 @@ def foreign_repository(root, keys):
 
 
 def git_selectors(foreign):
-    """Inherited Git variables that would make git read `foreign` instead of the checkout."""
+    """Inherited Git variables that would make git read `foreign` instead of the checkout, or not run at all."""
     return {
         "GIT_DIR": {"GIT_DIR": str(foreign / ".git")},
         "GIT_DIR and GIT_WORK_TREE": {"GIT_DIR": str(foreign / ".git"), "GIT_WORK_TREE": str(foreign)},
         "GIT_COMMON_DIR": {"GIT_COMMON_DIR": str(foreign / ".git")},
+        "GIT_OBJECT_DIRECTORY": {"GIT_OBJECT_DIRECTORY": str(foreign / ".git/objects")},
+        # Configuration git cannot parse stops every git command that sees it.
+        "GIT_CONFIG_COUNT": {"GIT_CONFIG_COUNT": "1"},
+        "GIT_CONFIG_PARAMETERS": {"GIT_CONFIG_PARAMETERS": "'unterminated"},
     }
 
 
