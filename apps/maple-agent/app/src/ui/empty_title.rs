@@ -14,6 +14,7 @@ use gpui::{
     Pixels, SharedString, Style, TextAlign, Window, point, px, size,
 };
 
+use super::motion;
 use super::theme;
 
 /// How long the title takes to reach its resting ink.
@@ -140,7 +141,7 @@ impl Element for EmptyTitle {
         let text = self.text.clone();
         let ink = style.color;
         let light = theme::is_light();
-        let paused = cx.reduce_motion() || !window.is_window_active();
+        let paused = motion::loops_paused(window, cx);
         let elapsed = self.started.map(elapsed_ms);
         let alpha = ink_alpha(self.entrance, elapsed, paused);
         let content = content_width(window, &text, font_size, &style);
@@ -368,14 +369,9 @@ fn x_at(elapsed_ms: f32, y: f32, lag_ms: f32) -> f32 {
     (elapsed_ms - START_MS - y * RAKE_MS - lag_ms) / TRAVEL_MS
 }
 
-fn ease_out(t: f32) -> f32 {
-    let t = t.clamp(0., 1.);
-    1. - (1. - t).powi(3)
-}
-
 /// Resting ink, `0` at the start and `1` once the title has settled.
 pub(crate) fn title_alpha(elapsed_ms: f32) -> f32 {
-    ease_out(elapsed_ms / FADE.as_millis() as f32)
+    motion::ease_out_cubic((elapsed_ms / FADE.as_millis() as f32).clamp(0., 1.))
 }
 
 /// Full ink on a replay, so a title that is already on screen does not
@@ -405,7 +401,7 @@ fn envelope(t: f32, peak_at: f32) -> f32 {
         return 0.;
     }
     if t <= peak_at {
-        ease_out(t / peak_at)
+        motion::ease_out_cubic((t / peak_at).clamp(0., 1.))
     } else {
         let u = (t - peak_at) / (1. - peak_at);
         (1. - u).powi(3)
@@ -418,7 +414,10 @@ fn sheen_finished(elapsed_ms: f32) -> bool {
 }
 
 fn elapsed_ms(started: Instant) -> f32 {
-    started.elapsed().as_secs_f32() * 1000.
+    motion::now()
+        .saturating_duration_since(started)
+        .as_secs_f32()
+        * 1000.
 }
 
 /// End a running glint when motion is paused. A finished or unstarted clock
@@ -426,7 +425,7 @@ fn elapsed_ms(started: Instant) -> f32 {
 fn settle(started: Option<Instant>, paused: bool) -> Option<Instant> {
     if paused && started.is_some_and(|started| !sheen_finished(elapsed_ms(started))) {
         let end = (START_MS + TRAVEL_MS + RAKE_MS + GLOW_MS) as u64 + 1;
-        Some(Instant::now() - Duration::from_millis(end))
+        Some(motion::now() - Duration::from_millis(end))
     } else {
         started
     }
@@ -438,7 +437,7 @@ fn settle(started: Option<Instant>, paused: bool) -> Option<Instant> {
 pub(crate) fn arm_glint(started: Option<Instant>, paused: bool) -> Option<Instant> {
     let started = settle(started, paused);
     if started.is_none() && !paused {
-        Some(Instant::now())
+        Some(motion::now())
     } else {
         started
     }

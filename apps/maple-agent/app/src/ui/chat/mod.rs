@@ -8346,10 +8346,12 @@ impl ChatScreen {
         cx: &mut Context<Self>,
     ) -> Div {
         let expanded = self.composer_expanded;
-        if !expanded {
+        // Not while the title folds with the composer: a glint started
+        // then would play under the fade.
+        if !expanded && composer_resize.is_none() {
             self.empty_title = crate::ui::empty_title::step_title(
                 self.empty_title,
-                cx.reduce_motion() || !window.is_window_active(),
+                motion::loops_paused(window, cx),
             );
         }
         let entrance = self.empty_title.entrance;
