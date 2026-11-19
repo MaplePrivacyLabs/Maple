@@ -95,11 +95,10 @@ Current TypeScript and Rust SDK defaults read the canonical histories under
 its consumers or retire the URLs used by older clients.
 
 For authorized backend releases, use the
-[manual PCR compatibility procedure](../services/opensecret/docs/pcr-compatibility.md):
-commit the reviewed signed files in Maple, prepare an exact-byte copy into the
-legacy repository, and verify both published locations before deploying an EIF
-that needs them. Preserve the signed-PCR format, pinned public key, and redirect
-policy. Operator builds run from `services/opensecret/`; verify the selected
+[signed PCR procedure](../services/opensecret/docs/pcr-compatibility.md):
+commit the reviewed signed files in Maple and verify the published location
+before deploying an EIF that needs them. Preserve the signed-PCR format, pinned
+public key, and redirect policy. Operator builds run from `services/opensecret/`; verify the selected
 checkout and commit on each deployment host rather than assuming a merged
 source change migrated that host.
 

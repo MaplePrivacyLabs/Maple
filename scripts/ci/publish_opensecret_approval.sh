@@ -130,8 +130,7 @@ if [[ -n "${GITHUB_STEP_SUMMARY:-}" ]]; then
     echo
     echo "After it merges, hand deployment the merge commit as \`OPENSECRET_SOURCE_REF\`,"
     echo "the artifact directory added to the Nix store as \`OPENSECRET_EIF_DIR\`, and"
-    echo "\`OPENSECRET_EIF_SHA256=${eif_sha256}\`. Mirror the four PCR files to the legacy"
-    echo "repository with the manual compatibility procedure."
+    echo "\`OPENSECRET_EIF_SHA256=${eif_sha256}\`."
   } >> "$GITHUB_STEP_SUMMARY"
 fi
 echo "Pushed $branch; open the pull request at $compare"

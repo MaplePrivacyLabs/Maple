@@ -52,9 +52,9 @@ pushes the same approval branch. See [release statements](release-statements.md)
    approval check compares against its updated file. Open the pull request
    yourself; the approval checks then rebuild and compare on that PR, and the
    root `pcr-compatibility` check verifies every signature.
-   After merging, mirror the four files to the legacy repository with the
-   manual [compatibility procedure](pcr-compatibility.md) and verify both
-   public locations.
+   After merging, verify the published files with the
+   [signed PCR procedure](pcr-compatibility.md). The legacy repository copy
+   is retired and is not updated; that page records the one exception.
 
 The workflow never creates a GitHub Release or tag: `/releases/latest` and the
 updater `latest.json` belong to the Maple desktop application. It does not
