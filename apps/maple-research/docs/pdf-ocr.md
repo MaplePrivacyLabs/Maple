@@ -12,7 +12,7 @@ The runtime is part of the application package; users do not download it when op
 
 | Platform | ONNX Runtime packaging |
 | --- | --- |
-| macOS | Microsoft's official universal2 dylib, loaded from the app Frameworks directory; both Apple silicon and Intel are retained. Minimum macOS is 13.4. |
+| macOS | Microsoft's official Apple silicon and Intel dylibs, joined into one universal library and loaded from the app Frameworks directory. Minimum macOS is 13.4. |
 | Linux | Microsoft's x64 or aarch64 shared library, installed under Maple's private library directory. |
 | Windows | Microsoft's x64 DLL, installed next to `maple.exe` and loaded by its explicit path. |
 | Android | Microsoft's official Android AAR, with `libonnxruntime.so` staged for arm64-v8a, armeabi-v7a, x86, and x86_64. |

@@ -62,7 +62,7 @@ verify_sha256() {
 
 if [ ! -f "${ORT_DYLIB}" ]; then
   rm -rf "${ORT_ROOT}"
-  onnxruntime_nuget_extract_library "${ORT_VERSION}" "${ORT_NUGET_ENTRY}" "${ORT_DYLIB}"
+  onnxruntime_nuget_extract_libraries "${ORT_VERSION}" "${ORT_NUGET_ENTRY}" "${ORT_DYLIB}"
 fi
 
 verify_sha256 "ONNX Runtime shared library" "${ORT_DYLIB}" "${ORT_DYLIB_SHA256}"
