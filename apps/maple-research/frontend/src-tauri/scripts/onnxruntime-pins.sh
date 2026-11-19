@@ -150,6 +150,31 @@ onnxruntime_ios_commit_for_version() {
   esac
 }
 
+# Git remotes that serve the pinned iOS source commit, tried in order. The
+# commit ID pins the source and the library hashes below pin the build output,
+# so a remote decides availability, never content. Microsoft's repository has
+# returned 404 since 2026-11-17; Intel's public fork carries the same commit.
+onnxruntime_ios_source_remotes() {
+  printf '%s\n' \
+    "https://github.com/microsoft/onnxruntime.git" \
+    "https://github.com/intel/onnxruntime.git"
+}
+
+# Fetch one commit into the current repository as FETCH_HEAD from the first
+# remote that serves it. Never prompts: a missing repository asks for a login.
+onnxruntime_ios_fetch_source_commit() {
+  local commit="$1" remote
+  while IFS= read -r remote; do
+    echo "Fetching ONNX Runtime ${commit} from ${remote}"
+    if GIT_TERMINAL_PROMPT=0 git fetch --depth 1 "${remote}" "${commit}" </dev/null; then
+      return 0
+    fi
+    echo "${remote} did not serve ${commit}." >&2
+  done < <(onnxruntime_ios_source_remotes)
+  echo "No source remote served ONNX Runtime commit ${commit}." >&2
+  return 1
+}
+
 onnxruntime_ios_device_lib_sha256_for_version() {
   local xcode_build="${2:-${MAPLE_XCODE_BUILD_VERSION:-27A9275}}"
 
