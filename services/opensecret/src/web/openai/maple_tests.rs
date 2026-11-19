@@ -1,15 +1,21 @@
 //! Offline tests for Maple routing, cache boundaries, and usage identity.
 use super::*;
-use crate::provider_registry::{MapleInstanceId, DUAL_INSTANCE_TEST_REGISTRY};
+use crate::provider_registry::{
+    MapleInstanceId, DUAL_INSTANCE_TEST_INSTANCES, DUAL_INSTANCE_TEST_REGISTRY,
+};
 
 #[test]
 fn uncensored_completion_access_uses_the_existing_pro_plan_gate() {
-    let model = crate::model_config::DEEPSEEK_V4_1_FLASH_UNCENSORED_MODEL_ID;
-    assert!(matches!(
-        ensure_completion_model_access(model, ModelPlan::Free),
-        Err(ApiError::ModelNotAvailableOnPlan)
-    ));
-    assert!(ensure_completion_model_access(model, ModelPlan::Paid).is_ok());
+    for model in [
+        crate::model_config::DEEPSEEK_V4_1_FLASH_UNCENSORED_MODEL_ID,
+        crate::model_config::KIMI_K3_1_PRO_UNCENSORED_MODEL_ID,
+    ] {
+        assert!(matches!(
+            ensure_completion_model_access(model, ModelPlan::Free),
+            Err(ApiError::ModelNotAvailableOnPlan)
+        ));
+        assert!(ensure_completion_model_access(model, ModelPlan::Paid).is_ok());
+    }
 }
 
 #[test]
@@ -23,6 +29,7 @@ fn nested_and_pinned_completion_contexts_preserve_plan_without_provider_flag() {
     for provider in [
         ProviderId::Maple(MapleInstanceId::I01),
         ProviderId::Maple(MapleInstanceId::I02),
+        ProviderId::Maple(MapleInstanceId::I03),
         ProviderId::Tinfoil,
     ] {
         let public_model = "deepseek-v4-1-flash";
@@ -77,7 +84,7 @@ fn maple_instance_routes_keep_shared_cache_namespace_and_billing_identity() {
     let mut prior_salt = None;
     let mut route_keys = HashSet::new();
 
-    for instance in MapleInstanceId::ALL {
+    for instance in DUAL_INSTANCE_TEST_INSTANCES {
         let proxies = ProxyRouter::new(
             "http://continuum.invalid".to_owned(),
             None,
@@ -128,6 +135,129 @@ fn maple_instance_routes_keep_shared_cache_namespace_and_billing_identity() {
         assert!(event.is_api_request);
     }
     assert_eq!(route_keys.len(), 2);
+}
+
+/// The production route of the uncensored Kimi model, end to end through the
+/// request rewrite a Maple send applies and the usage event billing prices.
+#[test]
+fn uncensored_kimi_route_sends_its_own_model_name_and_bills_the_maple_family() {
+    let user = Uuid::from_u128(17);
+    let model = crate::model_config::KIMI_K3_1_PRO_UNCENSORED_MODEL_ID;
+    assert_eq!(model, "kimi-k3-1-pro-uncensored");
+    let cache = CompletionCachePolicy::BoundV2(derive_provider_cache_namespaces(
+        &CacheNamespaceRoot::from_bytes([0x42; 32]),
+        user,
+    ));
+    let proxies = ProxyRouter::new(
+        "http://continuum.invalid".to_owned(),
+        None,
+        "https://tinfoil.invalid".to_owned(),
+    )
+    .with_maple_api_key(Some("synthetic-maple-key".to_owned()))
+    .with_maple_readiness(crate::provider_client::MapleReadiness::for_test_instances(
+        &[MapleInstanceId::I03],
+    ));
+
+    for (surface, auth) in [
+        (InferenceSurface::ChatCompletions, AuthMethod::ApiKey),
+        (InferenceSurface::Responses, AuthMethod::Jwt),
+    ] {
+        let intent = InferenceIntent::new(
+            user,
+            model,
+            model,
+            ModelPlan::Paid,
+            surface,
+            WorkloadClass::Interactive,
+        );
+        let route = ProviderRouter::default()
+            .select_active_completion_route(&proxies, &intent)
+            .unwrap();
+        assert_eq!(route.provider, ProviderId::Maple(MapleInstanceId::I03));
+        assert_eq!(route.proxy.provider_name, "maple-i03");
+        assert_eq!(route.provider.family_name(), "maple");
+        assert_eq!(route.public_model_id, model);
+        assert_eq!(route.provider_model_id, model);
+        assert_eq!(route.response_model_id, model);
+
+        // The same rewrite order a send applies: provider model, backend-owned
+        // cache namespace, then the dedicated node's engine-policy sanitizer.
+        let mut body = json!({
+            "model": model,
+            "messages": [{"role": "user", "content": [
+                {"type": "text", "text": "synthetic"},
+                {"type": "image_url", "uuid": "caller-cache-entry", "image_url": {
+                    "url": "data:image/png;base64,AA=="
+                }}
+            ]}],
+            "reasoning_effort": "high",
+            "temperature": 1.0,
+            "top_p": 0.95,
+            "chat_template_kwargs": {"preserve_thinking": true},
+            "cache_salt": "caller-controlled",
+            "user_cache_secret": "caller-controlled",
+            "priority": -1000,
+            "stream": true
+        })
+        .as_object()
+        .unwrap()
+        .clone();
+        body.insert("model".to_owned(), json!(route.provider_model_id));
+        apply_provider_managed_request_fields(
+            &mut body,
+            route.provider.family_name(),
+            user,
+            &cache,
+        );
+        ensure_stream_usage(&mut body);
+        let mut body = Value::Object(body);
+        assert!(route.provider.is_maple());
+        crate::maple_inference::sanitize_completion_request(&mut body);
+
+        assert_eq!(body["model"], "kimi-k3-1-pro-uncensored");
+        let CompletionCachePolicy::BoundV2(namespaces) = &cache else {
+            unreachable!();
+        };
+        assert_eq!(
+            body["cache_salt"],
+            json!(namespaces.maple_user_cache_secret())
+        );
+        assert!(body.get("user_cache_secret").is_none());
+        assert!(body.get("priority").is_none());
+        assert!(body["messages"][0]["content"][1].get("uuid").is_none());
+        assert_eq!(body["reasoning_effort"], "high");
+        assert_eq!(body["temperature"], 1.0);
+        assert_eq!(body["top_p"], 0.95);
+        assert_eq!(
+            body["chat_template_kwargs"],
+            json!({"preserve_thinking": true})
+        );
+        assert_eq!(body["stream_options"], json!({"include_usage": true}));
+
+        let event = build_usage_event(
+            user,
+            CompletionUsage {
+                prompt_tokens: 100,
+                completion_tokens: 20,
+                cached_prompt_tokens: Some(42),
+            },
+            BigDecimal::from(0),
+            route.provider.family_name().to_owned(),
+            &BillingContext::new(auth, route.public_model_id.clone(), None),
+        );
+        assert_eq!(event.provider_name, "maple");
+        assert_eq!(event.model_name, "kimi-k3-1-pro-uncensored");
+        assert_eq!(event.input_tokens, 100);
+        assert_eq!(event.output_tokens, 20);
+        assert_eq!(event.cached_input_tokens, Some(42));
+        assert_eq!(event.is_api_request, matches!(auth, AuthMethod::ApiKey));
+
+        // The node's own name for the model is already the public one, and a
+        // response naming anything else is still returned under the public id.
+        let mut response = json!({"model": route.provider_model_id, "choices": []});
+        canonicalize_response_model(&mut response, &route.response_model_id);
+        assert_eq!(response["model"], "kimi-k3-1-pro-uncensored");
+    }
 }
 
 #[test]
