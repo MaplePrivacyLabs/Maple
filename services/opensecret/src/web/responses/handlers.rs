@@ -6777,7 +6777,6 @@ async fn ensure_message_started(
 #[allow(clippy::too_many_arguments)]
 async fn start_responses_assistant_turn(
     state: &Arc<AppState>,
-    user: &User,
     body: &ResponsesCreateRequest,
     pinned_completion: &PinnedCompletionRequest,
     headers: &HeaderMap,
@@ -6818,7 +6817,6 @@ async fn start_responses_assistant_turn(
 
     start_chat_completion_response_for_execution(
         state,
-        user,
         chat_request.take(),
         headers,
         CompletionExecutionContext::for_pinned(billing_context, pinned_completion, cache_policy),
@@ -7180,7 +7178,6 @@ async fn setup_completion_processor(
                 loop {
                     match start_responses_assistant_turn(
                         state,
-                        user,
                         body,
                         pinned_completion,
                         headers,
@@ -7802,7 +7799,6 @@ async fn create_streaming_preparation_response(
                     let turn_body = model_turn_request_without_user_payload(&work.body);
                     let first_started = match start_responses_assistant_turn(
                         &state,
-                        &user,
                         &turn_body,
                         &work.pinned_completion,
                         &headers,
@@ -7848,7 +7844,6 @@ async fn create_streaming_preparation_response(
                             .await?;
                             start_responses_assistant_turn(
                                 &state,
-                                &user,
                                 &turn_body,
                                 &work.pinned_completion,
                                 &headers,
@@ -7994,7 +7989,6 @@ async fn create_response_stream_inner(
 ) -> Result<Response, ApiError> {
     let client_app = ClientApp::from_headers(&headers);
     let cache_policy = CompletionCachePolicy::for_request(
-        &session_id,
         cache_namespace_root.map(|Extension(root)| root),
         user.uuid,
     )?;
@@ -8458,7 +8452,6 @@ async fn create_response_stream_inner(
         execution_policy.deadline,
         start_responses_assistant_turn(
             &state,
-            &user,
             &model_turn_body,
             &pinned_completion,
             &headers,
@@ -8522,7 +8515,6 @@ async fn create_response_stream_inner(
                 execution_policy.deadline,
                 start_responses_assistant_turn(
                     &state,
-                    &user,
                     &model_turn_body,
                     &pinned_completion,
                     &headers,
@@ -8729,7 +8721,6 @@ fn response_client_sse(
     preparation_start: Option<oneshot::Sender<()>>,
 ) -> Response {
     let response_uuid = response_for_stream.uuid;
-    let require_explicit_terminal = session_id.is_v2();
     let mut client_execution_guard = Some(client_execution_guard);
     // Storage and execution are already running; the body only translates the
     // ordered client channel into encrypted SSE events.
@@ -9149,7 +9140,7 @@ fn response_client_sse(
             }
         }
 
-        if require_explicit_terminal && !saw_terminal {
+        if !saw_terminal {
             error!("Responses client stream closed without a terminal event");
             // No storage-authoritative terminal arrived. Fail the body so the
             // V2 gateway emits an authenticated transport error, without claiming
@@ -9229,22 +9220,15 @@ pub(crate) fn responses_sse_body_failure_for_test() -> Response {
     ]))
 }
 
-/// Helper to create encrypted SSE event
+/// Builds one logical SSE event. The Transport V2 gateway encrypts the whole
+/// response stream, so the event data is ordinary JSON.
 pub async fn encrypt_event(
-    state: &AppState,
-    transport_session: &TransportSession,
+    _state: &AppState,
+    _transport_session: &TransportSession,
     event_type: &str,
     payload: &Value,
 ) -> Result<Event, ApiError> {
-    let payload_str = payload.to_string();
-    let event_data = transport_session
-        .encode_sse_data(state, &payload_str)
-        .await
-        .map_err(|e| {
-            error!("Failed to encode event data: {:?}", e);
-            ApiError::InternalServerError
-        })?;
-    Ok(Event::default().event(event_type).data(event_data))
+    Ok(Event::default().event(event_type).data(payload.to_string()))
 }
 
 /// GET /v1/responses/{id} - Retrieve a single response

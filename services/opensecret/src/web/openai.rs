@@ -16,8 +16,7 @@ use crate::model_config::{
 use crate::models::token_usage::NewTokenUsage;
 use crate::models::users::User;
 use crate::provider_cache::{
-    derive_provider_cache_namespaces, legacy_continuum_cache_salt, legacy_maple_user_cache_secret,
-    CacheNamespaceRoot, DerivedCacheNamespaces,
+    derive_provider_cache_namespaces, CacheNamespaceRoot, DerivedCacheNamespaces,
 };
 use crate::provider_client::{
     ProviderClient, ProviderRequest, ProviderRequestError, ProviderResponse, ProviderSendTrace,
@@ -55,13 +54,11 @@ use axum::{
     routing::{get, post},
     Router,
 };
-use base64::{engine::general_purpose, Engine as _};
 use bigdecimal::BigDecimal;
 use chrono::Utc;
 use futures::StreamExt;
 use reqwest::Method;
 use serde_json::{json, Value};
-use sha2::{Digest, Sha256};
 use std::collections::HashSet;
 use std::str::FromStr;
 use std::sync::{Arc, Mutex, OnceLock};
@@ -88,34 +85,23 @@ const MAX_BOUNDED_PROVIDER_RESPONSE_BYTES: usize = 256 * 1024;
 const PROVIDER_MANAGED_CACHE_SALT_FIELD: &str = "cache_salt";
 const PROVIDER_MANAGED_USER_CACHE_SECRET_FIELD: &str = "user_cache_secret";
 
-/// The provider cache namespace is an explicit input to every completion.
-/// This prevents a V2 request from silently falling back to the legacy,
-/// operator-computable SHA256(user UUID) namespace.
+/// The provider cache namespace is an explicit input to every completion,
+/// derived from the caller's private cache root and verified user. A request
+/// without a root is refused, so no completion can fall back to an
+/// operator-computable namespace.
 #[derive(Clone)]
-pub(crate) enum CompletionCachePolicy {
-    LegacyV1,
-    BoundV2(DerivedCacheNamespaces),
-}
+pub(crate) struct CompletionCachePolicy(DerivedCacheNamespaces);
 
 impl CompletionCachePolicy {
     pub(crate) fn for_request(
-        transport: &TransportSession,
         cache_namespace_root: Option<CacheNamespaceRoot>,
         verified_user_id: Uuid,
     ) -> Result<Self, ApiError> {
-        if transport.is_v2() {
-            let root = cache_namespace_root.ok_or(ApiError::BadRequest)?;
-            Ok(Self::BoundV2(derive_provider_cache_namespaces(
-                &root,
-                verified_user_id,
-            )))
-        } else {
-            Ok(Self::LegacyV1)
-        }
-    }
-
-    pub(crate) const fn requires_provider_done(&self) -> bool {
-        matches!(self, Self::BoundV2(_))
+        let root = cache_namespace_root.ok_or(ApiError::BadRequest)?;
+        Ok(Self(derive_provider_cache_namespaces(
+            &root,
+            verified_user_id,
+        )))
     }
 }
 
@@ -183,12 +169,10 @@ pub(crate) async fn authorize_completion_caller(
     state: &AppState,
     user: &User,
     auth_method: AuthMethod,
-    session: &TransportSession,
     cache_namespace_root: Option<CacheNamespaceRoot>,
     surface: &str,
 ) -> Result<CompletionCaller, ApiError> {
-    let cache_policy =
-        CompletionCachePolicy::for_request(session, cache_namespace_root, user.uuid)?;
+    let cache_policy = CompletionCachePolicy::for_request(cache_namespace_root, user.uuid)?;
     let billing_access = state
         .chat_billing_access(user.uuid, auth_method == AuthMethod::ApiKey)
         .await;
@@ -593,17 +577,6 @@ fn prepare_tts_request(
         voice_for_log,
         provider_payload: Value::Object(request.provider_payload),
     })
-}
-
-fn build_tts_response_payload(body_bytes: &[u8], content_type: &str) -> (Value, bool) {
-    let is_json_response = serde_json::from_slice::<Value>(body_bytes).is_ok();
-    (
-        json!({
-            "content_base64": general_purpose::STANDARD.encode(body_bytes),
-            "content_type": content_type,
-        }),
-        is_json_response,
-    )
 }
 
 /// Request structure for embeddings endpoints
@@ -1259,26 +1232,16 @@ async fn send_attempt_terminal(
     let _ = sender.send(CompletionChunk::Terminal(terminal)).await;
 }
 
-fn stream_end_terminal(
-    attempt: InferenceAttempt,
-    saw_finish_signal: bool,
-    has_incomplete_frame: bool,
-    require_provider_done: bool,
-) -> AttemptTerminal {
-    if !require_provider_done && saw_finish_signal && !has_incomplete_frame {
-        AttemptTerminal::Completed {
-            attempt,
-            evidence: CompletionEvidence::FinishSignalThenEof,
-        }
-    } else {
-        AttemptTerminal::Failed {
-            attempt,
-            failure: AttemptFailure::new(
-                AttemptFailureKind::UnexpectedEof,
-                AttemptStage::Stream,
-                ReplaySafety::NotProvenPreAcceptance,
-            ),
-        }
+/// A provider stream that ends without `[DONE]` is incomplete, whatever finish
+/// evidence preceded the end of the stream.
+fn stream_end_terminal(attempt: InferenceAttempt) -> AttemptTerminal {
+    AttemptTerminal::Failed {
+        attempt,
+        failure: AttemptFailure::new(
+            AttemptFailureKind::UnexpectedEof,
+            AttemptStage::Stream,
+            ReplaySafety::NotProvenPreAcceptance,
+        ),
     }
 }
 
@@ -1429,7 +1392,6 @@ async fn process_completion_stream(
     tx_consumer: &mpsc::Sender<CompletionChunk>,
     chunk_timeout: Duration,
     response_execution: Option<&ResponseExecution>,
-    require_provider_done: bool,
 ) -> StreamProcessResult {
     process_completion_stream_with_frame_limit(
         response,
@@ -1438,7 +1400,6 @@ async fn process_completion_stream(
         tx_consumer,
         chunk_timeout,
         response_execution,
-        require_provider_done,
         None,
     )
     .await
@@ -1455,7 +1416,6 @@ async fn process_completion_stream_with_frame_limit(
     tx_consumer: &mpsc::Sender<CompletionChunk>,
     chunk_timeout: Duration,
     response_execution: Option<&ResponseExecution>,
-    require_provider_done: bool,
     frame_limit: Option<usize>,
 ) -> StreamProcessResult {
     let mut body_stream = response.bytes_stream();
@@ -1604,13 +1564,7 @@ async fn process_completion_stream_with_frame_limit(
                 );
             }
             Ok(None) => {
-                let has_incomplete_frame = buffer.iter().any(|byte| !byte.is_ascii_whitespace());
-                let terminal = stream_end_terminal(
-                    attempt,
-                    usage_accumulator.saw_terminal_signal,
-                    has_incomplete_frame,
-                    require_provider_done,
-                );
+                let terminal = stream_end_terminal(attempt);
                 return finish_stream_processing(
                     &mut usage_accumulator,
                     StreamUsageFinalization::EndOfStream,
@@ -2081,7 +2035,6 @@ async fn proxy_openai(
         &state,
         &user,
         auth_method,
-        &session_id,
         cache_namespace_root.map(|axum::Extension(root)| root),
         "chat",
     )
@@ -2246,7 +2199,6 @@ async fn proxy_openai(
     debug!("Handling streaming response");
     let mut rx = completion.stream;
 
-    let require_explicit_terminal = session_id.is_v2();
     let stream = async_stream::stream! {
         let mut saw_terminal = false;
         while let Some(chunk) = rx.recv().await {
@@ -2302,7 +2254,7 @@ async fn proxy_openai(
             }
         }
 
-        if require_explicit_terminal && !saw_terminal {
+        if !saw_terminal {
             error!("Completion stream closed without a terminal event");
             match encrypt_sse_event(
                 &state,
@@ -2756,7 +2708,6 @@ pub(crate) struct StartedCompletion {
     billing_context: BillingContext,
     non_streaming_body_limit: Option<usize>,
     stream_frame_limit: Option<usize>,
-    require_provider_done: bool,
     response_execution: Option<ResponseExecution>,
     response_execution_guard: Option<ResponseExecutionTaskGuard>,
 }
@@ -2765,7 +2716,6 @@ pub(crate) struct StartedCompletion {
 /// request and returns immediately after a successful provider response start.
 pub(crate) async fn start_chat_completion_response(
     state: &Arc<AppState>,
-    user: &User,
     body: Value,
     headers: &HeaderMap,
     execution: CompletionExecutionContext<'_>,
@@ -2773,7 +2723,6 @@ pub(crate) async fn start_chat_completion_response(
 ) -> Result<StartedCompletion, CompletionExecutionError> {
     get_chat_completion_response_with_options(
         state,
-        user,
         body,
         headers,
         execution,
@@ -2787,7 +2736,6 @@ pub(crate) async fn start_chat_completion_response(
 /// remains held across the persistence boundary and subsequent processing.
 pub(crate) async fn start_chat_completion_response_for_execution(
     state: &Arc<AppState>,
-    user: &User,
     body: Value,
     headers: &HeaderMap,
     execution: CompletionExecutionContext<'_>,
@@ -2797,7 +2745,6 @@ pub(crate) async fn start_chat_completion_response_for_execution(
     let execution = execution.with_response_execution(response_execution)?;
     get_chat_completion_response_with_options(
         state,
-        user,
         body,
         headers,
         execution,
@@ -2841,7 +2788,6 @@ pub(crate) async fn get_bounded_chat_completion_response(
 
     let started = get_chat_completion_response_with_options(
         state,
-        user,
         body,
         headers,
         execution,
@@ -2915,7 +2861,6 @@ fn log_selected_inference_route(pinned: &PinnedCompletionRequest, attempt: &Infe
 
 async fn get_chat_completion_response_with_options(
     state: &Arc<AppState>,
-    user: &User,
     body: Value,
     headers: &HeaderMap,
     execution: CompletionExecutionContext<'_>,
@@ -2935,7 +2880,6 @@ async fn get_chat_completion_response_with_options(
     }
     let billing_context = &mut billing;
     let cache_policy = cache;
-    let require_provider_done = cache_policy.requires_provider_done();
     if body.is_null() || body.as_object().is_none_or(|obj| obj.is_empty()) {
         error!("Request body is empty or invalid");
         return Err(ApiError::BadRequest.into());
@@ -3003,7 +2947,6 @@ async fn get_chat_completion_response_with_options(
     apply_provider_managed_request_fields(
         &mut modified_body,
         selected_route.provider.family_name(),
-        user.uuid,
         cache_policy,
     );
     billing_context.model_name = selected_route.public_model_id.clone();
@@ -3152,7 +3095,6 @@ async fn get_chat_completion_response_with_options(
         billing_context: billing,
         non_streaming_body_limit: options.non_streaming_body_limit,
         stream_frame_limit: options.stream_frame_limit,
-        require_provider_done,
         response_execution,
         response_execution_guard,
     })
@@ -3180,7 +3122,6 @@ pub(crate) async fn finish_started_completion(
     let billing_context = started.billing_context.clone();
     let non_streaming_body_limit = started.non_streaming_body_limit;
     let stream_frame_limit = started.stream_frame_limit;
-    let require_provider_done = started.require_provider_done;
     let response_execution = started.response_execution.take();
     let response_execution_guard = started.response_execution_guard.take();
 
@@ -3275,7 +3216,6 @@ pub(crate) async fn finish_started_completion(
             &tx_consumer,
             Duration::from_secs(STREAM_CHUNK_TIMEOUT_SECS),
             response_execution.as_ref(),
-            require_provider_done,
             stream_frame_limit,
         )
         .await;
@@ -3315,8 +3255,7 @@ pub(crate) async fn get_chat_completion_response(
     execution: CompletionExecutionContext<'_>,
     pinned: &PinnedCompletionRequest,
 ) -> Result<CompletionStream, CompletionExecutionError> {
-    let started =
-        start_chat_completion_response(state, user, body, headers, execution, pinned).await?;
+    let started = start_chat_completion_response(state, body, headers, execution, pinned).await?;
     finish_started_completion(state, user, started).await
 }
 
@@ -3403,17 +3342,12 @@ fn ensure_stream_usage(body: &mut serde_json::Map<String, Value>) {
     }
 }
 
-fn tinfoil_user_cache_secret(user_uuid: Uuid) -> String {
-    // Keep the cache namespace stable without exposing the raw user identifier.
-    hex::encode(Sha256::digest(user_uuid.as_bytes()))
-}
-
 pub(crate) fn apply_provider_managed_request_fields(
     body: &mut serde_json::Map<String, Value>,
     provider_name: &str,
-    user_uuid: Uuid,
     cache_policy: &CompletionCachePolicy,
 ) {
+    let CompletionCachePolicy(namespaces) = cache_policy;
     if body.remove(PROVIDER_MANAGED_CACHE_SALT_FIELD).is_some() {
         debug!("Stripped provider-managed completion request field: cache_salt");
     }
@@ -3423,13 +3357,9 @@ pub(crate) fn apply_provider_managed_request_fields(
         .is_some();
 
     if provider_name == ProviderId::Tinfoil.as_str() {
-        let user_cache_secret = match cache_policy {
-            CompletionCachePolicy::LegacyV1 => tinfoil_user_cache_secret(user_uuid),
-            CompletionCachePolicy::BoundV2(namespace) => namespace.tinfoil_user_cache_secret(),
-        };
         body.insert(
             PROVIDER_MANAGED_USER_CACHE_SECRET_FIELD.to_string(),
-            json!(user_cache_secret),
+            json!(namespaces.tinfoil_user_cache_secret()),
         );
         if replaced_user_cache_secret {
             debug!("Replaced provider-managed completion request field: user_cache_secret");
@@ -3438,21 +3368,11 @@ pub(crate) fn apply_provider_managed_request_fields(
         debug!("Stripped provider-managed completion request field: user_cache_secret");
     }
 
-    let cache_salt = match (provider_name, cache_policy) {
+    let cache_salt = match provider_name {
         // Direct vLLM consumes cache_salt. user_cache_secret is translated only
         // by Tinfoil's shared router, which this endpoint deliberately bypasses.
-        ("maple", CompletionCachePolicy::LegacyV1) => {
-            Some(legacy_maple_user_cache_secret(user_uuid))
-        }
-        ("maple", CompletionCachePolicy::BoundV2(namespaces)) => {
-            Some(namespaces.maple_user_cache_secret())
-        }
-        ("continuum", CompletionCachePolicy::LegacyV1) => {
-            Some(legacy_continuum_cache_salt(user_uuid))
-        }
-        ("continuum", CompletionCachePolicy::BoundV2(namespaces)) => {
-            Some(namespaces.continuum_cache_salt())
-        }
+        "maple" => Some(namespaces.maple_user_cache_secret()),
+        "continuum" => Some(namespaces.continuum_cache_salt()),
         _ => None,
     };
     if let Some(cache_salt) = cache_salt {
@@ -3681,22 +3601,14 @@ fn build_usage_event(
     }
 }
 
-/// Helper to encrypt an SSE event
+/// Builds one logical SSE event. The Transport V2 gateway encrypts the whole
+/// response stream, so the event data is ordinary JSON.
 async fn encrypt_sse_event(
-    state: &AppState,
-    transport_session: &TransportSession,
+    _state: &AppState,
+    _transport_session: &TransportSession,
     json: &Value,
 ) -> Result<Event, ApiError> {
-    let json_str = json.to_string();
-    let event_data = transport_session
-        .encode_sse_data(state, &json_str)
-        .await
-        .map_err(|e| {
-            error!("Failed to encode SSE event data: {:?}", e);
-            ApiError::InternalServerError
-        })?;
-
-    Ok(sse_event_from_encoded_data(&event_data))
+    Ok(sse_data_event(&json.to_string()))
 }
 
 /// OpenAI-style error payload for encrypted in-stream failures. Clients
@@ -3727,7 +3639,7 @@ fn completion_failure_payload(failure: &AttemptFailure) -> Value {
     }
 }
 
-fn sse_event_from_encoded_data(event_data: &str) -> Event {
+fn sse_data_event(event_data: &str) -> Event {
     Event::default().data(event_data)
 }
 
@@ -4075,7 +3987,6 @@ async fn ensure_paid_tts_access(state: &AppState, user: &User) -> Result<(), Api
 
 async fn proxy_tts(
     State(state): State<Arc<AppState>>,
-    axum::Extension(session_id): axum::Extension<TransportSession>,
     axum::Extension(user): axum::Extension<User>,
     axum::Extension(_auth_method): axum::Extension<AuthMethod>,
     Decrypted(tts_request): Decrypted<TTSRequest>,
@@ -4160,18 +4071,12 @@ async fn proxy_tts(
         );
     }
 
-    // Transport V2 encrypts the complete logical HTTP response in the gateway,
-    // so it can preserve the provider's native audio or JSON bytes. V1 keeps
-    // its established JSON/base64 response contract unchanged.
-    if session_id.is_v2() {
-        return Response::builder()
-            .header(header::CONTENT_TYPE, response_content_type)
-            .body(Body::from(body_bytes))
-            .map_err(|_| ApiError::InternalServerError);
-    }
-
-    let (response_payload, _) = build_tts_response_payload(&body_bytes, &response_content_type);
-    encrypt_response(&state, &session_id, &response_payload).await
+    // The gateway encrypts the complete logical HTTP response, so the
+    // provider's native audio or JSON bytes pass through unchanged.
+    Response::builder()
+        .header(header::CONTENT_TYPE, response_content_type)
+        .body(Body::from(body_bytes))
+        .map_err(|_| ApiError::InternalServerError)
 }
 
 async fn proxy_embeddings(
@@ -4617,13 +4522,6 @@ mod tests {
     }
 
     async fn process_mock_sse(body: &'static str) -> (StreamProcessResult, Vec<Value>) {
-        process_mock_sse_with_policy(body, false).await
-    }
-
-    async fn process_mock_sse_with_policy(
-        body: &'static str,
-        require_provider_done: bool,
-    ) -> (StreamProcessResult, Vec<Value>) {
         let (trace, server) = call_mock_provider(static_sse_app(body)).await;
         assert!(trace.prior_failures.is_empty());
         let response = match trace.result {
@@ -4642,7 +4540,6 @@ mod tests {
             &tx,
             Duration::from_secs(1),
             None,
-            require_provider_done,
         )
         .await;
         drop(tx);
@@ -4964,7 +4861,6 @@ mod tests {
             ),
             non_streaming_body_limit: None,
             stream_frame_limit: None,
-            require_provider_done: false,
             response_execution: None,
             response_execution_guard: None,
         };
@@ -5003,7 +4899,7 @@ mod tests {
             (
                 "finish then eof",
                 "data: {\"model\":\"upstream-k3\",\"choices\":[{\"delta\":{},\"finish_reason\":\"stop\"}]}\n\n",
-                ExpectedTerminal::Completed(CompletionEvidence::FinishSignalThenEof),
+                ExpectedTerminal::Failed(AttemptFailureKind::UnexpectedEof),
                 1,
             ),
             (
@@ -6140,7 +6036,6 @@ mod tests {
             &tx,
             Duration::from_secs(1),
             None,
-            true,
             Some(frame_limit),
         )
         .await;
@@ -6238,7 +6133,6 @@ mod tests {
                 &tx,
                 Duration::from_secs(1),
                 None,
-                true,
                 Some(1024),
             )
             .await
@@ -6267,43 +6161,28 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn terminal_error_event_round_trips_through_maple_encrypted_sse_contract() {
+    async fn terminal_error_event_is_plain_json_sse_data() {
         use axum::body::to_bytes;
-        use chacha20poly1305::{aead::Aead, ChaCha20Poly1305, Key, KeyInit, Nonce};
         use std::convert::Infallible;
 
         let payload = completion_error_payload("Inference provider request failed");
         let plaintext = payload.to_string();
-        let key_bytes = [0x42; 32];
-        let nonce_bytes = [0x24; 12];
-        let cipher = ChaCha20Poly1305::new(Key::from_slice(&key_bytes));
-        let ciphertext = cipher
-            .encrypt(Nonce::from_slice(&nonce_bytes), plaintext.as_bytes())
-            .expect("encrypt mock SSE error payload");
-        let encrypted = [nonce_bytes.as_slice(), ciphertext.as_slice()].concat();
 
-        let event = sse_event_from_encoded_data(&general_purpose::STANDARD.encode(encrypted));
+        let event = sse_data_event(&plaintext);
         let response =
             Sse::new(futures::stream::iter([Ok::<Event, Infallible>(event)])).into_response();
         let body = to_bytes(response.into_body(), 4096)
             .await
             .expect("serialize SSE event");
         let body = std::str::from_utf8(&body).expect("SSE body is UTF-8");
-        let encoded = body
+        let data = body
             .strip_prefix("data: ")
             .and_then(|value| value.strip_suffix("\n\n"))
             .expect("one SSE data event");
 
-        assert_ne!(encoded, plaintext);
-        let decoded = general_purpose::STANDARD
-            .decode(encoded)
-            .expect("Maple SDK base64 contract");
-        let (nonce, ciphertext) = decoded.split_at(12);
-        let nonce: [u8; 12] = nonce.try_into().expect("12-byte nonce");
-        let decrypted = crate::web::attestation_routes::SessionState::new(key_bytes)
-            .decrypt(ciphertext, &nonce)
-            .expect("Maple SDK AEAD contract");
-        assert_eq!(decrypted, plaintext.as_bytes());
+        // The gateway encrypts the response carrier; the logical event the
+        // client decrypts is the JSON payload itself.
+        assert_eq!(data, plaintext);
     }
 
     #[tokio::test]
@@ -6349,7 +6228,6 @@ mod tests {
             &tx,
             Duration::from_millis(STREAM_CHUNK_TIMEOUT_SECS),
             None,
-            false,
         )
         .await;
         drop(tx);
@@ -6409,7 +6287,6 @@ mod tests {
             &tx,
             Duration::from_millis(20),
             None,
-            false,
         )
         .await;
         drop(tx);
@@ -6467,7 +6344,6 @@ mod tests {
                 &tx,
                 Duration::from_secs(30),
                 None,
-                false,
             ),
         )
         .await
@@ -6521,7 +6397,6 @@ mod tests {
                 &tx,
                 Duration::from_secs(30),
                 Some(&execution),
-                false,
             ),
         )
         .await
@@ -6611,7 +6486,6 @@ mod tests {
             &tx,
             Duration::from_secs(1),
             None,
-            false,
         )
         .await;
         drop(tx);
@@ -6870,12 +6744,10 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn transport_v2_stream_requires_provider_done_despite_finish_evidence() {
-        let (without_done, chunks) = process_mock_sse_with_policy(
-            "data: {\"choices\":[{\"delta\":{},\"finish_reason\":\"stop\"}]}\n\n",
-            true,
-        )
-        .await;
+    async fn stream_requires_provider_done_despite_finish_evidence() {
+        let (without_done, chunks) =
+            process_mock_sse("data: {\"choices\":[{\"delta\":{},\"finish_reason\":\"stop\"}]}\n\n")
+                .await;
         assert_eq!(chunks.len(), 1);
         let provider_router = ProviderRouter::default();
         let failed_observation = provider_router
@@ -6908,13 +6780,10 @@ mod tests {
             }
         ));
 
-        let (with_done, _) = process_mock_sse_with_policy(
-            concat!(
-                "data: {\"choices\":[{\"delta\":{},\"finish_reason\":\"stop\"}]}\n\n",
-                "data: [DONE]\n\n"
-            ),
-            true,
-        )
+        let (with_done, _) = process_mock_sse(concat!(
+            "data: {\"choices\":[{\"delta\":{},\"finish_reason\":\"stop\"}]}\n\n",
+            "data: [DONE]\n\n"
+        ))
         .await;
         let completed_observation = provider_router
             .observe_attempt_terminal(&with_done.terminal, ShadowObservationMode::Update);
@@ -6935,21 +6804,14 @@ mod tests {
     }
 
     #[test]
-    fn stream_eof_requires_prior_finish_evidence() {
+    fn stream_eof_without_provider_done_is_an_unexpected_eof() {
         let pinned = pinned_test_completion();
         let attempt = pinned
             .begin_execution()
             .begin_attempt(pinned.route.identity());
 
         assert!(matches!(
-            stream_end_terminal(attempt.clone(), true, false, false),
-            AttemptTerminal::Completed {
-                evidence: CompletionEvidence::FinishSignalThenEof,
-                ..
-            }
-        ));
-        assert!(matches!(
-            stream_end_terminal(attempt, false, false, false),
+            stream_end_terminal(attempt),
             AttemptTerminal::Failed {
                 failure: AttemptFailure {
                     kind: AttemptFailureKind::UnexpectedEof,
@@ -7348,37 +7210,6 @@ mod tests {
     }
 
     #[test]
-    fn tts_binary_response_preserves_bytes_and_mime_type() {
-        let audio_bytes = [b'R', b'I', b'F', b'F', 0, 0xff, b'W', b'A', b'V', b'E'];
-        let (response, is_json_response) = build_tts_response_payload(&audio_bytes, "audio/flac");
-        let decoded = general_purpose::STANDARD
-            .decode(response["content_base64"].as_str().unwrap())
-            .unwrap();
-
-        assert!(!is_json_response);
-        assert_eq!(decoded, audio_bytes);
-        assert_eq!(response["content_type"], "audio/flac");
-    }
-
-    #[test]
-    fn tts_json_response_preserves_exact_bytes_and_problem_mime_type() {
-        let body = br#"{ "error" : { "message" : "voice generation failed" } }"#;
-
-        let (response, is_json_response) =
-            build_tts_response_payload(body, "application/problem+json; charset=utf-8");
-        let decoded = general_purpose::STANDARD
-            .decode(response["content_base64"].as_str().unwrap())
-            .unwrap();
-
-        assert!(is_json_response);
-        assert_eq!(decoded, body);
-        assert_eq!(
-            response["content_type"],
-            "application/problem+json; charset=utf-8"
-        );
-    }
-
-    #[test]
     fn extracts_sse_after_utf8_code_point_is_split_across_chunks() {
         let json = "{\"choices\":[{\"delta\":{\"content\":\"café\"}}]}";
         let event = format!("data: {json}\n\n").into_bytes();
@@ -7414,28 +7245,24 @@ mod tests {
         assert!(buffer.is_empty());
     }
 
-    #[test]
-    fn tinfoil_user_cache_secret_is_stable_and_unique_per_user() {
-        let first_user = Uuid::nil();
-        let second_user = Uuid::from_u128(1);
-
-        assert_eq!(
-            tinfoil_user_cache_secret(first_user),
-            "374708fff7719dd5979ec875d56cd2286f6d3cf7ec317a3b25632aab28ec37bb"
-        );
-        assert_eq!(
-            tinfoil_user_cache_secret(first_user),
-            tinfoil_user_cache_secret(first_user)
-        );
-        assert_ne!(
-            tinfoil_user_cache_secret(first_user),
-            tinfoil_user_cache_secret(second_user)
-        );
+    fn test_cache_policy(root_byte: u8, user_uuid: Uuid) -> CompletionCachePolicy {
+        CompletionCachePolicy::for_request(
+            Some(CacheNamespaceRoot::from_bytes([root_byte; 32])),
+            user_uuid,
+        )
+        .expect("a cache root yields a cache policy")
     }
 
     #[test]
-    fn applies_tinfoil_user_cache_secret_and_overwrites_client_value() {
+    fn tinfoil_cache_namespace_replaces_client_values_and_is_not_operator_computable() {
+        use sha2::{Digest, Sha256};
+
         let user_uuid = Uuid::from_u128(42);
+        let expected = derive_provider_cache_namespaces(
+            &CacheNamespaceRoot::from_bytes([0x55; 32]),
+            user_uuid,
+        )
+        .tinfoil_user_cache_secret();
         let mut body = serde_json::Map::from_iter([
             ("model".to_string(), json!("glm-5-3-flash")),
             ("cache_salt".to_string(), json!("user-supplied")),
@@ -7446,8 +7273,7 @@ mod tests {
         apply_provider_managed_request_fields(
             &mut body,
             ProviderId::Tinfoil.as_str(),
-            user_uuid,
-            &CompletionCachePolicy::LegacyV1,
+            &test_cache_policy(0x55, user_uuid),
         );
 
         assert_eq!(body.get("model"), Some(&json!("glm-5-3-flash")));
@@ -7455,36 +7281,13 @@ mod tests {
         assert!(!body.contains_key(PROVIDER_MANAGED_CACHE_SALT_FIELD));
         assert_eq!(
             body.get(PROVIDER_MANAGED_USER_CACHE_SECRET_FIELD),
-            Some(&json!(tinfoil_user_cache_secret(user_uuid)))
-        );
-    }
-
-    #[test]
-    fn bound_v2_cache_namespace_replaces_legacy_and_client_values() {
-        let user_uuid = Uuid::from_u128(42);
-        let root = CacheNamespaceRoot::from_bytes([0x55; 32]);
-        let namespace = derive_provider_cache_namespaces(&root, user_uuid);
-        let expected = namespace.tinfoil_user_cache_secret();
-        let mut body = serde_json::Map::from_iter([
-            ("cache_salt".to_string(), json!("user-supplied")),
-            ("user_cache_secret".to_string(), json!("client-controlled")),
-        ]);
-
-        apply_provider_managed_request_fields(
-            &mut body,
-            ProviderId::Tinfoil.as_str(),
-            user_uuid,
-            &CompletionCachePolicy::BoundV2(namespace),
-        );
-
-        assert!(!body.contains_key(PROVIDER_MANAGED_CACHE_SALT_FIELD));
-        assert_eq!(
-            body.get(PROVIDER_MANAGED_USER_CACHE_SECRET_FIELD),
             Some(&json!(expected))
         );
+        // A namespace anyone can compute from the user identifier alone would
+        // let the operator correlate or probe a user's cache.
         assert_ne!(
             body.get(PROVIDER_MANAGED_USER_CACHE_SECRET_FIELD),
-            Some(&json!(tinfoil_user_cache_secret(user_uuid)))
+            Some(&json!(hex::encode(Sha256::digest(user_uuid.as_bytes()))))
         );
     }
 
@@ -7498,8 +7301,7 @@ mod tests {
         apply_provider_managed_request_fields(
             &mut body,
             "other-provider",
-            Uuid::from_u128(42),
-            &CompletionCachePolicy::LegacyV1,
+            &test_cache_policy(0x55, Uuid::from_u128(42)),
         );
 
         assert!(!body.contains_key(PROVIDER_MANAGED_CACHE_SALT_FIELD));
@@ -7507,95 +7309,72 @@ mod tests {
     }
 
     #[test]
-    fn continuum_cache_salt_replaces_caller_fields_for_both_transports() {
+    fn continuum_cache_salt_replaces_caller_fields() {
         let user_uuid = Uuid::from_u128(42);
-        let namespaces = derive_provider_cache_namespaces(
+        let expected = derive_provider_cache_namespaces(
             &CacheNamespaceRoot::from_bytes([0x55; 32]),
             user_uuid,
-        );
-        let v2_salt = namespaces.continuum_cache_salt();
-        let v1_salt = legacy_continuum_cache_salt(user_uuid);
-        assert_ne!(v1_salt, v2_salt);
-        for (policy, expected) in [
-            (CompletionCachePolicy::LegacyV1, v1_salt),
-            (CompletionCachePolicy::BoundV2(namespaces), v2_salt),
+        )
+        .continuum_cache_salt();
+        let policy = test_cache_policy(0x55, user_uuid);
+        for caller_salt in [
+            Value::Null,
+            json!(""),
+            json!("caller-controlled"),
+            json!("x".repeat(64)),
+            json!(42),
+            json!({"nested": "value"}),
         ] {
-            for caller_salt in [
-                Value::Null,
-                json!(""),
-                json!("caller-controlled"),
-                json!("x".repeat(64)),
-                json!(42),
-                json!({"nested": "value"}),
-            ] {
-                let mut body = serde_json::Map::from_iter([
-                    ("model".to_string(), json!("provider-model")),
-                    ("cache_salt".to_string(), caller_salt),
-                    ("user_cache_secret".to_string(), json!("caller-controlled")),
-                    ("messages".to_string(), json!([])),
-                ]);
-                apply_provider_managed_request_fields(
-                    &mut body,
-                    ProviderId::Continuum.as_str(),
-                    user_uuid,
-                    &policy,
-                );
-                assert_eq!(body.get("cache_salt"), Some(&json!(expected)));
-                assert!(!body.contains_key("user_cache_secret"));
-                assert_eq!(body.get("model"), Some(&json!("provider-model")));
-                assert_eq!(body.get("messages"), Some(&json!([])));
-            }
+            let mut body = serde_json::Map::from_iter([
+                ("model".to_string(), json!("provider-model")),
+                ("cache_salt".to_string(), caller_salt),
+                ("user_cache_secret".to_string(), json!("caller-controlled")),
+                ("messages".to_string(), json!([])),
+            ]);
+            apply_provider_managed_request_fields(
+                &mut body,
+                ProviderId::Continuum.as_str(),
+                &policy,
+            );
+            assert_eq!(body.get("cache_salt"), Some(&json!(expected)));
+            assert!(!body.contains_key("user_cache_secret"));
+            assert_eq!(body.get("model"), Some(&json!("provider-model")));
+            assert_eq!(body.get("messages"), Some(&json!([])));
+        }
 
-            // Every turn, including internal exact-route completions, passes
-            // through this same boundary with the original cache policy.
-            let mut body = serde_json::Map::new();
-            for turn_policy in [&policy, &policy.clone()] {
-                apply_provider_managed_request_fields(
-                    &mut body,
-                    ProviderId::Continuum.as_str(),
-                    user_uuid,
-                    turn_policy,
-                );
-                assert_eq!(body.get("cache_salt"), Some(&json!(expected)));
-            }
+        // Every turn, including internal exact-route completions, passes
+        // through this same boundary with the original cache policy.
+        let mut body = serde_json::Map::new();
+        for turn_policy in [&policy, &policy.clone()] {
+            apply_provider_managed_request_fields(
+                &mut body,
+                ProviderId::Continuum.as_str(),
+                turn_policy,
+            );
+            assert_eq!(body.get("cache_salt"), Some(&json!(expected)));
         }
     }
 
     #[test]
-    fn v2_completion_cache_policy_requires_a_root_and_binds_verified_identity() {
-        use crate::transport_v2::crypto::SessionId;
-
-        let transport = TransportSession::v2(SessionId::from_bytes([0x11; 16]));
+    fn completion_cache_policy_requires_a_root_and_binds_verified_identity() {
         let user = Uuid::from_u128(1);
         assert!(matches!(
-            CompletionCachePolicy::for_request(&transport, None, user),
+            CompletionCachePolicy::for_request(None, user),
             Err(ApiError::BadRequest)
         ));
 
-        let root = CacheNamespaceRoot::from_bytes([0x42; 32]);
-        let policy =
-            CompletionCachePolicy::for_request(&transport, Some(root.clone()), user).unwrap();
-        assert!(policy.requires_provider_done());
         let mut first = serde_json::Map::new();
         apply_provider_managed_request_fields(
             &mut first,
             ProviderId::Continuum.as_str(),
-            user,
-            &policy,
+            &test_cache_policy(0x42, user),
         );
-        for (other_user, other_root) in [
-            (Uuid::from_u128(2), root),
-            (user, CacheNamespaceRoot::from_bytes([0x24; 32])),
-        ] {
-            let other_policy =
-                CompletionCachePolicy::for_request(&transport, Some(other_root), other_user)
-                    .unwrap();
+        for (other_user, other_root) in [(Uuid::from_u128(2), 0x42), (user, 0x24)] {
             let mut other = serde_json::Map::new();
             apply_provider_managed_request_fields(
                 &mut other,
                 ProviderId::Continuum.as_str(),
-                other_user,
-                &other_policy,
+                &test_cache_policy(other_root, other_user),
             );
             assert_ne!(first.get("cache_salt"), other.get("cache_salt"));
         }

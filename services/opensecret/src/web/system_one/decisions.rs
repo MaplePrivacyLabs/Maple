@@ -788,8 +788,13 @@ mod tests {
         crate::web::openai::apply_provider_managed_request_fields(
             &mut body,
             &proxy.provider_name,
-            uuid::Uuid::nil(),
-            &crate::web::openai::CompletionCachePolicy::LegacyV1,
+            &crate::web::openai::CompletionCachePolicy::for_request(
+                Some(crate::provider_cache::CacheNamespaceRoot::from_bytes(
+                    [7; 32],
+                )),
+                uuid::Uuid::nil(),
+            )
+            .unwrap(),
         );
         let response = client
             .send(

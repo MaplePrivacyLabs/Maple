@@ -13,7 +13,6 @@ use secp256k1::SecretKey;
 use serde::de::DeserializeOwned;
 use sha2::{Digest, Sha256, Sha512};
 use std::{process::Command, sync::Arc};
-use tokio::sync::Mutex;
 use uuid::Uuid;
 
 use crate::aws_credentials::AwsCredentialManager;
@@ -590,49 +589,6 @@ pub async fn generate_random_bytes_from_enclave(
         String::from_utf8(output.stdout).map_err(|e| EncryptError::KmsError(e.to_string()))?;
 
     parse_kmstool_plaintext(&output_str, "genrandom", Some(length))
-}
-
-pub struct CustomRng {
-    buffer: Mutex<Vec<u8>>,
-}
-
-impl CustomRng {
-    pub fn new() -> Self {
-        CustomRng {
-            buffer: Mutex::new(Vec::new()),
-        }
-    }
-
-    async fn fill_buffer(&self) {
-        let bytes: [u8; 1024] = generate_random();
-        let mut buffer = self.buffer.lock().await;
-        buffer.extend_from_slice(&bytes);
-    }
-
-    pub async fn fill_bytes(&self, dest: &mut [u8]) {
-        let mut buffer = self.buffer.lock().await;
-        while buffer.len() < dest.len() {
-            drop(buffer); // Release the lock before filling the buffer
-            self.fill_buffer().await;
-            buffer = self.buffer.lock().await;
-        }
-
-        let n = dest.len();
-        dest.copy_from_slice(&buffer[..n]);
-        *buffer = buffer[n..].to_vec();
-    }
-
-    pub async fn next_u32(&self) -> u32 {
-        let mut bytes = [0u8; 4];
-        self.fill_bytes(&mut bytes).await;
-        u32::from_le_bytes(bytes)
-    }
-
-    pub async fn next_u64(&self) -> u64 {
-        let mut bytes = [0u8; 8];
-        self.fill_bytes(&mut bytes).await;
-        u64::from_le_bytes(bytes)
-    }
 }
 
 #[cfg(test)]

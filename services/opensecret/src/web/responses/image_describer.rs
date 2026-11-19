@@ -2,7 +2,7 @@
 //!
 //! This module deliberately owns only provider-independent policy and wire-format
 //! construction. The handler supplies an [`ImageDescriptionAttemptExecutor`]
-//! that routes each candidate through the request's V1 or V2 policy, accounts for
+//! that routes each candidate through the request's cache policy, accounts for
 //! every provider response it consumes, and returns a bounded response body.
 
 use crate::model_config::model_config;
