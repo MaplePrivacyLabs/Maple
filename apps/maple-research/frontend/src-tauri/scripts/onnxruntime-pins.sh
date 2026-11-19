@@ -1,24 +1,19 @@
 #!/usr/bin/env bash
 
-onnxruntime_linux_x64_archive_sha256_for_version() {
-  case "$1" in
-    1.23.2)
-      printf '%s\n' "1fa4dcaef22f6f7d5cd81b28c2800414350c10116f5fdd46a2160082551c5f9b"
-      ;;
-    *)
-      echo "No pinned Linux x64 ONNX Runtime archive SHA-256 for version '$1'." >&2
-      return 1
-      ;;
-  esac
+# Linux and Windows take their library from Microsoft's official NuGet package.
+# The package pin guards the download; the per-platform library pins below are
+# what a build is held to.
+onnxruntime_nuget_package_url_for_version() {
+  printf '%s\n' "https://api.nuget.org/v3-flatcontainer/microsoft.ml.onnxruntime/$1/microsoft.ml.onnxruntime.$1.nupkg"
 }
 
-onnxruntime_linux_aarch64_archive_sha256_for_version() {
+onnxruntime_nuget_package_sha256_for_version() {
   case "$1" in
     1.23.2)
-      printf '%s\n' "7c63c73560ed76b1fac6cff8204ffe34fe180e70d6582b5332ec094810241e5c"
+      printf '%s\n' "25fe172f7fcdf34f2b5b02c8b997f6b88abc282956849d4af4335af23d0c4e4a"
       ;;
     *)
-      echo "No pinned Linux aarch64 ONNX Runtime archive SHA-256 for version '$1'." >&2
+      echo "No pinned ONNX Runtime NuGet package SHA-256 for version '$1'." >&2
       return 1
       ;;
   esac
@@ -67,18 +62,6 @@ onnxruntime_macos_universal2_dylib_sha256_for_version() {
       ;;
     *)
       echo "No pinned macOS universal2 ONNX Runtime dylib SHA-256 for version '$1'." >&2
-      return 1
-      ;;
-  esac
-}
-
-onnxruntime_windows_x64_archive_sha256_for_version() {
-  case "$1" in
-    1.23.2)
-      printf '%s\n' "0b38df9af21834e41e73d602d90db5cb06dbd1ca618948b8f1d66d607ac9f3cd"
-      ;;
-    *)
-      echo "No pinned Windows x64 ONNX Runtime archive SHA-256 for version '$1'." >&2
       return 1
       ;;
   esac

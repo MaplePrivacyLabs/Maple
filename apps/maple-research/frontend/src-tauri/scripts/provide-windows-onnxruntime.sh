@@ -4,14 +4,13 @@ set -euo pipefail
 ORT_VERSION="${ORT_VERSION:-1.23.2}"
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 source "${SCRIPT_DIR}/onnxruntime-pins.sh"
+source "${SCRIPT_DIR}/onnxruntime-nuget.sh"
 
 TAURI_DIR="$(cd "${SCRIPT_DIR}/.." && pwd)"
 ORT_ROOT="${TAURI_DIR}/onnxruntime-windows"
 ORT_DIR="${ORT_ROOT}/onnxruntime-win-x64-${ORT_VERSION}"
-ORT_ARCHIVE="onnxruntime-win-x64-${ORT_VERSION}.zip"
-ORT_URL="https://github.com/microsoft/onnxruntime/releases/download/v${ORT_VERSION}/${ORT_ARCHIVE}"
+ORT_NUGET_ENTRY="runtimes/win-x64/native/onnxruntime.dll"
 ORT_DLL="${ORT_DIR}/lib/onnxruntime.dll"
-ORT_ARCHIVE_SHA256="$(onnxruntime_windows_x64_archive_sha256_for_version "${ORT_VERSION}")"
 ORT_DLL_SHA256="$(onnxruntime_windows_x64_dll_sha256_for_version "${ORT_VERSION}")"
 
 sha256_file() {
@@ -61,16 +60,7 @@ to_native_path() {
 
 if [ ! -f "${ORT_DLL}" ]; then
   rm -rf "${ORT_ROOT}"
-  mkdir -p "${ORT_ROOT}"
-  archive_path="${ORT_ROOT}/${ORT_ARCHIVE}"
-
-  curl -fL --retry 5 --retry-delay 2 --retry-all-errors \
-    "${ORT_URL}" \
-    --output "${archive_path}"
-
-  verify_sha256 "ONNX Runtime archive" "${archive_path}" "${ORT_ARCHIVE_SHA256}"
-  unzip -q "${archive_path}" -d "${ORT_ROOT}"
-  rm -f "${archive_path}"
+  onnxruntime_nuget_extract_library "${ORT_VERSION}" "${ORT_NUGET_ENTRY}" "${ORT_DLL}"
 fi
 
 verify_sha256 "ONNX Runtime DLL" "${ORT_DLL}" "${ORT_DLL_SHA256}"
