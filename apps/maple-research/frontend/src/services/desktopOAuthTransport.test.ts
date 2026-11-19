@@ -6,13 +6,12 @@ import {
   claimTransportV2DesktopOAuthInitiation,
   clearDesktopOAuthTransport,
   clearDesktopOAuthTarget,
+  clearRetiredDesktopOAuthMarkers,
   isNativeOAuthRedirect,
-  markDesktopOAuthTransport,
+  isRetiredDesktopOAuthEntry,
   markTransportV2DesktopOAuth,
   mintTransportV2NativeAuthDeepLink,
-  readDesktopOAuthTransport,
-  readTransportV2DesktopOAuth,
-  shouldLoadLegacyDesktopOAuth
+  readTransportV2DesktopOAuth
 } from "./desktopOAuthTransport";
 
 class MemoryStorage implements Storage {
@@ -140,7 +139,6 @@ describe("desktop OAuth transport selection", () => {
   test("stores the exact provider and target pair in same-tab state", () => {
     markTransportV2DesktopOAuth(state, 1_000);
 
-    expect(readDesktopOAuthTransport()).toBe("v2");
     expect(isNativeOAuthRedirect()).toBe(true);
     expect(readTransportV2DesktopOAuth("github", 1_001)).toEqual({
       ...state,
@@ -327,44 +325,48 @@ describe("desktop OAuth transport selection", () => {
     expect(() => buildTransportV2NativeAuthDeepLink(`YQ.Yg.${"a".repeat(4092)}`)).toThrow();
   });
 
-  test("keeps unversioned desktop-auth on the pinned V1 bridge", () => {
-    expect(shouldLoadLegacyDesktopOAuth(location("/desktop-auth", "?provider=github"))).toBe(true);
+  test("treats unversioned desktop-auth as a retired client entry", () => {
+    expect(isRetiredDesktopOAuthEntry(location("/desktop-auth", "?provider=github"))).toBe(true);
+    expect(isRetiredDesktopOAuthEntry(location("/desktop-auth"))).toBe(true);
   });
 
-  test("never downgrades supplied or malformed transport selectors", () => {
-    expect(
-      shouldLoadLegacyDesktopOAuth(location("/desktop-auth", "?provider=github&transport=v2"))
-    ).toBe(false);
-    expect(
-      shouldLoadLegacyDesktopOAuth(location("/desktop-auth", "?provider=github&transport=invalid"))
-    ).toBe(false);
-    expect(
-      shouldLoadLegacyDesktopOAuth(location("/desktop-auth", "?provider=github&transport="))
-    ).toBe(false);
+  test("leaves supplied or malformed transport selectors to the application", () => {
+    for (const search of [
+      "?provider=github&transport=v2",
+      "?provider=github&transport=invalid",
+      "?provider=github&transport="
+    ]) {
+      expect(isRetiredDesktopOAuthEntry(location("/desktop-auth", search))).toBe(false);
+    }
   });
 
-  test("preserves callbacks from an already-running released-client flow", () => {
+  test("leaves every callback and other route to the application", () => {
+    // A marker left by a pre-V2 flow must not capture an ordinary web callback.
     localStorage.setItem("redirect-to-native", "true");
-    expect(shouldLoadLegacyDesktopOAuth(location("/auth/github/callback"))).toBe(true);
+    localStorage.setItem("maple_desktop_oauth_transport_v1", "v1");
+    for (const pathname of ["/auth/github/callback", "/auth/apple/callback", "/login", "/"]) {
+      expect(isRetiredDesktopOAuthEntry(location(pathname))).toBe(false);
+    }
   });
 
-  test("never loads V1 for marked V2 or malformed callbacks", () => {
-    markDesktopOAuthTransport("v2");
-    expect(shouldLoadLegacyDesktopOAuth(location("/auth/google/callback"))).toBe(false);
+  test("removes markers left by a pre-V2 flow without touching a current one", () => {
+    localStorage.setItem("redirect-to-native", "true");
+    localStorage.setItem("maple_desktop_oauth_transport_v1", "v1");
+    markTransportV2DesktopOAuth(state, 1_000);
 
-    localStorage.setItem("maple_desktop_oauth_transport_v1", "invalid");
-    expect(shouldLoadLegacyDesktopOAuth(location("/auth/google/callback"))).toBe(false);
-  });
+    clearRetiredDesktopOAuthMarkers();
 
-  test("does not load the legacy bridge for ordinary web callbacks", () => {
-    expect(shouldLoadLegacyDesktopOAuth(location("/auth/apple/callback"))).toBe(false);
+    expect(localStorage.getItem("redirect-to-native")).toBeNull();
+    expect(localStorage.getItem("maple_desktop_oauth_transport_v1")).toBeNull();
+    expect(isNativeOAuthRedirect()).toBe(true);
+    expect(readTransportV2DesktopOAuth("github", 1_001)).toEqual({ ...state, startedAt: 1_000 });
   });
 
   test("clears transport and pending target state after handoff", () => {
     markTransportV2DesktopOAuth(state, 1_000);
     clearDesktopOAuthTransport();
 
-    expect(readDesktopOAuthTransport()).toBeNull();
+    expect(isNativeOAuthRedirect()).toBe(false);
     expect(readTransportV2DesktopOAuth("github", 1_001)).toBeNull();
     expect(localStorage.getItem("redirect-to-native")).toBeNull();
   });
