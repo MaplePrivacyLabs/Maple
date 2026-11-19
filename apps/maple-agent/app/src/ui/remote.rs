@@ -128,7 +128,8 @@ impl Tone {
     fn color(self) -> u32 {
         match self {
             Self::Muted => theme::text_muted(),
-            Self::Accent => theme::accent(),
+            // Badge and note text, so the text role of the accent.
+            Self::Accent => theme::accent_text(),
             Self::Success => theme::status_success(),
             Self::Warning => theme::status_warning(),
             Self::Error => theme::status_error(),

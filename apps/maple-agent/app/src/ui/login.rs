@@ -57,7 +57,17 @@ pub struct LoginScreen {
     deletion_notice: Option<UiText>,
     busy: bool,
     messages: MessageCache,
+    /// Records the painted fill and label color of the form's submit.
+    #[cfg(test)]
+    submit_paint: Option<PaintProbe>,
 }
+
+/// Where a test reads a control's painted background and text color.
+#[cfg(test)]
+type PaintProbe = (
+    std::rc::Rc<std::cell::RefCell<gpui::Fill>>,
+    std::rc::Rc<std::cell::Cell<Option<gpui::Hsla>>>,
+);
 
 impl LoginScreen {
     pub fn new(backend: Arc<AgentBackend>, cx: &mut Context<Self>) -> Self {
@@ -110,6 +120,8 @@ impl LoginScreen {
             deletion_notice: None,
             busy: false,
             messages: Default::default(),
+            #[cfg(test)]
+            submit_paint: None,
         };
         this.subscriptions.push(cx.subscribe(
             &this.password_input,
@@ -392,6 +404,19 @@ impl Drop for LoginScreen {
 
 impl EventEmitter<LoginSucceeded> for LoginScreen {}
 
+impl LoginScreen {
+    fn probe(
+        &self,
+        button: crate::ui::motion::HoverBackground,
+    ) -> crate::ui::motion::HoverBackground {
+        #[cfg(test)]
+        if let Some((fill, text)) = &self.submit_paint {
+            return button.observe_paint(fill.clone(), text.clone());
+        }
+        button
+    }
+}
+
 impl Render for LoginScreen {
     fn render(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let busy = self.busy;
@@ -407,7 +432,7 @@ impl Render for LoginScreen {
             .border_color(gpui::rgb(theme::border()))
             .when(
                 busy && !matches!(self.oauth, OAuthFlow::Hosted { .. }),
-                |container| container.opacity(0.7),
+                |container| container.opacity(theme::BUSY_FORM_OPACITY),
             )
             .tab_group()
             .child(
@@ -454,7 +479,7 @@ impl Render for LoginScreen {
                         &tr("flows-login-password"),
                         self.password_input.clone(),
                     ))
-                    .child(submit_button(busy, cx))
+                    .child(self.probe(submit_button(busy, cx)))
                     .child(
                         widgets::ghost_button("guest-cancel")
                             .debug_selector(|| "guest-cancel".to_string())
@@ -474,7 +499,7 @@ impl Render for LoginScreen {
                         &tr("flows-login-password"),
                         self.password_input.clone(),
                     ))
-                    .child(submit_button(busy, cx))
+                    .child(self.probe(submit_button(busy, cx)))
                     .child(
                         div()
                             .flex()
@@ -546,10 +571,10 @@ impl Render for LoginScreen {
                     )
                     .child(field("", self.callback_input.clone()))
                     .child(
-                        widgets::primary_button("oauth-confirm")
+                        self.probe(widgets::primary_button("oauth-confirm"))
                             .debug_selector(|| "oauth-confirm".to_string())
                             .w_full()
-                            .when(busy, |el| el.bg(gpui::rgb(theme::bg_sidebar_pill())))
+                            .when(busy, busy_submit)
                             .when(!busy, |el| {
                                 el.on_click(cx.listener(|this, _event, _window, cx| {
                                     let redirected = this.callback_input.read(cx).text();
@@ -628,9 +653,10 @@ impl Render for LoginScreen {
 
 fn submit_button(busy: bool, cx: &mut Context<LoginScreen>) -> crate::ui::motion::HoverBackground {
     widgets::primary_button("login-submit")
+        .debug_selector(|| "login-submit".to_string())
         .w_full()
         .mt_1()
-        .when(busy, |el| el.bg(gpui::rgb(theme::bg_sidebar_pill())))
+        .when(busy, busy_submit)
         .when(!busy, |el| {
             el.on_click(cx.listener(LoginScreen::submit_clicked))
         })
@@ -639,6 +665,19 @@ fn submit_button(busy: bool, cx: &mut Context<LoginScreen>) -> crate::ui::motion
         } else {
             tr("flows-login-sign-in").to_string()
         }))
+}
+
+/// The busy look of a sign-in form's submit (password, guest and OAuth
+/// paste): a neutral pill that keeps its fill under the pointer and while
+/// pressed, with a label that reads at 4.5:1 inside the faded form. Replaces
+/// the accent fill and its `on_accent` label, which is dark in some themes.
+fn busy_submit(button: crate::ui::motion::HoverBackground) -> crate::ui::motion::HoverBackground {
+    let fill = gpui::rgb(theme::busy_button_fill());
+    button
+        .bg(fill)
+        .highlighted(false)
+        .active(move |style| style.bg(fill))
+        .text_color(gpui::rgb(theme::busy_button_text()))
 }
 
 fn deletion_status_text(status: crate::backend::AccountDeletionStatus) -> UiText {
@@ -786,6 +825,98 @@ mod tests {
         fn render(&mut self, _window: &mut Window, _cx: &mut Context<Self>) -> impl IntoElement {
             div().size_full().child(self.screen.clone())
         }
+    }
+
+    /// While a sign-in runs, the password, guest and OAuth-paste forms draw
+    /// their submit as the shared neutral busy pill with a body-text label,
+    /// at rest, under the pointer and while pressed. With the accent's
+    /// foreground (dark in Dracula and Neon Dusk) it was unreadable.
+    #[gpui::test]
+    fn busy_submit_is_a_readable_neutral_pill_in_every_form(cx: &mut TestAppContext) {
+        use gpui::{Modifiers, MouseButton};
+        let _theme = crate::ui::theme::TestThemeGuard::acquire();
+        cx.executor().allow_parking();
+        let backend =
+            Arc::new(AgentBackend::for_test("http://127.0.0.1:9".into(), String::new()).unwrap());
+        let fill = Rc::new(RefCell::new(gpui::Fill::default()));
+        let label = Rc::new(std::cell::Cell::new(None));
+        let screen = cx.new(|cx| {
+            crate::desktop::register_key_bindings(cx);
+            let mut screen = LoginScreen::new(backend, cx);
+            screen.submit_paint = Some((fill.clone(), label.clone()));
+            screen
+        });
+        let (_host, cx) = cx.add_window_view(|_window, _cx| LoginHost {
+            screen: screen.clone(),
+        });
+        cx.simulate_resize(size(px(900.), px(700.)));
+        for preference in [
+            theme::Preference::Dracula,
+            theme::Preference::NeonDusk,
+            theme::Preference::CherryBlossom,
+        ] {
+            cx.update(|_window, app| theme::apply_preference(preference, app));
+            for (form, selector) in [
+                ("password", "login-submit"),
+                ("guest", "login-submit"),
+                ("oauth paste", "oauth-confirm"),
+            ] {
+                screen.update(cx, |screen, cx| {
+                    screen.busy = false;
+                    screen.set_guest(form == "guest", cx);
+                    screen.oauth = if form == "oauth paste" {
+                        OAuthFlow::Pending {
+                            provider: OAuthProvider::Google,
+                            auth_url: "https://example.test/authorize".to_string(),
+                        }
+                    } else {
+                        OAuthFlow::Idle
+                    };
+                    screen.busy = true;
+                    cx.notify();
+                });
+                cx.run_until_parked();
+                let expected_fill = gpui::Fill::from(gpui::rgb(theme::busy_button_fill()));
+                let expected_label: Option<gpui::Hsla> =
+                    Some(gpui::rgb(theme::busy_button_text()).into());
+                let bounds = cx
+                    .debug_bounds(selector)
+                    .unwrap_or_else(|| panic!("{form}: busy submit renders"));
+                cx.simulate_mouse_move(bounds.center(), None, Modifiers::default());
+                assert_eq!(
+                    *fill.borrow(),
+                    expected_fill,
+                    "{preference:?} {form}: hovered"
+                );
+                assert_eq!(label.get(), expected_label, "{preference:?} {form}: label");
+                cx.simulate_mouse_down(bounds.center(), MouseButton::Left, Modifiers::default());
+                assert_eq!(
+                    *fill.borrow(),
+                    expected_fill,
+                    "{preference:?} {form}: pressed"
+                );
+                cx.simulate_mouse_up(bounds.center(), MouseButton::Left, Modifiers::default());
+                cx.simulate_mouse_move(gpui::point(px(5.), px(5.)), None, Modifiers::default());
+                assert_eq!(
+                    *fill.borrow(),
+                    expected_fill,
+                    "{preference:?} {form}: at rest"
+                );
+                screen.update(cx, |screen, _| assert!(screen.busy, "{form}: still busy"));
+            }
+        }
+        // The probe follows the real button: an idle form paints the accent.
+        screen.update(cx, |screen, cx| {
+            screen.busy = false;
+            screen.set_guest(false, cx);
+            screen.oauth = OAuthFlow::Idle;
+            cx.notify();
+        });
+        cx.run_until_parked();
+        assert_eq!(
+            *fill.borrow(),
+            gpui::Fill::from(gpui::rgb(theme::accent_fill()))
+        );
     }
 
     #[gpui::test]

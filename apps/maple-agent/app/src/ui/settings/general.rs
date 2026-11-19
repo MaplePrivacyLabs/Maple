@@ -199,20 +199,11 @@ impl SettingsScreen {
     }
 
     fn theme_selector_row(&self, cx: &mut Context<Self>) -> Div {
-        // Tab stops after the sidebar filter (0); one slot per pill so Tab
-        // walks System → Dark → Light in order.
-        const THEME_TAB_INDEX: isize = 1;
-        let options = [
-            (theme::Preference::System, "system"),
-            (theme::Preference::Dark, "dark"),
-            (theme::Preference::Light, "light"),
-        ];
+        let count = theme::Preference::ALL.len();
         div()
             .flex()
-            .flex_wrap()
-            .items_center()
-            .justify_between()
-            .gap_4()
+            .flex_col()
+            .gap_3()
             .child(setting_copy(
                 tr("settings-appearance"),
                 tr("settings-appearance-description"),
@@ -220,60 +211,46 @@ impl SettingsScreen {
             .child(
                 div()
                     .id("setting-value-appearance")
-                    .role(gpui::Role::TabList)
+                    .role(gpui::Role::RadioGroup)
                     .aria_label(tr("settings-appearance"))
                     .flex()
-                    .flex_none()
+                    .flex_wrap()
                     .items_center()
-                    .gap_1()
-                    .p_1()
-                    .rounded_full()
-                    .bg(gpui::rgb(theme::bg_input()))
-                    .border_1()
-                    .border_color(gpui::rgb(theme::border_subtle()))
-                    .children(options.into_iter().zip(THEME_TAB_INDEX..).map(
-                        |((preference, slug), tab_index)| {
+                    .gap_2()
+                    .children(theme::Preference::ALL.into_iter().enumerate().map(
+                        |(position, preference)| {
                             let active = self.theme == preference;
-                            let swatch = match preference {
-                                theme::Preference::System => div()
-                                    .size(px(12.))
-                                    .rounded_full()
-                                    .border_1()
-                                    .border_color(gpui::rgb(theme::border()))
-                                    .overflow_hidden()
-                                    .flex()
-                                    .child(div().w_1_2().h_full().bg(gpui::rgb(0x18181c)))
-                                    .child(div().w_1_2().h_full().bg(gpui::rgb(0xffffff))),
-                                theme::Preference::Dark => div()
-                                    .size(px(12.))
-                                    .rounded_full()
-                                    .border_1()
-                                    .border_color(gpui::rgb(theme::border()))
-                                    .bg(gpui::rgb(0x18181c)),
-                                theme::Preference::Light => div()
-                                    .size(px(12.))
-                                    .rounded_full()
-                                    .border_1()
-                                    .border_color(gpui::rgb(theme::border()))
-                                    .bg(gpui::rgb(0xffffff)),
-                            };
-                            let pill = div()
+                            let slug = preference.as_str();
+                            let choice = div()
                                 .id(gpui::SharedString::from(format!(
                                     "setting-appearance-{slug}"
                                 )))
                                 .debug_selector(move || format!("setting-appearance-{slug}"))
-                                .role(gpui::Role::Tab)
+                                .role(gpui::Role::RadioButton)
                                 .aria_label(theme_label(preference))
-                                .aria_selected(active)
-                                .tab_index(tab_index)
+                                .aria_toggled(if active {
+                                    gpui::Toggled::True
+                                } else {
+                                    gpui::Toggled::False
+                                })
+                                .aria_position_in_set(position + 1)
+                                .aria_size_of_set(count)
+                                .track_focus(&self.theme_focus[position])
                                 .flex()
                                 .items_center()
-                                .gap_1p5()
-                                .px_3()
+                                .gap_2()
+                                .pl_1p5()
+                                .pr_3()
                                 .py_1()
                                 .rounded_full()
+                                .border_1()
                                 .text_xs()
                                 .font_weight(gpui::FontWeight::MEDIUM)
+                                .border_color(gpui::rgb(if active {
+                                    theme::bg_default_button()
+                                } else {
+                                    theme::border_subtle()
+                                }))
                                 .bg(gpui::rgb(if active {
                                     theme::bg_default_button()
                                 } else {
@@ -292,8 +269,8 @@ impl SettingsScreen {
                                     })
                                 })
                                 .when(active, |el| el.hover(|style| style.cursor_pointer()))
-                                // The selected pill keeps its fill under the
-                                // pointer.
+                                // The selected choice keeps its fill under
+                                // the pointer.
                                 .hover_bg(gpui::rgb(if active {
                                     theme::bg_default_button()
                                 } else {
@@ -304,18 +281,26 @@ impl SettingsScreen {
                                     this.choose_theme(preference, cx);
                                 }))
                                 .on_key_down(cx.listener(
-                                    move |this, event: &gpui::KeyDownEvent, _, cx| {
+                                    move |this, event: &gpui::KeyDownEvent, window, cx| {
                                         if activates(event) {
                                             cx.stop_propagation();
                                             this.choose_theme(preference, cx);
+                                        } else if let Some(target) =
+                                            theme_arrow_target(position, event)
+                                        {
+                                            // Radio convention: arrows move
+                                            // focus and select, wrapping.
+                                            cx.stop_propagation();
+                                            this.choose_theme(theme::Preference::ALL[target], cx);
+                                            window.focus(&this.theme_focus[target], cx);
                                         }
                                     },
                                 ))
-                                .child(swatch)
+                                .child(theme_swatch(preference))
                                 .child(theme_label(preference));
                             self.application_target(
                                 || SettingsTarget::Appearance(AppearanceTarget::Theme(preference)),
-                                pill,
+                                choice,
                             )
                         },
                     )),
@@ -424,11 +409,79 @@ fn localized_toggle_row(
             on,
         ))
 }
+/// Tab stops after the sidebar filter (0); one slot per theme choice so Tab
+/// still walks them in the order shown.
+const THEME_TAB_INDEX: isize = 1;
+
+/// Focus handles for the theme choices, created once with the screen.
+pub(super) fn theme_focus_handles(cx: &mut Context<SettingsScreen>) -> Vec<gpui::FocusHandle> {
+    (THEME_TAB_INDEX..)
+        .take(theme::Preference::ALL.len())
+        .map(|index| cx.focus_handle().tab_index(index).tab_stop(true))
+        .collect()
+}
+
+/// The choice an unmodified arrow, Home or End key moves to from
+/// `position`: Left/Up go back and Right/Down forward, wrapping at the
+/// ends, as in a radio group. Other keys return `None`.
+fn theme_arrow_target(position: usize, event: &gpui::KeyDownEvent) -> Option<usize> {
+    if event.keystroke.modifiers.modified() {
+        return None;
+    }
+    let count = theme::Preference::ALL.len();
+    match event.keystroke.key.as_str() {
+        "left" | "up" => Some((position + count - 1) % count),
+        "right" | "down" => Some((position + 1) % count),
+        "home" => Some(0),
+        "end" => Some(count - 1),
+        _ => None,
+    }
+}
+
 pub(super) fn theme_label(value: theme::Preference) -> gpui::SharedString {
     match value {
         theme::Preference::System => tr("settings-theme-label-system"),
-        theme::Preference::Dark => tr("settings-theme-label-dark"),
         theme::Preference::Light => tr("settings-theme-label-light"),
+        theme::Preference::Dark => tr("settings-theme-label-dark"),
+        theme::Preference::Dracula => tr("settings-theme-label-dracula"),
+        theme::Preference::Americana => tr("settings-theme-label-americana"),
+        theme::Preference::NeonDusk => tr("settings-theme-label-neon-dusk"),
+        theme::Preference::CherryBlossom => tr("settings-theme-label-cherry-blossom"),
+    }
+}
+
+/// A small disc previewing the choice: its canvas with the sidebar and
+/// accent as a split lower half. Standard Maple splits Maple Dark and Maple
+/// Light down the middle, as it follows the OS between them.
+fn theme_swatch(preference: theme::Preference) -> Div {
+    let disc = div()
+        .flex_none()
+        .size(px(16.))
+        .rounded_full()
+        .border_1()
+        .border_color(gpui::rgb(theme::border()))
+        .overflow_hidden()
+        .flex();
+    let half = |[canvas, sidebar, accent]: [u32; 3]| {
+        div()
+            .flex_1()
+            .h_full()
+            .flex()
+            .flex_col()
+            .child(div().flex_1().bg(gpui::rgb(canvas)))
+            .child(
+                div()
+                    .flex_1()
+                    .flex()
+                    .child(div().flex_1().bg(gpui::rgb(sidebar)))
+                    .child(div().flex_1().bg(gpui::rgb(accent))),
+            )
+    };
+    match preference {
+        theme::Preference::System => disc
+            .child(half(theme::Preference::Dark.swatch()))
+            .child(half(theme::Preference::Light.swatch())),
+        _ => disc.child(half(preference.swatch())),
     }
 }
 pub(super) fn font_label(value: crate::ui::typography::ChatFontFamily) -> gpui::SharedString {

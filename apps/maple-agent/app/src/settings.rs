@@ -141,7 +141,9 @@ pub struct AppSettings {
     /// UI language override; None follows the operating system.
     #[serde(default, deserialize_with = "view_preference_or_default")]
     pub locale: Option<String>,
-    /// Color theme: "system", "dark", or "light".
+    /// Color theme ID, parsed by `ui::theme::Preference`: "system", "light",
+    /// "dark", "dracula", "americana", "neon-dusk" or "cherry-blossom".
+    /// An unknown ID draws as "system" and is kept until the user picks again.
     #[serde(default = "default_theme")]
     pub theme: String,
     /// Chat reading face: "system", "manrope", "geist", or "serif".

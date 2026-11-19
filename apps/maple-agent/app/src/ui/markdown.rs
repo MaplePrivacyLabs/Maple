@@ -1077,24 +1077,9 @@ mod tests {
         assert_ne!(highlight.font_weight, Some(gpui::FontWeight::BOLD));
     }
 
-    /// Serializes tests that flip the process-global theme, and pairs with
-    /// `ThemeRestore` so the flip never leaks into a test that reads the
-    /// palette while this one runs or after it panics.
-    static THEME_LOCK: parking_lot::Mutex<()> = parking_lot::Mutex::new(());
-
-    /// Restores the theme when the test ends, panics included.
-    struct ThemeRestore;
-    impl Drop for ThemeRestore {
-        fn drop(&mut self) {
-            theme::set_preference(theme::Preference::System);
-            theme::resolve(gpui::WindowAppearance::Dark);
-        }
-    }
-
     #[test]
     fn code_span_color_follows_theme_switch() {
-        let _guard = THEME_LOCK.lock();
-        let _restore = ThemeRestore;
+        let _theme = theme::TestThemeGuard::acquire();
         // A document parsed under one palette must re-resolve its inline
         // colors under the other: parse caches blocks across theme flips.
         let document = parse("token at `~/.mutiny/token` end");

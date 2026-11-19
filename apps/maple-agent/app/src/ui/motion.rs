@@ -1133,6 +1133,8 @@ fn hover_background(
         observed: None,
         #[cfg(test)]
         observed_opacity: None,
+        #[cfg(test)]
+        observed_text: None,
     }
 }
 
@@ -1147,6 +1149,8 @@ pub struct HoverBackground {
     observed: Option<std::rc::Rc<RefCell<gpui::Fill>>>,
     #[cfg(test)]
     observed_opacity: Option<std::rc::Rc<std::cell::Cell<f32>>>,
+    #[cfg(test)]
+    observed_text: Option<std::rc::Rc<std::cell::Cell<Option<gpui::Hsla>>>>,
 }
 
 impl HoverBackground {
@@ -1175,6 +1179,19 @@ impl HoverBackground {
     /// moved: arrow keys inside a menu must not trail behind.
     pub fn instant(mut self, instant: bool) -> Self {
         self.instant = instant;
+        self
+    }
+
+    /// Record the background and text color this control paints, for
+    /// tests that check a screen's real rendering.
+    #[cfg(test)]
+    pub(crate) fn observe_paint(
+        mut self,
+        background: std::rc::Rc<RefCell<gpui::Fill>>,
+        text: std::rc::Rc<std::cell::Cell<Option<gpui::Hsla>>>,
+    ) -> Self {
+        self.observed = Some(background);
+        self.observed_text = Some(text);
         self
     }
 }
@@ -1322,6 +1339,17 @@ impl Element for HoverBackground {
                 .compute_style(id, hitbox.as_ref(), window, cx)
                 .background
                 .unwrap_or_default();
+        }
+        #[cfg(test)]
+        if let Some(observed) = &self.observed_text {
+            use gpui::InteractiveElement;
+            observed.set(
+                self.element
+                    .interactivity()
+                    .compute_style(id, hitbox.as_ref(), window, cx)
+                    .text
+                    .color,
+            );
         }
         #[cfg(test)]
         if let Some(observed) = &self.observed_opacity {
