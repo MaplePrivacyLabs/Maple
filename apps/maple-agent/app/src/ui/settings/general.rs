@@ -450,39 +450,25 @@ pub(super) fn theme_label(value: theme::Preference) -> gpui::SharedString {
     }
 }
 
-/// A small disc previewing the choice: its canvas with the sidebar and
-/// accent as a split lower half. Standard Maple splits Maple Dark and Maple
-/// Light down the middle, as it follows the OS between them.
+/// Two solid dots previewing the choice ([`theme::Preference::swatch`]),
+/// each rounded on its own with a hairline so a dot close to the surface
+/// behind it still reads.
 fn theme_swatch(preference: theme::Preference) -> Div {
-    let disc = div()
-        .flex_none()
-        .size(px(16.))
-        .rounded_full()
-        .border_1()
-        .border_color(gpui::rgb(theme::border()))
-        .overflow_hidden()
-        .flex();
-    let half = |[canvas, sidebar, accent]: [u32; 3]| {
+    let dot = |color: u32| {
         div()
-            .flex_1()
-            .h_full()
-            .flex()
-            .flex_col()
-            .child(div().flex_1().bg(gpui::rgb(canvas)))
-            .child(
-                div()
-                    .flex_1()
-                    .flex()
-                    .child(div().flex_1().bg(gpui::rgb(sidebar)))
-                    .child(div().flex_1().bg(gpui::rgb(accent))),
-            )
+            .flex_none()
+            .size(px(10.))
+            .rounded_full()
+            .bg(gpui::rgb(color))
+            .border_1()
+            .border_color(gpui::rgb(theme::border()))
     };
-    match preference {
-        theme::Preference::System => disc
-            .child(half(theme::Preference::Dark.swatch()))
-            .child(half(theme::Preference::Light.swatch())),
-        _ => disc.child(half(preference.swatch())),
-    }
+    div()
+        .flex_none()
+        .flex()
+        .items_center()
+        .gap(px(3.))
+        .children(preference.swatch().map(dot))
 }
 pub(super) fn font_label(value: crate::ui::typography::ChatFontFamily) -> gpui::SharedString {
     match value {

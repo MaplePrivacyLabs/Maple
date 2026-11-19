@@ -79,12 +79,14 @@ impl Preference {
         }
     }
 
-    /// What a Settings swatch previews: the canvas, sidebar and accent of
-    /// the palette this choice draws with. Standard Maple previews Maple
-    /// Dark; its swatch pairs it with Maple Light.
-    pub fn swatch(self) -> [u32; 3] {
-        let palette = self.fixed_palette().unwrap_or(PaletteId::Dark).palette();
-        [palette.bg_app, palette.bg_sidebar, palette.accent]
+    /// The two dots a Settings choice previews: the canvas and accent of
+    /// the palette it draws with, or for Standard Maple, which follows the
+    /// OS, the Maple Dark and Maple Light canvases.
+    pub fn swatch(self) -> [u32; 2] {
+        match self.fixed_palette() {
+            Some(palette) => [palette.palette().bg_app, palette.palette().accent],
+            None => [DARK.bg_app, LIGHT.bg_app],
+        }
     }
 }
 
