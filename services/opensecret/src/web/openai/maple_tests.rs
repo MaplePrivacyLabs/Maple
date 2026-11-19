@@ -142,7 +142,7 @@ fn uncensored_kimi_route_sends_its_own_model_name_and_bills_the_maple_family() {
     let user = Uuid::from_u128(17);
     let model = crate::model_config::KIMI_K3_1_PRO_UNCENSORED_MODEL_ID;
     assert_eq!(model, "kimi-k3-1-pro-uncensored");
-    let cache = CompletionCachePolicy::BoundV2(derive_provider_cache_namespaces(
+    let cache = CompletionCachePolicy(derive_provider_cache_namespaces(
         &CacheNamespaceRoot::from_bytes([0x42; 32]),
         user,
     ));
@@ -201,21 +201,14 @@ fn uncensored_kimi_route_sends_its_own_model_name_and_bills_the_maple_family() {
         .unwrap()
         .clone();
         body.insert("model".to_owned(), json!(route.provider_model_id));
-        apply_provider_managed_request_fields(
-            &mut body,
-            route.provider.family_name(),
-            user,
-            &cache,
-        );
+        apply_provider_managed_request_fields(&mut body, route.provider.family_name(), &cache);
         ensure_stream_usage(&mut body);
         let mut body = Value::Object(body);
         assert!(route.provider.is_maple());
         crate::maple_inference::sanitize_completion_request(&mut body);
 
         assert_eq!(body["model"], "kimi-k3-1-pro-uncensored");
-        let CompletionCachePolicy::BoundV2(namespaces) = &cache else {
-            unreachable!();
-        };
+        let CompletionCachePolicy(namespaces) = &cache;
         assert_eq!(
             body["cache_salt"],
             json!(namespaces.maple_user_cache_secret())
