@@ -81,10 +81,12 @@ Each captured history contains 145 entries. All 290 captured PCR0 signatures ver
 against the public key pinned by both SDKs. PCR1/PCR2 are present in the JSON
 but are not covered by those signatures; this import preserves that format.
 
-Keep `OpenSecretCloud/opensecret` at its current name, public, writable, and
-unarchived. Installed clients still request its raw history URLs. Its current
-default branch is a compatibility mirror; backend implementation lives here.
-Historical source, issues, and branches do not create a second active backend.
+`OpenSecretCloud/opensecret` stays at its current name, public and unarchived.
+Its signed-PCR copy served clients that spoke Transport V1 and was retired with
+it in November 2026; it receives no new approvals. See
+[the signed PCR procedure](../services/opensecret/docs/pcr-compatibility.md).
+Backend implementation lives here. Historical source, issues, and branches do
+not create a second active backend.
 
 Current TypeScript and Rust SDK defaults read the canonical histories under
 `MaplePrivacyLabs/Maple/master/services/opensecret/`. The SDK package names are
