@@ -217,9 +217,6 @@ tokens! {
     accent_ink: 0xff9771, 0xd04926;
 
     status_running: 0xbabccb, 0xa3a3a3;
-    /// The band that shines across a running task's title: the brightest
-    /// ink each theme has, so a running row reads at a glance on any fill.
-    activity_shine: 0xffffff, 0x000000;
     status_success: 0x8fa35a, 0x7b8f4a;
     status_error: 0xe07052, 0xd05e41;
     /// Wavy underline under a misspelled word in the composer.
