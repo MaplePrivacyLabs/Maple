@@ -198,7 +198,7 @@ sidebar, settings navigation, popups, and hover fills on Pebble; coral only
 on the send button, the composer border, focus rings, the new-task row,
 selected menu items, and primary buttons. Status in the transcript stays
 neutral with a coral glyph at most: the Maple mark on a turn's line is
-Pebble (`status_running`), its blocks pulse one at a time around the M's outline while
+Pebble (`status_running`), its blocks pulse one at a time along the M's stroke while
 Maple works, and it rests in coral (`accent_ink`) only while Maple waits
 for the user.
 
