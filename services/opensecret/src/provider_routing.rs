@@ -2513,28 +2513,28 @@ mod tests {
     }
 
     #[test]
-    fn uncensored_kimi_routes_only_to_ready_i04_and_never_to_another_route() {
-        let i04 = ProviderId::Maple(MapleInstanceId::I04);
+    fn uncensored_kimi_routes_only_to_ready_i03_and_never_to_another_route() {
+        let i03 = ProviderId::Maple(MapleInstanceId::I03);
         let model = KIMI_K3_1_PRO_UNCENSORED_MODEL_ID;
-        let i04_route = RouteKey {
-            provider: i04,
+        let i03_route = RouteKey {
+            provider: i03,
             provider_model_id: model.to_owned(),
         };
-        // i04 with its approved release withheld: the client builds no direct
+        // i03 with its approved release withheld: the client builds no direct
         // target or transport for it, so it is never ready, while every other
         // provider is. Readiness comes from the real target selection.
         let unconfigured = proxy_router_with_maple().with_maple_readiness(
             crate::provider_client::MapleReadiness::for_test_endpoints(
-                crate::maple_inference::endpoints_with_unpinned_i04(),
+                crate::maple_inference::endpoints_with_unpinned_i03(),
             ),
         );
         for instance in MapleInstanceId::ALL {
             assert_eq!(
                 unconfigured.get_maple_proxy(instance).is_some(),
-                instance != MapleInstanceId::I04
+                instance != MapleInstanceId::I03
             );
         }
-        // The compiled guests as pinned: i04 is targeted like the others.
+        // The compiled guests as pinned: i03 is targeted like the others.
         let ready = proxy_router_with_maple().with_maple_readiness(
             crate::provider_client::MapleReadiness::for_test_endpoints(
                 crate::maple_inference::endpoints(),
@@ -2603,27 +2603,27 @@ mod tests {
                     assert_eq!(shared.public_model_id, KIMI_K3_1_PRO_MODEL_ID);
                 }
             }
-            assert!(router.shadow_health_snapshot(&i04_route).is_some());
+            assert!(router.shadow_health_snapshot(&i03_route).is_some());
 
             let selected = router
                 .select_active_completion_route(&ready, &uncensored)
                 .unwrap();
-            assert_eq!(selected.provider, i04);
-            assert_eq!(selected.proxy.provider_name, "maple-i04");
-            assert_eq!(selected.proxy.base_url, "https://i04.tfinf.maple.ai");
+            assert_eq!(selected.provider, i03);
+            assert_eq!(selected.proxy.provider_name, "maple-i03");
+            assert_eq!(selected.proxy.base_url, "https://i03.tfinf.maple.ai");
             assert_eq!(selected.public_model_id, model);
             assert_eq!(selected.provider_model_id, model);
             assert_eq!(selected.response_model_id, model);
             assert_eq!(selected.bucket, None);
             assert_eq!(selected.selection_source, RouteSelectionSource::StaticSplit);
-            assert_eq!(selected.identity().route_key(), i04_route);
+            assert_eq!(selected.identity().route_key(), i03_route);
             assert_eq!(
                 router.model_availability(&ready, &[model])[model],
-                ModelAvailability::Available(ConfiguredProviders::none().with_provider(i04))
+                ModelAvailability::Available(ConfiguredProviders::none().with_provider(i03))
             );
             let plan = router.shadow_completion_plan(&ready, &uncensored).unwrap();
             assert_eq!(plan.eligible_routes.len(), 1);
-            assert_eq!(plan.eligible_routes[0].provider, i04);
+            assert_eq!(plan.eligible_routes[0].provider, i03);
             let shared = router
                 .select_active_completion_route(&ready, &stock)
                 .unwrap();
@@ -2649,13 +2649,13 @@ mod tests {
                     .select_active_completion_route(&ready, &uncensored)
                     .unwrap()
                     .provider,
-                i04
+                i03
             );
 
-            // A saturated or failing i04 is a capacity result for this model,
+            // A saturated or failing i03 is a capacity result for this model,
             // never a move to stock Kimi or to another guest.
             let other_router = ProviderRouter::default();
-            open_route_with_capacity_failure(&other_router, i04, model, model, 503, 60);
+            open_route_with_capacity_failure(&other_router, i03, model, model, 503, 60);
             assert!(matches!(
                 other_router.select_active_completion_route(&ready, &uncensored),
                 Err(ProviderRoutingError::CapacityUnavailable { model: unavailable, .. })
@@ -2677,7 +2677,7 @@ mod tests {
                     .select_active_completion_route_excluding(
                         &ready,
                         &uncensored,
-                        &HashSet::from([i04_route.clone()])
+                        &HashSet::from([i03_route.clone()])
                     )
                     .unwrap_err(),
                 ProviderRoutingError::NoEligibleRoute(model.to_owned())

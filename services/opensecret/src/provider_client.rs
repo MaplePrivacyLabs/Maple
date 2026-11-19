@@ -1576,28 +1576,28 @@ mod tests {
             [
                 "i01.tfinf.maple.ai",
                 "i02.tfinf.maple.ai",
-                "i04.tfinf.maple.ai"
+                "i03.tfinf.maple.ai"
             ]
         );
-        // i04's target carries its own release, which is on no other guest's.
-        let i04 = "MaplePrivacyLabs/inference-penclaw";
-        let i04_digest = "d1fb4b4c8dcc2fa229cc601b21677fcc6c47b3562308e5ec9fe13270f50f0933";
-        assert!(policies[2].contains(i04) && policies[2].contains(i04_digest));
+        // i03's target carries its own release, which is on no other guest's.
+        let i03 = "MaplePrivacyLabs/inference-penclaw";
+        let i03_digest = "d1fb4b4c8dcc2fa229cc601b21677fcc6c47b3562308e5ec9fe13270f50f0933";
+        assert!(policies[2].contains(i03) && policies[2].contains(i03_digest));
         for other in &policies[..2] {
-            assert!(!other.contains(i04) && !other.contains(i04_digest));
+            assert!(!other.contains(i03) && !other.contains(i03_digest));
             assert_ne!(other, &policies[2]);
         }
     }
 
     #[tokio::test]
     async fn guest_without_an_approved_release_has_no_target_transport_or_readiness() {
-        let unpinned = &crate::maple_inference::UNPINNED_I04_TEST_ENDPOINT;
+        let unpinned = &crate::maple_inference::UNPINNED_I03_TEST_ENDPOINT;
         assert!(matches!(unpinned.direct_policy(), Ok(None)));
         // Alone it yields no target; among the production guests it is the
         // only one left out.
         assert!(maple_direct_targets([unpinned]).unwrap().is_empty());
         let targets =
-            maple_direct_targets(crate::maple_inference::endpoints_with_unpinned_i04()).unwrap();
+            maple_direct_targets(crate::maple_inference::endpoints_with_unpinned_i03()).unwrap();
         let targeted = targets
             .iter()
             .map(|(instance, _)| *instance)
@@ -1618,7 +1618,7 @@ mod tests {
             assert_eq!(*host, crate::maple_inference::endpoint(*instance).host);
         }
         let from_targets = MapleReadiness::for_test_endpoints(
-            crate::maple_inference::endpoints_with_unpinned_i04(),
+            crate::maple_inference::endpoints_with_unpinned_i03(),
         );
         assert!(from_targets.is_ready(MapleInstanceId::I01));
         assert!(from_targets.is_ready(MapleInstanceId::I02));
@@ -1768,7 +1768,7 @@ mod tests {
         assert!(!readiness.is_ready(MapleInstanceId::I01));
         assert!(readiness.is_ready(MapleInstanceId::I02));
         assert!(
-            !readiness.is_ready(MapleInstanceId::I04),
+            !readiness.is_ready(MapleInstanceId::I03),
             "a guest without a transport is never ready"
         );
         assert!(readiness.any_ready());
@@ -1840,12 +1840,12 @@ mod tests {
             }
             for invalid in [
                 "maple",
-                "maple-i03",
+                "maple-i04",
                 "maple-i05",
                 "maple-i01.attacker",
-                "maple-i04.attacker",
+                "maple-i03.attacker",
                 "MAPLE-I01",
-                "MAPLE-I04",
+                "MAPLE-I03",
                 "unknown",
             ] {
                 provider.provider_name = invalid.to_owned();
@@ -2361,7 +2361,7 @@ mod tests {
         for (provider, expect_priority) in [
             (maple_proxy_for(MapleInstanceId::I01), false),
             (maple_proxy_for(MapleInstanceId::I02), false),
-            (maple_proxy_for(MapleInstanceId::I04), false),
+            (maple_proxy_for(MapleInstanceId::I03), false),
             (tinfoil_proxy(), true),
         ] {
             let request = client

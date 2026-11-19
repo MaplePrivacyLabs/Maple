@@ -33,26 +33,26 @@ const I02_ENDPOINT: MapleEndpoint = MapleEndpoint {
     current_release: Some(&I02_CURRENT_RELEASE),
     staged_releases: &[],
 };
-// i04 serves the uncensored Kimi K3.1 Pro checkpoint and nothing else. Only
+// i03 serves the uncensored Kimi K3.1 Pro checkpoint and nothing else. Only
 // that checkpoint's own release is approved here: no other guest's pin
 // applies to it, and its pin approves nothing on another guest.
-const I04_ENDPOINT: MapleEndpoint = MapleEndpoint {
-    instance: MapleInstanceId::I04,
-    host: "i04.tfinf.maple.ai",
-    base_url: "https://i04.tfinf.maple.ai",
-    current_release: Some(&I04_CURRENT_RELEASE),
+const I03_ENDPOINT: MapleEndpoint = MapleEndpoint {
+    instance: MapleInstanceId::I03,
+    host: "i03.tfinf.maple.ai",
+    base_url: "https://i03.tfinf.maple.ai",
+    current_release: Some(&I03_CURRENT_RELEASE),
     staged_releases: &[],
 };
 
-/// i04's identity and address with no approved release, as a new guest is
+/// i03's identity and address with no approved release, as a new guest is
 /// before its measured release has been reviewed. No production endpoint is in
 /// this state; tests use it to prove such a guest gets no policy, target,
 /// transport, readiness or route.
 #[cfg(test)]
-pub(crate) static UNPINNED_I04_TEST_ENDPOINT: MapleEndpoint = MapleEndpoint {
-    instance: MapleInstanceId::I04,
-    host: "i04.tfinf.maple.ai",
-    base_url: "https://i04.tfinf.maple.ai",
+pub(crate) static UNPINNED_I03_TEST_ENDPOINT: MapleEndpoint = MapleEndpoint {
+    instance: MapleInstanceId::I03,
+    host: "i03.tfinf.maple.ai",
+    base_url: "https://i03.tfinf.maple.ai",
     current_release: None,
     staged_releases: &[],
 };
@@ -61,7 +61,7 @@ pub(crate) const fn endpoint(instance: MapleInstanceId) -> &'static MapleEndpoin
     match instance {
         MapleInstanceId::I01 => &I01_ENDPOINT,
         MapleInstanceId::I02 => &I02_ENDPOINT,
-        MapleInstanceId::I04 => &I04_ENDPOINT,
+        MapleInstanceId::I03 => &I03_ENDPOINT,
     }
 }
 
@@ -70,11 +70,11 @@ pub(crate) fn endpoints() -> [&'static MapleEndpoint; 3] {
     MapleInstanceId::ALL.map(endpoint)
 }
 
-/// The compiled guests with i04's approved release withheld.
+/// The compiled guests with i03's approved release withheld.
 #[cfg(test)]
-pub(crate) fn endpoints_with_unpinned_i04() -> [&'static MapleEndpoint; 3] {
+pub(crate) fn endpoints_with_unpinned_i03() -> [&'static MapleEndpoint; 3] {
     endpoints().map(|endpoint| match endpoint.instance {
-        MapleInstanceId::I04 => &UNPINNED_I04_TEST_ENDPOINT,
+        MapleInstanceId::I03 => &UNPINNED_I03_TEST_ENDPOINT,
         _ => endpoint,
     })
 }
@@ -193,8 +193,8 @@ const I02_CURRENT_RELEASE: ReleasePin = ReleasePin {
 };
 
 // The published, measured artifact of the uncensored Kimi K3.1 Pro checkpoint.
-// It is the only release i04 may run, and it belongs to no other guest.
-const I04_CURRENT_RELEASE: ReleasePin = ReleasePin {
+// It is the only release i03 may run, and it belongs to no other guest.
+const I03_CURRENT_RELEASE: ReleasePin = ReleasePin {
     repo: "MaplePrivacyLabs/inference-penclaw",
     tag: "v0.2.0",
     digest: "d1fb4b4c8dcc2fa229cc601b21677fcc6c47b3562308e5ec9fe13270f50f0933",
@@ -498,18 +498,18 @@ mod tests {
         }
         assert_eq!(endpoint(MapleInstanceId::I01).host, "i01.tfinf.maple.ai");
         assert_eq!(endpoint(MapleInstanceId::I02).host, "i02.tfinf.maple.ai");
-        assert_eq!(endpoint(MapleInstanceId::I04).host, "i04.tfinf.maple.ai");
+        assert_eq!(endpoint(MapleInstanceId::I03).host, "i03.tfinf.maple.ai");
         assert_eq!(
-            endpoint(MapleInstanceId::I04).base_url,
-            "https://i04.tfinf.maple.ai"
+            endpoint(MapleInstanceId::I03).base_url,
+            "https://i03.tfinf.maple.ai"
         );
     }
 
     #[test]
     fn guest_without_an_approved_release_has_no_network_policy() {
-        // The synthetic guest differs from the real i04 only in its release.
-        let unpinned = &UNPINNED_I04_TEST_ENDPOINT;
-        let pinned = endpoint(MapleInstanceId::I04);
+        // The synthetic guest differs from the real i03 only in its release.
+        let unpinned = &UNPINNED_I03_TEST_ENDPOINT;
+        let pinned = endpoint(MapleInstanceId::I03);
         assert_eq!(unpinned.instance, pinned.instance);
         assert_eq!(unpinned.host, pinned.host);
         assert_eq!(unpinned.base_url, pinned.base_url);
@@ -528,31 +528,31 @@ mod tests {
 
         // Only the empty set is unconfigured: a staged release alone is a policy.
         // Synthetic release identity is local to this test; no endpoint uses it.
-        const I04_TEST_STAGE: ReleasePin = ReleasePin {
-            repo: I04_CURRENT_RELEASE.repo,
-            tag: "test-i04-only-stage",
-            digest: I04_CURRENT_RELEASE.digest,
-            registers: I04_CURRENT_RELEASE.registers,
+        const I03_TEST_STAGE: ReleasePin = ReleasePin {
+            repo: I03_CURRENT_RELEASE.repo,
+            tag: "test-i03-only-stage",
+            digest: I03_CURRENT_RELEASE.digest,
+            registers: I03_CURRENT_RELEASE.registers,
         };
-        const STAGED_ONLY_I04_ENDPOINT: MapleEndpoint = MapleEndpoint {
-            instance: MapleInstanceId::I04,
-            host: "i04.tfinf.maple.ai",
-            base_url: "https://i04.tfinf.maple.ai",
+        const STAGED_ONLY_I03_ENDPOINT: MapleEndpoint = MapleEndpoint {
+            instance: MapleInstanceId::I03,
+            host: "i03.tfinf.maple.ai",
+            base_url: "https://i03.tfinf.maple.ai",
             current_release: None,
-            staged_releases: &[I04_TEST_STAGE],
+            staged_releases: &[I03_TEST_STAGE],
         };
-        let staged = approved_releases(&STAGED_ONLY_I04_ENDPOINT);
+        let staged = approved_releases(&STAGED_ONLY_I03_ENDPOINT);
         assert_eq!(staged.len(), 1);
-        assert_eq!(staged[0].release.tag, I04_TEST_STAGE.tag);
-        assert!(STAGED_ONLY_I04_ENDPOINT.direct_policy().unwrap().is_some());
+        assert_eq!(staged[0].release.tag, I03_TEST_STAGE.tag);
+        assert!(STAGED_ONLY_I03_ENDPOINT.direct_policy().unwrap().is_some());
     }
 
     #[test]
-    fn uncensored_kimi_i04_approves_only_its_published_release() {
-        let i04 = endpoint(MapleInstanceId::I04);
-        assert_eq!(i04.host, "i04.tfinf.maple.ai");
-        assert!(i04.staged_releases.is_empty());
-        let approved = approved_releases(i04);
+    fn uncensored_kimi_i03_approves_only_its_published_release() {
+        let i03 = endpoint(MapleInstanceId::I03);
+        assert_eq!(i03.host, "i03.tfinf.maple.ai");
+        assert!(i03.staged_releases.is_empty());
+        let approved = approved_releases(i03);
         assert_eq!(approved.len(), 1);
         let release = &approved[0];
         assert_eq!(release.release.repo, "MaplePrivacyLabs/inference-penclaw");
@@ -570,7 +570,7 @@ mod tests {
             "758adac43a82a5f3146342660caefea0a7714414dd9055c4a56d1502273d85bbad86d625096a206c9335c23d05df3f99",
             "5840a42e40bfc47fef37fb59956372957ef01d47f9e05fa32fedc11174b82a2041a9ca5682520de5dbd89ce3888a918f",
         ]);
-        let policy = i04
+        let policy = i03
             .direct_policy()
             .expect("the pin is a well-formed policy")
             .expect("a pinned guest is configured");
@@ -579,23 +579,23 @@ mod tests {
         assert!(serialized.contains(&release.release.digest));
     }
 
-    /// Copying another guest's pin onto i04, or i04's onto another guest, must
+    /// Copying another guest's pin onto i03, or i03's onto another guest, must
     /// fail: the Kimi checkpoint has its own artifact and its own measurement.
     #[test]
-    fn i04_pin_is_not_another_guests_pin() {
-        let i04 = &approved_releases(endpoint(MapleInstanceId::I04))[0];
+    fn i03_pin_is_not_another_guests_pin() {
+        let i03 = &approved_releases(endpoint(MapleInstanceId::I03))[0];
         for other in [MapleInstanceId::I01, MapleInstanceId::I02] {
             let approved = approved_releases(endpoint(other));
             assert!(!approved.is_empty(), "{other:?}");
             for release in approved {
-                assert_ne!(release.release.repo, i04.release.repo, "{other:?}");
-                assert_ne!(release.release.digest, i04.release.digest, "{other:?}");
+                assert_ne!(release.release.repo, i03.release.repo, "{other:?}");
+                assert_ne!(release.release.digest, i03.release.digest, "{other:?}");
                 assert_ne!(
-                    release.measurement.registers[0], i04.measurement.registers[0],
+                    release.measurement.registers[0], i03.measurement.registers[0],
                     "{other:?}"
                 );
                 assert_ne!(
-                    release.measurement.registers, i04.measurement.registers,
+                    release.measurement.registers, i03.measurement.registers,
                     "{other:?}"
                 );
             }

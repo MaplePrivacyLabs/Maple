@@ -29,7 +29,7 @@ fn nested_and_pinned_completion_contexts_preserve_plan_without_provider_flag() {
     for provider in [
         ProviderId::Maple(MapleInstanceId::I01),
         ProviderId::Maple(MapleInstanceId::I02),
-        ProviderId::Maple(MapleInstanceId::I04),
+        ProviderId::Maple(MapleInstanceId::I03),
         ProviderId::Tinfoil,
     ] {
         let public_model = "deepseek-v4-1-flash";
@@ -155,7 +155,7 @@ fn uncensored_kimi_route_sends_its_own_model_name_and_bills_the_maple_family() {
     )
     .with_maple_api_key(Some("synthetic-maple-key".to_owned()))
     .with_maple_readiness(crate::provider_client::MapleReadiness::for_test_instances(
-        &[MapleInstanceId::I04],
+        &[MapleInstanceId::I03],
     ));
 
     for (surface, auth) in [
@@ -173,8 +173,8 @@ fn uncensored_kimi_route_sends_its_own_model_name_and_bills_the_maple_family() {
         let route = ProviderRouter::default()
             .select_active_completion_route(&proxies, &intent)
             .unwrap();
-        assert_eq!(route.provider, ProviderId::Maple(MapleInstanceId::I04));
-        assert_eq!(route.proxy.provider_name, "maple-i04");
+        assert_eq!(route.provider, ProviderId::Maple(MapleInstanceId::I03));
+        assert_eq!(route.proxy.provider_name, "maple-i03");
         assert_eq!(route.provider.family_name(), "maple");
         assert_eq!(route.public_model_id, model);
         assert_eq!(route.provider_model_id, model);

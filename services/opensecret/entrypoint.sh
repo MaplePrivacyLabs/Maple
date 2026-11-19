@@ -493,7 +493,7 @@ echo "127.0.0.39 router-5.tinfoil.sh" >> /etc/hosts
 # and inference. Keep these addresses paired with their own VSOCK forwarders.
 echo "127.0.0.42 i01.tfinf.maple.ai" >> /etc/hosts
 echo "127.0.0.43 i02.tfinf.maple.ai" >> /etc/hosts
-echo "127.0.0.44 i04.tfinf.maple.ai" >> /etc/hosts
+echo "127.0.0.44 i03.tfinf.maple.ai" >> /etc/hosts
 # END MAPLE_INFERENCE_HOSTS
 # Legacy Tinfoil router domains (retained for discovery and fallback)
 echo "127.0.0.26 router.inf4.tinfoil.sh" >> /etc/hosts
@@ -630,8 +630,8 @@ run_forever tf_maple_inference_i01 python3 /app/traffic_forwarder.py 127.0.0.42 
 log "Starting Maple dedicated inference i02 traffic forwarder"
 run_forever tf_maple_inference_i02 python3 /app/traffic_forwarder.py 127.0.0.43 443 3 8051 &
 
-log "Starting Maple dedicated inference i04 traffic forwarder"
-run_forever tf_maple_inference_i04 python3 /app/traffic_forwarder.py 127.0.0.44 443 3 8052 &
+log "Starting Maple dedicated inference i03 traffic forwarder"
+run_forever tf_maple_inference_i03 python3 /app/traffic_forwarder.py 127.0.0.44 443 3 8052 &
 # END MAPLE_INFERENCE_FORWARDERS
 
 # Legacy Tinfoil router endpoints (retained for discovery and fallback)

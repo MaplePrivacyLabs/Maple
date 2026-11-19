@@ -18,7 +18,7 @@ pub(crate) struct ConfiguredProviders {
     continuum: bool,
     maple_i01: bool,
     maple_i02: bool,
-    maple_i04: bool,
+    maple_i03: bool,
 }
 
 impl ConfiguredProviders {
@@ -28,7 +28,7 @@ impl ConfiguredProviders {
             continuum: false,
             maple_i01: false,
             maple_i02: false,
-            maple_i04: false,
+            maple_i03: false,
         }
     }
 
@@ -39,7 +39,7 @@ impl ConfiguredProviders {
             continuum: true,
             maple_i01: true,
             maple_i02: true,
-            maple_i04: true,
+            maple_i03: true,
         }
     }
 
@@ -49,7 +49,7 @@ impl ConfiguredProviders {
             ProviderId::Continuum => self.continuum = true,
             ProviderId::Maple(MapleInstanceId::I01) => self.maple_i01 = true,
             ProviderId::Maple(MapleInstanceId::I02) => self.maple_i02 = true,
-            ProviderId::Maple(MapleInstanceId::I04) => self.maple_i04 = true,
+            ProviderId::Maple(MapleInstanceId::I03) => self.maple_i03 = true,
         }
         self
     }
@@ -60,7 +60,7 @@ impl ConfiguredProviders {
             ProviderId::Continuum => self.continuum,
             ProviderId::Maple(MapleInstanceId::I01) => self.maple_i01,
             ProviderId::Maple(MapleInstanceId::I02) => self.maple_i02,
-            ProviderId::Maple(MapleInstanceId::I04) => self.maple_i04,
+            ProviderId::Maple(MapleInstanceId::I03) => self.maple_i03,
         }
     }
 }
@@ -777,9 +777,9 @@ mod tests {
     }
 
     #[test]
-    fn uncensored_kimi_plans_only_i04_and_never_borrows_another_route() {
+    fn uncensored_kimi_plans_only_i03_and_never_borrows_another_route() {
         use crate::inference::{InferenceSurface, WorkloadClass};
-        let i04 = ProviderId::Maple(MapleInstanceId::I04);
+        let i03 = ProviderId::Maple(MapleInstanceId::I03);
         for (surface, workload) in [
             (InferenceSurface::Responses, WorkloadClass::Interactive),
             (
@@ -811,7 +811,7 @@ mod tests {
                     },
                 )
                 .unwrap();
-                assert_eq!(plan.selected.provider, i04);
+                assert_eq!(plan.selected.provider, i03);
                 assert_eq!(
                     plan.selected.public_model_id,
                     KIMI_K3_1_PRO_UNCENSORED_MODEL_ID
@@ -834,13 +834,13 @@ mod tests {
                 assert_eq!(plan.policy_version, MAPLE_ROUTING_POLICY_VERSION);
             }
 
-            // Every provider but i04 is available: there is still no route.
-            let mut without_i04 = ConfiguredProviders::none()
+            // Every provider but i03 is available: there is still no route.
+            let mut without_i03 = ConfiguredProviders::none()
                 .with_provider(ProviderId::Tinfoil)
                 .with_provider(ProviderId::Continuum);
             for instance in MapleInstanceId::ALL {
-                if instance != MapleInstanceId::I04 {
-                    without_i04 = without_i04.with_provider(ProviderId::Maple(instance));
+                if instance != MapleInstanceId::I03 {
+                    without_i03 = without_i03.with_provider(ProviderId::Maple(instance));
                 }
             }
             assert_eq!(
@@ -848,7 +848,7 @@ mod tests {
                     &PROVIDER_REGISTRY,
                     RoutePlanningInput {
                         intent: &request,
-                        configured_providers: without_i04,
+                        configured_providers: without_i03,
                         remembered_provider: Some(ProviderId::Tinfoil),
                     },
                 )
@@ -857,14 +857,14 @@ mod tests {
             );
         }
 
-        // Stock Kimi keeps its shared route and never moves to i04.
+        // Stock Kimi keeps its shared route and never moves to i03.
         let stock = intent(KIMI_K3_1_PRO_MODEL_ID, KIMI_K3_1_PRO_MODEL_ID);
         let plan = plan_completion_route(
             &PROVIDER_REGISTRY,
             RoutePlanningInput {
                 intent: &stock,
                 configured_providers: ConfiguredProviders::all(),
-                remembered_provider: Some(i04),
+                remembered_provider: Some(i03),
             },
         )
         .unwrap();
@@ -876,8 +876,8 @@ mod tests {
                 &PROVIDER_REGISTRY,
                 RoutePlanningInput {
                     intent: &stock,
-                    configured_providers: ConfiguredProviders::none().with_provider(i04),
-                    remembered_provider: Some(i04),
+                    configured_providers: ConfiguredProviders::none().with_provider(i03),
+                    remembered_provider: Some(i03),
                 },
             )
             .unwrap_err(),

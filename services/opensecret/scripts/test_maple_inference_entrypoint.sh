@@ -106,7 +106,7 @@ extract_block MAPLE_INFERENCE_FORWARDERS "$work_dir/forwarders-block.sh"
 # Inspect host writes without executing redirections, so even a malformed
 # fixture cannot touch the system host file or another real output path.
 [ "$(sed '/^#/d; /^[[:space:]]*$/d' "$work_dir/hosts-block.sh")" = \
-    $'echo "127.0.0.42 i01.tfinf.maple.ai" >> /etc/hosts\necho "127.0.0.43 i02.tfinf.maple.ai" >> /etc/hosts\necho "127.0.0.44 i04.tfinf.maple.ai" >> /etc/hosts' ]
+    $'echo "127.0.0.42 i01.tfinf.maple.ai" >> /etc/hosts\necho "127.0.0.43 i02.tfinf.maple.ai" >> /etc/hosts\necho "127.0.0.44 i03.tfinf.maple.ai" >> /etc/hosts' ]
 
 # Stub the supervisor, so the extracted launch block only records arguments.
 # Separate files preserve deterministic assertions even though launches use &.
@@ -114,7 +114,7 @@ run_forever() {
     local name="$1"
     shift
     case "$name" in
-        tf_maple_inference_i01|tf_maple_inference_i02|tf_maple_inference_i04) ;;
+        tf_maple_inference_i01|tf_maple_inference_i02|tf_maple_inference_i03) ;;
         *) return 1 ;;
     esac
     printf '%s\n' "$*" >> "$work_dir/$name"
@@ -124,7 +124,7 @@ source "$work_dir/forwarders-block.sh"
 wait
 [ "$(cat "$work_dir/tf_maple_inference_i01")" = 'python3 /app/traffic_forwarder.py 127.0.0.42 443 3 8050' ]
 [ "$(cat "$work_dir/tf_maple_inference_i02")" = 'python3 /app/traffic_forwarder.py 127.0.0.43 443 3 8051' ]
-[ "$(cat "$work_dir/tf_maple_inference_i04")" = 'python3 /app/traffic_forwarder.py 127.0.0.44 443 3 8052' ]
+[ "$(cat "$work_dir/tf_maple_inference_i03")" = 'python3 /app/traffic_forwarder.py 127.0.0.44 443 3 8052' ]
 
 # The complete source must not add aliases or duplicate launch entries outside
 # the isolated blocks that would override or collide with the tested mappings.
@@ -139,4 +139,4 @@ done
 for port in 8050 8051 8052; do
     [ "$(grep -Ec "traffic_forwarder\.py .* 3 $port( |\$)" "$entrypoint_path")" = 1 ]
 done
-echo "Maple inference i01/i02/i04 egress mapping tests passed"
+echo "Maple inference i01/i02/i03 egress mapping tests passed"
