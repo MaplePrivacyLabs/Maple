@@ -20,9 +20,6 @@ pub enum Error {
     #[error("Session error: {0}")]
     Session(String),
 
-    #[error("Key exchange failed: {0}")]
-    KeyExchange(String),
-
     #[error("Encryption error: {0}")]
     Encryption(String),
 

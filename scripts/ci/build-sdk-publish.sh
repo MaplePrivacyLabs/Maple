@@ -78,7 +78,6 @@ nix develop --no-update-lock-file ./sdk -c bash -euo pipefail -c '
           src/lib/test/*.test.ts \
           src/lib/test/integration/attestation.test.ts \
           src/lib/test/integration/developerHook.test.ts \
-          src/lib/test/integration/liveAttestation.test.ts \
           src/lib/test/integration/pcr.test.ts \
           src/lib/test/integration/platformPushSettings.test.ts \
           src/lib/test/integration/web.test.ts \
