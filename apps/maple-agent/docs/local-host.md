@@ -200,6 +200,7 @@ request on the same connection, opened with `mcp/connect` and closed with
 The `model` config option stays the selector; `models.availableModels[]` lists
 the same models with each one's reasoning levels in `_meta`
 (`reasoningEfforts` and `reasoningEffort`, or `supportsReasoningEffort: false`),
+each effort naming its level as `id`, `value` and `label`,
 read from the state the `thought_level` option shows for that model. A client
 that probes one session thus learns every model's levels.
 
