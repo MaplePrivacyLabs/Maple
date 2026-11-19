@@ -478,6 +478,7 @@ pub const GLM_5_3_FLASH_MODEL_ID: &str = "glm-5-3-flash";
 pub const POWERFUL_MODEL_ID: &str = GLM_5_3_MODEL_ID;
 pub const INKLING_2_SMALL_MODEL_ID: &str = "inkling-2-small";
 pub const KIMI_K3_1_PRO_MODEL_ID: &str = "kimi-k3-1-pro";
+pub const KIMI_K3_1_PRO_UNCENSORED_MODEL_ID: &str = "kimi-k3-1-pro-uncensored";
 pub const DEEPSEEK_V4_1_FLASH_MODEL_ID: &str = "deepseek-v4-1-flash";
 /// The Quick tier's preferred model on every plan.
 pub const QUICK_MODEL_ID: &str = DEEPSEEK_V4_1_FLASH_MODEL_ID;
@@ -1233,6 +1234,39 @@ const MODEL_CONFIGS: &[ModelConfigEntry] = &[
         Some("552B"),
         Some("16B"),
     )),
+    // An abliterated Kimi K3.1 Pro checkpoint served from Maple's own node. It
+    // keeps the base architecture, tokenizer and chat template, so sampling,
+    // reasoning levels and history replay follow the stock entry's Moonshot
+    // sources (moonshotai/Kimi-K3.1-Pro model card and quickstart); only
+    // identity, group and catalog provider differ.
+    //
+    // Research sorts its list by `sort_order`; Maple Work lists each group in
+    // this table's order. Both put this entry first among the uncensored models.
+    ModelConfigEntry::new(
+        KIMI_K3_1_PRO_UNCENSORED_MODEL_ID,
+        "Kimi K3.1 Pro Uncensored",
+        "Kimi Uncensored",
+        "Kimi K3.1 Pro with refusals reduced, for multimodal reasoning and tool use.",
+        ModelAccessTier::Pro,
+        ModelCapabilities::chat(true, true),
+        &["New"],
+        true,
+        true,
+        false,
+        66,
+        262_144,
+        KIMI_K3_1_PRO_RESPONSES_MODEL_CONFIG,
+    )
+    .with_reasoning(KIMI_K3_1_PRO_REASONING)
+    .in_group(ModelGroup::Uncensored)
+    .with_developer_role_as_system()
+    .with_catalog_provider("maple", KIMI_K3_1_PRO_UNCENSORED_MODEL_ID)
+    .with_catalog_metadata(ModelCatalogMetadata::new(
+        &["text", "image"],
+        &["text"],
+        Some("2.8T"),
+        Some("104B"),
+    )),
     // Dealign's pinned 1017 derivative retains the base architecture, tokenizer,
     // recommended sampling and reasoning protocol. Model card and revision:
     // https://huggingface.co/dealignai/DeepSeek-V4.1-Flash-1017-UNCENSORED-FP8/tree/c19ca5ca4eaeb79d29fdf08aea8327da95b1116a
@@ -1247,7 +1281,7 @@ const MODEL_CONFIGS: &[ModelConfigEntry] = &[
         true,
         true,
         false,
-        66,
+        67,
         1_048_576,
         DEEPSEEK_V4_1_FLASH_RESPONSES_MODEL_CONFIG,
     )
@@ -1519,6 +1553,147 @@ mod tests {
         assert!(ModelPlan::Paid.allows_model(id));
     }
 
+    #[test]
+    fn uncensored_kimi_catalog_is_visible_on_every_plan_with_pro_access() {
+        let id = KIMI_K3_1_PRO_UNCENSORED_MODEL_ID;
+        assert_eq!(id, "kimi-k3-1-pro-uncensored");
+        for plan in [ModelPlan::Free, ModelPlan::Paid] {
+            let catalog = model_catalog_response(plan);
+            let uncensored = catalog_model(&catalog, id);
+            assert_eq!(uncensored["provider"], "maple");
+            assert_eq!(uncensored["provider_id"], id);
+            assert_eq!(uncensored["display_name"], "Kimi K3.1 Pro Uncensored");
+            assert_eq!(uncensored["short_name"], "Kimi Uncensored");
+            assert_eq!(uncensored["access"], "pro");
+            assert_eq!(uncensored["badges"], json!(["New"]));
+            assert_eq!(uncensored["group"], "uncensored");
+            assert_eq!(uncensored["enabled"], true);
+            assert_eq!(uncensored["deprecated"], false);
+            assert_eq!(uncensored["available_in_agent"], true);
+
+            // Everything about how the model behaves is the stock model's.
+            let stock = catalog_model(&catalog, KIMI_K3_1_PRO_MODEL_ID);
+            assert_eq!(stock["provider"], "tinfoil");
+            assert_eq!(stock["group"], "capable");
+            for field in [
+                "context_window",
+                "max_context_tokens",
+                "max_completion_tokens",
+                "capabilities",
+                "tasks",
+                "reasoning",
+                "input_modalities",
+                "output_modalities",
+                "parameter_size",
+                "active_parameter_size",
+            ] {
+                assert_eq!(uncensored[field], stock[field], "{field}");
+            }
+            assert_eq!(uncensored["context_window"], 262_144);
+            assert_eq!(uncensored["capabilities"]["vision"], true);
+            assert_eq!(uncensored["capabilities"]["tool_use"], true);
+        }
+
+        let models = openai_models_response();
+        assert_eq!(catalog_model(&models, id)["access"], "pro");
+        assert_eq!(resolve_public_model_id(id), Some(id));
+        assert!(enabled_api_completion_model_ids().any(|model| model == id));
+        assert!(!ModelPlan::Free.allows_model(id));
+        assert!(ModelPlan::Paid.allows_model(id));
+    }
+
+    /// `model_config` falls back to a prefix match, and the uncensored Kimi id
+    /// extends the stock one. An exact entry must always win.
+    #[test]
+    fn every_catalog_id_resolves_to_its_own_entry_before_prefix_matching() {
+        for entry in MODEL_CONFIGS {
+            assert_eq!(
+                MODEL_CONFIGS
+                    .iter()
+                    .filter(|other| other.id == entry.id)
+                    .count(),
+                1,
+                "{}",
+                entry.id
+            );
+            assert_eq!(model_config(entry.id), entry.config, "{}", entry.id);
+        }
+
+        let stock = model_entry(KIMI_K3_1_PRO_MODEL_ID).expect("stock Kimi");
+        let uncensored = model_entry(KIMI_K3_1_PRO_UNCENSORED_MODEL_ID).expect("uncensored Kimi");
+        assert!(uncensored.id.starts_with(stock.id));
+        assert_eq!(stock.id, "kimi-k3-1-pro");
+        assert_eq!(stock.catalog_provider, "tinfoil");
+        assert_eq!(stock.group, Some(ModelGroup::Capable));
+        assert_eq!(uncensored.id, "kimi-k3-1-pro-uncensored");
+        assert_eq!(uncensored.catalog_provider, "maple");
+        assert_eq!(uncensored.catalog_provider_id, uncensored.id);
+        assert_eq!(uncensored.group, Some(ModelGroup::Uncensored));
+        assert_eq!(uncensored.config, stock.config);
+        assert!(uncensored.config.developer_role_as_system);
+        assert_eq!(
+            uncensored.config.responses.reasoning_history,
+            ReasoningHistoryStrategy::KimiPreserveThinking
+        );
+        assert_eq!(
+            model_reasoning(uncensored.id),
+            model_reasoning(stock.id),
+            "same levels, default and mandatory reasoning"
+        );
+        for (requested, resolved) in [(stock.id, stock.id), (uncensored.id, uncensored.id)] {
+            assert_eq!(resolve_public_model_id(requested), Some(resolved));
+        }
+        // A longer unknown name is not a public model, whatever it starts with.
+        for unknown in [
+            "kimi-k3-1-pro-uncensored-v2",
+            "kimi-k3-1-pro-uncensore",
+            "kimi-k3-1-pro-",
+        ] {
+            assert_eq!(resolve_public_model_id(unknown), None, "{unknown}");
+            assert!(model_entry(unknown).is_none(), "{unknown}");
+        }
+    }
+
+    /// Research sorts by `sort_order` and Maple Work keeps the catalog's order
+    /// within a group, so both must agree on the uncensored models' order.
+    #[test]
+    fn uncensored_group_lists_kimi_before_deepseek_in_both_orderings() {
+        let expected = [
+            KIMI_K3_1_PRO_UNCENSORED_MODEL_ID,
+            DEEPSEEK_V4_1_FLASH_UNCENSORED_MODEL_ID,
+        ];
+        for plan in [ModelPlan::Free, ModelPlan::Paid] {
+            let catalog = model_catalog_response(plan);
+            let in_catalog_order = catalog["data"]
+                .as_array()
+                .expect("catalog data")
+                .iter()
+                .filter(|model| model["group"] == "uncensored")
+                .map(|model| {
+                    (
+                        model["sort_order"].as_u64().expect("sort order"),
+                        model["id"].as_str().expect("model ID"),
+                    )
+                })
+                .collect::<Vec<_>>();
+            let mut by_sort_order = in_catalog_order.clone();
+            by_sort_order.sort_unstable();
+            for ordering in [in_catalog_order, by_sort_order] {
+                assert_eq!(
+                    ordering.iter().map(|(_, id)| *id).collect::<Vec<_>>(),
+                    expected,
+                    "plan={plan:?}"
+                );
+            }
+        }
+        // Nothing sorts between the two in Research's flat list.
+        let sort_order = |id: &str| model_entry(id).expect("catalog model").sort_order;
+        assert_eq!(
+            sort_order(DEEPSEEK_V4_1_FLASH_UNCENSORED_MODEL_ID),
+            sort_order(KIMI_K3_1_PRO_UNCENSORED_MODEL_ID) + 1
+        );
+    }
+
     fn has_model(response: &Value, model_id: &str) -> bool {
         response["data"]
             .as_array()
@@ -1561,6 +1736,7 @@ mod tests {
         assert_eq!(model_context_window("glm-5-3"), 262_144);
         assert_eq!(model_context_window("glm-5-3-flash"), 1_048_576);
         assert_eq!(model_context_window("kimi-k3-1-pro"), 262_144);
+        assert_eq!(model_context_window("kimi-k3-1-pro-uncensored"), 262_144);
         assert_eq!(model_context_window(INKLING_2_SMALL_MODEL_ID), 524_288);
         assert_eq!(model_context_window("deepseek-v4-1-flash"), 1_048_576);
         assert_eq!(model_context_window(AUTO_QUICK_MODEL_ID), 1_048_576);
@@ -1576,6 +1752,7 @@ mod tests {
             ("glm-5-3", 1.0, 0.95, None, None),
             ("glm-5-3-flash", 1.0, 0.95, None, None),
             ("kimi-k3-1-pro", 1.0, 0.95, None, None),
+            (KIMI_K3_1_PRO_UNCENSORED_MODEL_ID, 1.0, 0.95, None, None),
             (INKLING_2_SMALL_MODEL_ID, 1.0, 1.0, None, None),
             ("deepseek-v4-1-flash", 1.0, 1.0, None, None),
             (
@@ -1639,7 +1816,15 @@ mod tests {
                 ReasoningHistoryStrategy::KimiPreserveThinking,
             ),
             (
+                KIMI_K3_1_PRO_UNCENSORED_MODEL_ID,
+                ReasoningHistoryStrategy::KimiPreserveThinking,
+            ),
+            (
                 "deepseek-v4-1-flash",
+                ReasoningHistoryStrategy::DeepSeekToolsOnly,
+            ),
+            (
+                DEEPSEEK_V4_1_FLASH_UNCENSORED_MODEL_ID,
                 ReasoningHistoryStrategy::DeepSeekToolsOnly,
             ),
             ("llama3-3-70b", ReasoningHistoryStrategy::Omit),
@@ -1663,6 +1848,7 @@ mod tests {
             ("glm-5-3", CurrentTurn, CurrentTurn),
             ("glm-5-3-flash", CurrentTurn, CurrentTurn),
             ("kimi-k3-1-pro", All, All),
+            (KIMI_K3_1_PRO_UNCENSORED_MODEL_ID, All, All),
             ("deepseek-v4-1-flash", None, All),
             ("llama3-3-70b", None, None),
         ] {
@@ -1755,6 +1941,10 @@ mod tests {
         assert_eq!(
             resolve_public_model_id("kimi-k3-1-pro"),
             Some("kimi-k3-1-pro")
+        );
+        assert_eq!(
+            resolve_public_model_id("kimi-k3-1-pro-uncensored"),
+            Some("kimi-k3-1-pro-uncensored")
         );
         assert_eq!(resolve_public_model_id("glm-5-3"), Some("glm-5-3"));
         assert_eq!(
@@ -1885,6 +2075,8 @@ mod tests {
         let catalog = model_catalog_response(ModelPlan::Paid);
         for (id, group) in [
             (GLM_5_3_MODEL_ID, "capable"),
+            (KIMI_K3_1_PRO_MODEL_ID, "capable"),
+            (KIMI_K3_1_PRO_UNCENSORED_MODEL_ID, "uncensored"),
             (DEEPSEEK_V4_1_FLASH_UNCENSORED_MODEL_ID, "uncensored"),
             (DEEPSEEK_V4_1_FLASH_MODEL_ID, "fast"),
         ] {
@@ -1951,6 +2143,7 @@ mod tests {
             for model in [
                 QUICK_MODEL_ID,
                 KIMI_K3_1_PRO_MODEL_ID,
+                KIMI_K3_1_PRO_UNCENSORED_MODEL_ID,
                 GLM_5_3_MODEL_ID,
                 GLM_5_3_FLASH_MODEL_ID,
                 DEEPSEEK_V4_1_FLASH_MODEL_ID,
@@ -1998,6 +2191,8 @@ mod tests {
             "llama3-3-70b",
             "gemma4-31b",
             "kimi-k3-1-pro",
+            KIMI_K3_1_PRO_UNCENSORED_MODEL_ID,
+            DEEPSEEK_V4_1_FLASH_UNCENSORED_MODEL_ID,
             "glm-5-3",
             "glm-5-3-flash",
             AUTO_POWERFUL_MODEL_ID,
@@ -2214,6 +2409,7 @@ mod tests {
         let expected = vec![
             INKLING_2_SMALL_MODEL_ID.to_string(),
             KIMI_K3_1_PRO_MODEL_ID.to_string(),
+            KIMI_K3_1_PRO_UNCENSORED_MODEL_ID.to_string(),
         ];
 
         assert_eq!(
@@ -2279,7 +2475,7 @@ mod tests {
             Option<&'static [&'static str]>,
             Option<&'static str>,
         );
-        let expected: [Expected; 10] = [
+        let expected: [Expected; 11] = [
             (
                 "gpt-oss-120b",
                 true,
@@ -2304,6 +2500,13 @@ mod tests {
             ),
             (
                 "kimi-k3-1-pro",
+                true,
+                true,
+                Some(&["max", "high", "low"]),
+                Some("max"),
+            ),
+            (
+                KIMI_K3_1_PRO_UNCENSORED_MODEL_ID,
                 true,
                 true,
                 Some(&["max", "high", "low"]),
@@ -2439,17 +2642,24 @@ mod tests {
         assert_eq!(gpt_oss.clamp(ReasoningEffort::XHigh), ReasoningEffort::High);
         assert_eq!(gpt_oss.clamp(ReasoningEffort::None), ReasoningEffort::Low);
 
-        let kimi = model_reasoning(KIMI_K3_1_PRO_MODEL_ID).unwrap();
-        assert!(!kimi.accepts(ReasoningEffort::None));
-        assert_eq!(kimi.clamp(ReasoningEffort::Medium), ReasoningEffort::High);
-        assert_eq!(
-            kimi.accepted_efforts(),
-            vec![
-                ReasoningEffort::Low,
+        for model in [KIMI_K3_1_PRO_MODEL_ID, KIMI_K3_1_PRO_UNCENSORED_MODEL_ID] {
+            let kimi = model_reasoning(model).unwrap();
+            assert!(!kimi.accepts(ReasoningEffort::None), "{model}");
+            assert_eq!(
+                kimi.clamp(ReasoningEffort::Medium),
                 ReasoningEffort::High,
-                ReasoningEffort::Max
-            ]
-        );
+                "{model}"
+            );
+            assert_eq!(
+                kimi.accepted_efforts(),
+                vec![
+                    ReasoningEffort::Low,
+                    ReasoningEffort::High,
+                    ReasoningEffort::Max
+                ],
+                "{model}"
+            );
+        }
 
         let gemma = model_reasoning("gemma4-31b").unwrap();
         for effort in ReasoningEffort::ALL {
@@ -2540,7 +2750,8 @@ mod tests {
                 model_ids_with_badge(&catalog, "New"),
                 vec![
                     INKLING_2_SMALL_MODEL_ID.to_string(),
-                    KIMI_K3_1_PRO_MODEL_ID.to_string()
+                    KIMI_K3_1_PRO_MODEL_ID.to_string(),
+                    KIMI_K3_1_PRO_UNCENSORED_MODEL_ID.to_string(),
                 ]
             );
         }

@@ -18,6 +18,7 @@ pub(crate) struct ConfiguredProviders {
     continuum: bool,
     maple_i01: bool,
     maple_i02: bool,
+    maple_i04: bool,
 }
 
 impl ConfiguredProviders {
@@ -27,6 +28,7 @@ impl ConfiguredProviders {
             continuum: false,
             maple_i01: false,
             maple_i02: false,
+            maple_i04: false,
         }
     }
 
@@ -37,6 +39,7 @@ impl ConfiguredProviders {
             continuum: true,
             maple_i01: true,
             maple_i02: true,
+            maple_i04: true,
         }
     }
 
@@ -46,6 +49,7 @@ impl ConfiguredProviders {
             ProviderId::Continuum => self.continuum = true,
             ProviderId::Maple(MapleInstanceId::I01) => self.maple_i01 = true,
             ProviderId::Maple(MapleInstanceId::I02) => self.maple_i02 = true,
+            ProviderId::Maple(MapleInstanceId::I04) => self.maple_i04 = true,
         }
         self
     }
@@ -56,6 +60,7 @@ impl ConfiguredProviders {
             ProviderId::Continuum => self.continuum,
             ProviderId::Maple(MapleInstanceId::I01) => self.maple_i01,
             ProviderId::Maple(MapleInstanceId::I02) => self.maple_i02,
+            ProviderId::Maple(MapleInstanceId::I04) => self.maple_i04,
         }
     }
 }
@@ -286,10 +291,11 @@ mod tests {
     use super::*;
     use crate::model_config::{
         ModelPlan, AUTO_POWERFUL_MODEL_ID, DEEPSEEK_V4_1_FLASH_MODEL_ID, GLM_5_3_FLASH_MODEL_ID,
-        GLM_5_3_MODEL_ID,
+        GLM_5_3_MODEL_ID, KIMI_K3_1_PRO_MODEL_ID, KIMI_K3_1_PRO_UNCENSORED_MODEL_ID,
     };
     use crate::provider_registry::{
-        ProviderId, DUAL_INSTANCE_TEST_REGISTRY, PROVIDER_REGISTRY, STOCK_REPLICA_TEST_REGISTRY,
+        ProviderId, DUAL_INSTANCE_TEST_INSTANCES, DUAL_INSTANCE_TEST_REGISTRY, PROVIDER_REGISTRY,
+        STOCK_REPLICA_TEST_REGISTRY,
     };
     use uuid::Uuid;
 
@@ -756,9 +762,133 @@ mod tests {
     }
 
     #[test]
+    fn configured_providers_track_each_provider_independently() {
+        let providers = [ProviderId::Tinfoil, ProviderId::Continuum]
+            .into_iter()
+            .chain(MapleInstanceId::ALL.map(ProviderId::Maple));
+        for provider in providers.clone() {
+            assert!(!ConfiguredProviders::none().contains(provider));
+            assert!(ConfiguredProviders::all().contains(provider));
+            let only = ConfiguredProviders::none().with_provider(provider);
+            for other in providers.clone() {
+                assert_eq!(only.contains(other), other == provider);
+            }
+        }
+    }
+
+    #[test]
+    fn uncensored_kimi_plans_only_i04_and_never_borrows_another_route() {
+        use crate::inference::{InferenceSurface, WorkloadClass};
+        let i04 = ProviderId::Maple(MapleInstanceId::I04);
+        for (surface, workload) in [
+            (InferenceSurface::Responses, WorkloadClass::Interactive),
+            (
+                InferenceSurface::ChatCompletions,
+                WorkloadClass::Interactive,
+            ),
+            (InferenceSurface::Internal, WorkloadClass::Background),
+        ] {
+            let request = InferenceIntent::new(
+                Uuid::from_u128(73),
+                KIMI_K3_1_PRO_UNCENSORED_MODEL_ID,
+                KIMI_K3_1_PRO_UNCENSORED_MODEL_ID,
+                ModelPlan::Paid,
+                surface,
+                workload,
+            );
+            // A stale or forged memory of another provider changes nothing.
+            for remembered in [
+                None,
+                Some(ProviderId::Tinfoil),
+                Some(ProviderId::Maple(MapleInstanceId::I01)),
+            ] {
+                let plan = plan_completion_route(
+                    &PROVIDER_REGISTRY,
+                    RoutePlanningInput {
+                        intent: &request,
+                        configured_providers: ConfiguredProviders::all(),
+                        remembered_provider: remembered,
+                    },
+                )
+                .unwrap();
+                assert_eq!(plan.selected.provider, i04);
+                assert_eq!(
+                    plan.selected.public_model_id,
+                    KIMI_K3_1_PRO_UNCENSORED_MODEL_ID
+                );
+                assert_eq!(
+                    plan.selected.provider_model_id,
+                    KIMI_K3_1_PRO_UNCENSORED_MODEL_ID
+                );
+                assert_eq!(
+                    plan.selected.response_model_id,
+                    KIMI_K3_1_PRO_UNCENSORED_MODEL_ID
+                );
+                assert_eq!(plan.selected.bucket, None);
+                assert_eq!(plan.decision, PlanDecision::FixedRoute);
+                assert_eq!(
+                    plan.selected.selection_source,
+                    RouteSelectionSource::StaticSplit
+                );
+                assert_eq!(plan.eligible_routes.len(), 1);
+                assert_eq!(plan.policy_version, MAPLE_ROUTING_POLICY_VERSION);
+            }
+
+            // Every provider but i04 is available: there is still no route.
+            let mut without_i04 = ConfiguredProviders::none()
+                .with_provider(ProviderId::Tinfoil)
+                .with_provider(ProviderId::Continuum);
+            for instance in MapleInstanceId::ALL {
+                if instance != MapleInstanceId::I04 {
+                    without_i04 = without_i04.with_provider(ProviderId::Maple(instance));
+                }
+            }
+            assert_eq!(
+                plan_completion_route(
+                    &PROVIDER_REGISTRY,
+                    RoutePlanningInput {
+                        intent: &request,
+                        configured_providers: without_i04,
+                        remembered_provider: Some(ProviderId::Tinfoil),
+                    },
+                )
+                .unwrap_err(),
+                RoutePlanningError::NoEligibleRoute(KIMI_K3_1_PRO_UNCENSORED_MODEL_ID.to_string())
+            );
+        }
+
+        // Stock Kimi keeps its shared route and never moves to i04.
+        let stock = intent(KIMI_K3_1_PRO_MODEL_ID, KIMI_K3_1_PRO_MODEL_ID);
+        let plan = plan_completion_route(
+            &PROVIDER_REGISTRY,
+            RoutePlanningInput {
+                intent: &stock,
+                configured_providers: ConfiguredProviders::all(),
+                remembered_provider: Some(i04),
+            },
+        )
+        .unwrap();
+        assert_eq!(plan.selected.provider, ProviderId::Tinfoil);
+        assert_eq!(plan.selected.provider_model_id, KIMI_K3_1_PRO_MODEL_ID);
+        assert_eq!(plan.eligible_routes.len(), 1);
+        assert_eq!(
+            plan_completion_route(
+                &PROVIDER_REGISTRY,
+                RoutePlanningInput {
+                    intent: &stock,
+                    configured_providers: ConfiguredProviders::none().with_provider(i04),
+                    remembered_provider: Some(i04),
+                },
+            )
+            .unwrap_err(),
+            RoutePlanningError::NoEligibleRoute(KIMI_K3_1_PRO_MODEL_ID.to_string())
+        );
+    }
+
+    #[test]
     fn synthetic_dual_instance_registry_keeps_both_replicas_independent() {
         let request = intent(DEEPSEEK_V4_1_FLASH_MODEL_ID, DEEPSEEK_V4_1_FLASH_MODEL_ID);
-        for instance in MapleInstanceId::ALL {
+        for instance in DUAL_INSTANCE_TEST_INSTANCES {
             let provider = ProviderId::Maple(instance);
             let configured = ConfiguredProviders::none().with_provider(provider);
             let other = ProviderId::Maple(if instance == MapleInstanceId::I01 {

@@ -33,15 +33,32 @@ const I02_ENDPOINT: MapleEndpoint = MapleEndpoint {
     current_release: Some(&I02_CURRENT_RELEASE),
     staged_releases: &[],
 };
+// i04 serves the uncensored Kimi K3.1 Pro checkpoint. No measured release is
+// approved for it yet, so the guest stays unconfigured: no verifier, no
+// network initialization and no eligible route until its own `ReleasePin` is
+// added here. Never bring it up on another guest's pin.
+const I04_ENDPOINT: MapleEndpoint = MapleEndpoint {
+    instance: MapleInstanceId::I04,
+    host: "i04.tfinf.maple.ai",
+    base_url: "https://i04.tfinf.maple.ai",
+    current_release: None,
+    staged_releases: &[],
+};
 
 pub(crate) const fn endpoint(instance: MapleInstanceId) -> &'static MapleEndpoint {
     match instance {
         MapleInstanceId::I01 => &I01_ENDPOINT,
         MapleInstanceId::I02 => &I02_ENDPOINT,
+        MapleInstanceId::I04 => &I04_ENDPOINT,
     }
 }
 
 /// Remove caller-controlled engine policy from Maple's direct vLLM requests.
+///
+/// `priority` orders the node's scheduler. `mm_processor_kwargs` reaches the
+/// model's multimodal processor on a node that trusts request processor
+/// arguments. Each is the node operator's setting, never a caller's, and each
+/// is a top-level request field.
 ///
 /// vLLM reads media cache identifiers from the content part's own `uuid`,
 /// independently of the backend-owned KV cache salt. Do not recursively remove
@@ -54,6 +71,7 @@ pub(crate) fn sanitize_completion_request(body: &mut serde_json::Value) {
         return;
     };
     body.remove("priority");
+    body.remove("mm_processor_kwargs");
 
     let Some(messages) = body
         .get_mut("messages")
@@ -116,6 +134,7 @@ struct ReleasePin {
 // These identify the published artifact and full multiplatform measurement,
 // not a cached live quote. Remove retired entries after rollout completes.
 // i01 serves the uncensored model; i02 independently serves stock DeepSeek.
+// i04 has no pin yet; add `I04_CURRENT_RELEASE` beside these when it does.
 const I01_CURRENT_RELEASE: ReleasePin = ReleasePin {
     repo: "MaplePrivacyLabs/inference-deepseek-uncensored",
     tag: "v0.1.0+b300",
@@ -221,6 +240,70 @@ mod tests {
         sanitize_completion_request(&mut body);
 
         assert_eq!(body, expected);
+    }
+
+    #[test]
+    fn completion_policy_strips_request_processor_arguments_only_at_the_top_level() {
+        for untrusted in [
+            json!({"max_pixels": 1_000_000_000_u64, "num_crops": 4096}),
+            json!({"images_kwargs": {"do_resize": false}, "return_tensors": "np"}),
+            json!({}),
+            json!(null),
+            json!("caller-chosen"),
+            json!([{"size": {"height": 1, "width": 1}}]),
+        ] {
+            let mut body = json!({
+                "model": "kimi-k3-1-pro-uncensored",
+                "mm_processor_kwargs": untrusted,
+                "temperature": 1.0,
+                "top_p": 0.95,
+                "reasoning_effort": "max",
+                "cache_salt": "backend-owned",
+                "chat_template_kwargs": {
+                    "preserve_thinking": true,
+                    "mm_processor_kwargs": {"template": "data"}
+                },
+                "tools": [{"type": "function", "function": {
+                    "name": "resize",
+                    "parameters": {"properties": {
+                        "mm_processor_kwargs": {"type": "object"}
+                    }}
+                }}],
+                "messages": [
+                    {"role": "user", "mm_processor_kwargs": "message-metadata", "content": [
+                        {"type": "text", "text": "Describe mm_processor_kwargs"},
+                        {"type": "image_url", "mm_processor_kwargs": {"part": "data"}, "image_url": {
+                            "url": "data:image/png;base64,AA=="
+                        }}
+                    ]},
+                    {"role": "assistant", "reasoning": "kept", "tool_calls": [{
+                        "id": "functions.resize:0",
+                        "type": "function",
+                        "function": {
+                            "name": "resize",
+                            "arguments": "{\"mm_processor_kwargs\":{\"max_pixels\":4}}"
+                        }
+                    }]},
+                    {"role": "tool", "tool_call_id": "functions.resize:0", "content": "done"}
+                ]
+            });
+            let mut expected = body.clone();
+            expected
+                .as_object_mut()
+                .unwrap()
+                .remove("mm_processor_kwargs");
+
+            sanitize_completion_request(&mut body);
+
+            assert!(body.get("mm_processor_kwargs").is_none());
+            assert_eq!(body, expected);
+        }
+
+        // A request that never named the field is unchanged.
+        let mut absent = json!({"model": "kimi-k3-1-pro-uncensored", "messages": []});
+        let expected = absent.clone();
+        sanitize_completion_request(&mut absent);
+        assert_eq!(absent, expected);
     }
 
     #[test]
@@ -342,9 +425,32 @@ mod tests {
             assert_eq!(url.host_str(), Some(endpoint.host));
             assert!(url.port().is_none());
             assert_eq!(url.path(), "/");
+            // A guest is configured exactly when it has an approved release.
+            let pinned = endpoint.current_release.is_some() || !endpoint.staged_releases.is_empty();
+            assert_eq!(policy.is_some(), pinned, "{}", endpoint.host);
         }
         assert_eq!(endpoint(MapleInstanceId::I01).host, "i01.tfinf.maple.ai");
         assert_eq!(endpoint(MapleInstanceId::I02).host, "i02.tfinf.maple.ai");
+        assert_eq!(endpoint(MapleInstanceId::I04).host, "i04.tfinf.maple.ai");
+        assert_eq!(
+            endpoint(MapleInstanceId::I04).base_url,
+            "https://i04.tfinf.maple.ai"
+        );
+    }
+
+    #[test]
+    fn unpinned_i04_has_no_approved_release_or_network_policy() {
+        let i04 = endpoint(MapleInstanceId::I04);
+        assert!(i04.current_release.is_none());
+        assert!(i04.staged_releases.is_empty());
+        assert!(approved_releases(i04).is_empty());
+        // Unconfigured is a valid state, distinct from a malformed policy.
+        assert!(matches!(direct_policy(MapleInstanceId::I04), Ok(None)));
+        // An empty set is never a policy that approves everything.
+        assert!(DirectPolicy::new(Vec::new()).is_err());
+        // The other guests' pins neither depend on nor extend to this one.
+        assert!(direct_policy(MapleInstanceId::I01).unwrap().is_some());
+        assert!(direct_policy(MapleInstanceId::I02).unwrap().is_some());
     }
 
     #[test]
