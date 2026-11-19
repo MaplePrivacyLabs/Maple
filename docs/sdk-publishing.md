@@ -89,8 +89,8 @@ next.
    For enclave trust changes, review the affected embedded PCR0 roots in
    `sdk/src/lib/pcr.ts` and `sdk/rust/src/pcr.rs` against the signed environment
    histories. Bundle refreshes are optional fast-path/offline compatibility
-   updates, separate from approving an EIF. Preserve the signed histories and
-   [legacy mirror](../services/opensecret/docs/pcr-compatibility.md).
+   updates, separate from approving an EIF. Preserve the
+   [signed histories](../services/opensecret/docs/pcr-compatibility.md).
 2. **Publish the affected SDKs** when the fix must reach external users or
    Auth. From `sdk/` on merged `master`, use
    `just publish-npm VERSION trusted false` for TypeScript or

@@ -109,12 +109,11 @@ and deliberately update/verify the target measurements; never update checked-in
 PCRs solely to clear ordinary pull-request CI.
 
 The PCR files retain their existing names and signed format. Follow
-[`docs/pcr-compatibility.md`](docs/pcr-compatibility.md) for validation and manual
-publication of identical bytes to the legacy `OpenSecretCloud/opensecret`
-repository. Current Maple SDK defaults read the canonical histories under
-`MaplePrivacyLabs/Maple/master/services/opensecret/`; the legacy raw URLs
-remain available for older installed clients. Keep both locations synchronized
-through the manual compatibility procedure.
+[`docs/pcr-compatibility.md`](docs/pcr-compatibility.md) to validate and verify
+them. Maple SDKs read the signed histories under
+`MaplePrivacyLabs/Maple/master/services/opensecret/`. The copy in
+`OpenSecretCloud/opensecret` is retired: only Transport V1 clients read it, and
+it receives no new approvals.
 
 See [`docs/nitro-deploy.md`](docs/nitro-deploy.md) for operator procedures.
 Changing PCR references or KMS policy, copying artifacts, starting or stopping
