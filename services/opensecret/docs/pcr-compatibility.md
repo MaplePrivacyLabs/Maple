@@ -71,8 +71,9 @@ Build first without credentials, review measurements, then resolve only the
 existing signing key around the signer. Deployment consumes the resulting
 reviewed immutable artifact; it must not rebuild or sign implicitly.
 
-After the `OpenSecret EIF release` workflow's approval branch has merged, or
-after running the operator `update-pcr-*` recipes locally, run the following
+After an approval branch from the `OpenSecret EIF release` or
+`OpenSecret Dev release statement` workflow has merged, or after running the
+operator `update-pcr-*` recipes locally, run the following
 from `services/opensecret/`:
 
 ```sh

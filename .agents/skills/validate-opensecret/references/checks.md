@@ -174,7 +174,8 @@ fails on a mismatch only in an environment whose approval files it edits; a
 master mismatch passes with a notice and the built PCRs, meaning the revision
 awaits approval. The check script exits 3 for a mismatch and with another
 non-zero status for a build failure. This repository's CI signs only in the
-reviewer-gated `OpenSecret EIF release` workflow, never creates GitHub
+reviewer-gated `OpenSecret EIF release` (Production) and
+`OpenSecret Dev release statement` (Dev) workflows, never creates GitHub
 Releases, and never deploys the TEE service.
 Ordinary pull-request completion does not update PCR references.
 Do not copy or sign values just to clear a validation failure; distinguish an
