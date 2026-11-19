@@ -1234,7 +1234,10 @@ const MODEL_CONFIGS: &[ModelConfigEntry] = &[
         Some("552B"),
         Some("16B"),
     )),
-    // An abliterated Kimi K3.1 Pro checkpoint served from Maple's own node. It
+    // Audn's abliterated Kimi K3.1 Pro checkpoint,
+    // audnai/penclaw-Kimi-K3.1-pro-unrestricted at revision
+    // 781d40495beb276fc52d0afd470a5aad1fd5d1bf, served from the measured
+    // release in MaplePrivacyLabs/inference-penclaw on Maple's own node. It
     // keeps the base architecture, tokenizer and chat template, so sampling,
     // reasoning levels and history replay follow the stock entry's Moonshot
     // sources (moonshotai/Kimi-K3.1-Pro model card and quickstart); only

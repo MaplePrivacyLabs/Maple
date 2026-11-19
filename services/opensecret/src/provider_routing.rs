@@ -2520,15 +2520,29 @@ mod tests {
             provider: i04,
             provider_model_id: model.to_owned(),
         };
-        // The state of a guest without an approved release: it has no direct
-        // transport, so it is never ready, while every other provider is.
+        // i04 with its approved release withheld: the client builds no direct
+        // target or transport for it, so it is never ready, while every other
+        // provider is. Readiness comes from the real target selection.
         let unconfigured = proxy_router_with_maple().with_maple_readiness(
-            crate::provider_client::MapleReadiness::for_test_instances(&[
-                MapleInstanceId::I01,
-                MapleInstanceId::I02,
-            ]),
+            crate::provider_client::MapleReadiness::for_test_endpoints(
+                crate::maple_inference::endpoints_with_unpinned_i04(),
+            ),
         );
-        let ready = proxy_router_with_maple();
+        for instance in MapleInstanceId::ALL {
+            assert_eq!(
+                unconfigured.get_maple_proxy(instance).is_some(),
+                instance != MapleInstanceId::I04
+            );
+        }
+        // The compiled guests as pinned: i04 is targeted like the others.
+        let ready = proxy_router_with_maple().with_maple_readiness(
+            crate::provider_client::MapleReadiness::for_test_endpoints(
+                crate::maple_inference::endpoints(),
+            ),
+        );
+        for instance in MapleInstanceId::ALL {
+            assert!(ready.get_maple_proxy(instance).is_some());
+        }
         for surface in [
             InferenceSurface::ChatCompletions,
             InferenceSurface::Responses,
