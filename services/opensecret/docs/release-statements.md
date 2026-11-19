@@ -175,8 +175,11 @@ environment, not the repository:
 | `ATTESTATIONS_R2_ACCESS_KEY_ID_SECRET_ID` | Variable | BWS item ID of the Dev bucket publisher's access key ID |
 | `ATTESTATIONS_R2_SECRET_ACCESS_KEY_SECRET_ID` | Variable | BWS item ID of the Dev bucket publisher's secret access key |
 
-Outside this repository: the signer role trusts only this repository's
-`pcr-signing-dev` environment OIDC subject and may sign only with the Dev key;
+Outside this repository: the signer role can be assumed only by a job whose
+OIDC token matches this repository's `pcr-signing-dev` environment subject, the
+`master` ref, and this workflow file at `master`, and it may sign only with the
+Dev key. Renaming this workflow file therefore stops signing until the role is
+updated;
 the Dev publisher credential can write only `maple-attestations-dev`; and the
 bucket's `attestations-dev.maple.ai` custom domain serves public `GET`/`HEAD`
 with CORS. No zone cache setting may replace the object's
