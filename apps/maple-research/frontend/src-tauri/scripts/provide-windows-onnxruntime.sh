@@ -60,7 +60,7 @@ to_native_path() {
 
 if [ ! -f "${ORT_DLL}" ]; then
   rm -rf "${ORT_ROOT}"
-  onnxruntime_nuget_extract_library "${ORT_VERSION}" "${ORT_NUGET_ENTRY}" "${ORT_DLL}"
+  onnxruntime_nuget_extract_libraries "${ORT_VERSION}" "${ORT_NUGET_ENTRY}" "${ORT_DLL}"
 fi
 
 verify_sha256 "ONNX Runtime DLL" "${ORT_DLL}" "${ORT_DLL_SHA256}"

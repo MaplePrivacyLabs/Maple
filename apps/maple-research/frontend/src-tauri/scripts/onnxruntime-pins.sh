@@ -43,25 +43,28 @@ onnxruntime_linux_aarch64_dylib_sha256_for_version() {
   esac
 }
 
-onnxruntime_macos_universal2_archive_sha256_for_version() {
+# macOS takes one library per architecture from the NuGet package and joins
+# them. Microsoft signs these files separately from the universal library its
+# release archive carried, so the code is the same but the hashes are not.
+onnxruntime_macos_x64_dylib_sha256_for_version() {
   case "$1" in
     1.23.2)
-      printf '%s\n' "49ae8e3a66ccb18d98ad3fe7f5906b6d7887df8a5edd40f49eb2b14e20885809"
+      printf '%s\n' "8c9c78de65ea3786f987c0d980e9c1b13a3a5fbc6b3e2965ba05b450e6e4c054"
       ;;
     *)
-      echo "No pinned macOS universal2 ONNX Runtime archive SHA-256 for version '$1'." >&2
+      echo "No pinned macOS x64 ONNX Runtime dylib SHA-256 for version '$1'." >&2
       return 1
       ;;
   esac
 }
 
-onnxruntime_macos_universal2_dylib_sha256_for_version() {
+onnxruntime_macos_arm64_dylib_sha256_for_version() {
   case "$1" in
     1.23.2)
-      printf '%s\n' "6fee21a0dbcaa98fe082cb4f7ed07ec5def439df36198f47b61dc205e7d2a1fa"
+      printf '%s\n' "d306d2bc768540766c7ed8a1e0ff05d2870c77a934ebeee4a7bafa1b732ef299"
       ;;
     *)
-      echo "No pinned macOS universal2 ONNX Runtime dylib SHA-256 for version '$1'." >&2
+      echo "No pinned macOS arm64 ONNX Runtime dylib SHA-256 for version '$1'." >&2
       return 1
       ;;
   esac
