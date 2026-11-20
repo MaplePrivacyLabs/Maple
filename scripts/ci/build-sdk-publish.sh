@@ -88,6 +88,8 @@ nix develop --no-update-lock-file ./sdk -c bash -euo pipefail -c '
       bun --no-env-file pm pack --ignore-scripts --filename "${build_dir}/package.tgz"
       python3 -I "${repo_root}/scripts/ci/check-sdk-package-consumers.py" \
         "${build_dir}/sdk" "${build_dir}/package.tgz"
+      python3 -I "${repo_root}/scripts/ci/check-sdk-packed-release-evidence.py" \
+        "${build_dir}/sdk" "${build_dir}/package.tgz"
       cp "${build_dir}/package.tgz" "${output_dir}/package.tgz"
       ;;
     rust)

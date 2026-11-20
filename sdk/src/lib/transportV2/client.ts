@@ -9,6 +9,11 @@ import {
 } from "../attestation";
 import { requireTrustedPcr0, snapshotPcrConfig, type PcrConfig } from "../pcr";
 import {
+  observeReleaseEvidence,
+  releaseEvidenceObservationFromPcrs,
+  type ReleaseEvidenceObservation
+} from "../releaseEvidence/observe";
+import {
   attestationUserData,
   deriveTransportV2SessionKeys,
   type TransportV2SessionKeys
@@ -94,24 +99,48 @@ async function localDocument(encodedDocument: string): Promise<AttestationDocume
   return parseDocumentPayload(parsed.payload);
 }
 
+type ReleaseEvidenceObserver = (observation: ReleaseEvidenceObservation) => Promise<unknown>;
+
 /** @internal Dependency boundary for PCR-gate ordering tests. */
 export interface TransportV2AttestationVerificationDependencies {
   isLocalDevelopmentApiUrl: typeof isLocalDevelopmentApiUrl;
   authenticateDocument: typeof authenticateBytes;
   parseLocalDocument: typeof localDocument;
   requireTrustedPcr0: typeof requireTrustedPcr0;
+  /** Absent means no observation, as in the existing ordering tests. */
+  observeReleaseEvidence?: ReleaseEvidenceObserver;
 }
 
 const defaultVerificationDependencies: TransportV2AttestationVerificationDependencies = {
   isLocalDevelopmentApiUrl,
   authenticateDocument: authenticateBytes,
   parseLocalDocument: localDocument,
-  requireTrustedPcr0
+  requireTrustedPcr0,
+  observeReleaseEvidence
 };
 
 /**
+ * Starts the report-only release-evidence observation and returns at once.
+ * The session never waits for it, and whatever it throws or rejects with is
+ * dropped here; the observer logs its own result. Starting it from a resolved
+ * promise turns a synchronous throw into a rejection, so one catch covers both.
+ */
+function observeWithoutWaiting(
+  observer: ReleaseEvidenceObserver,
+  observation: ReleaseEvidenceObservation
+): void {
+  const observing = Promise.resolve().then(() => observer(observation));
+  observing.catch(() => {
+    // The observation cannot affect the session, and must not surface as an
+    // unhandled rejection.
+  });
+}
+
+/**
  * Verifies the complete Nitro document and PCR policy before returning the
- * attested server key. Exported only for deterministic security tests.
+ * attested server key. For a remote enclave that passes, it also starts the
+ * report-only release-evidence observation, which may fetch the release
+ * bundle in the background. Exported only for deterministic security tests.
  */
 export async function verifyTransportV2AttestationDocumentWithDependencies(
   encodedDocument: string,
@@ -136,8 +165,19 @@ export async function verifyTransportV2AttestationDocumentWithDependencies(
   if (!document.user_data || !equalBytes(document.user_data, expectedUserData)) {
     throw new TransportV2ProtocolError("Transport v2 attestation client key binding is invalid.");
   }
+  // A loopback development server's document is not authenticated, so it gets
+  // neither the PCR gate nor a release-evidence observation.
   if (!local) {
     await dependencies.requireTrustedPcr0(document.pcrs, pcrConfig);
+    const observer = dependencies.observeReleaseEvidence;
+    const observing = observer !== undefined;
+    if (observing) {
+      // The caller passes a snapshotPcrConfig result, which always names the
+      // environment; an unset one means production there as well.
+      const environment = pcrConfig.environment ?? "production";
+      const observation = releaseEvidenceObservationFromPcrs(document.pcrs, environment);
+      observeWithoutWaiting(observer, observation);
+    }
   }
   return new Uint8Array(document.public_key);
 }

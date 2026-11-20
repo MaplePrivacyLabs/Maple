@@ -322,6 +322,7 @@ LANES: Tuple[Lane, ...] = (
     Lane("sdk-ts", SDK_TS + ("sdk/.prettierrc.json", "sdk/.prettierignore", "sdk/eslint.config.js", "sdk/justfile",
                              "sdk/.env.example", "sdk/LICENSE.md", "scripts/ci/build-sdk-publish.sh",
                              "scripts/ci/check-sdk-package-consumers.py",
+                             "scripts/ci/check-sdk-packed-release-evidence.py",
                              "scripts/ci/opensecret-release/dev-signing-key.pem",
                              "scripts/ci/opensecret-release/trusted_root.json"),
          runner=GITHUB, run='./scripts/ci/build-sdk-publish.sh npm "$(mktemp -d)"', hook="sdk_ts"),
