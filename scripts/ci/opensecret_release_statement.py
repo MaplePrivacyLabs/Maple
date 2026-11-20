@@ -725,10 +725,12 @@ def check_timestamps(timestamps, signature):
 
 
 def cosign_verify(cosign, bundle, key_path, eif):
+    # Cosign refuses to hash a blob over 128 MiB unless this variable raises its
+    # limit, and a real EIF is larger. Allow exactly what prepare accepts.
     subprocess.run([
         str(cosign), "verify-blob-attestation", "--bundle", str(bundle), "--key", str(key_path),
         "--type", PREDICATE_TYPE, "--use-signed-timestamps", "--trusted-root", str(TRUSTED_ROOT), str(eif),
-    ], check=True, env=clean_env())
+    ], check=True, env=clean_env(COSIGN_MAX_ATTACHMENT_SIZE=str(MAX_EIF_BYTES)))
 
 
 def verify_bundle(bundle, statement, key_path, public_der, eif, cosign):

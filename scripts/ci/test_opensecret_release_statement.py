@@ -586,7 +586,7 @@ else:
 FAKE_COSIGN = r'''
 import json, os, shutil, sys
 args = sys.argv[1:]
-env = {key: value for key, value in os.environ.items() if key.startswith(("AWS_", "TUF_"))}
+env = {key: value for key, value in os.environ.items() if key.startswith(("AWS_", "TUF_", "COSIGN_"))}
 token = env.get("AWS_WEB_IDENTITY_TOKEN_FILE")
 with (STATE / "cosign.log").open("a") as log:
     log.write(json.dumps({"args": args, "env": env,
@@ -1315,6 +1315,16 @@ class SignTests(unittest.TestCase):
             "--key", str(self.work.repo / DEV_PUBLIC_KEY),
             "--type", release.PREDICATE_TYPE, "--use-signed-timestamps", "--trusted-root", str(release.TRUSTED_ROOT),
             str(self.work.candidate / "image.eif")])
+
+    def test_cosign_may_verify_an_eif_as_large_as_prepare_accepts(self):
+        # Cosign's own default stops at 128 MiB, which a real EIF exceeds: the
+        # first Dev run signed and then could not verify what it had signed.
+        self.work.signed_bundle()
+        self.sign()
+        verify = self.work.log("cosign")[2]
+        self.assertEqual(verify["args"][0], "verify-blob-attestation")
+        self.assertGreater(release.MAX_EIF_BYTES, 128 * 1024 * 1024)
+        self.assertEqual(verify["env"]["COSIGN_MAX_ATTACHMENT_SIZE"], str(release.MAX_EIF_BYTES))
 
     def test_only_the_role_assumed_through_github_oidc_reaches_kms(self):
         self.work.signed_bundle()
