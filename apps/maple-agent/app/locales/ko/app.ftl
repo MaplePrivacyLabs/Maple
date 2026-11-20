@@ -1531,6 +1531,9 @@ chat-question-label = Maple의 질문
 chat-permission-label = 이 동작을 허용할까요?
 chat-permission-allow = 한 번 허용
 chat-permission-deny = 거부
+chat-permission-note-placeholder = 또는 Maple에게 대신 할 일을 알려주세요…
+# $mode is the name of the task's permission mode, for example Auto.
+chat-permission-mode-hint = '{ $mode }' 모드는 이런 동작을 하기 전에 물어봐요
 chat-permission-reason-secrets = 비밀 정보 또는 자격 증명을 읽어요.
 chat-permission-reason-secrets-leaving = 비밀 정보를 이 컴퓨터 밖으로 보낼 수 있어요.
 chat-permission-reason-sends-out = 이 컴퓨터 밖으로 무언가를 보내거나 게시해요.

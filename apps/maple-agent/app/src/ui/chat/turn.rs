@@ -59,7 +59,9 @@ impl TurnRow {
 pub(super) struct Chunk {
     end: usize,
     icons: Vec<(&'static str, usize)>,
-    states: [usize; 4],
+    /// How many of the chunk's steps are in each state. A step waiting on
+    /// the user, or refused, still counts by its call's own status.
+    states: [usize; step::StepState::Denied as usize + 1],
 }
 
 impl Chunk {
@@ -560,14 +562,23 @@ pub(super) fn render_chunk(
     chunk: &Chunk,
     open: bool,
     live: bool,
+    // One of the chunk's calls waits for the user to allow it. Folded, the
+    // step that says so is hidden, so the header says it.
+    waiting: bool,
     chat: &gpui::WeakEntity<ChatScreen>,
     messages: &MessageCache,
 ) -> Div {
     let label = messages.get("chat-activity-steps", [("count", chunk.count().into())]);
-    let status = chunk.state(live).map(|state| {
+    let state = if waiting {
+        Some(step::StepState::Waiting)
+    } else {
+        chunk.state(live)
+    };
+    let status = state.map(|state| {
         let (key, ink) = match state {
             step::StepState::Failed => ("chat-status-failed", theme::status_error()),
             step::StepState::Stopped => ("chat-status-stopped", theme::text_muted()),
+            step::StepState::Waiting => ("chat-status-waiting", theme::accent_ink()),
             _ => ("chat-status-running", theme::text_muted()),
         };
         let id = SharedString::from(format!("activity-status-{lead}"));
@@ -843,6 +854,66 @@ impl ChatScreen {
                 timed.lead = Some(new.to_owned());
             }
         }
+        if let Some(allowed) = self.step_permissions.remove(old) {
+            self.step_permissions.insert(new.to_owned(), allowed);
+        }
+    }
+
+    /// The permission request on screen, if the question card shows one.
+    pub(super) fn current_permission(&self) -> Option<&maple_agent::agent::AgentPermissionPrompt> {
+        self.current_question()?
+            .questions
+            .iter()
+            .find_map(|entry| entry.permission.as_ref())
+    }
+
+    /// The tool call the permission request on screen is about. The
+    /// request names its tool and what the call would do, not the call,
+    /// and every call of a reply is on screen as running before any is
+    /// asked about. So the call is the turn's one unanswered call with
+    /// that tool and that action. Where two could be meant, none is
+    /// marked: a wrong step would keep an answer that was not its own.
+    pub(super) fn waiting_step(&self) -> Option<usize> {
+        let prompt = self.current_permission()?;
+        let mut meant = self
+            .timeline
+            .iter()
+            .enumerate()
+            .rev()
+            .take_while(|(_, item)| !starts_turn(item))
+            .filter(|(_, item)| {
+                is_tool(item)
+                    && step::StepState::of(item.status.as_deref()) == step::StepState::Running
+                    && !self.step_permissions.contains_key(&item.id)
+                    && item.label.as_ref().and_then(|label| label.name.as_deref())
+                        == Some(prompt.tool.as_str())
+                    // An input with no command, path, url or query has
+                    // nothing to compare; the tool alone decides.
+                    && call_action(item).is_none_or(|action| same_action(&prompt.action, action))
+            });
+        let (index, _) = meant.next()?;
+        meant.next().is_none().then_some(index)
+    }
+
+    /// The user answered a permission request: the call it was about keeps
+    /// what they said for as long as this view shows the task.
+    pub(super) fn settle_permission(&mut self, question: &crate::backend::PendingQuestion) {
+        let Some(asked) = question
+            .questions
+            .iter()
+            .position(|entry| entry.permission.is_some())
+        else {
+            return;
+        };
+        let Some(call) = self.waiting_step().and_then(|step| self.timeline.get(step)) else {
+            return;
+        };
+        // Only the first option, "Allow once", lets the call run.
+        let allowed = self
+            .question_selected
+            .get(&asked)
+            .is_some_and(|selection| selection.picked.contains(&0));
+        self.step_permissions.insert(call.id.clone(), allowed);
     }
 
     /// Paint once a second while a run is timed, so the time on its line
@@ -869,6 +940,24 @@ impl ChatScreen {
         })
         .detach();
     }
+}
+
+/// What a call would do, as a permission request words it: the first of
+/// these fields its input has.
+fn call_action(item: &AgentTimelineItem) -> Option<&str> {
+    let input = item.input.as_ref()?;
+    ["command", "path", "url", "query"]
+        .into_iter()
+        .find_map(|field| input.get(field)?.as_str())
+}
+
+/// Whether the action a request shows is the call's. The request cuts the
+/// middle out of a long one and says so on a line of its own.
+fn same_action(shown: &str, full: &str) -> bool {
+    shown == full
+        || shown.split_once("\n[").is_some_and(|(start, _)| {
+            !start.is_empty() && full.len() > shown.len() && full.starts_with(start)
+        })
 }
 
 #[cfg(test)]

@@ -2154,6 +2154,63 @@ mod state_tests {
         });
     }
 
+    /// A permission request is about the call still running, and that
+    /// call keeps what the user answered.
+    #[gpui::test]
+    fn test_a_call_keeps_what_the_user_said_to_its_permission_request(cx: &mut TestAppContext) {
+        cx.executor().allow_parking();
+        let screen = screen(cx);
+        screen.update(cx, |this, cx| {
+            this.selected_session = Some("s1".to_string());
+            let call = |id: &str, status: &str, command: &str| AgentTimelineItem {
+                status: Some(status.to_string()),
+                label: Some(maple_agent::agent::AgentTimelineLabel {
+                    kind: "tool".to_string(),
+                    name: Some("bash".to_string()),
+                    detail: Some(command.to_string()),
+                }),
+                input: Some(serde_json::json!({ "command": command })),
+                ..item(id, "tool", None)
+            };
+            // One reply made these calls. All are on screen as running
+            // before any is asked about.
+            this.replace_timeline(vec![
+                user_item("u1", "Push it"),
+                call("read", "completed", "cat notes.txt"),
+                call("push", "running", "git push"),
+                call("list", "running", "ls"),
+            ]);
+            assert_eq!(this.waiting_step(), None, "nothing waits before a request");
+
+            this.handle_service_event(permission_event("p1"), cx);
+            assert_eq!(
+                this.waiting_step(),
+                Some(2),
+                "the request is about the call that would do what it says, not the newest"
+            );
+            this.toggle_question_option(0, 0, cx);
+            assert_eq!(this.step_permissions.get("push"), Some(&true));
+
+            // The same command again is the next call's; it is refused,
+            // and the earlier answer stays.
+            this.apply_incoming_item("s1", call("again", "running", "git push"), cx);
+            this.handle_service_event(permission_event("p2"), cx);
+            assert_eq!(this.waiting_step(), Some(4));
+            this.toggle_question_option(0, 1, cx);
+            assert_eq!(this.step_permissions.get("again"), Some(&false));
+            assert_eq!(this.step_permissions.get("push"), Some(&true));
+
+            // Two calls the request could mean: neither is marked, and
+            // neither keeps the answer.
+            this.apply_incoming_item("s1", call("third", "running", "git push"), cx);
+            this.apply_incoming_item("s1", call("fourth", "running", "git push"), cx);
+            this.handle_service_event(permission_event("p3"), cx);
+            assert_eq!(this.waiting_step(), None);
+            this.toggle_question_option(0, 0, cx);
+            assert_eq!(this.step_permissions.len(), 2);
+        });
+    }
+
     /// A permission card and its notification are worded in the interface's
     /// language, and the answer stays the runtime's label in any language.
     #[gpui::test]
