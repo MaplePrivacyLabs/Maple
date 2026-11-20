@@ -116,10 +116,15 @@ pub(super) struct Turns {
     chunks: HashMap<usize, Chunk>,
     /// First step of the latest user turn, kept stable for its clock.
     tail: Option<usize>,
+    /// The reply that ends a turn, by its row, with the turn's lead: the
+    /// last message from Maple after the turn's last step.
+    replies: HashMap<usize, usize>,
+    /// The reply of the turn at the end, while no step has followed it.
+    tail_reply: Option<usize>,
     chunk: Option<usize>,
 }
 
-fn starts_turn(item: &AgentTimelineItem) -> bool {
+pub(super) fn starts_turn(item: &AgentTimelineItem) -> bool {
     item.item_type == "message" && item.role.as_deref() == Some("user")
 }
 
@@ -176,6 +181,8 @@ impl Turns {
         self.chunks.clear();
         self.chunk = None;
         self.tail = None;
+        self.replies.clear();
+        self.tail_reply = None;
         for item in timeline {
             self.push(item);
         }
@@ -188,6 +195,7 @@ impl Turns {
         let row = if starts_turn {
             self.tail = None;
             self.chunk = None;
+            self.tail_reply = None;
             TurnRow::Plain
         } else if !is_step {
             // Hidden plans and empty streamed messages do not separate
@@ -195,16 +203,33 @@ impl Turns {
             if breaks_chunk {
                 self.chunk = None;
             }
+            // What Maple says after the turn's steps is its reply, until
+            // it says more or takes another step. A message with nothing
+            // in it yet draws no row, so it cannot carry the card.
+            if let Some(lead) = self.tail
+                && breaks_chunk
+                && item.item_type == "message"
+            {
+                if let Some(earlier) = self.tail_reply.replace(index) {
+                    self.replies.remove(&earlier);
+                }
+                self.replies.insert(index, lead);
+            }
             TurnRow::Plain
-        } else if let Some(lead) = self.chunk {
-            TurnRow::Step(lead)
         } else {
-            self.chunk = Some(index);
-            if self.tail.is_none() {
-                self.tail = Some(index);
-                TurnRow::Lead
+            if let Some(reply) = self.tail_reply.take() {
+                self.replies.remove(&reply);
+            }
+            if let Some(lead) = self.chunk {
+                TurnRow::Step(lead)
             } else {
-                TurnRow::Chunk
+                self.chunk = Some(index);
+                if self.tail.is_none() {
+                    self.tail = Some(index);
+                    TurnRow::Lead
+                } else {
+                    TurnRow::Chunk
+                }
             }
         };
         if let Some(lead) = row.lead(index) {
@@ -221,6 +246,29 @@ impl Turns {
 
     pub(super) fn tail(&self) -> Option<usize> {
         self.tail
+    }
+
+    /// The lead of the turn the row at `row` is the reply of.
+    pub(super) fn reply_of(&self, row: usize) -> Option<usize> {
+        self.replies.get(&row).copied()
+    }
+
+    /// The reply of the turn at the end, if it has one yet.
+    pub(super) fn tail_reply(&self) -> Option<usize> {
+        self.tail_reply
+    }
+
+    /// The lead of the turn the step at `index` belongs to. A chunk's own
+    /// lead is not its turn's unless it is the turn's first.
+    pub(super) fn turn_of(&self, index: usize) -> Option<usize> {
+        match self.tail {
+            Some(tail) if index >= tail => Some(tail),
+            _ => self
+                .rows
+                .get(..=index)?
+                .iter()
+                .rposition(|row| *row == TurnRow::Lead),
+        }
     }
 
     pub(super) fn chunk(&self, lead: usize) -> Option<&Chunk> {
@@ -804,6 +852,16 @@ impl ChatScreen {
     /// the turn it was working on keeps how long it worked. A run that
     /// waits on the user holds its time.
     pub(super) fn sync_run_clocks(&mut self) {
+        // Once its turn is over, a reply may carry the card of what the
+        // turn changed: that row is taller from then on, so measure it
+        // again the first time it is seen settled.
+        let running = self.turns.tail().is_some_and(|lead| self.turn_runs(lead));
+        let settled = self.turns.tail_reply().filter(|_| !running);
+        if std::mem::replace(&mut self.settled_reply, settled) != settled
+            && let Some(reply) = settled
+        {
+            self.list_state.remeasure_items(reply..reply + 1);
+        }
         if self.run_clocks.is_empty() {
             return;
         }
@@ -856,6 +914,10 @@ impl ChatScreen {
         }
         if let Some(allowed) = self.step_permissions.remove(old) {
             self.step_permissions.insert(new.to_owned(), allowed);
+        }
+        self.turn_changes.forget(old);
+        if let Some(open) = self.open_changes.remove(old) {
+            self.open_changes.insert(new.to_owned(), open);
         }
     }
 
@@ -1038,11 +1100,76 @@ mod tests {
         }
         assert_eq!(live.rows, snapshot.rows);
         assert_eq!(live.tail, snapshot.tail);
+        assert_eq!(live.replies, snapshot.replies);
         // A window that starts mid-turn leads with its first loaded step.
         assert_eq!(snapshot.row(0), TurnRow::Lead);
         // A new message from the user starts a turn with no line yet.
         live.push(&item("message", Some("user")));
         assert_eq!(live.tail(), None);
+    }
+
+    #[test]
+    fn a_later_chunk_belongs_to_its_turns_first_step() {
+        let said = || AgentTimelineItem {
+            text: Some("Checking the result.".into()),
+            ..item("message", Some("assistant"))
+        };
+        let mut turns = Turns::default();
+        turns.rebuild(&[
+            item("message", Some("user")),
+            item("tool", None),
+            said(),
+            item("tool", None),
+            item("message", Some("user")),
+            item("tool", None),
+            said(),
+            item("tool", None),
+        ]);
+        assert_eq!(turns.row(3), TurnRow::Chunk);
+        assert_eq!(turns.turn_of(3), Some(1));
+        assert_eq!(turns.turn_of(7), Some(5));
+        // The reply after a later chunk still ends the whole turn.
+        turns.push(&said());
+        assert_eq!(turns.reply_of(8), Some(5));
+    }
+
+    #[test]
+    fn a_turns_reply_is_what_maple_says_after_its_last_step() {
+        let said = || AgentTimelineItem {
+            text: Some("Done.".into()),
+            ..item("message", Some("assistant"))
+        };
+        let mut turns = Turns::default();
+        turns.rebuild(&[
+            item("message", Some("user")),
+            // Said before any step: not a reply to carry what changed.
+            said(),
+            item("tool", None),
+            said(),
+        ]);
+        assert_eq!(turns.reply_of(1), None);
+        assert_eq!(turns.reply_of(3), Some(2));
+        // Another step: the turn is not over, and what was said is no
+        // longer its last word.
+        turns.push(&item("tool", None));
+        assert_eq!(turns.reply_of(3), None);
+        turns.push(&said());
+        assert_eq!(turns.reply_of(5), Some(2));
+        assert_eq!(turns.tail_reply(), Some(5));
+        // A plain turn has no steps, so nothing to list.
+        turns.push(&item("message", Some("user")));
+        turns.push(&said());
+        assert_eq!(turns.reply_of(7), None);
+        // A message that is still empty draws nothing, so the reply before
+        // it keeps the card.
+        let mut turns = Turns::default();
+        turns.rebuild(&[
+            item("tool", None),
+            said(),
+            item("message", Some("assistant")),
+        ]);
+        assert_eq!(turns.reply_of(1), Some(0));
+        assert_eq!(turns.tail_reply(), Some(1));
     }
 
     #[test]

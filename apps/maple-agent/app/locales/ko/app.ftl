@@ -1556,6 +1556,8 @@ chat-turn-worked = 작업 완료
 chat-turn-worked-seconds = { $seconds }초 동안 작업했어요
 # $minutes is a whole number of minutes; $seconds is the rest, under 60.
 chat-turn-worked-minutes = { $minutes }분 { $seconds }초 동안 작업했어요
+# $count is the number of files a turn changed.
+chat-turn-files-changed = 파일 { $count }개 변경됨
 # $count is the number of tool and thinking steps in one activity chunk.
 chat-activity-steps = 단계 { $count }개
 chat-settings = 설정
