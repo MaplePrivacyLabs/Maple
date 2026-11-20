@@ -2446,7 +2446,13 @@ impl Sidebar {
                 let rename_field = self.other_task_rename_field(&task.target, cx);
                 let renaming = rename_field.is_some();
                 let pin_target = TaskTarget::Other(task.target.clone());
-                let row_bg = if selected {
+                // An open menu holds the row in its hover fill.
+                let menu_open = self
+                    .popup
+                    .is_open(&SidebarPopup::OtherTask(task.target.clone()));
+                let row_bg = if menu_open {
+                    hover_bg
+                } else if selected {
                     theme::bg_sidebar_row_hover()
                 } else {
                     theme::bg_sidebar()
@@ -2459,6 +2465,10 @@ impl Sidebar {
                     .group(task.id.clone())
                     .role(gpui::Role::ListBoxOption)
                     .aria_label(task.title.clone())
+                    .when_some(
+                        self.activity_description(task.activity, &task.metadata),
+                        |row, text| row.aria_description(text),
+                    )
                     .aria_selected(false)
                     .mx_2()
                     .my(px(1.))
@@ -2477,6 +2487,7 @@ impl Sidebar {
                     })
                     .hover_bg(gpui::rgb(hover_bg))
                     .when(dragging || renaming, |row| row.highlighted(false))
+                    .when(menu_open, |row| row.highlighted(true))
                     .when(!(dragging || renaming), |row| {
                         row.hover(|style| style.cursor_pointer())
                     })
@@ -2492,7 +2503,10 @@ impl Sidebar {
                             .map(|column| match rename_field {
                                 Some(field) => column.child(field),
                                 None => column.child(row_line(
-                                    task.title.clone(),
+                                    task_title(
+                                        &task.title,
+                                        task.activity == Some(SessionActivity::Running),
+                                    ),
                                     hover_group,
                                     row_bg,
                                     hover_bg,
@@ -2516,6 +2530,7 @@ impl Sidebar {
                                 &task.row.group,
                                 "pin",
                                 tr("chat-unpin-task"),
+                                false,
                             )
                             .opacity(1.)
                             .tooltip(widgets::tooltip(tr("chat-unpin"), None))

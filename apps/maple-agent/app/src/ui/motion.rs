@@ -34,6 +34,13 @@ use gpui::{
 /// second still read as motion at a fraction of the display rate.
 pub const LOOP_FPS: u32 = 15;
 
+/// One breath of a running task's grey dot in the sidebar: calm, so a
+/// sidebar of running tasks does not flicker.
+pub const RUNNING_BREATH: Duration = Duration::from_millis(2400);
+/// One cycle of the band across a running task's title: a pass, then a
+/// rest, two breaths of [`RUNNING_BREATH`] so the dot and band keep step.
+pub const RUNNING_SHINE: Duration = Duration::from_millis(4800);
+
 /// One kind of motion. Everything of that kind takes its timing from the
 /// token, so editing a token here retunes every animation that uses it.
 ///

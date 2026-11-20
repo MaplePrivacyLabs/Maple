@@ -250,6 +250,15 @@ tokens! {
     bg_sidebar_row_hover: 0x32323a, 0xe8e8ed;
     bg_sidebar_row_selected: 0x3a3a44, 0xd1d2dc;
     bg_sidebar_row_selected_hover: 0x43434e, 0xc5c6d1;
+    /// A running task's breathing dot: Pebble 300 on dark, Pebble 500 on
+    /// light, where a lighter grey vanished on the selected row.
+    sidebar_running: 0xbabccb, 0x8c8d96;
+    /// The band that crosses a running task's title on dark (Pebble 50).
+    /// Light does not shine: it has no ink brighter than its text.
+    sidebar_running_shine: 0xf7f7f9, 0x171717;
+    /// The dot of a task that finished while unseen: a clearer success
+    /// green than `status_success`'s olive, which read as dull at 8 px.
+    sidebar_finished: 0x4fc298, 0x18a44e;
 
     /// Display headings (Array face): pebble-300 on dark, pebble-800 on
     /// light, as the brand kit sets its section titles.
@@ -297,6 +306,17 @@ pub fn overlay_hover() -> gpui::Hsla {
         gpui::hsla(0., 0., 0., 0.06)
     } else {
         gpui::hsla(0., 0., 1., 0.08)
+    }
+}
+
+/// Translucent fill for a pressed control over any surface: one step past
+/// [`overlay_hover`], so a press always reads darker (lighter on dark)
+/// than the hover and the row beneath, whatever that row's own state.
+pub fn overlay_press() -> gpui::Hsla {
+    if is_light() {
+        gpui::hsla(0., 0., 0., 0.11)
+    } else {
+        gpui::hsla(0., 0., 1., 0.14)
     }
 }
 
