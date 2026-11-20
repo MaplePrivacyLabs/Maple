@@ -8,10 +8,11 @@ use crate::model_config::{
     DECISION_LARGE_MODEL_ID, DECISION_MEDIUM_MODEL_ID, DECISION_SMALL_MODEL_ID,
     DEEPSEEK_V4_1_FLASH_MODEL_ID, DEEPSEEK_V4_1_FLASH_UNCENSORED_MODEL_ID, GLM_5_3_FLASH_MODEL_ID,
     GLM_5_3_MODEL_ID, GPT_OSS_120B_MODEL_ID, INKLING_2_SMALL_MODEL_ID, KIMI_K3_1_PRO_MODEL_ID,
+    KIMI_K3_1_PRO_UNCENSORED_MODEL_ID,
 };
 
 pub(crate) const SHADOW_ROUTING_POLICY_VERSION: &str = "routing-v2-weighted-v8";
-pub(crate) const MAPLE_ROUTING_POLICY_VERSION: &str = "routing-v2-maple-instances-v9";
+pub(crate) const MAPLE_ROUTING_POLICY_VERSION: &str = "routing-v2-maple-instances-v10";
 
 /// A backend-owned dedicated inference deployment. Its identity is internal to
 /// routing; customer pricing and accounting continue to use the Maple family.
@@ -19,10 +20,11 @@ pub(crate) const MAPLE_ROUTING_POLICY_VERSION: &str = "routing-v2-maple-instance
 pub(crate) enum MapleInstanceId {
     I01,
     I02,
+    I03,
 }
 
 impl MapleInstanceId {
-    pub(crate) const ALL: [Self; 2] = [Self::I01, Self::I02];
+    pub(crate) const ALL: [Self; 3] = [Self::I01, Self::I02, Self::I03];
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
@@ -40,6 +42,7 @@ impl ProviderId {
             Self::Continuum => "continuum",
             Self::Maple(MapleInstanceId::I01) => "maple-i01",
             Self::Maple(MapleInstanceId::I02) => "maple-i02",
+            Self::Maple(MapleInstanceId::I03) => "maple-i03",
         }
     }
 
@@ -62,6 +65,7 @@ impl ProviderId {
             "continuum" => Some(Self::Continuum),
             "maple-i01" => Some(Self::Maple(MapleInstanceId::I01)),
             "maple-i02" => Some(Self::Maple(MapleInstanceId::I02)),
+            "maple-i03" => Some(Self::Maple(MapleInstanceId::I03)),
             _ => None,
         }
     }
@@ -174,6 +178,11 @@ const PROVIDERS: &[ProviderSpec] = &[
         weight: 100,
         enabled: true,
     },
+    ProviderSpec {
+        id: ProviderId::Maple(MapleInstanceId::I03),
+        weight: 100,
+        enabled: true,
+    },
 ];
 
 const GPT_OSS_120B_ROUTES: &[ModelRouteSpec] = &[ModelRouteSpec {
@@ -196,6 +205,16 @@ const KIMI_K3_1_PRO_ROUTES: &[ModelRouteSpec] = &[ModelRouteSpec {
     provider: ProviderId::Tinfoil,
     provider_model_id: KIMI_K3_1_PRO_MODEL_ID,
     response_model_id: KIMI_K3_1_PRO_MODEL_ID,
+    weight: 100,
+    enabled: true,
+}];
+
+// A distinct checkpoint served only by dedicated i03, under its public name.
+// Stock Kimi on shared Tinfoil is not a fallback for it, nor it for stock Kimi.
+const KIMI_K3_1_PRO_UNCENSORED_ROUTES: &[ModelRouteSpec] = &[ModelRouteSpec {
+    provider: ProviderId::Maple(MapleInstanceId::I03),
+    provider_model_id: KIMI_K3_1_PRO_UNCENSORED_MODEL_ID,
+    response_model_id: KIMI_K3_1_PRO_UNCENSORED_MODEL_ID,
     weight: 100,
     enabled: true,
 }];
@@ -320,6 +339,12 @@ const DUAL_INSTANCE_TEST_ROUTES: &[ModelRouteSpec] = &[
     },
 ];
 
+/// The two replicas in `DUAL_INSTANCE_TEST_ROUTES`. Guests outside this pair
+/// serve other models and take no part in the synthetic registry.
+#[cfg(test)]
+pub(crate) const DUAL_INSTANCE_TEST_INSTANCES: [MapleInstanceId; 2] =
+    [MapleInstanceId::I01, MapleInstanceId::I02];
+
 #[cfg(test)]
 const DUAL_INSTANCE_TEST_MODELS: &[CompletionModelSpec] = &[completion_model(
     DEEPSEEK_V4_1_FLASH_MODEL_ID,
@@ -361,6 +386,10 @@ const COMPLETION_MODELS: &[CompletionModelSpec] = &[
     completion_model(GPT_OSS_120B_MODEL_ID, GPT_OSS_120B_ROUTES),
     completion_model("gemma4-31b", GEMMA4_31B_ROUTES),
     completion_model(KIMI_K3_1_PRO_MODEL_ID, KIMI_K3_1_PRO_ROUTES),
+    completion_model(
+        KIMI_K3_1_PRO_UNCENSORED_MODEL_ID,
+        KIMI_K3_1_PRO_UNCENSORED_ROUTES,
+    ),
     completion_model(INKLING_2_SMALL_MODEL_ID, INKLING_2_SMALL_ROUTES),
     completion_model(GLM_5_3_MODEL_ID, GLM_5_3_ROUTES),
     completion_model(GLM_5_3_FLASH_MODEL_ID, GLM_5_3_FLASH_ROUTES),
@@ -446,14 +475,58 @@ mod tests {
     }
 
     #[test]
+    fn uncensored_kimi_is_distinct_and_has_only_i03_without_stock_fallback() {
+        let i03 = ProviderId::Maple(MapleInstanceId::I03);
+        let uncensored = PROVIDER_REGISTRY
+            .completion_model(KIMI_K3_1_PRO_UNCENSORED_MODEL_ID)
+            .unwrap();
+        assert_eq!(uncensored.routes.len(), 1);
+        let route = uncensored.routes[0];
+        assert_eq!(route.provider, i03);
+        assert_eq!(route.provider_model_id, "kimi-k3-1-pro-uncensored");
+        assert_eq!(route.response_model_id, "kimi-k3-1-pro-uncensored");
+        assert_eq!(route.weight, 100);
+        assert!(route.enabled);
+        let provider = PROVIDER_REGISTRY.provider(i03).unwrap();
+        assert_eq!(provider.weight, 100);
+        assert!(provider.enabled);
+
+        let stock = PROVIDER_REGISTRY
+            .completion_model(KIMI_K3_1_PRO_MODEL_ID)
+            .unwrap();
+        assert_eq!(stock.routes.len(), 1);
+        assert_eq!(stock.routes[0].provider, ProviderId::Tinfoil);
+        assert_eq!(stock.routes[0].provider_model_id, KIMI_K3_1_PRO_MODEL_ID);
+
+        // The guest serves this one model, and no other model names its checkpoint.
+        for model in PROVIDER_REGISTRY.completion_models() {
+            let is_uncensored = model.public_model_id == KIMI_K3_1_PRO_UNCENSORED_MODEL_ID;
+            for route in model.routes {
+                assert_eq!(route.provider == i03, is_uncensored);
+                assert_eq!(
+                    route.provider_model_id == KIMI_K3_1_PRO_UNCENSORED_MODEL_ID,
+                    is_uncensored
+                );
+            }
+        }
+    }
+
+    #[test]
     fn internal_instance_identity_is_distinct_from_logical_provider_family() {
+        let mut names = BTreeSet::new();
         for instance in MapleInstanceId::ALL {
             let provider = ProviderId::Maple(instance);
             assert!(provider.is_maple());
             assert_eq!(provider.family_name(), "maple");
             assert_eq!(ProviderId::from_name(provider.as_str()), Some(provider));
             assert_ne!(provider.as_str(), provider.family_name());
+            assert!(names.insert(provider.as_str()));
+            assert!(PROVIDER_REGISTRY.provider(provider).is_some());
         }
+        assert_eq!(
+            names,
+            BTreeSet::from(["maple-i01", "maple-i02", "maple-i03"])
+        );
         assert_ne!(
             ProviderId::Maple(MapleInstanceId::I01),
             ProviderId::Maple(MapleInstanceId::I02)
@@ -463,12 +536,22 @@ mod tests {
             assert_eq!(provider.family_name(), provider.as_str());
             assert_eq!(ProviderId::from_name(provider.as_str()), Some(provider));
         }
+        assert_eq!(
+            ProviderId::from_name("maple-i03"),
+            Some(ProviderId::Maple(MapleInstanceId::I03))
+        );
+        // There is no i04 guest; a name is valid only when a guest is compiled in.
         for name in [
             "maple",
-            "maple-i03",
+            "maple-i04",
+            "maple-i05",
+            "maple-i3",
             "maple-i01.evil",
+            "maple-i03.evil",
             "MAPLE-I01",
+            "MAPLE-I03",
             "https://i01.tfinf.maple.ai",
+            "i03.tfinf.maple.ai",
         ] {
             assert_eq!(ProviderId::from_name(name), None);
         }
@@ -518,6 +601,7 @@ mod tests {
                 GPT_OSS_120B_MODEL_ID,
                 "gemma4-31b",
                 KIMI_K3_1_PRO_MODEL_ID,
+                KIMI_K3_1_PRO_UNCENSORED_MODEL_ID,
                 INKLING_2_SMALL_MODEL_ID,
                 GLM_5_3_MODEL_ID,
                 GLM_5_3_FLASH_MODEL_ID,
@@ -578,6 +662,12 @@ mod tests {
                     ProviderId::Tinfoil,
                     KIMI_K3_1_PRO_MODEL_ID,
                     KIMI_K3_1_PRO_MODEL_ID
+                ),
+                (
+                    KIMI_K3_1_PRO_UNCENSORED_MODEL_ID,
+                    ProviderId::Maple(MapleInstanceId::I03),
+                    KIMI_K3_1_PRO_UNCENSORED_MODEL_ID,
+                    KIMI_K3_1_PRO_UNCENSORED_MODEL_ID
                 ),
                 (
                     INKLING_2_SMALL_MODEL_ID,

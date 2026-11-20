@@ -1,7 +1,4 @@
-use std::{
-    fmt,
-    sync::{Arc, OnceLock},
-};
+use std::{fmt, sync::Arc};
 
 use base64::{engine::general_purpose::STANDARD, Engine as _};
 use hmac::{Hmac, Mac};
@@ -148,35 +145,6 @@ pub(crate) fn derive_provider_cache_namespaces(
     }))
 }
 
-/// Legacy clients have no private cache root. Keep their Continuum namespaces
-/// stable within this backend process, but secret from the host and other users.
-/// Restarting the process intentionally cold-starts these namespaces.
-pub(crate) fn legacy_continuum_cache_salt(verified_user_id: Uuid) -> String {
-    static ROOT: OnceLock<CacheNamespaceRoot> = OnceLock::new();
-    let root = ROOT.get_or_init(|| CacheNamespaceRoot(crate::encrypt::generate_random()));
-    let bytes = Zeroizing::new(derive_cache_namespace(
-        root,
-        verified_user_id,
-        CONTINUUM_CACHE_NAMESPACE_V1_LABEL,
-    ));
-    hex::encode(bytes.as_slice())
-}
-
-/// Legacy clients have no private cache root. Maple's dedicated instances get
-/// their own process-secret namespace, separate from shared Tinfoil and other
-/// providers even when the same authenticated user reaches both routes.
-/// Restarting the process intentionally cold-starts these namespaces.
-pub(crate) fn legacy_maple_user_cache_secret(verified_user_id: Uuid) -> String {
-    static ROOT: OnceLock<CacheNamespaceRoot> = OnceLock::new();
-    let root = ROOT.get_or_init(|| CacheNamespaceRoot(crate::encrypt::generate_random()));
-    let bytes = Zeroizing::new(derive_cache_namespace(
-        root,
-        verified_user_id,
-        MAPLE_CACHE_NAMESPACE_V1_LABEL,
-    ));
-    hex::encode(bytes.as_slice())
-}
-
 fn derive_cache_namespace(
     root: &CacheNamespaceRoot,
     verified_user_id: Uuid,
@@ -195,7 +163,6 @@ fn derive_cache_namespace(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use sha2::Digest;
 
     #[test]
     fn cache_root_wire_encoding_is_canonical_and_redacted() {
@@ -301,30 +268,5 @@ mod tests {
         let namespaces = derive_provider_cache_namespaces(&root, user);
         assert_ne!(namespace, namespaces.tinfoil_user_cache_secret());
         assert_ne!(namespace, namespaces.continuum_cache_salt());
-    }
-
-    #[test]
-    fn legacy_maple_namespace_is_stable_user_bound_and_private() {
-        let user = Uuid::from_u128(1);
-        let namespace = legacy_maple_user_cache_secret(user);
-        assert_eq!(namespace.len(), 64);
-        assert_eq!(namespace, legacy_maple_user_cache_secret(user));
-        assert_ne!(
-            namespace,
-            legacy_maple_user_cache_secret(Uuid::from_u128(2))
-        );
-        assert_ne!(namespace, legacy_continuum_cache_salt(user));
-        // Tinfoil V1 uses this legacy UUID hash; Maple must not share it.
-        assert_ne!(namespace, hex::encode(Sha256::digest(user.as_bytes())));
-    }
-
-    #[test]
-    fn legacy_continuum_namespace_is_stable_and_user_bound() {
-        let user = Uuid::from_u128(1);
-        let salt = legacy_continuum_cache_salt(user);
-        assert_eq!(salt.len(), 64);
-        assert_eq!(salt, legacy_continuum_cache_salt(user));
-        assert_ne!(salt, legacy_continuum_cache_salt(Uuid::from_u128(2)));
-        assert_ne!(salt, hex::encode(Sha256::digest(user.as_bytes())));
     }
 }

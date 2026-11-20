@@ -92,7 +92,7 @@ fn v2_request(
         .into_parts();
     parts
         .extensions
-        .insert(TransportSession::v2(SessionId::from_bytes([0xAA; 16])));
+        .insert(TransportSession::new(SessionId::from_bytes([0xAA; 16])));
     if let Some(token) = bearer_token {
         parts.extensions.insert(
             Credential::new(crate::transport_v2::envelope::CredentialKind::Bearer, token)
@@ -224,7 +224,7 @@ async fn db_change_password_rejects_short_new_password_without_touching_the_cred
         .expect("password credential should open the active seed wrap");
     let token = NewToken::new_with_auth_context(
         &authenticated.user,
-        TokenType::access_for_transport(true),
+        TokenType::TransportV2Access,
         &app_state,
         &authenticated.auth_context,
     )

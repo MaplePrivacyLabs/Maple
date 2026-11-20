@@ -3042,7 +3042,7 @@ mod password_reset_limits {
             .into_parts();
         parts
             .extensions
-            .insert(TransportSession::v2(SessionId::from_bytes([0xAB; 16])));
+            .insert(TransportSession::new(SessionId::from_bytes([0xAB; 16])));
         Request::from_parts(parts, body)
     }
 

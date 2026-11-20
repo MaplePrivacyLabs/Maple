@@ -31,12 +31,15 @@ jobs:
       - uses: ./.github/actions/setup-nix
       - name: Audit every Bun lockfile
         run: |
+          # GHSA-fc5q-39xc-vjpf: picomatch ReDoS with no fixed release, reached only
+          # through build and lint tooling. Drop the flag here and in
+          # build-sdk-publish.sh once a fixed picomatch is published.
           # shellcheck disable=SC2016 # The child shell expands its own variables.
           nix develop --no-update-lock-file .#ci -c bash -uo pipefail -c '
             status=0
             for project in sdk apps/maple-research/frontend apps/maple-auth services/updates services/agent-updates; do
               echo "::group::$project"
-              (cd "$project" && bun --no-env-file audit --audit-level=high) || status=1
+              (cd "$project" && bun --no-env-file audit --audit-level=high --ignore=GHSA-fc5q-39xc-vjpf) || status=1
               echo "::endgroup::"
             done
             exit "$status"'

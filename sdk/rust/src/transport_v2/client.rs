@@ -212,8 +212,7 @@ impl TransportV2Client {
         })
     }
 
-    /// Send exactly one encrypted request. This method never retries or falls
-    /// back to transport v1.
+    /// Send exactly one encrypted request. This method never retries.
     #[cfg(test)]
     pub(crate) async fn send(
         &self,

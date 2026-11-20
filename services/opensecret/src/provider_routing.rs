@@ -518,10 +518,12 @@ mod tests {
     use crate::model_config::{
         ModelAliasTargets, ModelPlan, AUTO_POWERFUL_MODEL_ID, AUTO_QUICK_MODEL_ID,
         DEEPSEEK_V4_1_FLASH_MODEL_ID, DEEPSEEK_V4_1_FLASH_UNCENSORED_MODEL_ID,
-        GLM_5_3_FLASH_MODEL_ID, GLM_5_3_MODEL_ID, KIMI_K3_1_PRO_MODEL_ID, QUICK_MODEL_ID,
+        GLM_5_3_FLASH_MODEL_ID, GLM_5_3_MODEL_ID, KIMI_K3_1_PRO_MODEL_ID,
+        KIMI_K3_1_PRO_UNCENSORED_MODEL_ID, QUICK_MODEL_ID,
     };
     use crate::provider_registry::{
-        MapleInstanceId, DUAL_INSTANCE_TEST_REGISTRY, STOCK_REPLICA_TEST_REGISTRY,
+        MapleInstanceId, DUAL_INSTANCE_TEST_INSTANCES, DUAL_INSTANCE_TEST_REGISTRY,
+        STOCK_REPLICA_TEST_REGISTRY,
     };
     use std::time::Duration;
 
@@ -2511,6 +2513,179 @@ mod tests {
     }
 
     #[test]
+    fn uncensored_kimi_routes_only_to_ready_i03_and_never_to_another_route() {
+        let i03 = ProviderId::Maple(MapleInstanceId::I03);
+        let model = KIMI_K3_1_PRO_UNCENSORED_MODEL_ID;
+        let i03_route = RouteKey {
+            provider: i03,
+            provider_model_id: model.to_owned(),
+        };
+        // i03 with its approved release withheld: the client builds no direct
+        // target or transport for it, so it is never ready, while every other
+        // provider is. Readiness comes from the real target selection.
+        let unconfigured = proxy_router_with_maple().with_maple_readiness(
+            crate::provider_client::MapleReadiness::for_test_endpoints(
+                crate::maple_inference::endpoints_with_unpinned_i03(),
+            ),
+        );
+        for instance in MapleInstanceId::ALL {
+            assert_eq!(
+                unconfigured.get_maple_proxy(instance).is_some(),
+                instance != MapleInstanceId::I03
+            );
+        }
+        // The compiled guests as pinned: i03 is targeted like the others.
+        let ready = proxy_router_with_maple().with_maple_readiness(
+            crate::provider_client::MapleReadiness::for_test_endpoints(
+                crate::maple_inference::endpoints(),
+            ),
+        );
+        for instance in MapleInstanceId::ALL {
+            assert!(ready.get_maple_proxy(instance).is_some());
+        }
+        for surface in [
+            InferenceSurface::ChatCompletions,
+            InferenceSurface::Responses,
+            InferenceSurface::Internal,
+        ] {
+            let router = ProviderRouter::default();
+            let mut uncensored = intent(model, model);
+            uncensored.surface = surface;
+            let mut stock = intent(KIMI_K3_1_PRO_MODEL_ID, KIMI_K3_1_PRO_MODEL_ID);
+            stock.surface = surface;
+            // Remembered routes on other providers must not become fallbacks.
+            for provider in [ProviderId::Tinfoil, ProviderId::Maple(MapleInstanceId::I01)] {
+                router.sticky_routes().record(
+                    uncensored.account_uuid,
+                    surface,
+                    model,
+                    StickyRoute {
+                        public_model_id: model.to_owned(),
+                        provider,
+                        provider_model_id: model.to_owned(),
+                    },
+                );
+                for proxies in [
+                    &unconfigured,
+                    &proxy_router_with_both_providers(),
+                    &proxy_router_with_both_providers()
+                        .with_maple_api_key(Some("test-key".to_string())),
+                ] {
+                    assert_eq!(
+                        router
+                            .select_active_completion_route(proxies, &uncensored)
+                            .unwrap_err(),
+                        ProviderRoutingError::NoEligibleRoute(model.to_owned())
+                    );
+                    assert_eq!(
+                        router
+                            .select_active_completion_route_excluding(
+                                proxies,
+                                &uncensored,
+                                &HashSet::new()
+                            )
+                            .unwrap_err(),
+                        ProviderRoutingError::NoEligibleRoute(model.to_owned())
+                    );
+                    assert_eq!(
+                        router.shadow_completion_plan(proxies, &uncensored),
+                        Err(RoutePlanningError::NoEligibleRoute(model.to_owned()))
+                    );
+                    assert_eq!(
+                        router.model_availability(proxies, &[model])[model],
+                        ModelAvailability::NotConfigured
+                    );
+                    // Stock Kimi is a different model and is unaffected.
+                    let shared = router
+                        .select_active_completion_route(proxies, &stock)
+                        .unwrap();
+                    assert_eq!(shared.provider, ProviderId::Tinfoil);
+                    assert_eq!(shared.public_model_id, KIMI_K3_1_PRO_MODEL_ID);
+                }
+            }
+            assert!(router.shadow_health_snapshot(&i03_route).is_some());
+
+            let selected = router
+                .select_active_completion_route(&ready, &uncensored)
+                .unwrap();
+            assert_eq!(selected.provider, i03);
+            assert_eq!(selected.proxy.provider_name, "maple-i03");
+            assert_eq!(selected.proxy.base_url, "https://i03.tfinf.maple.ai");
+            assert_eq!(selected.public_model_id, model);
+            assert_eq!(selected.provider_model_id, model);
+            assert_eq!(selected.response_model_id, model);
+            assert_eq!(selected.bucket, None);
+            assert_eq!(selected.selection_source, RouteSelectionSource::StaticSplit);
+            assert_eq!(selected.identity().route_key(), i03_route);
+            assert_eq!(
+                router.model_availability(&ready, &[model])[model],
+                ModelAvailability::Available(ConfiguredProviders::none().with_provider(i03))
+            );
+            let plan = router.shadow_completion_plan(&ready, &uncensored).unwrap();
+            assert_eq!(plan.eligible_routes.len(), 1);
+            assert_eq!(plan.eligible_routes[0].provider, i03);
+            let shared = router
+                .select_active_completion_route(&ready, &stock)
+                .unwrap();
+            assert_eq!(shared.provider, ProviderId::Tinfoil);
+            assert_eq!(shared.provider_model_id, KIMI_K3_1_PRO_MODEL_ID);
+
+            // Stock Kimi capacity is a separate resource on a separate provider.
+            open_route_with_capacity_failure(
+                &router,
+                ProviderId::Tinfoil,
+                KIMI_K3_1_PRO_MODEL_ID,
+                KIMI_K3_1_PRO_MODEL_ID,
+                429,
+                60,
+            );
+            assert!(matches!(
+                router.select_active_completion_route(&ready, &stock),
+                Err(ProviderRoutingError::CapacityUnavailable { model, .. })
+                    if model == KIMI_K3_1_PRO_MODEL_ID
+            ));
+            assert_eq!(
+                router
+                    .select_active_completion_route(&ready, &uncensored)
+                    .unwrap()
+                    .provider,
+                i03
+            );
+
+            // A saturated or failing i03 is a capacity result for this model,
+            // never a move to stock Kimi or to another guest.
+            let other_router = ProviderRouter::default();
+            open_route_with_capacity_failure(&other_router, i03, model, model, 503, 60);
+            assert!(matches!(
+                other_router.select_active_completion_route(&ready, &uncensored),
+                Err(ProviderRoutingError::CapacityUnavailable { model: unavailable, .. })
+                    if unavailable == model
+            ));
+            assert!(matches!(
+                other_router.model_availability(&ready, &[model])[model],
+                ModelAvailability::Unavailable { .. }
+            ));
+            assert_eq!(
+                other_router
+                    .select_active_completion_route(&ready, &stock)
+                    .unwrap()
+                    .provider,
+                ProviderId::Tinfoil
+            );
+            assert_eq!(
+                router
+                    .select_active_completion_route_excluding(
+                        &ready,
+                        &uncensored,
+                        &HashSet::from([i03_route.clone()])
+                    )
+                    .unwrap_err(),
+                ProviderRoutingError::NoEligibleRoute(model.to_owned())
+            );
+        }
+    }
+
+    #[test]
     fn unified_deepseek_shared_and_maple_capacity_remain_independent() {
         let router = ProviderRouter::with_test_registry(&STOCK_REPLICA_TEST_REGISTRY);
         let proxies = proxy_router_with_maple().with_maple_readiness(
@@ -2714,7 +2889,7 @@ mod tests {
     #[test]
     fn synthetic_dual_instance_capacity_and_circuit_failures_are_isolated_per_provider() {
         let proxies = proxy_router_with_maple();
-        for failed in MapleInstanceId::ALL {
+        for failed in DUAL_INSTANCE_TEST_INSTANCES {
             for capacity in [false, true] {
                 let router = dual_instance_test_router();
                 let failed_provider = ProviderId::Maple(failed);
@@ -2818,7 +2993,7 @@ mod tests {
 
     #[test]
     fn synthetic_dual_instance_readiness_and_recovery_keep_warmed_alternate() {
-        for ready in MapleInstanceId::ALL {
+        for ready in DUAL_INSTANCE_TEST_INSTANCES {
             let router = dual_instance_test_router();
             let both = proxy_router_with_maple();
             let proxies = both.clone().with_maple_readiness(

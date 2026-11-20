@@ -238,7 +238,7 @@ grep -Eq "test result: ok\\. ${compaction_count} passed; 0 failed; 0 ignored;" \
 callback_count=0
 for callback_filter in \
   db::tests::db_oauth_settings_ \
-  transport_v2::gateway::tests::db_oauth_callback_selection_v1_v2 \
+  transport_v2::gateway::tests::db_oauth_callback_selection \
   transport_v2::gateway::tests::db_oauth_callback_completion_; do
   cargo test --locked --all-features "$callback_filter" \
     -- --ignored --list >"$workdir/callback-tests.list"
@@ -247,8 +247,8 @@ for callback_filter in \
      END { print count + 0 }' "$workdir/callback-tests.list")"
   test "$selected_count" -gt 0
   if [ "$callback_filter" = "transport_v2::gateway::tests::db_oauth_callback_completion_" ]; then
-    # Both Google and GitHub must complete through both encrypted transports.
-    test "$selected_count" -eq 4
+    # Both Google and GitHub must complete through the gateway.
+    test "$selected_count" -eq 2
   fi
 
   cargo test --locked --all-features "$callback_filter" \
@@ -267,7 +267,7 @@ done
 recovery_count=0
 for recovery_suite in \
   recovery_db_tests::=12 \
-  recovery_route_tests::=31 \
+  recovery_route_tests::=30 \
   transport_v2::gateway::tests::db_recovery_=1; do
   recovery_filter="${recovery_suite%=*}"
   expected_count="${recovery_suite##*=}"

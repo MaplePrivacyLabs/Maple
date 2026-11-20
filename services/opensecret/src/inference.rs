@@ -320,7 +320,6 @@ impl AttemptFailure {
 pub(crate) enum CompletionEvidence {
     NonStreamingResponse,
     ProviderDone,
-    FinishSignalThenEof,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
