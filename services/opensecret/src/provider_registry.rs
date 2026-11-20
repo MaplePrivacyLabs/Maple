@@ -8,11 +8,10 @@ use crate::model_config::{
     DECISION_LARGE_MODEL_ID, DECISION_MEDIUM_MODEL_ID, DECISION_SMALL_MODEL_ID,
     DEEPSEEK_V4_1_FLASH_MODEL_ID, DEEPSEEK_V4_1_FLASH_UNCENSORED_MODEL_ID, GLM_5_3_FLASH_MODEL_ID,
     GLM_5_3_MODEL_ID, GPT_OSS_120B_MODEL_ID, INKLING_2_SMALL_MODEL_ID, KIMI_K3_1_PRO_MODEL_ID,
-    KIMI_K3_1_PRO_UNCENSORED_MODEL_ID,
 };
 
 pub(crate) const SHADOW_ROUTING_POLICY_VERSION: &str = "routing-v2-weighted-v8";
-pub(crate) const MAPLE_ROUTING_POLICY_VERSION: &str = "routing-v2-maple-instances-v10";
+pub(crate) const MAPLE_ROUTING_POLICY_VERSION: &str = "routing-v2-maple-instances-v11";
 
 /// A backend-owned dedicated inference deployment. Its identity is internal to
 /// routing; customer pricing and accounting continue to use the Maple family.
@@ -201,23 +200,29 @@ const GEMMA4_31B_ROUTES: &[ModelRouteSpec] = &[ModelRouteSpec {
     enabled: true,
 }];
 
-const KIMI_K3_1_PRO_ROUTES: &[ModelRouteSpec] = &[ModelRouteSpec {
-    provider: ProviderId::Tinfoil,
-    provider_model_id: KIMI_K3_1_PRO_MODEL_ID,
-    response_model_id: KIMI_K3_1_PRO_MODEL_ID,
-    weight: 100,
-    enabled: true,
-}];
-
-// A distinct checkpoint served only by dedicated i03, under its public name.
-// Stock Kimi on shared Tinfoil is not a fallback for it, nor it for stock Kimi.
-const KIMI_K3_1_PRO_UNCENSORED_ROUTES: &[ModelRouteSpec] = &[ModelRouteSpec {
-    provider: ProviderId::Maple(MapleInstanceId::I03),
-    provider_model_id: KIMI_K3_1_PRO_UNCENSORED_MODEL_ID,
-    response_model_id: KIMI_K3_1_PRO_UNCENSORED_MODEL_ID,
-    weight: 100,
-    enabled: true,
-}];
+// Provider multipliers allocate 1% of fresh Kimi K3.1 Pro account buckets to
+// shared Tinfoil and 99% to dedicated i03: 70 * 10 : 100 * 693. Both serve the
+// stock checkpoint under the same name. The one Tinfoil bucket keeps that
+// route's health and circuit state exercised, so it stays a proven fallback
+// when i03 is unavailable. Verified readiness and health gates exclude i03
+// until its approved release attests; eligible sticky routes retain their
+// normal precedence over the initial allocation.
+const KIMI_K3_1_PRO_ROUTES: &[ModelRouteSpec] = &[
+    ModelRouteSpec {
+        provider: ProviderId::Tinfoil,
+        provider_model_id: KIMI_K3_1_PRO_MODEL_ID,
+        response_model_id: KIMI_K3_1_PRO_MODEL_ID,
+        weight: 10,
+        enabled: true,
+    },
+    ModelRouteSpec {
+        provider: ProviderId::Maple(MapleInstanceId::I03),
+        provider_model_id: KIMI_K3_1_PRO_MODEL_ID,
+        response_model_id: KIMI_K3_1_PRO_MODEL_ID,
+        weight: 693,
+        enabled: true,
+    },
+];
 
 // Combined with the provider weights, 30 * 693 : 70 * 3 allocates healthy
 // GLM 5.3 account buckets 99% to Continuum and 1% to Tinfoil. The one Tinfoil
@@ -386,10 +391,6 @@ const COMPLETION_MODELS: &[CompletionModelSpec] = &[
     completion_model(GPT_OSS_120B_MODEL_ID, GPT_OSS_120B_ROUTES),
     completion_model("gemma4-31b", GEMMA4_31B_ROUTES),
     completion_model(KIMI_K3_1_PRO_MODEL_ID, KIMI_K3_1_PRO_ROUTES),
-    completion_model(
-        KIMI_K3_1_PRO_UNCENSORED_MODEL_ID,
-        KIMI_K3_1_PRO_UNCENSORED_ROUTES,
-    ),
     completion_model(INKLING_2_SMALL_MODEL_ID, INKLING_2_SMALL_ROUTES),
     completion_model(GLM_5_3_MODEL_ID, GLM_5_3_ROUTES),
     completion_model(GLM_5_3_FLASH_MODEL_ID, GLM_5_3_FLASH_ROUTES),
@@ -475,39 +476,43 @@ mod tests {
     }
 
     #[test]
-    fn uncensored_kimi_is_distinct_and_has_only_i03_without_stock_fallback() {
+    fn stock_kimi_splits_between_shared_tinfoil_and_dedicated_i03() {
         let i03 = ProviderId::Maple(MapleInstanceId::I03);
-        let uncensored = PROVIDER_REGISTRY
-            .completion_model(KIMI_K3_1_PRO_UNCENSORED_MODEL_ID)
-            .unwrap();
-        assert_eq!(uncensored.routes.len(), 1);
-        let route = uncensored.routes[0];
-        assert_eq!(route.provider, i03);
-        assert_eq!(route.provider_model_id, "kimi-k3-1-pro-uncensored");
-        assert_eq!(route.response_model_id, "kimi-k3-1-pro-uncensored");
-        assert_eq!(route.weight, 100);
-        assert!(route.enabled);
-        let provider = PROVIDER_REGISTRY.provider(i03).unwrap();
-        assert_eq!(provider.weight, 100);
-        assert!(provider.enabled);
-
-        let stock = PROVIDER_REGISTRY
+        let kimi = PROVIDER_REGISTRY
             .completion_model(KIMI_K3_1_PRO_MODEL_ID)
             .unwrap();
-        assert_eq!(stock.routes.len(), 1);
-        assert_eq!(stock.routes[0].provider, ProviderId::Tinfoil);
-        assert_eq!(stock.routes[0].provider_model_id, KIMI_K3_1_PRO_MODEL_ID);
+        assert_eq!(
+            kimi.routes
+                .iter()
+                .map(|route| (route.provider, route.weight, route.enabled))
+                .collect::<Vec<_>>(),
+            vec![(ProviderId::Tinfoil, 10, true), (i03, 693, true)]
+        );
+        // Both routes serve the stock checkpoint under the stock name.
+        for route in kimi.routes {
+            assert_eq!(route.provider_model_id, "kimi-k3-1-pro");
+            assert_eq!(route.response_model_id, "kimi-k3-1-pro");
+        }
+        // 70 * 10 : 100 * 693 is 1% shared and 99% dedicated.
+        let effective = kimi
+            .routes
+            .iter()
+            .map(|route| {
+                let provider = PROVIDER_REGISTRY.provider(route.provider).unwrap();
+                assert!(provider.enabled);
+                u32::from(provider.weight) * u32::from(route.weight)
+            })
+            .collect::<Vec<_>>();
+        assert_eq!(effective, vec![700, 69_300]);
+        assert_eq!(effective[0] * 99, effective[1]);
 
-        // The guest serves this one model, and no other model names its checkpoint.
+        // The guest serves this one model.
         for model in PROVIDER_REGISTRY.completion_models() {
-            let is_uncensored = model.public_model_id == KIMI_K3_1_PRO_UNCENSORED_MODEL_ID;
-            for route in model.routes {
-                assert_eq!(route.provider == i03, is_uncensored);
-                assert_eq!(
-                    route.provider_model_id == KIMI_K3_1_PRO_UNCENSORED_MODEL_ID,
-                    is_uncensored
-                );
-            }
+            let is_kimi = model.public_model_id == KIMI_K3_1_PRO_MODEL_ID;
+            assert_eq!(
+                model.routes.iter().any(|route| route.provider == i03),
+                is_kimi
+            );
         }
     }
 
@@ -601,7 +606,6 @@ mod tests {
                 GPT_OSS_120B_MODEL_ID,
                 "gemma4-31b",
                 KIMI_K3_1_PRO_MODEL_ID,
-                KIMI_K3_1_PRO_UNCENSORED_MODEL_ID,
                 INKLING_2_SMALL_MODEL_ID,
                 GLM_5_3_MODEL_ID,
                 GLM_5_3_FLASH_MODEL_ID,
@@ -664,10 +668,10 @@ mod tests {
                     KIMI_K3_1_PRO_MODEL_ID
                 ),
                 (
-                    KIMI_K3_1_PRO_UNCENSORED_MODEL_ID,
+                    KIMI_K3_1_PRO_MODEL_ID,
                     ProviderId::Maple(MapleInstanceId::I03),
-                    KIMI_K3_1_PRO_UNCENSORED_MODEL_ID,
-                    KIMI_K3_1_PRO_UNCENSORED_MODEL_ID
+                    KIMI_K3_1_PRO_MODEL_ID,
+                    KIMI_K3_1_PRO_MODEL_ID
                 ),
                 (
                     INKLING_2_SMALL_MODEL_ID,

@@ -7582,7 +7582,7 @@ mod tests {
             ("maple", "deepseek-v4-1-flash"),
             ("maple", "deepseek-v4-1-flash-1017-uncensored"),
             ("tinfoil", "kimi-k3-1-pro"),
-            ("maple", "kimi-k3-1-pro-uncensored"),
+            ("maple", "kimi-k3-1-pro"),
             ("tinfoil", "glm-5-3"),
             ("tinfoil", "glm-5-3-flash"),
             ("continuum", "glm-5-3-flash"),
@@ -7610,7 +7610,6 @@ mod tests {
             ("glm-5.3-flash", "glm-5-3-flash"),
             ("glm-5.3", "glm-5-3"),
             ("kimi-k3-1-pro", "kimi-k3-1-pro"),
-            ("kimi-k3-1-pro-uncensored", "kimi-k3-1-pro-uncensored"),
             ("glm-5-3-flash", "glm-5-3-flash"),
         ] {
             let mut response = json!({

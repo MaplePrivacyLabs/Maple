@@ -33,9 +33,9 @@ const I02_ENDPOINT: MapleEndpoint = MapleEndpoint {
     current_release: Some(&I02_CURRENT_RELEASE),
     staged_releases: &[],
 };
-// i03 serves the uncensored Kimi K3.1 Pro checkpoint and nothing else. Only
-// that checkpoint's own release is approved here: no other guest's pin
-// applies to it, and its pin approves nothing on another guest.
+// i03 serves stock Kimi K3.1 Pro and nothing else. Only that guest's own
+// release is approved here: no other guest's pin applies to it, and its pin
+// approves nothing on another guest.
 const I03_ENDPOINT: MapleEndpoint = MapleEndpoint {
     instance: MapleInstanceId::I03,
     host: "i03.tfinf.maple.ai",
@@ -192,16 +192,18 @@ const I02_CURRENT_RELEASE: ReleasePin = ReleasePin {
     ],
 };
 
-// The published, measured artifact of the uncensored Kimi K3.1 Pro checkpoint.
-// It is the only release i03 may run, and it belongs to no other guest.
+// The published, measured artifact that serves the stock Kimi K3.1 Pro
+// checkpoint (moonshotai/Kimi-K3.1-Pro) as `kimi-k3-1-pro`. It is the only
+// release i03 may run, and it belongs to no other guest. The guest's former
+// uncensored release must not become eligible through this stock route.
 const I03_CURRENT_RELEASE: ReleasePin = ReleasePin {
-    repo: "MaplePrivacyLabs/inference-penclaw",
-    tag: "v0.2.0",
-    digest: "d1fb4b4c8dcc2fa229cc601b21677fcc6c47b3562308e5ec9fe13270f50f0933",
+    repo: "MaplePrivacyLabs/inference-kimi-k3-1-pro",
+    tag: "v0.1.0",
+    digest: "f657858484733a838e2bc040668854cb1f871985e757a46985113ec140dd51a2",
     registers: &[
-        "94ecafd52fb6f841d00c930448a1fc65bb42cc69c66112e8c85fed8adba57d4406b4922a479f430494492e8bb5c523a1",
+        "0e50784891d87b95d07d35e3022303729d856c2c37726ae2e22047f21d44a77864914d56a57ae2dc2904fae030ab4241",
         "758adac43a82a5f3146342660caefea0a7714414dd9055c4a56d1502273d85bbad86d625096a206c9335c23d05df3f99",
-        "5840a42e40bfc47fef37fb59956372957ef01d47f9e05fa32fedc11174b82a2041a9ca5682520de5dbd89ce3888a918f",
+        "3dfcc61427ff4dfe5814e6aa47d81c82d39180e9a142155f8efb2304c82ef4ae69934ebfb67afa10cb75126584a01739",
     ],
 };
 
@@ -308,7 +310,7 @@ mod tests {
             message["content"][1][field] = json!({"part": "data"});
             message["content"][1]["image_url"][field] = json!({"nested": "data"});
             json!({
-                "model": "kimi-k3-1-pro-uncensored",
+                "model": "kimi-k3-1-pro",
                 "temperature": 1.0,
                 "top_p": 0.95,
                 "reasoning_effort": "max",
@@ -366,7 +368,7 @@ mod tests {
         assert_eq!(body, expected);
 
         // A request that never named either field is unchanged.
-        let mut absent = json!({"model": "kimi-k3-1-pro-uncensored", "messages": []});
+        let mut absent = json!({"model": "kimi-k3-1-pro", "messages": []});
         let expected = absent.clone();
         sanitize_completion_request(&mut absent);
         assert_eq!(absent, expected);
@@ -548,34 +550,37 @@ mod tests {
     }
 
     #[test]
-    fn uncensored_kimi_i03_approves_only_its_published_release() {
+    fn kimi_i03_approves_only_its_published_release() {
         let i03 = endpoint(MapleInstanceId::I03);
         assert_eq!(i03.host, "i03.tfinf.maple.ai");
         assert!(i03.staged_releases.is_empty());
         let approved = approved_releases(i03);
         assert_eq!(approved.len(), 1);
         let release = &approved[0];
-        assert_eq!(release.release.repo, "MaplePrivacyLabs/inference-penclaw");
-        assert_eq!(release.release.tag, "v0.2.0");
+        assert_eq!(
+            release.release.repo,
+            "MaplePrivacyLabs/inference-kimi-k3-1-pro"
+        );
+        assert_eq!(release.release.tag, "v0.1.0");
         assert_eq!(
             release.release.digest,
-            "d1fb4b4c8dcc2fa229cc601b21677fcc6c47b3562308e5ec9fe13270f50f0933"
+            "f657858484733a838e2bc040668854cb1f871985e757a46985113ec140dd51a2"
         );
         assert_eq!(
             release.measurement.type_,
             PredicateType::SnpTdxMultiPlatformV1
         );
         assert_eq!(release.measurement.registers, [
-            "94ecafd52fb6f841d00c930448a1fc65bb42cc69c66112e8c85fed8adba57d4406b4922a479f430494492e8bb5c523a1",
+            "0e50784891d87b95d07d35e3022303729d856c2c37726ae2e22047f21d44a77864914d56a57ae2dc2904fae030ab4241",
             "758adac43a82a5f3146342660caefea0a7714414dd9055c4a56d1502273d85bbad86d625096a206c9335c23d05df3f99",
-            "5840a42e40bfc47fef37fb59956372957ef01d47f9e05fa32fedc11174b82a2041a9ca5682520de5dbd89ce3888a918f",
+            "3dfcc61427ff4dfe5814e6aa47d81c82d39180e9a142155f8efb2304c82ef4ae69934ebfb67afa10cb75126584a01739",
         ]);
         let policy = i03
             .direct_policy()
             .expect("the pin is a well-formed policy")
             .expect("a pinned guest is configured");
         let serialized = format!("{policy:?}");
-        assert!(serialized.contains("MaplePrivacyLabs/inference-penclaw"));
+        assert!(serialized.contains("MaplePrivacyLabs/inference-kimi-k3-1-pro"));
         assert!(serialized.contains(&release.release.digest));
     }
 
@@ -719,7 +724,13 @@ mod tests {
     fn retired_release_is_not_approved_on_either_guest() {
         for instance in MapleInstanceId::ALL {
             for approved in approved_releases(endpoint(instance)) {
-                assert_ne!(approved.release.tag, "v0.1.0");
+                // A tag names a release only within its repository. The
+                // retired one is the stock DeepSeek repository's; i03's stock
+                // Kimi release is another repository's `v0.1.0`.
+                assert!(
+                    approved.release.repo != "MaplePrivacyLabs/inference-deepseek"
+                        || approved.release.tag != "v0.1.0"
+                );
                 assert_ne!(
                     approved.release.digest,
                     "2d69e8544e5b2706d0e6004bc0ac925dc9abd79cb284f9400c26c9d145e25b00"

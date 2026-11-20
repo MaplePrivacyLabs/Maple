@@ -493,35 +493,24 @@ mod tests {
     /// An uncensored checkpoint is only ever an explicit choice.
     #[test]
     fn uncensored_models_are_never_auto_candidates() {
-        use crate::model_config::{
-            DEEPSEEK_V4_1_FLASH_UNCENSORED_MODEL_ID, KIMI_K3_1_PRO_UNCENSORED_MODEL_ID,
-        };
+        use crate::model_config::DEEPSEEK_V4_1_FLASH_UNCENSORED_MODEL_ID;
+        let uncensored = DEEPSEEK_V4_1_FLASH_UNCENSORED_MODEL_ID;
         for plan in [ModelPlan::Free, ModelPlan::Paid] {
             for mode in [
                 ModelSelectionMode::AutoQuick,
                 ModelSelectionMode::AutoPowerful,
             ] {
                 let candidates = auto_model_candidates(mode, plan).expect("auto tier");
-                for uncensored in [
-                    KIMI_K3_1_PRO_UNCENSORED_MODEL_ID,
-                    DEEPSEEK_V4_1_FLASH_UNCENSORED_MODEL_ID,
-                ] {
-                    assert!(!candidates.contains(&uncensored), "{mode:?} {plan:?}");
-                }
+                assert!(!candidates.contains(&uncensored), "{mode:?} {plan:?}");
             }
-            for uncensored in [
-                KIMI_K3_1_PRO_UNCENSORED_MODEL_ID,
-                DEEPSEEK_V4_1_FLASH_UNCENSORED_MODEL_ID,
-            ] {
-                assert_eq!(
-                    ModelSelectionMode::from_requested_model(uncensored),
-                    ModelSelectionMode::Explicit
-                );
-                assert_eq!(
-                    ModelAliasTargets::for_plan(plan).resolve(uncensored),
-                    uncensored
-                );
-            }
+            assert_eq!(
+                ModelSelectionMode::from_requested_model(uncensored),
+                ModelSelectionMode::Explicit
+            );
+            assert_eq!(
+                ModelAliasTargets::for_plan(plan).resolve(uncensored),
+                uncensored
+            );
         }
     }
 
@@ -857,10 +846,6 @@ mod tests {
         );
         assert!(!model_capabilities(GLM_5_3_MODEL_ID).expect("glm").vision);
         assert!(model_uses_kimi_tool_call_ids(KIMI_K3_1_PRO_MODEL_ID));
-        // The uncensored checkpoint keeps Kimi's chat template and call ids.
-        assert!(model_uses_kimi_tool_call_ids(
-            crate::model_config::KIMI_K3_1_PRO_UNCENSORED_MODEL_ID
-        ));
         assert!(!model_uses_kimi_tool_call_ids(GLM_5_3_FLASH_MODEL_ID));
         assert!(!model_uses_kimi_tool_call_ids(
             crate::model_config::DEEPSEEK_V4_1_FLASH_UNCENSORED_MODEL_ID

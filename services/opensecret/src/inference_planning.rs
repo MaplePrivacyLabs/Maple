@@ -291,7 +291,7 @@ mod tests {
     use super::*;
     use crate::model_config::{
         ModelPlan, AUTO_POWERFUL_MODEL_ID, DEEPSEEK_V4_1_FLASH_MODEL_ID, GLM_5_3_FLASH_MODEL_ID,
-        GLM_5_3_MODEL_ID, KIMI_K3_1_PRO_MODEL_ID, KIMI_K3_1_PRO_UNCENSORED_MODEL_ID,
+        GLM_5_3_MODEL_ID, KIMI_K3_1_PRO_MODEL_ID,
     };
     use crate::provider_registry::{
         ProviderId, DUAL_INSTANCE_TEST_INSTANCES, DUAL_INSTANCE_TEST_REGISTRY, PROVIDER_REGISTRY,
@@ -777,9 +777,10 @@ mod tests {
     }
 
     #[test]
-    fn uncensored_kimi_plans_only_i03_and_never_borrows_another_route() {
+    fn stock_kimi_allocates_one_shared_and_ninety_nine_i03_account_buckets() {
         use crate::inference::{InferenceSurface, WorkloadClass};
         let i03 = ProviderId::Maple(MapleInstanceId::I03);
+        let providers = [ProviderId::Tinfoil, i03];
         for (surface, workload) in [
             (InferenceSurface::Responses, WorkloadClass::Interactive),
             (
@@ -788,99 +789,125 @@ mod tests {
             ),
             (InferenceSurface::Internal, WorkloadClass::Background),
         ] {
-            let request = InferenceIntent::new(
-                Uuid::from_u128(73),
-                KIMI_K3_1_PRO_UNCENSORED_MODEL_ID,
-                KIMI_K3_1_PRO_UNCENSORED_MODEL_ID,
-                ModelPlan::Paid,
-                surface,
-                workload,
-            );
-            // A stale or forged memory of another provider changes nothing.
-            for remembered in [
-                None,
-                Some(ProviderId::Tinfoil),
-                Some(ProviderId::Maple(MapleInstanceId::I01)),
-            ] {
-                let plan = plan_completion_route(
-                    &PROVIDER_REGISTRY,
-                    RoutePlanningInput {
-                        intent: &request,
-                        configured_providers: ConfiguredProviders::all(),
-                        remembered_provider: remembered,
-                    },
-                )
-                .unwrap();
-                assert_eq!(plan.selected.provider, i03);
-                assert_eq!(
-                    plan.selected.public_model_id,
-                    KIMI_K3_1_PRO_UNCENSORED_MODEL_ID
+            let mut counts = [0; 2];
+            for bucket in 0..100u8 {
+                let request = InferenceIntent::new(
+                    Uuid::from_u128(u128::from(bucket)),
+                    KIMI_K3_1_PRO_MODEL_ID,
+                    KIMI_K3_1_PRO_MODEL_ID,
+                    ModelPlan::Paid,
+                    surface,
+                    workload,
                 );
+                let input = RoutePlanningInput {
+                    intent: &request,
+                    configured_providers: ConfiguredProviders::all(),
+                    remembered_provider: None,
+                };
+                let plan = plan_completion_route(&PROVIDER_REGISTRY, input).unwrap();
                 assert_eq!(
-                    plan.selected.provider_model_id,
-                    KIMI_K3_1_PRO_UNCENSORED_MODEL_ID
+                    plan,
+                    plan_completion_route(&PROVIDER_REGISTRY, input).unwrap()
                 );
-                assert_eq!(
-                    plan.selected.response_model_id,
-                    KIMI_K3_1_PRO_UNCENSORED_MODEL_ID
-                );
-                assert_eq!(plan.selected.bucket, None);
-                assert_eq!(plan.decision, PlanDecision::FixedRoute);
+                let index = usize::from(bucket >= 1);
+                counts[index] += 1;
+                assert_eq!(plan.selected.provider, providers[index]);
+                // Either route serves the stock checkpoint under the stock name.
+                assert_eq!(plan.selected.public_model_id, KIMI_K3_1_PRO_MODEL_ID);
+                assert_eq!(plan.selected.provider_model_id, KIMI_K3_1_PRO_MODEL_ID);
+                assert_eq!(plan.selected.response_model_id, KIMI_K3_1_PRO_MODEL_ID);
+                assert_eq!(plan.selected.bucket, Some(bucket));
+                assert_eq!(plan.decision, PlanDecision::StaticBucket);
                 assert_eq!(
                     plan.selected.selection_source,
                     RouteSelectionSource::StaticSplit
                 );
-                assert_eq!(plan.eligible_routes.len(), 1);
+                assert_eq!(plan.eligible_routes.len(), 2);
                 assert_eq!(plan.policy_version, MAPLE_ROUTING_POLICY_VERSION);
             }
-
-            // Every provider but i03 is available: there is still no route.
-            let mut without_i03 = ConfiguredProviders::none()
-                .with_provider(ProviderId::Tinfoil)
-                .with_provider(ProviderId::Continuum);
-            for instance in MapleInstanceId::ALL {
-                if instance != MapleInstanceId::I03 {
-                    without_i03 = without_i03.with_provider(ProviderId::Maple(instance));
-                }
-            }
-            assert_eq!(
-                plan_completion_route(
-                    &PROVIDER_REGISTRY,
-                    RoutePlanningInput {
-                        intent: &request,
-                        configured_providers: without_i03,
-                        remembered_provider: Some(ProviderId::Tinfoil),
-                    },
-                )
-                .unwrap_err(),
-                RoutePlanningError::NoEligibleRoute(KIMI_K3_1_PRO_UNCENSORED_MODEL_ID.to_string())
-            );
+            assert_eq!(counts, [1, 99]);
         }
+    }
 
-        // Stock Kimi keeps its shared route and never moves to i03.
-        let stock = intent(KIMI_K3_1_PRO_MODEL_ID, KIMI_K3_1_PRO_MODEL_ID);
-        let plan = plan_completion_route(
-            &PROVIDER_REGISTRY,
-            RoutePlanningInput {
-                intent: &stock,
-                configured_providers: ConfiguredProviders::all(),
-                remembered_provider: Some(i03),
-            },
-        )
-        .unwrap();
-        assert_eq!(plan.selected.provider, ProviderId::Tinfoil);
-        assert_eq!(plan.selected.provider_model_id, KIMI_K3_1_PRO_MODEL_ID);
-        assert_eq!(plan.eligible_routes.len(), 1);
-        assert_eq!(
+    #[test]
+    fn stock_kimi_falls_back_to_the_other_route_and_keeps_an_eligible_sticky_one() {
+        let i03 = ProviderId::Maple(MapleInstanceId::I03);
+        // Account bucket 73 lands on i03 by weight.
+        let request = intent(KIMI_K3_1_PRO_MODEL_ID, KIMI_K3_1_PRO_MODEL_ID);
+        let plan = |configured_providers, remembered_provider| {
             plan_completion_route(
                 &PROVIDER_REGISTRY,
                 RoutePlanningInput {
-                    intent: &stock,
-                    configured_providers: ConfiguredProviders::none().with_provider(i03),
-                    remembered_provider: Some(i03),
+                    intent: &request,
+                    configured_providers,
+                    remembered_provider,
                 },
             )
-            .unwrap_err(),
+        };
+
+        let weighted = plan(ConfiguredProviders::all(), None).unwrap();
+        assert_eq!(weighted.selected.provider, i03);
+        assert_eq!(weighted.decision, PlanDecision::StaticBucket);
+
+        // i03 is not ready or not healthy: shared Tinfoil serves the model,
+        // whatever the account remembers.
+        let mut without_i03 = ConfiguredProviders::none()
+            .with_provider(ProviderId::Tinfoil)
+            .with_provider(ProviderId::Continuum);
+        for instance in MapleInstanceId::ALL {
+            if instance != MapleInstanceId::I03 {
+                without_i03 = without_i03.with_provider(ProviderId::Maple(instance));
+            }
+        }
+        for remembered in [None, Some(i03), Some(ProviderId::Tinfoil)] {
+            let fallback = plan(without_i03, remembered).unwrap();
+            assert_eq!(fallback.selected.provider, ProviderId::Tinfoil);
+            assert_eq!(fallback.selected.provider_model_id, KIMI_K3_1_PRO_MODEL_ID);
+            assert_eq!(fallback.selected.bucket, None);
+            assert_eq!(fallback.decision, PlanDecision::FixedRoute);
+            assert_eq!(
+                fallback.selected.selection_source,
+                RouteSelectionSource::Fallback
+            );
+            assert_eq!(fallback.eligible_routes.len(), 1);
+        }
+
+        // Shared Tinfoil is unavailable: i03 serves the one shared bucket too.
+        let only_i03 = ConfiguredProviders::none().with_provider(i03);
+        let fallback = plan(only_i03, Some(ProviderId::Tinfoil)).unwrap();
+        assert_eq!(fallback.selected.provider, i03);
+        assert_eq!(fallback.decision, PlanDecision::FixedRoute);
+        assert_eq!(
+            fallback.selected.selection_source,
+            RouteSelectionSource::Fallback
+        );
+
+        // Both available: an account warmed on shared Tinfoil stays there, and
+        // another guest is never a route for this model.
+        let sticky = plan(ConfiguredProviders::all(), Some(ProviderId::Tinfoil)).unwrap();
+        assert_eq!(sticky.selected.provider, ProviderId::Tinfoil);
+        assert_eq!(sticky.decision, PlanDecision::RememberedRoute);
+        assert_eq!(
+            sticky.selected.selection_source,
+            RouteSelectionSource::Sticky
+        );
+        assert_eq!(sticky.eligible_routes, weighted.eligible_routes);
+        for other in [MapleInstanceId::I01, MapleInstanceId::I02] {
+            let ignored = plan(ConfiguredProviders::all(), Some(ProviderId::Maple(other))).unwrap();
+            assert_eq!(ignored, weighted);
+            assert!(ignored
+                .eligible_routes
+                .iter()
+                .all(|route| route.provider != ProviderId::Maple(other)));
+        }
+
+        // Neither route: no other model or guest stands in.
+        let mut neither = ConfiguredProviders::none().with_provider(ProviderId::Continuum);
+        for instance in [MapleInstanceId::I01, MapleInstanceId::I02] {
+            neither = neither.with_provider(ProviderId::Maple(instance));
+        }
+        assert_eq!(
+            plan(neither, Some(i03)).unwrap_err(),
             RoutePlanningError::NoEligibleRoute(KIMI_K3_1_PRO_MODEL_ID.to_string())
         );
     }

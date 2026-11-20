@@ -1580,8 +1580,8 @@ mod tests {
             ]
         );
         // i03's target carries its own release, which is on no other guest's.
-        let i03 = "MaplePrivacyLabs/inference-penclaw";
-        let i03_digest = "d1fb4b4c8dcc2fa229cc601b21677fcc6c47b3562308e5ec9fe13270f50f0933";
+        let i03 = "MaplePrivacyLabs/inference-kimi-k3-1-pro";
+        let i03_digest = "f657858484733a838e2bc040668854cb1f871985e757a46985113ec140dd51a2";
         assert!(policies[2].contains(i03) && policies[2].contains(i03_digest));
         for other in &policies[..2] {
             assert!(!other.contains(i03) && !other.contains(i03_digest));
