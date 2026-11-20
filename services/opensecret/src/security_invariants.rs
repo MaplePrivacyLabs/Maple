@@ -342,7 +342,7 @@ fn openai_compatible_routes_do_not_request_user_storage_keys() {
 }
 
 #[test]
-fn models_route_allows_optional_identity_but_requires_session_e2ee() {
+fn models_route_allows_optional_identity_but_requires_a_transport_session() {
     let manifest_dir = Path::new(env!("CARGO_MANIFEST_DIR"));
     let main_source = fs::read_to_string(manifest_dir.join("src/main.rs"))
         .expect("main source should be readable");
@@ -360,7 +360,7 @@ fn models_route_allows_optional_identity_but_requires_session_e2ee() {
         router_body.contains("\"/v1/models\"")
             && router_body.contains("decrypt_request::<()>")
             && !router_body.contains("decrypt_models_request"),
-        "the models route must validate a live encryption session for every request"
+        "the models route must require the gateway's transport session for every request"
     );
 
     let handler_body = extract_function_body(&openai_source, "async fn proxy_models");
@@ -369,16 +369,16 @@ fn models_route_allows_optional_identity_but_requires_session_e2ee() {
             "async fn proxy_models(\n    State(state): State<Arc<AppState>>,\n    axum::Extension(session_id): axum::Extension<TransportSession>,\n    _user: Option<axum::Extension<User>>,\n)"
         )
             && handler_body.contains("encrypt_response(&state, &session_id, &models_response)"),
-        "the models handler must require session E2EE"
+        "the models handler must require the transport session and answer through it"
     );
     assert!(
         !handler_body.contains("Json(models_response)"),
-        "the models handler must not return a successful plaintext response"
+        "the models handler must not answer outside the transport response helper"
     );
 }
 
 #[test]
-fn openai_auth_remains_outside_session_decryption() {
+fn openai_auth_remains_outside_request_body_parsing() {
     let manifest_dir = Path::new(env!("CARGO_MANIFEST_DIR"));
     let main_source = fs::read_to_string(manifest_dir.join("src/main.rs"))
         .expect("main source should be readable");
@@ -386,9 +386,8 @@ fn openai_auth_remains_outside_session_decryption() {
         .expect("OpenAI route source should be readable");
 
     // `route_layer` is applied when the completed OpenAI router is composed
-    // into the application, so it wraps the route-local decryption layers.
-    // This order lets a request with both an expired access token and a stale
-    // session receive the access-token refresh signal first.
+    // into the application, so it wraps the route-local body-parsing layers:
+    // a caller is authenticated before its request body is parsed.
     assert!(
         main_source.contains(
             "openai_routes(app_state.clone())\n                .route_layer(from_fn_with_state(app_state.clone(), require_internal))\n                .route_layer(from_fn_with_state(app_state.clone(), validate_openai_auth))"
@@ -407,12 +406,12 @@ fn openai_auth_remains_outside_session_decryption() {
     let chat_route = &router_body[chat_route_start..next_route_start];
     assert!(
         chat_route.contains("decrypt_request::<Value>"),
-        "chat completions must retain route-local session decryption"
+        "chat completions must retain its route-local transport boundary"
     );
 }
 
 #[test]
-fn web_routes_remain_jwt_authenticated_and_e2ee_wrapped() {
+fn web_routes_remain_jwt_authenticated_behind_the_transport_boundary() {
     let manifest_dir = Path::new(env!("CARGO_MANIFEST_DIR"));
     let main_source = fs::read_to_string(manifest_dir.join("src/main.rs"))
         .expect("main source should be readable");
@@ -430,7 +429,7 @@ fn web_routes_remain_jwt_authenticated_and_e2ee_wrapped() {
     assert_eq!(
         router_body.matches("decrypt_request::<Value>").count(),
         2,
-        "both web routes must decrypt request bodies through session E2EE"
+        "both web routes must parse request bodies at the transport boundary"
     );
     assert_eq!(
         web_source
@@ -443,7 +442,7 @@ fn web_routes_remain_jwt_authenticated_and_e2ee_wrapped() {
         let handler_body = extract_function_body(&web_source, handler);
         assert!(
             handler_body.contains("encrypt_response(&state, &session_id, &response)"),
-            "{handler} must encrypt successful responses through session E2EE"
+            "{handler} must answer through the transport response helper"
         );
     }
 }
@@ -528,8 +527,8 @@ fn refresh_route_preserves_signed_auth_context_without_recomputing_binding() {
     for required_pattern in [
         "AuthContext::from_claims(&claims)",
         "verify_seed_wrap_for_auth_context(&user, &auth_context)",
-        "TokenType::access_for_transport(session_id.is_v2())",
-        "TokenType::refresh_for_transport(session_id.is_v2())",
+        "TokenType::TransportV2Access",
+        "TokenType::TransportV2Refresh",
     ] {
         assert!(
             refresh_body.contains(required_pattern),
@@ -894,8 +893,8 @@ fn password_credential_lifecycle_rewraps_seed_and_reissues_tokens() {
         ".update_user_password_and_seed_wrap(",
         "&auth_context",
         "NewToken::new_with_auth_context(",
-        "TokenType::access_for_transport(session_id.is_v2())",
-        "TokenType::refresh_for_transport(session_id.is_v2())",
+        "TokenType::TransportV2Access",
+        "TokenType::TransportV2Refresh",
         "&new_auth_context",
     ] {
         assert!(
@@ -1091,8 +1090,8 @@ fn password_registration_and_login_issue_tokens_only_after_seed_wrap_verificatio
     for required_pattern in [
         ".authenticate_user(",
         "NewToken::new_with_auth_context(",
-        "TokenType::access_for_transport(is_transport_v2)",
-        "TokenType::refresh_for_transport(is_transport_v2)",
+        "TokenType::TransportV2Access",
+        "TokenType::TransportV2Refresh",
         "&authenticated_user.auth_context",
     ] {
         assert!(
@@ -1517,15 +1516,8 @@ fn assert_patterns_in_order(source: &str, patterns: &[&str]) {
     }
 }
 
-const RECOVERY_MANAGEMENT_HANDLERS: &[&str] = &[
-    "recovery_status",
-    "enroll_recovery",
-    "rotate_recovery",
-    "disable_recovery",
-];
-
 #[test]
-fn recovery_management_routes_require_jwt_and_v2_transport() {
+fn recovery_management_routes_require_jwt_and_encrypted_requests() {
     let protected_routes =
         Path::new(env!("CARGO_MANIFEST_DIR")).join("src/web/protected_routes.rs");
     let contents =
@@ -1566,12 +1558,6 @@ fn recovery_management_routes_require_jwt_and_v2_transport() {
         );
     }
 
-    // The v2-transport gate is part of the recovery sub-router itself, so v1
-    // sessions are rejected before user JWT validation touches the database.
-    assert!(
-        router_body.contains("from_fn(require_transport_v2)"),
-        "the recovery sub-router must apply the v2-transport gate"
-    );
     assert!(
         router_body.contains("from_fn_with_state(app_state.clone(), validate_jwt)"),
         "the recovery sub-router must apply the user-JWT middleware"
@@ -1588,32 +1574,373 @@ fn recovery_management_routes_require_jwt_and_v2_transport() {
     );
 }
 
+/// Routers the listener serves in plaintext by design. Every other router
+/// under `src/web` belongs to the application.
+const PLAINTEXT_ROUTER_SOURCES: &[&str] = &[
+    "src/web/attestation_routes.rs",
+    "src/web/health_routes.rs",
+    "src/web/remote/relay.rs",
+];
+
+/// Middleware that refuses a request without the gateway's transport session
+/// before its handler can run.
+const TRANSPORT_BOUNDARY_MIDDLEWARE: &[&str] = &[
+    "decrypt_request",
+    "prepare_refresh_request",
+    "prepare_platform_refresh_request",
+];
+
+const ROUTE_METHODS: &[&str] = &["get", "post", "put", "patch", "delete"];
+
+/// Each handler on each application route carries its own transport-boundary
+/// layer, so a router mounted in the wrong place still fails closed.
 #[test]
-fn recovery_handlers_enforce_transport_and_user_guards_before_any_logic() {
-    let protected_routes =
-        Path::new(env!("CARGO_MANIFEST_DIR")).join("src/web/protected_routes.rs");
-    let contents =
-        fs::read_to_string(&protected_routes).expect("protected routes source should be readable");
+fn every_application_route_enforces_the_transport_boundary() {
+    let manifest_dir = Path::new(env!("CARGO_MANIFEST_DIR"));
+    let mut scan = RouteBoundaryScan::default();
+    scan_route_boundaries(&manifest_dir.join("src/web"), manifest_dir, &mut scan);
 
-    for handler in RECOVERY_MANAGEMENT_HANDLERS {
-        let signature = format!("pub async fn {handler}(");
-        let body = extract_function_body(&contents, &signature);
+    assert!(
+        scan.findings.is_empty(),
+        "application routes without a transport boundary on every handler:\n{}",
+        scan.findings.join("\n")
+    );
+    // Guard the scan itself: an empty walk would pass vacuously.
+    assert!(
+        scan.handlers >= 100,
+        "expected to scan the application's routes, found only {} handlers",
+        scan.handlers
+    );
+}
 
-        let do_recovery_work =
-            body.contains("encrypt_response") || body.contains("db.get_recovery_wrap");
-        if !do_recovery_work {
-            continue;
-        }
+#[test]
+fn route_boundary_scanner_flags_unlayered_and_partially_layered_routes() {
+    let source = r#"
+fn router(state: S) -> Router {
+    Router::new()
+        .route("/covered", post(a).layer(from_fn_with_state(state.clone(), decrypt_request::<A>)))
+        .route("/refresh", post(b).layer(from_fn(prepare_refresh_request)))
+        .route("/bare", get(c))
+        .route(
+            "/half",
+            get(d)
+                .layer(from_fn_with_state(state.clone(), decrypt_request::<()>))
+                .merge(post(e)),
+        )
+        .route("/chained", get(f).delete(g).layer(from_fn(decrypt_request::<()>)))
+}
 
-        let guard_index = body
-            .find("require_v2_transport_session(&transport_session)?;")
-            .unwrap_or_else(|| panic!("{handler} must call the v2-transport guard first"));
-        let logic_index = body
-            .find("db.")
-            .unwrap_or_else(|| body.rfind("await").expect("handler should await work"));
+#[cfg(test)]
+mod tests {
+    fn test_router() -> Router {
+        Router::new().route("/test-only", get(h))
+    }
+}
+"#;
+    let mut scan = RouteBoundaryScan::default();
+    scan_route_boundary_source("example.rs", source, &mut scan);
+
+    assert_eq!(scan.handlers, 7);
+    assert_eq!(scan.findings.len(), 3, "{:?}", scan.findings);
+    for route in ["/bare", "/half", "/chained"] {
         assert!(
-            guard_index < logic_index,
-            "{handler} must reject non-v2 transports before opening or writing recovery state"
+            scan.findings.iter().any(|finding| finding.contains(route)),
+            "{route} should be reported: {:?}",
+            scan.findings
+        );
+    }
+}
+
+#[derive(Default)]
+struct RouteBoundaryScan {
+    handlers: usize,
+    findings: Vec<String>,
+}
+
+fn scan_route_boundaries(path: &Path, manifest_dir: &Path, scan: &mut RouteBoundaryScan) {
+    if path.is_dir() {
+        for entry in fs::read_dir(path).expect("source directory should be readable") {
+            let entry = entry.expect("source directory entry should be readable");
+            scan_route_boundaries(&entry.path(), manifest_dir, scan);
+        }
+        return;
+    }
+    if path.extension().and_then(|extension| extension.to_str()) != Some("rs") {
+        return;
+    }
+    // Out-of-line test modules (`tests.rs`, `*_tests.rs`) carry no `cfg(test)`
+    // attribute of their own.
+    let stem = path
+        .file_stem()
+        .and_then(|stem| stem.to_str())
+        .unwrap_or("");
+    if stem == "tests" || stem.ends_with("_tests") {
+        return;
+    }
+    let relative_path = path
+        .strip_prefix(manifest_dir)
+        .unwrap_or(path)
+        .display()
+        .to_string();
+    if PLAINTEXT_ROUTER_SOURCES.contains(&relative_path.as_str()) {
+        return;
+    }
+    let contents = fs::read_to_string(path)
+        .unwrap_or_else(|_| panic!("{} should be readable", path.display()));
+    scan_route_boundary_source(&relative_path, &contents, scan);
+}
+
+fn scan_route_boundary_source(source_path: &str, source: &str, scan: &mut RouteBoundaryScan) {
+    let syntax = syn::parse_file(source)
+        .unwrap_or_else(|error| panic!("{source_path} should parse as Rust source: {error}"));
+    let mut visitor = RouteBoundaryVisitor { source_path, scan };
+    visitor.visit_file(&syntax);
+}
+
+fn is_test_only(attrs: &[syn::Attribute]) -> bool {
+    attrs.iter().any(|attr| {
+        attr.path().is_ident("test")
+            || (attr.path().is_ident("cfg")
+                && attr
+                    .parse_args::<syn::Ident>()
+                    .is_ok_and(|ident| ident == "test"))
+    })
+}
+
+fn last_path_ident(expr: &syn::Expr) -> Option<String> {
+    match expr {
+        syn::Expr::Path(path) => path
+            .path
+            .segments
+            .last()
+            .map(|segment| segment.ident.to_string()),
+        _ => None,
+    }
+}
+
+/// `get(handler)`, optionally followed by layers, merges, or further methods.
+fn is_method_router(expr: &syn::Expr) -> bool {
+    match expr {
+        syn::Expr::Call(call) => {
+            last_path_ident(&call.func).is_some_and(|name| ROUTE_METHODS.contains(&name.as_str()))
+        }
+        syn::Expr::MethodCall(call) => is_method_router(&call.receiver),
+        _ => false,
+    }
+}
+
+struct RouteBoundaryVisitor<'a> {
+    source_path: &'a str,
+    scan: &'a mut RouteBoundaryScan,
+}
+
+impl<'ast> Visit<'ast> for RouteBoundaryVisitor<'_> {
+    fn visit_item_mod(&mut self, item: &'ast syn::ItemMod) {
+        if !is_test_only(&item.attrs) {
+            visit::visit_item_mod(self, item);
+        }
+    }
+
+    fn visit_item_fn(&mut self, item: &'ast syn::ItemFn) {
+        if !is_test_only(&item.attrs) {
+            visit::visit_item_fn(self, item);
+        }
+    }
+
+    fn visit_expr_method_call(&mut self, call: &'ast syn::ExprMethodCall) {
+        if call.method == "route" && call.args.len() == 2 {
+            let mut counter = RouteHandlerCounter::default();
+            counter.visit_expr(&call.args[1]);
+            self.scan.handlers += counter.handlers;
+            if counter.handlers == 0 || counter.boundaries < counter.handlers {
+                let route = match &call.args[0] {
+                    syn::Expr::Lit(syn::ExprLit {
+                        lit: syn::Lit::Str(route),
+                        ..
+                    }) => route.value(),
+                    _ => "<dynamic>".to_string(),
+                };
+                self.scan.findings.push(format!(
+                    "{}: route {route} has {} handler(s) and {} transport boundary layer(s)",
+                    self.source_path, counter.handlers, counter.boundaries
+                ));
+            }
+        }
+        visit::visit_expr_method_call(self, call);
+    }
+}
+
+#[derive(Default)]
+struct RouteHandlerCounter {
+    handlers: usize,
+    boundaries: usize,
+}
+
+impl<'ast> Visit<'ast> for RouteHandlerCounter {
+    fn visit_expr_call(&mut self, call: &'ast syn::ExprCall) {
+        if is_method_router(&syn::Expr::Call(call.clone())) {
+            self.handlers += 1;
+        }
+        visit::visit_expr_call(self, call);
+    }
+
+    fn visit_expr_method_call(&mut self, call: &'ast syn::ExprMethodCall) {
+        if ROUTE_METHODS.contains(&call.method.to_string().as_str())
+            && is_method_router(&call.receiver)
+        {
+            self.handlers += 1;
+        }
+        visit::visit_expr_method_call(self, call);
+    }
+
+    fn visit_expr_path(&mut self, path: &'ast syn::ExprPath) {
+        if path.path.segments.last().is_some_and(|segment| {
+            TRANSPORT_BOUNDARY_MIDDLEWARE.contains(&segment.ident.to_string().as_str())
+        }) {
+            self.boundaries += 1;
+        }
+        visit::visit_expr_path(self, path);
+    }
+}
+
+/// The listener serves the application only through the Transport V2 gateway.
+/// A router that mounted an application route directly would hand a plaintext
+/// HTTP caller a route whose handlers assume an authenticated, decrypted
+/// envelope.
+#[test]
+fn application_routes_are_served_only_behind_the_transport_v2_gateway() {
+    let main_contents =
+        fs::read_to_string(Path::new(env!("CARGO_MANIFEST_DIR")).join("src/main.rs"))
+            .expect("main source should be readable");
+
+    let public_body = extract_function_body(&main_contents, "fn public_routes");
+    for required_pattern in [
+        "health_routes()",
+        "attestation_routes::router(",
+        "web::remote::relay::router(",
+        "transport_v2_gateway.router()",
+    ] {
+        assert!(
+            public_body.contains(required_pattern),
+            "the listener's router must serve `{required_pattern}`"
+        );
+    }
+    assert_eq!(
+        public_body.matches(".merge(").count(),
+        3,
+        "the listener's router must serve exactly its four plaintext surfaces"
+    );
+    for forbidden_pattern in [
+        "application_routes(",
+        "transport_v2_application(",
+        "native_handoff_routes(",
+        "_routes(app_state",
+    ] {
+        assert!(
+            !public_body.contains(forbidden_pattern),
+            "the listener's router must not mount `{forbidden_pattern}` in plaintext"
+        );
+    }
+
+    // The application is composed once, for the gateway, and nothing else
+    // turns it into a served router.
+    assert_eq!(
+        main_contents.matches("application_routes(").count(),
+        2,
+        "application_routes must be defined once and used only by the gateway application"
+    );
+    let gateway_application_body =
+        extract_function_body(&main_contents, "fn transport_v2_application");
+    assert!(gateway_application_body.contains("application_routes(app_state.clone())"));
+    assert_eq!(
+        main_contents.matches("transport_v2_application(").count(),
+        2,
+        "the gateway application must be built once, for the gateway"
+    );
+    let main_body = extract_function_body(&main_contents, "async fn main");
+    assert_patterns_in_order(
+        main_body,
+        &[
+            "TransportV2Gateway::new(",
+            "transport_v2_application(app_state.clone())",
+            "let app = public_routes(app_state.clone(), &transport_v2_gateway)\n        .layer(cors)\n        .layer(from_fn(add_error_contract_header));",
+            "axum::serve(listener, app.into_make_service())",
+        ],
+    );
+    for forbidden_pattern in [".merge(", ".nest(", ".route(", ".fallback("] {
+        assert!(
+            !main_body.contains(forbidden_pattern),
+            "main must serve public_routes as built, without `{forbidden_pattern}`"
+        );
+    }
+
+    // Each plaintext router serves exactly the routes it is named for.
+    for (path, signature, routes) in [
+        (
+            "src/web/health_routes.rs",
+            "pub fn router",
+            &["\"/health-check\""][..],
+        ),
+        (
+            "src/web/attestation_routes.rs",
+            "pub fn router",
+            &["\"/attestation/:nonce\""][..],
+        ),
+        (
+            "src/web/remote/relay.rs",
+            "pub(crate) fn router",
+            &["\"/v1/remote/relay-access\""][..],
+        ),
+        (
+            "src/transport_v2/gateway.rs",
+            "pub(crate) fn router",
+            &["\"/v2/session\"", "\"/v2/request\""][..],
+        ),
+    ] {
+        let source = fs::read_to_string(Path::new(env!("CARGO_MANIFEST_DIR")).join(path))
+            .expect("router source should be readable");
+        let router_body = extract_function_body(&source, signature);
+        assert_eq!(
+            router_body.matches(".route(").count(),
+            routes.len(),
+            "{path} must serve exactly {routes:?}"
+        );
+        for route in routes {
+            assert!(router_body.contains(route), "{path} must serve {route}");
+        }
+        for forbidden_pattern in [".merge(application", ".nest(", ".fallback("] {
+            assert!(
+                !router_body.contains(forbidden_pattern),
+                "{path} must not widen its router with `{forbidden_pattern}`"
+            );
+        }
+    }
+
+    // The application's own boundary fails closed without the gateway's
+    // session marker, and its authentication reads only envelope credentials.
+    let middleware = fs::read_to_string(
+        Path::new(env!("CARGO_MANIFEST_DIR")).join("src/web/encryption_middleware.rs"),
+    )
+    .expect("encryption middleware source should be readable");
+    let decrypt_body = extract_function_body(&middleware, "pub async fn decrypt_request");
+    assert_patterns_in_order(
+        decrypt_body,
+        &[
+            "request.extensions().get::<TransportSession>().is_none()",
+            "return Err(ApiError::BadRequest);",
+            "next.run(request)",
+        ],
+    );
+    for (path, forbidden_pattern) in [
+        ("src/jwt.rs", "header::AUTHORIZATION"),
+        ("src/web/openai_auth.rs", "header::AUTHORIZATION"),
+        ("src/web/encryption_middleware.rs", "x-session-id"),
+    ] {
+        let source = fs::read_to_string(Path::new(env!("CARGO_MANIFEST_DIR")).join(path))
+            .expect("source should be readable");
+        assert!(
+            !source.contains(forbidden_pattern),
+            "{path} must not read a plaintext `{forbidden_pattern}`"
         );
     }
 }
@@ -1706,7 +2033,7 @@ fn recovery_stepup_gates_before_seed_open_and_insert() {
 }
 
 #[test]
-fn password_reset_v2_options_requires_v2_transport_and_shared_readonly_proof() {
+fn password_reset_v2_options_requires_shared_readonly_proof() {
     let login_routes = Path::new(env!("CARGO_MANIFEST_DIR")).join("src/web/login_routes.rs");
     let contents =
         fs::read_to_string(&login_routes).expect("login route source should be readable");
@@ -1735,37 +2062,21 @@ fn password_reset_v2_options_requires_v2_transport_and_shared_readonly_proof() {
         !sub_router_body.contains(".with_state("),
         "the options sub-router must keep its typed state until the login router erases it"
     );
-    // The v2-transport gate must be the outermost layer on the sub-router:
-    // the route is declared with its encrypted-request layer, and the
-    // v2-transport gate is applied after it, so a v1 session is rejected
-    // before any request body is decrypted or proof is verified.
-    assert!(
-        sub_router_body.contains("from_fn(require_transport_v2)"),
-        "the options sub-router must apply the v2-transport gate"
-    );
     assert_patterns_in_order(
         sub_router_body,
         &[
             "post(password_reset_v2_options)",
             "decrypt_request::<PasswordResetV2OptionsRequest>",
-            ".route_layer(from_fn(require_transport_v2))",
         ],
     );
 
     let handler_body = extract_function_body(&contents, "pub async fn password_reset_v2_options");
-    let guard_index = handler_body
-        .find("require_v2_transport_session(&transport_session)?;")
-        .expect("the v2 options handler must call the v2-transport guard first");
     let proof_index = handler_body
         .find("verify_password_reset_proof(")
         .expect("the v2 options handler must reuse the shared proof verification");
     let reveal_index = handler_body
         .find("recovery_wrap_exists")
         .expect("the v2 options handler must reveal recovery enrollment");
-    assert!(
-        guard_index < proof_index,
-        "the v2 options handler must reject non-v2 transports before proof verification"
-    );
     assert!(
         proof_index < reveal_index,
         "the v2 options handler must reveal recovery enrollment only after the proof"
@@ -1808,7 +2119,7 @@ fn password_reset_v2_options_requires_v2_transport_and_shared_readonly_proof() {
 }
 
 #[test]
-fn password_reset_v2_complete_requires_v2_transport_and_guarded_completion() {
+fn password_reset_v2_complete_requires_guarded_completion() {
     let login_routes = Path::new(env!("CARGO_MANIFEST_DIR")).join("src/web/login_routes.rs");
     let contents =
         fs::read_to_string(&login_routes).expect("login route source should be readable");
@@ -1825,22 +2136,15 @@ fn password_reset_v2_complete_requires_v2_transport_and_guarded_completion() {
             && sub_router_body.contains("decrypt_request::<CompletePasswordResetV2Request>"),
         "the completion sub-router must wire the route with its encrypted-request layer"
     );
-    // The v2-transport gate must be the outermost layer on the sub-router so
-    // a v1 session is rejected before any request body is decrypted or proof
-    // is verified.
     assert_patterns_in_order(
         sub_router_body,
         &[
             "post(password_reset_v2_complete)",
             "decrypt_request::<CompletePasswordResetV2Request>",
-            ".route_layer(from_fn(require_transport_v2))",
         ],
     );
 
     let handler_body = extract_function_body(&contents, "pub async fn password_reset_v2_complete");
-    let guard_index = handler_body
-        .find("require_v2_transport_session(&transport_session)?;")
-        .expect("the completion handler must call the v2-transport guard first");
     let acknowledge_index = handler_body
         .find("acknowledge_data_loss")
         .expect("the completion handler must gate destructive reset on an explicit acknowledgment");
@@ -1850,10 +2154,6 @@ fn password_reset_v2_complete_requires_v2_transport_and_guarded_completion() {
     let proof_index = handler_body
         .find("verify_password_reset_proof(")
         .expect("the completion handler must reuse the shared proof verification");
-    assert!(
-        guard_index < acknowledge_index,
-        "the completion handler must reject non-v2 transports before mode dispatch"
-    );
     assert!(
         acknowledge_index < project_index,
         "the completion handler must require the destructive acknowledgment before any account lookup"

@@ -3,14 +3,12 @@ use aws_nitro_enclaves_nsm_api::{
     api::{Request, Response},
     driver::{nsm_exit, nsm_init, nsm_process_request},
 };
-use axum::routing::post;
 use axum::{extract::State, routing::get, Json};
 use axum::{http::StatusCode, Router};
 use base64::{engine::general_purpose, Engine as _};
-use chacha20poly1305::{aead::Aead, ChaCha20Poly1305, Key, KeyInit, Nonce};
 use chrono::{Duration, Utc};
 use secp256k1::{PublicKey, Secp256k1, SecretKey};
-use serde::{Deserialize, Serialize};
+use serde::Serialize;
 use serde_bytes::ByteBuf;
 use serde_cbor::Value;
 use sha2::{Digest, Sha256};
@@ -18,72 +16,45 @@ use std::collections::BTreeMap;
 use std::sync::{Arc, LazyLock};
 use tokio::{sync::Semaphore, task};
 use tracing::error;
-use uuid::Uuid;
 use yasna::models::ObjectIdentifier;
 use yasna::{construct_der, Tag};
-use zeroize::{Zeroize, ZeroizeOnDrop};
 
-#[derive(Zeroize, ZeroizeOnDrop)]
-pub struct SessionState {
-    session_key: [u8; 32],
-}
-
-impl SessionState {
-    pub fn new(session_key: [u8; 32]) -> Self {
-        Self { session_key }
-    }
-
-    pub fn get_session_key(&self) -> &[u8; 32] {
-        &self.session_key
-    }
-
-    pub fn decrypt(&self, encrypted_data: &[u8], nonce: &[u8; 12]) -> Result<Vec<u8>, ApiError> {
-        let key = Key::from_slice(self.session_key.as_ref());
-        let cipher = ChaCha20Poly1305::new(key);
-        let nonce = Nonce::from_slice(nonce);
-
-        cipher.decrypt(nonce, encrypted_data).map_err(|e| {
-            tracing::error!("could not decrypt data: {e}");
-            ApiError::InternalServerError
-        })
-    }
-}
-
-#[derive(Deserialize)]
-struct KeyExchangeRequest {
-    nonce: String,
-    client_public_key: String,
-}
-
-#[derive(Serialize)]
-struct KeyExchangeResponse {
-    session_id: Uuid,
-    encrypted_session_key: String,
-}
+const MAX_ATTESTATION_NONCE_BYTES: usize = 512;
 
 #[derive(Serialize)]
 struct AttestationResponse {
     attestation_document: String,
 }
 
+/// The public attestation document.
+///
+/// This is not a transport: it establishes no session and attests no key. It
+/// lets anyone fetch a fresh document for a nonce they chose and inspect the
+/// enclave's measurements, as the apps' verification page and deployment
+/// checks do. A Transport V2 session carries its own attestation, bound to
+/// its handshake, in the `POST /v2/session` response.
 pub fn router(app_state: Arc<AppState>) -> Router<()> {
     Router::new()
         .route("/attestation/:nonce", get(get_attestation))
-        .route("/key_exchange", post(key_exchange))
         .with_state(app_state)
+}
+
+fn validate_attestation_nonce(nonce: &str) -> Result<(), ApiError> {
+    if nonce.len() > MAX_ATTESTATION_NONCE_BYTES {
+        return Err(ApiError::BadRequest);
+    }
+    Ok(())
 }
 
 async fn get_attestation(
     State(data): State<Arc<AppState>>,
     axum::extract::Path(nonce): axum::extract::Path<String>,
 ) -> Result<(StatusCode, Json<AttestationResponse>), ApiError> {
-    // Create an ephemeral key pair for this request
-    let enclave_public_key = data.create_ephemeral_key(&nonce).await?;
+    validate_attestation_nonce(&nonce)?;
 
-    // Create a request for the attestation document
     let request = Request::Attestation {
         user_data: None,
-        public_key: Some(ByteBuf::from(enclave_public_key.as_bytes().to_vec())),
+        public_key: None,
         nonce: Some(ByteBuf::from(nonce.into_bytes())),
     };
 
@@ -400,97 +371,23 @@ fn generate_real_attestation_document(request: Request) -> Result<Vec<u8>, ApiEr
     }
 }
 
-async fn key_exchange(
-    State(data): State<Arc<AppState>>,
-    Json(payload): Json<KeyExchangeRequest>,
-) -> Result<Json<KeyExchangeResponse>, ApiError> {
-    let client_public_key_bytes = general_purpose::STANDARD
-        .decode(&payload.client_public_key)
-        .map_err(|_| ApiError::BadRequest)?;
-
-    let client_public_key = x25519_dalek::PublicKey::from(
-        <[u8; 32]>::try_from(client_public_key_bytes.as_slice())
-            .map_err(|_| ApiError::BadRequest)?,
-    );
-
-    let ephemeral_secret = data
-        .get_and_remove_ephemeral_secret(&payload.nonce)
-        .await?
-        .ok_or(ApiError::BadRequest)?;
-
-    let shared_secret = derive_contributory_shared_secret(ephemeral_secret, &client_public_key)?;
-
-    // Generate a random session key using your secure random function
-    let session_state = SessionState::new(crate::encrypt::generate_random());
-
-    // Encrypt the session key using the shared secret
-    let nonce_bytes: [u8; 12] = crate::encrypt::generate_random();
-    let nonce = Nonce::from_slice(&nonce_bytes);
-    let cipher = ChaCha20Poly1305::new(shared_secret.as_bytes().into());
-    let mut encrypted_session_key = nonce_bytes.to_vec();
-    encrypted_session_key.extend_from_slice(
-        &cipher
-            .encrypt(nonce, session_state.get_session_key().as_ref())
-            .map_err(|_| ApiError::InternalServerError)?,
-    );
-
-    // Generate a new UUID for the session
-    let session_id = Uuid::new_v4();
-
-    // Store the session state, evicting the least-recently-used unleased
-    // session if the cache is full.
-    data.store_session_state(session_id, session_state).await?;
-    Ok(Json(KeyExchangeResponse {
-        session_id,
-        encrypted_session_key: general_purpose::STANDARD.encode(&encrypted_session_key),
-    }))
-}
-
-fn derive_contributory_shared_secret(
-    ephemeral_secret: x25519_dalek::EphemeralSecret,
-    client_public_key: &x25519_dalek::PublicKey,
-) -> Result<x25519_dalek::SharedSecret, ApiError> {
-    let shared_secret = ephemeral_secret.diffie_hellman(client_public_key);
-    if !shared_secret.was_contributory() {
-        return Err(ApiError::BadRequest);
-    }
-
-    Ok(shared_secret)
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
 
     #[test]
-    fn session_state_zeroizes_key_material() {
-        fn assert_zeroize_on_drop<T: ZeroizeOnDrop>() {}
-
-        assert_zeroize_on_drop::<SessionState>();
-
-        let mut state = SessionState::new([0xA5; 32]);
-        state.zeroize();
-        assert_eq!(state.get_session_key(), &[0; 32]);
-    }
-
-    #[test]
-    fn key_exchange_rejects_non_contributory_x25519_public_key() {
-        let ephemeral_secret = x25519_dalek::EphemeralSecret::random_from_rng(rand_core::OsRng);
-        let low_order_public_key = x25519_dalek::PublicKey::from([0u8; 32]);
-
+    fn nonce_limit_is_measured_in_bytes() {
+        assert!(validate_attestation_nonce(&"a".repeat(512)).is_ok());
         assert!(matches!(
-            derive_contributory_shared_secret(ephemeral_secret, &low_order_public_key),
+            validate_attestation_nonce(&"a".repeat(513)),
             Err(ApiError::BadRequest)
         ));
-    }
 
-    #[test]
-    fn key_exchange_accepts_honest_x25519_public_key() {
-        let ephemeral_secret = x25519_dalek::EphemeralSecret::random_from_rng(rand_core::OsRng);
-        let client_secret = x25519_dalek::EphemeralSecret::random_from_rng(rand_core::OsRng);
-        let client_public_key = x25519_dalek::PublicKey::from(&client_secret);
-
-        assert!(derive_contributory_shared_secret(ephemeral_secret, &client_public_key).is_ok());
+        assert!(validate_attestation_nonce(&"é".repeat(256)).is_ok());
+        assert!(matches!(
+            validate_attestation_nonce(&"é".repeat(257)),
+            Err(ApiError::BadRequest)
+        ));
     }
 
     #[tokio::test(flavor = "multi_thread", worker_threads = 4)]

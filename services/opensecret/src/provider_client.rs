@@ -742,6 +742,21 @@ impl MapleReadiness {
         Self::for_test_instances(if ready { &MapleInstanceId::ALL } else { &[] })
     }
 
+    /// Readiness as the key-bearing constructor builds it for these guests:
+    /// one transport per direct target, with a loopback transport standing in
+    /// for attestation. A guest without an approved release gets none.
+    #[cfg(test)]
+    pub(crate) fn for_test_endpoints(
+        endpoints: impl IntoIterator<Item = &'static crate::maple_inference::MapleEndpoint>,
+    ) -> Self {
+        let targeted = maple_direct_targets(endpoints)
+            .expect("test endpoints form valid policies")
+            .into_iter()
+            .map(|(instance, _)| instance)
+            .collect::<Vec<_>>();
+        Self::for_test_instances(&targeted)
+    }
+
     #[cfg(test)]
     pub(crate) fn for_test_instances(ready: &[MapleInstanceId]) -> Self {
         Self {
@@ -772,6 +787,34 @@ impl std::fmt::Debug for MapleReadiness {
             )
             .finish_non_exhaustive()
     }
+}
+
+/// The direct-attested target of each given guest that has an approved release.
+///
+/// A guest without one is left out: it gets no verifier, no transport and no
+/// network initialization, so readiness and routing treat it as absent. A
+/// malformed policy is an error for the whole set, before any transport starts.
+fn maple_direct_targets(
+    endpoints: impl IntoIterator<Item = &'static crate::maple_inference::MapleEndpoint>,
+) -> Result<Vec<(MapleInstanceId, AttestationTarget)>, ProviderClientError> {
+    let mut targets = Vec::new();
+    for endpoint in endpoints {
+        let Some(policy) = endpoint
+            .direct_policy()
+            .map_err(|_| ProviderClientError::MaplePolicy)?
+        else {
+            continue;
+        };
+        targets.push((
+            endpoint.instance,
+            AttestationTarget::MapleDirect {
+                instance: endpoint.instance,
+                host: endpoint.host,
+                policy,
+            },
+        ));
+    }
+    Ok(targets)
 }
 
 /// Shared outbound provider clients.
@@ -815,21 +858,9 @@ impl ProviderClient {
     ) -> Result<Self, ProviderClientError> {
         self.maple.clear();
         if let Some(api_key) = api_key.filter(|key| !key.trim().is_empty()) {
-            for instance in MapleInstanceId::ALL {
-                let endpoint = crate::maple_inference::endpoint(instance);
-                let Some(policy) = crate::maple_inference::direct_policy(instance)
-                    .map_err(|_| ProviderClientError::MaplePolicy)?
-                else {
-                    continue;
-                };
-                let transport = Arc::new(SecureTinfoilTransport::new(
-                    api_key.clone(),
-                    AttestationTarget::MapleDirect {
-                        instance: endpoint.instance,
-                        host: endpoint.host,
-                        policy,
-                    },
-                ));
+            let targets = maple_direct_targets(crate::maple_inference::endpoints())?;
+            for (instance, target) in targets {
+                let transport = Arc::new(SecureTinfoilTransport::new(api_key.clone(), target));
                 transport.start_background_initialization();
                 self.maple
                     .insert(instance, TinfoilTransport::Secure(transport));
@@ -1319,9 +1350,10 @@ mod tests {
         AttestationTarget::MapleDirect {
             instance,
             host: crate::maple_inference::endpoint(instance).host,
-            policy: crate::maple_inference::direct_policy(instance)
+            policy: crate::maple_inference::endpoint(instance)
+                .direct_policy()
                 .unwrap()
-                .unwrap(),
+                .expect("every production guest has an approved release"),
         }
     }
 
@@ -1507,6 +1539,151 @@ mod tests {
         assert!(!client.maple_readiness().any_ready());
     }
 
+    #[test]
+    fn every_production_guest_has_a_direct_target_on_its_own_host() {
+        let targets = maple_direct_targets(crate::maple_inference::endpoints()).unwrap();
+        assert_eq!(
+            targets
+                .iter()
+                .map(|(instance, _)| *instance)
+                .collect::<Vec<_>>(),
+            MapleInstanceId::ALL
+        );
+        let mut hosts = Vec::new();
+        let mut policies = Vec::new();
+        for (instance, target) in &targets {
+            let AttestationTarget::MapleDirect {
+                instance: target_instance,
+                host,
+                policy,
+            } = target
+            else {
+                panic!("a guest never uses shared-router discovery");
+            };
+            let endpoint = crate::maple_inference::endpoint(*instance);
+            assert_eq!(target_instance, instance);
+            assert_eq!(*host, endpoint.host);
+            let policy = format!("{policy:?}");
+            assert_eq!(
+                policy,
+                format!("{:?}", endpoint.direct_policy().unwrap().unwrap())
+            );
+            hosts.push(*host);
+            policies.push(policy);
+        }
+        assert_eq!(
+            hosts,
+            [
+                "i01.tfinf.maple.ai",
+                "i02.tfinf.maple.ai",
+                "i03.tfinf.maple.ai"
+            ]
+        );
+        // i03's target carries its own release, which is on no other guest's.
+        let i03 = "MaplePrivacyLabs/inference-penclaw";
+        let i03_digest = "d1fb4b4c8dcc2fa229cc601b21677fcc6c47b3562308e5ec9fe13270f50f0933";
+        assert!(policies[2].contains(i03) && policies[2].contains(i03_digest));
+        for other in &policies[..2] {
+            assert!(!other.contains(i03) && !other.contains(i03_digest));
+            assert_ne!(other, &policies[2]);
+        }
+    }
+
+    #[tokio::test]
+    async fn guest_without_an_approved_release_has_no_target_transport_or_readiness() {
+        let unpinned = &crate::maple_inference::UNPINNED_I03_TEST_ENDPOINT;
+        assert!(matches!(unpinned.direct_policy(), Ok(None)));
+        // Alone it yields no target; among the production guests it is the
+        // only one left out.
+        assert!(maple_direct_targets([unpinned]).unwrap().is_empty());
+        let targets =
+            maple_direct_targets(crate::maple_inference::endpoints_with_unpinned_i03()).unwrap();
+        let targeted = targets
+            .iter()
+            .map(|(instance, _)| *instance)
+            .collect::<Vec<_>>();
+        assert_eq!(targeted, [MapleInstanceId::I01, MapleInstanceId::I02]);
+        let unpinned = unpinned.instance;
+        assert!(!targeted.contains(&unpinned));
+        for (instance, target) in &targets {
+            let AttestationTarget::MapleDirect {
+                instance: target_instance,
+                host,
+                ..
+            } = target
+            else {
+                panic!("a guest never uses shared-router discovery");
+            };
+            assert_eq!(target_instance, instance);
+            assert_eq!(*host, crate::maple_inference::endpoint(*instance).host);
+        }
+        let from_targets = MapleReadiness::for_test_endpoints(
+            crate::maple_inference::endpoints_with_unpinned_i03(),
+        );
+        assert!(from_targets.is_ready(MapleInstanceId::I01));
+        assert!(from_targets.is_ready(MapleInstanceId::I02));
+        assert!(!from_targets.is_ready(unpinned));
+        // With its release approved, the same guest is targeted like the rest.
+        let pinned = MapleReadiness::for_test_endpoints(crate::maple_inference::endpoints());
+        assert!(pinned.is_ready(unpinned));
+
+        // Build the client the way the key-bearing constructor does, with
+        // loopback transports in place of attestation: one per target only.
+        let (capture_tx, mut capture_rx) = mpsc::channel::<()>(1);
+        let app = Router::new().fallback(any(move || {
+            let capture_tx = capture_tx.clone();
+            async move {
+                capture_tx.send(()).await.unwrap();
+                StatusCode::OK
+            }
+        }));
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let address = listener.local_addr().unwrap();
+        let server = tokio::spawn(async move { axum::serve(listener, app).await.unwrap() });
+        let mut client = ProviderClient::for_test(format!("http://{address}")).unwrap();
+        for instance in targeted {
+            client.maple.insert(
+                instance,
+                TinfoilTransport::Plain {
+                    client: test_http_client().unwrap(),
+                    base_url: format!("http://{address}"),
+                    api_key: "dedicated-test-key".to_owned(),
+                },
+            );
+        }
+        let readiness = client.maple_readiness();
+        assert!(readiness.is_ready(MapleInstanceId::I01));
+        assert!(readiness.is_ready(MapleInstanceId::I02));
+        assert!(!readiness.is_ready(unpinned));
+        assert!(!readiness.clone().is_ready(unpinned));
+
+        // A request addressed to the unpinned guest fails locally. It is never
+        // sent to another guest, the shared router or an ordinary HTTP client.
+        let mut provider = maple_proxy_for(unpinned);
+        provider.base_url = format!("http://{address}");
+        let result = client
+            .send(
+                &provider,
+                ProviderRequest::new(
+                    Method::POST,
+                    "/v1/chat/completions",
+                    Duration::from_millis(50),
+                )
+                .body(Bytes::from_static(b"synthetic-test-body")),
+            )
+            .await;
+        assert!(matches!(
+            result,
+            Err(ProviderRequestError::MapleUnavailable)
+        ));
+        assert!(
+            tokio::time::timeout(Duration::from_millis(25), capture_rx.recv())
+                .await
+                .is_err()
+        );
+        server.abort();
+    }
+
     #[tokio::test]
     async fn direct_target_factories_keep_each_immutable_host_policy_and_shared_maple_key() {
         let captured = Arc::new(std::sync::Mutex::new(Vec::new()));
@@ -1540,7 +1717,7 @@ mod tests {
             assert!(transport.create_client().await.is_err());
         }
         let captured = captured.lock().unwrap();
-        assert_eq!(captured.len(), 4);
+        assert_eq!(captured.len(), MapleInstanceId::ALL.len() * 2);
         for (index, instance) in MapleInstanceId::ALL.into_iter().enumerate() {
             let first = &captured[index * 2];
             assert_eq!(first, &captured[index * 2 + 1]);
@@ -1550,7 +1727,8 @@ mod tests {
                 first.2,
                 format!(
                     "{:?}",
-                    crate::maple_inference::direct_policy(instance)
+                    crate::maple_inference::endpoint(instance)
+                        .direct_policy()
                         .unwrap()
                         .unwrap()
                 )
@@ -1589,6 +1767,10 @@ mod tests {
         let readiness = client.maple_readiness();
         assert!(!readiness.is_ready(MapleInstanceId::I01));
         assert!(readiness.is_ready(MapleInstanceId::I02));
+        assert!(
+            !readiness.is_ready(MapleInstanceId::I03),
+            "a guest without a transport is never ready"
+        );
         assert!(readiness.any_ready());
         assert!(!readiness.clone().is_ready(MapleInstanceId::I01));
         let recovery_gate = pending.refresh_gate.lock().await;
@@ -1637,13 +1819,6 @@ mod tests {
                     api_key: "dedicated-test-key".to_owned(),
                 },
             );
-            let absent = if ready == MapleInstanceId::I01 {
-                MapleInstanceId::I02
-            } else {
-                MapleInstanceId::I01
-            };
-            let mut provider = maple_proxy_for(absent);
-            provider.base_url = format!("http://{address}");
             let request = || {
                 ProviderRequest::new(
                     Method::POST,
@@ -1651,15 +1826,26 @@ mod tests {
                     Duration::from_millis(50),
                 )
             };
-            assert!(matches!(
-                client.send(&provider, request()).await,
-                Err(ProviderRequestError::MapleUnavailable)
-            ));
+            let mut provider = maple_proxy_for(ready);
+            provider.base_url = format!("http://{address}");
+            for absent in MapleInstanceId::ALL {
+                if absent == ready {
+                    continue;
+                }
+                provider.provider_name = ProviderId::Maple(absent).as_str().to_owned();
+                assert!(matches!(
+                    client.send(&provider, request()).await,
+                    Err(ProviderRequestError::MapleUnavailable)
+                ));
+            }
             for invalid in [
                 "maple",
-                "maple-i03",
+                "maple-i04",
+                "maple-i05",
                 "maple-i01.attacker",
+                "maple-i03.attacker",
                 "MAPLE-I01",
+                "MAPLE-I03",
                 "unknown",
             ] {
                 provider.provider_name = invalid.to_owned();
@@ -2175,6 +2361,7 @@ mod tests {
         for (provider, expect_priority) in [
             (maple_proxy_for(MapleInstanceId::I01), false),
             (maple_proxy_for(MapleInstanceId::I02), false),
+            (maple_proxy_for(MapleInstanceId::I03), false),
             (tinfoil_proxy(), true),
         ] {
             let request = client

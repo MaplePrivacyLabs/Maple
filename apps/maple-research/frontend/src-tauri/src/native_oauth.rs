@@ -230,7 +230,6 @@ fn map_sdk_error(action: &'static str, error: &maple_sdk::Error) -> String {
         maple_sdk::Error::Crypto(_) => "crypto",
         maple_sdk::Error::AttestationVerificationFailed(_) => "attestation",
         maple_sdk::Error::Session(_) => "session",
-        maple_sdk::Error::KeyExchange(_) => "key_exchange",
         maple_sdk::Error::Encryption(_) => "encryption",
         maple_sdk::Error::Decryption(_) => "decryption",
         maple_sdk::Error::Authentication(_) => "authentication",

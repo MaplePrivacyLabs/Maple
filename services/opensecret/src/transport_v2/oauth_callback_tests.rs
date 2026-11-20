@@ -2,55 +2,37 @@
 // Selection checks need no provider exchange. Completion checks below use only
 // loopback providers and a disposable database, with no real OAuth credentials.
 
-async fn oauth_selection_v1_request(
+/// Sends one plaintext request straight to the application router, the way a
+/// caller that bypassed the Transport V2 gateway would. Nothing but the gateway
+/// can attach a transport session, so the application must refuse it.
+async fn direct_application_request(
     application: &Router<()>,
-    session_id: uuid::Uuid,
-    session_key: &[u8; 32],
+    method: Method,
     target: &str,
-    payload: &serde_json::Value,
-) -> (u16, serde_json::Value) {
-    use chacha20poly1305::{aead::Aead, ChaCha20Poly1305, KeyInit, Nonce};
-
-    let cipher = ChaCha20Poly1305::new_from_slice(session_key).unwrap();
-    let nonce = crate::encrypt::generate_random::<12>();
-    let mut encrypted = nonce.to_vec();
-    encrypted.extend_from_slice(
-        &cipher
-            .encrypt(
-                Nonce::from_slice(&nonce),
-                serde_json::to_vec(payload).unwrap().as_slice(),
-            )
-            .unwrap(),
-    );
-    let request = Request::builder()
-        .method(Method::POST)
-        .uri(target)
-        .header(header::CONTENT_TYPE, "application/json")
-        .header("x-session-id", session_id.to_string())
-        .body(Body::from(
-            serde_json::to_vec(&serde_json::json!({ "encrypted": STANDARD.encode(encrypted) }))
-                .unwrap(),
-        ))
-        .unwrap();
-    let response = application.clone().oneshot(request).await.unwrap();
-    let status = response.status().as_u16();
-    let body = to_bytes(response.into_body(), 64 * 1024).await.unwrap();
-    let body: serde_json::Value = serde_json::from_slice(&body).unwrap();
-    if status != 200 {
-        // V1 retains its existing plaintext error projection.
-        return (status, body);
+    payload: Option<&serde_json::Value>,
+    bearer: Option<&str>,
+) -> u16 {
+    let mut builder = Request::builder().method(method).uri(target);
+    if let Some(bearer) = bearer {
+        builder = builder.header(header::AUTHORIZATION, format!("Bearer {bearer}"));
     }
-    let encrypted = STANDARD
-        .decode(body["encrypted"].as_str().unwrap())
-        .unwrap();
-    let (nonce, ciphertext) = encrypted.split_at(12);
-    let plaintext = cipher
-        .decrypt(Nonce::from_slice(nonce), ciphertext)
-        .unwrap();
-    (status, serde_json::from_slice(&plaintext).unwrap())
+    let body = match payload {
+        Some(payload) => {
+            builder = builder.header(header::CONTENT_TYPE, "application/json");
+            Body::from(serde_json::to_vec(payload).unwrap())
+        }
+        None => Body::empty(),
+    };
+    application
+        .clone()
+        .oneshot(builder.body(body).unwrap())
+        .await
+        .unwrap()
+        .status()
+        .as_u16()
 }
 
-async fn oauth_selection_v2_request(
+async fn oauth_selection_request(
     gateway: &Router<()>,
     session: &TestSession,
     request_number: u8,
@@ -100,7 +82,7 @@ async fn oauth_selection_v2_request(
 
 #[tokio::test]
 #[ignore = "requires AEAD_TAMPER_TEST_DATABASE_URL pointing at disposable migrated local Postgres"]
-async fn db_oauth_callback_selection_v1_v2() {
+async fn db_oauth_callback_selection() {
     use crate::{
         db::setup_test_db,
         models::{
@@ -110,7 +92,6 @@ async fn db_oauth_callback_selection_v1_v2() {
             project_settings::{AppleOAuthSettings, OAuthProviderSettings, OAuthSettings},
         },
         web::{
-            attestation_routes::SessionState,
             oauth_routes,
             platform::common::{
                 PROJECT_APPLE_OAUTH_SECRET, PROJECT_GITHUB_OAUTH_SECRET,
@@ -209,15 +190,9 @@ async fn db_oauth_callback_selection_v1_v2() {
     }
 
     let application = oauth_routes(Arc::clone(&app_state));
-    let session_v1_id = uuid::Uuid::new_v4();
-    let session_v1_key = crate::encrypt::generate_random::<32>();
-    app_state
-        .store_session_state(session_v1_id, SessionState::new(session_v1_key))
-        .await
-        .unwrap();
-    let session_v2 = test_session(0xD1);
+    let session = test_session(0xD1);
     let sessions = Arc::new(SessionStore::new(NonZeroUsize::new(2).unwrap()));
-    sessions.insert(Arc::clone(&session_v2.server)).unwrap();
+    sessions.insert(Arc::clone(&session.server)).unwrap();
     let gateway = request_router(application.clone(), sessions);
     let mut request_number = 0;
 
@@ -246,64 +221,59 @@ async fn db_oauth_callback_selection_v1_v2() {
             if let Some(selection) = selection {
                 payload["redirect_url"] = selection;
             }
-            let v1 = oauth_selection_v1_request(
-                &application,
-                session_v1_id,
-                &session_v1_key,
-                &target,
-                &payload,
-            )
-            .await;
-            request_number += 1;
-            let v2 = oauth_selection_v2_request(
-                &gateway,
-                &session_v2,
-                request_number,
-                &target,
-                &payload,
-            )
-            .await;
-            for (transport, (status, response)) in [(1, v1), (2, v2)] {
-                let Some(expected) = expected else {
-                    assert_eq!(
-                        status, 400,
-                        "{provider} V{transport} must reject unlisted callbacks"
-                    );
-                    assert!(response.get("auth_url").is_none());
-                    assert!(response.get("state").is_none());
-                    continue;
-                };
-                assert_eq!(
-                    status, 200,
-                    "{provider} V{transport} initiation should succeed"
-                );
-                let auth_url = url::Url::parse(response["auth_url"].as_str().unwrap()).unwrap();
-                let query: std::collections::HashMap<_, _> = auth_url.query_pairs().collect();
-                if provider == "apple" {
-                    assert_eq!(query.get("client_id").map(|value| value.as_ref()), Some("oauth-selection.services"));
-                }
-                assert_eq!(
-                    query.get("redirect_uri").map(|value| value.as_ref()),
-                    Some(expected)
-                );
-                let opaque_state = response["state"].as_str().unwrap();
-                assert_eq!(
-                    query.get("state").map(|value| value.as_ref()),
-                    Some(opaque_state)
-                );
-                let state: serde_json::Value = serde_json::from_slice(
-                    &base64::engine::general_purpose::URL_SAFE_NO_PAD
-                        .decode(opaque_state)
-                        .unwrap(),
+            // The same request sent around the gateway never starts a flow.
+            assert_eq!(
+                direct_application_request(
+                    &application,
+                    Method::POST,
+                    &target,
+                    Some(&payload),
+                    None,
                 )
-                .unwrap();
-                assert_eq!(state["client_id"], project.client_id.to_string());
-                assert_eq!(state["redirect_url"], expected);
-                assert!(!state["csrf_token"].as_str().unwrap().is_empty());
-                if provider != "apple" {
-                    assert_eq!(query.contains_key("code_challenge"), transport == 2);
-                }
+                .await,
+                400,
+                "{provider} must refuse a request that bypassed the gateway"
+            );
+            request_number += 1;
+            let (status, response) =
+                oauth_selection_request(&gateway, &session, request_number, &target, &payload)
+                    .await;
+            let Some(expected) = expected else {
+                assert_eq!(status, 400, "{provider} must reject unlisted callbacks");
+                assert!(response.get("auth_url").is_none());
+                assert!(response.get("state").is_none());
+                continue;
+            };
+            assert_eq!(status, 200, "{provider} initiation should succeed");
+            let auth_url = url::Url::parse(response["auth_url"].as_str().unwrap()).unwrap();
+            let query: std::collections::HashMap<_, _> = auth_url.query_pairs().collect();
+            if provider == "apple" {
+                assert_eq!(
+                    query.get("client_id").map(|value| value.as_ref()),
+                    Some("oauth-selection.services")
+                );
             }
+            assert_eq!(
+                query.get("redirect_uri").map(|value| value.as_ref()),
+                Some(expected)
+            );
+            let opaque_state = response["state"].as_str().unwrap();
+            assert_eq!(
+                query.get("state").map(|value| value.as_ref()),
+                Some(opaque_state)
+            );
+            let state: serde_json::Value = serde_json::from_slice(
+                &base64::engine::general_purpose::URL_SAFE_NO_PAD
+                    .decode(opaque_state)
+                    .unwrap(),
+            )
+            .unwrap();
+            assert_eq!(state["client_id"], project.client_id.to_string());
+            assert_eq!(state["redirect_url"], expected);
+            assert!(!state["csrf_token"].as_str().unwrap().is_empty());
+            // GitHub and Google bind the code with PKCE; Apple with a nonce.
+            assert_eq!(query.contains_key("code_challenge"), provider != "apple");
+            assert_eq!(query.contains_key("nonce"), provider == "apple");
         }
     }
     app_state.db.delete_org_project(&project).unwrap();
@@ -396,13 +366,10 @@ impl Drop for OAuthCompletionMock {
     }
 }
 
-async fn oauth_callback_completion_case(provider: &str, is_v2: bool) {
+async fn oauth_callback_completion_case(provider: &str) {
     use crate::{
         db::setup_test_db,
-        jwt::{
-            validate_token, AuthContext, TRANSPORT_V2_USER_ACCESS, TRANSPORT_V2_USER_REFRESH,
-            USER_ACCESS, USER_REFRESH,
-        },
+        jwt::{validate_token, AuthContext, TRANSPORT_V2_USER_ACCESS, TRANSPORT_V2_USER_REFRESH},
         models::{
             org_project_secrets::NewOrgProjectSecret,
             org_projects::NewOrgProject,
@@ -412,7 +379,6 @@ async fn oauth_callback_completion_case(provider: &str, is_v2: bool) {
         },
         oauth::{GithubProvider, GoogleProvider, OAuthManager},
         web::{
-            attestation_routes::SessionState,
             oauth_routes,
             platform::common::{PROJECT_GITHUB_OAUTH_SECRET, PROJECT_GOOGLE_OAUTH_SECRET},
         },
@@ -526,34 +492,16 @@ async fn oauth_callback_completion_case(provider: &str, is_v2: bool) {
         .unwrap();
 
     let application = oauth_routes(Arc::clone(&app_state));
-    let session_v1_id = uuid::Uuid::new_v4();
-    let session_v1_key = crate::encrypt::generate_random::<32>();
-    app_state
-        .store_session_state(session_v1_id, SessionState::new(session_v1_key))
-        .await
-        .unwrap();
-    let session_v2 = test_session(0xD2);
+    let session = test_session(0xD2);
+    let other_session = test_session(0xD3);
     let sessions = Arc::new(SessionStore::new(NonZeroUsize::new(2).unwrap()));
-    sessions.insert(Arc::clone(&session_v2.server)).unwrap();
-    let gateway = request_router(application.clone(), sessions);
+    sessions.insert(Arc::clone(&session.server)).unwrap();
+    sessions.insert(Arc::clone(&other_session.server)).unwrap();
+    let gateway = request_router(application, sessions);
     let request = |number, target: String, payload: serde_json::Value| {
-        let application = &application;
         let gateway = &gateway;
-        let session_v2 = &session_v2;
-        async move {
-            if is_v2 {
-                oauth_selection_v2_request(gateway, session_v2, number, &target, &payload).await
-            } else {
-                oauth_selection_v1_request(
-                    application,
-                    session_v1_id,
-                    &session_v1_key,
-                    &target,
-                    &payload,
-                )
-                .await
-            }
-        }
+        let session = &session;
+        async move { oauth_selection_request(gateway, session, number, &target, &payload).await }
     };
     let initiate_target = format!("/auth/{provider}");
     let initiate_payload = serde_json::json!({
@@ -587,15 +535,21 @@ async fn oauth_callback_completion_case(provider: &str, is_v2: bool) {
         "code": "callback-completion-code",
         "state": initiation["state"],
     });
+    // The callback state is bound to the session that initiated it: another
+    // attested session cannot complete it, and its attempt consumes nothing.
+    assert_eq!(
+        oauth_selection_request(&gateway, &other_session, 3, &callback_target, &callback_payload)
+            .await
+            .0,
+        400,
+        "{provider} callback must be refused from another session"
+    );
+    assert!(mock.token_requests.lock().unwrap().is_empty());
     let (status, response) = request(3, callback_target.clone(), callback_payload.clone()).await;
     assert_eq!(status, 200, "{provider} callback must complete after settings change");
     assert_eq!(response["id"], user.uuid.to_string());
     assert_eq!(response["email"], email);
-    let audiences = if is_v2 {
-        [TRANSPORT_V2_USER_ACCESS, TRANSPORT_V2_USER_REFRESH]
-    } else {
-        [USER_ACCESS, USER_REFRESH]
-    };
+    let audiences = [TRANSPORT_V2_USER_ACCESS, TRANSPORT_V2_USER_REFRESH];
     for (field, audience) in ["access_token", "refresh_token"].into_iter().zip(audiences) {
         let claims = validate_token(response[field].as_str().unwrap(), &app_state, audience).unwrap();
         assert_eq!(claims.sub, user.uuid.to_string());
@@ -621,15 +575,13 @@ async fn oauth_callback_completion_case(provider: &str, is_v2: bool) {
         assert_eq!(form.get("redirect_uri"), Some(&selected));
         assert_eq!(form.get("code").map(String::as_str), Some("callback-completion-code"));
         assert_eq!(form.get("grant_type").map(String::as_str), Some("authorization_code"));
-        if is_v2 {
-            let verifier = form.get("code_verifier").expect("V2 callback must send its PKCE verifier");
-            let challenge = base64::engine::general_purpose::URL_SAFE_NO_PAD
-                .encode(Sha256::digest(verifier.as_bytes()));
-            assert_eq!(query.get("code_challenge").unwrap(), &challenge);
-            assert_eq!(query.get("code_challenge_method").map(|v| v.as_ref()), Some("S256"));
-        } else {
-            assert!(!form.contains_key("code_verifier"));
-        }
+        let verifier = form
+            .get("code_verifier")
+            .expect("the callback must send its PKCE verifier");
+        let challenge = base64::engine::general_purpose::URL_SAFE_NO_PAD
+            .encode(Sha256::digest(verifier.as_bytes()));
+        assert_eq!(query.get("code_challenge").unwrap(), &challenge);
+        assert_eq!(query.get("code_challenge_method").map(|v| v.as_ref()), Some("S256"));
     }
     assert_eq!(mock.user_requests.load(Ordering::SeqCst), 1);
 
@@ -645,32 +597,16 @@ async fn oauth_callback_completion_case(provider: &str, is_v2: bool) {
 
 #[tokio::test]
 #[ignore = "requires AEAD_TAMPER_TEST_DATABASE_URL pointing at disposable migrated local Postgres"]
-async fn db_oauth_callback_completion_github_v1() {
-    tokio::time::timeout(Duration::from_secs(30), oauth_callback_completion_case("github", false))
+async fn db_oauth_callback_completion_github() {
+    tokio::time::timeout(Duration::from_secs(30), oauth_callback_completion_case("github"))
         .await
-        .expect("GitHub V1 callback fixture timed out");
+        .expect("GitHub callback fixture timed out");
 }
 
 #[tokio::test]
 #[ignore = "requires AEAD_TAMPER_TEST_DATABASE_URL pointing at disposable migrated local Postgres"]
-async fn db_oauth_callback_completion_github_v2() {
-    tokio::time::timeout(Duration::from_secs(30), oauth_callback_completion_case("github", true))
+async fn db_oauth_callback_completion_google() {
+    tokio::time::timeout(Duration::from_secs(30), oauth_callback_completion_case("google"))
         .await
-        .expect("GitHub V2 callback fixture timed out");
-}
-
-#[tokio::test]
-#[ignore = "requires AEAD_TAMPER_TEST_DATABASE_URL pointing at disposable migrated local Postgres"]
-async fn db_oauth_callback_completion_google_v1() {
-    tokio::time::timeout(Duration::from_secs(30), oauth_callback_completion_case("google", false))
-        .await
-        .expect("Google V1 callback fixture timed out");
-}
-
-#[tokio::test]
-#[ignore = "requires AEAD_TAMPER_TEST_DATABASE_URL pointing at disposable migrated local Postgres"]
-async fn db_oauth_callback_completion_google_v2() {
-    tokio::time::timeout(Duration::from_secs(30), oauth_callback_completion_case("google", true))
-        .await
-        .expect("Google V2 callback fixture timed out");
+        .expect("Google callback fixture timed out");
 }

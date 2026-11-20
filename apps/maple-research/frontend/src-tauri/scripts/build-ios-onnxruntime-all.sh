@@ -59,10 +59,7 @@ checkout_onnxruntime_source() {
 
     (
         cd onnxruntime
-        if ! git remote get-url origin >/dev/null 2>&1; then
-            git remote add origin https://github.com/microsoft/onnxruntime.git
-        fi
-        git fetch --depth 1 origin "${ORT_COMMIT}"
+        onnxruntime_ios_fetch_source_commit "${ORT_COMMIT}" || return 1
         git checkout --force --detach FETCH_HEAD
         git submodule update --init --recursive --force
 

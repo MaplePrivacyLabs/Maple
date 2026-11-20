@@ -1,9 +1,12 @@
-import { StrictMode } from "react";
+import { StrictMode, type ComponentType } from "react";
 import { createRoot } from "react-dom/client";
 import { isIOS, isTauri, isTauriDesktop, waitForPlatform } from "@/utils/platform";
 import { restoreChatTypographyAtLaunch } from "@/services/chatTypographyPreferences";
 import { restoreWorkspaceModeAtLaunch } from "@/services/workspaceModePreference";
-import { shouldLoadLegacyDesktopOAuth } from "@/services/desktopOAuthTransport";
+import {
+  clearRetiredDesktopOAuthMarkers,
+  isRetiredDesktopOAuthEntry
+} from "@/services/desktopOAuthTransport";
 import { openSecretClientConfig } from "@/config/openSecretClientConfig";
 
 // Initialize platform detection before rendering
@@ -26,19 +29,24 @@ async function initializeApp() {
     }
   }
   if (isTauri()) {
-    // Keep the V2 SDK out of the hosted V1 compatibility entrypoint. Released
-    // callbacks select their pinned bundle before any V2 application module is
-    // imported.
     const { ensureNativeTransportRoot } = await import("@/services/nativeTransportRoot");
     await ensureNativeTransportRoot(openSecretClientConfig().apiUrl);
   }
   restoreWorkspaceModeAtLaunch(isTauriDesktop());
 
+  // Markers left by a pre-V2 hosted sign-in must not outlive that flow.
+  clearRetiredDesktopOAuthMarkers();
+
   // Create the router only after restoring the launch route so its first
-  // location snapshot matches the user's saved mode.
-  const { default: App } = shouldLoadLegacyDesktopOAuth(window.location)
-    ? await import("./legacy/LegacyDesktopOAuthApp")
-    : await import("./app");
+  // location snapshot matches the user's saved mode. A release from before
+  // Transport V2 gets an update notice instead of the application.
+  let App: ComponentType;
+  if (isRetiredDesktopOAuthEntry(window.location)) {
+    await import("./index.css");
+    App = (await import("./components/DesktopSignInUpdateRequired")).DesktopSignInUpdateRequired;
+  } else {
+    App = (await import("./app")).default;
+  }
 
   // Render the app
   const rootElement = document.getElementById("root")!;

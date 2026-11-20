@@ -1187,6 +1187,11 @@ async fn session_setup_reports_every_models_reasoning_levels() {
     let reasoner = meta_of(&created["models"], "reasoner");
     assert_eq!(levels_of(&reasoner), ["off", "low", "high", "max"]);
     assert_eq!(reasoner["reasoningEffort"], "high");
+    // Each level carries the same name under every key a client may read.
+    assert_eq!(
+        reasoner["reasoningEfforts"][0],
+        json!({"id": "off", "value": "off", "label": "off"})
+    );
     let always_on = meta_of(&created["models"], "always-on");
     assert_eq!(levels_of(&always_on), ["low", "high"]);
     assert_eq!(always_on["reasoningEffort"], "low");

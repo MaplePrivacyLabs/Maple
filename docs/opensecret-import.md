@@ -81,10 +81,12 @@ Each captured history contains 145 entries. All 290 captured PCR0 signatures ver
 against the public key pinned by both SDKs. PCR1/PCR2 are present in the JSON
 but are not covered by those signatures; this import preserves that format.
 
-Keep `OpenSecretCloud/opensecret` at its current name, public, writable, and
-unarchived. Installed clients still request its raw history URLs. Its current
-default branch is a compatibility mirror; backend implementation lives here.
-Historical source, issues, and branches do not create a second active backend.
+`OpenSecretCloud/opensecret` stays at its current name, public and unarchived.
+Its signed-PCR copy served clients that spoke Transport V1 and was retired with
+it in November 2026; it receives no new approvals. See
+[the signed PCR procedure](../services/opensecret/docs/pcr-compatibility.md).
+Backend implementation lives here. Historical source, issues, and branches do
+not create a second active backend.
 
 Current TypeScript and Rust SDK defaults read the canonical histories under
 `MaplePrivacyLabs/Maple/master/services/opensecret/`. The SDK package names are
@@ -93,16 +95,16 @@ Current TypeScript and Rust SDK defaults read the canonical histories under
 its consumers or retire the URLs used by older clients.
 
 For authorized backend releases, use the
-[manual PCR compatibility procedure](../services/opensecret/docs/pcr-compatibility.md):
-commit the reviewed signed files in Maple, prepare an exact-byte copy into the
-legacy repository, and verify both published locations before deploying an EIF
-that needs them. Preserve the signed-PCR format, pinned public key, and redirect
-policy. Operator builds run from `services/opensecret/`; verify the selected
+[signed PCR procedure](../services/opensecret/docs/pcr-compatibility.md):
+commit the reviewed signed files in Maple and verify the published location
+before deploying an EIF that needs them. Preserve the signed-PCR format, pinned
+public key, and redirect policy. Operator builds run from `services/opensecret/`; verify the selected
 checkout and commit on each deployment host rather than assuming a merged
 source change migrated that host.
 
 The separate `OpenSecret EIF release` workflow builds and attests a candidate
-and can sign new PCR entries behind its protected approval environment. It
+and can sign new Production PCR entries behind its protected approval
+environment; `OpenSecret Dev release statement` signs Dev candidates. Each
 pushes an approval branch for review; it creates no GitHub Release or tag and
 does not deploy. Ordinary CI remains read-only with respect to approvals.
 The copy helper does not commit or push. The signing-key transition and legacy

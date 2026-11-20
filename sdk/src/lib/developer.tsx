@@ -8,7 +8,7 @@ import {
   EXPECTED_ROOT_CERT_HASH,
   ParsedAttestationView
 } from "./attestationForView";
-import type { AttestationDocument } from "./attestation";
+import type { Attestation, AttestationDocument } from "./attestation";
 import { PcrConfig } from "./pcr";
 import {
   clearTransportV2CredentialsIfCurrent,
@@ -17,7 +17,6 @@ import {
   subscribeTransportV2AuthInvalidation,
   transportV2ProfilePublicationDecision
 } from "./transportV2/auth";
-import type { Attestation } from "./getAttestation";
 import { getTransportV2PublicAttestation, transportV2Runtime } from "./transportV2/runtime";
 import {
   snapshotTransportV2AuthorityScope,

@@ -3,7 +3,8 @@ use serde::{Deserialize, Deserializer, Serialize, Serializer};
 use serde_json::Value;
 use uuid::Uuid;
 
-// Attestation & Key Exchange Types
+// Public attestation document types (`GET /attestation/{nonce}`). The client's
+// own sessions use Transport V2 and do not fetch this document.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct AttestationRequest {
     pub nonce: String,
@@ -12,29 +13,6 @@ pub struct AttestationRequest {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct AttestationResponse {
     pub attestation_document: String,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct KeyExchangeRequest {
-    pub client_public_key: String,
-    pub nonce: String,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct KeyExchangeResponse {
-    pub encrypted_session_key: String,
-    pub session_id: String,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct EncryptedRequest {
-    pub encrypted: String, // Base64-encoded (nonce + ciphertext)
-}
-
-#[derive(Debug, Clone)]
-pub struct SessionState {
-    pub session_id: Uuid,
-    pub session_key: [u8; 32],
 }
 
 // Token Management Types
@@ -97,13 +75,6 @@ pub struct LogoutRequest {
     pub refresh_token: String,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub push_device_id: Option<Uuid>,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct EncryptedResponse<T> {
-    pub encrypted: String,
-    #[serde(skip)]
-    _phantom: std::marker::PhantomData<T>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Default)]

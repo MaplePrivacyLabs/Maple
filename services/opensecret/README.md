@@ -49,8 +49,7 @@ protected environment variables. Billing and feature flags are optional
 external HTTP APIs whose administrative credentials remain in the backend;
 their server implementations are not part of this repository setup.
 
-Protected routes require OpenSecret attestation/key exchange and encrypted
-sessions. “OpenAI-shaped” describes decrypted payloads, not a plaintext
+Protected routes require an attested Transport V2 session. “OpenAI-shaped” describes decrypted payloads, not a plaintext
 OpenAI-compatible wire endpoint. Use an OpenSecret SDK or Maple for
 protected-route integration tests; plain `curl` is suitable only for public
 health probes.
@@ -88,7 +87,7 @@ OPENSECRET_DEV_POSTGRES=0 OPENSECRET_DEV_ENV=0 OPENSECRET_DEV_CONTAINERS=0 \
 
 The Rust unit-test job does not run ignored tests. The SDK integration job
 also runs the disposable-database helper, including OAuth settings and
-encrypted V1/V2 callback-selection checks. Live-provider tests remain separate. Use the
+encrypted callback-selection checks. Live-provider tests remain separate. Use the
 [`validate-opensecret`](../../.agents/skills/validate-opensecret/SKILL.md) workflow
 for disposable PostgreSQL tests, authorized provider checks, encrypted-client
 smoke tests, Nix checks, and release-only EIF/PCR evidence. Report those layers
@@ -110,12 +109,11 @@ and deliberately update/verify the target measurements; never update checked-in
 PCRs solely to clear ordinary pull-request CI.
 
 The PCR files retain their existing names and signed format. Follow
-[`docs/pcr-compatibility.md`](docs/pcr-compatibility.md) for validation and manual
-publication of identical bytes to the legacy `OpenSecretCloud/opensecret`
-repository. Current Maple SDK defaults read the canonical histories under
-`MaplePrivacyLabs/Maple/master/services/opensecret/`; the legacy raw URLs
-remain available for older installed clients. Keep both locations synchronized
-through the manual compatibility procedure.
+[`docs/pcr-compatibility.md`](docs/pcr-compatibility.md) to validate and verify
+them. Maple SDKs read the signed histories under
+`MaplePrivacyLabs/Maple/master/services/opensecret/`. The copy in
+`OpenSecretCloud/opensecret` is retired: only Transport V1 clients read it, and
+it receives no new approvals.
 
 See [`docs/nitro-deploy.md`](docs/nitro-deploy.md) for operator procedures.
 Changing PCR references or KMS policy, copying artifacts, starting or stopping
