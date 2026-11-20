@@ -6,7 +6,8 @@ build, and independent Pages publication. Its build does not import Research,
 its configuration, or the in-tree SDK. The app consumes the published
 `@mapleai/sdk` version pinned in its own manifest and lockfile.
 
-Research keeps its existing browser authentication and legacy native bridge.
+Research keeps its existing browser authentication. Its legacy native bridge
+was removed with Transport V1.
 This application does not replace web login or change installed clients' entry
 URLs. Initial migration traffic reaches it through a separately enabled V2-only
 redirect. See the repository [Pages guide](../../docs/pages-deployments.md) for

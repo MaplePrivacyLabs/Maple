@@ -6,7 +6,6 @@ import {
   type MapleAppVariant
 } from "@/config/mapleAppVariant";
 
-export type DesktopOAuthTransport = "v1" | "v2";
 export type DesktopOAuthProvider = "github" | "google" | "apple";
 
 const DESKTOP_OAUTH_TRANSPORT_KEY = "maple_desktop_oauth_transport_v1";
@@ -102,10 +101,9 @@ export function buildTransportV2DesktopAuthUrl(
   return url.toString();
 }
 
-export function markDesktopOAuthTransport(transport: DesktopOAuthTransport): void {
-  const storage = transport === "v2" ? sessionStorage : localStorage;
-  storage.setItem(DESKTOP_OAUTH_TRANSPORT_KEY, transport);
-  storage.setItem(REDIRECT_TO_NATIVE_KEY, "true");
+function markNativeOAuthRedirect(): void {
+  sessionStorage.setItem(DESKTOP_OAUTH_TRANSPORT_KEY, "v2");
+  sessionStorage.setItem(REDIRECT_TO_NATIVE_KEY, "true");
 }
 
 export function markTransportV2DesktopOAuth(
@@ -136,7 +134,7 @@ export function markTransportV2DesktopOAuth(
     sessionStorage.removeItem(TRANSPORT_V2_MINT_CLAIM_KEY);
   }
   sessionStorage.setItem(TRANSPORT_V2_PENDING_KEY, JSON.stringify(nextState));
-  markDesktopOAuthTransport("v2");
+  markNativeOAuthRedirect();
 }
 
 export function readTransportV2DesktopOAuth(
@@ -188,16 +186,19 @@ export function claimTransportV2DesktopOAuthInitiation(
   return true;
 }
 
-export function readDesktopOAuthTransport(): DesktopOAuthTransport | null {
-  if (sessionStorage.getItem(DESKTOP_OAUTH_TRANSPORT_KEY) === "v2") return "v2";
-  return localStorage.getItem(DESKTOP_OAUTH_TRANSPORT_KEY) === "v1" ? "v1" : null;
+/**
+ * The pre-V2 hosted sign-in kept its markers in localStorage. Nothing reads
+ * them any more; remove any that an old flow left behind.
+ */
+export function clearRetiredDesktopOAuthMarkers(): void {
+  localStorage.removeItem(DESKTOP_OAUTH_TRANSPORT_KEY);
+  localStorage.removeItem(REDIRECT_TO_NATIVE_KEY);
 }
 
 export function clearDesktopOAuthTransport(): void {
-  for (const storage of [sessionStorage, localStorage]) {
-    storage.removeItem(DESKTOP_OAUTH_TRANSPORT_KEY);
-    storage.removeItem(REDIRECT_TO_NATIVE_KEY);
-  }
+  sessionStorage.removeItem(DESKTOP_OAUTH_TRANSPORT_KEY);
+  sessionStorage.removeItem(REDIRECT_TO_NATIVE_KEY);
+  clearRetiredDesktopOAuthMarkers();
   removeTransportV2PendingState();
 }
 
@@ -244,7 +245,7 @@ export function isCurrentDesktopOAuthTarget(
   return isNativeOAuthRedirect() && current !== null && sameDesktopOAuthTarget(current, expected);
 }
 
-/** Clear only this flow, including expired state, without disturbing a newer login or V1. */
+/** Clear only this flow, including expired state, without disturbing a newer login. */
 export function clearDesktopOAuthTarget(expected: TransportV2DesktopOAuthState): void {
   const encoded = sessionStorage.getItem(TRANSPORT_V2_PENDING_KEY);
   if (!encoded) return;
@@ -287,29 +288,17 @@ export async function mintTransportV2NativeAuthDeepLink(
   }
 }
 
-export function shouldLoadLegacyDesktopOAuth(
+/**
+ * Releases from before Transport V2 opened `/desktop-auth` without a
+ * transport selector, and nothing can sign them in any more. Any supplied
+ * selector, including a malformed one, stays with the application, which
+ * accepts only `v2` and fails closed on everything else.
+ */
+export function isRetiredDesktopOAuthEntry(
   location: Pick<Location, "pathname" | "search">
 ): boolean {
-  if (location.pathname === "/desktop-auth") {
-    // Released clients did not send a transport selector. Any supplied
-    // selector, including a malformed one, stays on the fail-closed current
-    // bundle instead of silently downgrading.
-    return new URLSearchParams(location.search).getAll("transport").length === 0;
-  }
-
-  if (!/^\/auth\/(github|google|apple)\/callback$/u.test(location.pathname)) {
-    return false;
-  }
-  if (
-    sessionStorage.getItem(REDIRECT_TO_NATIVE_KEY) === "true" &&
-    sessionStorage.getItem(DESKTOP_OAUTH_TRANSPORT_KEY) === "v2"
-  ) {
-    return false;
-  }
-  if (localStorage.getItem(REDIRECT_TO_NATIVE_KEY) !== "true") return false;
-
-  const marker = localStorage.getItem(DESKTOP_OAUTH_TRANSPORT_KEY);
-  // A missing marker is an already-running flow started by the previously
-  // deployed site. Unknown markers fail closed on the current bundle.
-  return marker === null || marker === "v1";
+  return (
+    location.pathname === "/desktop-auth" &&
+    new URLSearchParams(location.search).getAll("transport").length === 0
+  );
 }

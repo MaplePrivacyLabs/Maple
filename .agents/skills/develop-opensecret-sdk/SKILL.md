@@ -93,10 +93,10 @@ them; there is no separate integration revision to advance.
 Provider-spending tests remain opt-in through `RUN_LIVE_AI=1` and require
 explicit credential, egress, and cost authorization. Both SDKs use signed-PCR
 histories under `MaplePrivacyLabs/Maple/master/services/opensecret/`, with the
-existing verification key and separate development/production policies. Keep
-the legacy `OpenSecretCloud/opensecret` histories available for older clients
-through the backend's manual compatibility procedure. Source changes do not
-publish SDKs or update installed clients.
+existing verification key and separate development/production policies. The
+`OpenSecretCloud/opensecret` copy that SDKs before 4.0 read is retired and gets
+no new approvals. Source changes do not publish SDKs or update installed
+clients.
 
 Before handoff, inspect package boundaries as applicable:
 

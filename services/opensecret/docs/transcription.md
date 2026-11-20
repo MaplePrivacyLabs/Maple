@@ -43,8 +43,7 @@ The app records 16 kHz mono PCM16 WAV. Ten minutes is about 19.2 MB of audio;
 twenty minutes is about 38.4 MB. Both fit the SDK's 50 MiB Transport V2 JSON-body
 limit after base64 encoding. Thirty minutes is about 57.6 MB of audio and 76.8 MB
 of base64, so the existing SDK rejects it before upload. Enclave-side compression
-or splitting cannot change that ingress limit. Transport V1's additional base64
-envelope is more restrictive.
+or splitting cannot change that ingress limit.
 
 Provider duration agreement confirms reported audio processing, not transcript
 accuracy or completeness of recognized speech. Use the real-audio validation

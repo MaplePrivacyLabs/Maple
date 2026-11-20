@@ -4,16 +4,17 @@ set -euo pipefail
 ORT_VERSION="${ORT_VERSION:-1.23.2}"
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 source "${SCRIPT_DIR}/onnxruntime-pins.sh"
+source "${SCRIPT_DIR}/onnxruntime-nuget.sh"
 
 case "$(uname -m)" in
   x86_64 | amd64)
     ORT_ARCH="x64"
-    ORT_ARCHIVE_SHA256_FUNC="onnxruntime_linux_x64_archive_sha256_for_version"
+    ORT_NUGET_RUNTIME="linux-x64"
     ORT_DYLIB_SHA256_FUNC="onnxruntime_linux_x64_dylib_sha256_for_version"
     ;;
   aarch64 | arm64)
     ORT_ARCH="aarch64"
-    ORT_ARCHIVE_SHA256_FUNC="onnxruntime_linux_aarch64_archive_sha256_for_version"
+    ORT_NUGET_RUNTIME="linux-arm64"
     ORT_DYLIB_SHA256_FUNC="onnxruntime_linux_aarch64_dylib_sha256_for_version"
     ;;
   *)
@@ -25,10 +26,8 @@ esac
 TAURI_DIR="$(cd "${SCRIPT_DIR}/.." && pwd)"
 ORT_ROOT="${TAURI_DIR}/onnxruntime-linux"
 ORT_DIR="${ORT_ROOT}/onnxruntime-linux-${ORT_ARCH}-${ORT_VERSION}"
-ORT_ARCHIVE="onnxruntime-linux-${ORT_ARCH}-${ORT_VERSION}.tgz"
-ORT_URL="https://github.com/microsoft/onnxruntime/releases/download/v${ORT_VERSION}/${ORT_ARCHIVE}"
+ORT_NUGET_ENTRY="runtimes/${ORT_NUGET_RUNTIME}/native/libonnxruntime.so"
 ORT_DYLIB="${ORT_DIR}/lib/libonnxruntime.so.${ORT_VERSION}"
-ORT_ARCHIVE_SHA256="$("${ORT_ARCHIVE_SHA256_FUNC}" "${ORT_VERSION}")"
 ORT_DYLIB_SHA256="$("${ORT_DYLIB_SHA256_FUNC}" "${ORT_VERSION}")"
 
 sha256_file() {
@@ -63,16 +62,7 @@ verify_sha256() {
 
 if [ ! -f "${ORT_DYLIB}" ]; then
   rm -rf "${ORT_ROOT}"
-  mkdir -p "${ORT_ROOT}"
-  archive_path="${ORT_ROOT}/${ORT_ARCHIVE}"
-
-  curl -fL --retry 5 --retry-delay 2 --retry-all-errors \
-    "${ORT_URL}" \
-    --output "${archive_path}"
-
-  verify_sha256 "ONNX Runtime archive" "${archive_path}" "${ORT_ARCHIVE_SHA256}"
-  tar -xzf "${archive_path}" -C "${ORT_ROOT}"
-  rm -f "${archive_path}"
+  onnxruntime_nuget_extract_libraries "${ORT_VERSION}" "${ORT_NUGET_ENTRY}" "${ORT_DYLIB}"
 fi
 
 verify_sha256 "ONNX Runtime shared library" "${ORT_DYLIB}" "${ORT_DYLIB_SHA256}"

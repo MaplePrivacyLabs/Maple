@@ -1,8 +1,8 @@
 # OpenSecret Transport V2
 
-This document is the canonical wire contract for Transport V2. It describes
-the protocol implemented by `src/transport_v2/` and the V2-specific
-authentication paths. Older design notes are useful research, but are not
+This document is the canonical wire contract for Transport V2, the only client
+transport OpenSecret serves. It describes the protocol implemented by
+`src/transport_v2/` and its authentication paths. Older design notes are useful research, but are not
 normative when they disagree with this document or the source.
 
 Transport V2 is deliberately small:
@@ -12,7 +12,8 @@ Transport V2 is deliberately small:
 - every request carries its own credential, when one is required;
 - a random request ID provides unordered, exact replay detection;
 - responses are ordered authenticated records with explicit finality; and
-- V1 remains a separate protocol with unchanged wire behavior.
+- the application is reachable no other way: Transport V1 is
+  [retired](#transport-v1-is-retired).
 
 It does **not** use a principal-bound session, EHBP, DPoP, Binary HTTP,
 monotonic request counters, per-field signatures, or a custom memory scheduler.
@@ -262,8 +263,9 @@ inside the encrypted response; subsequent authenticated requests carry the
 appropriate token inside their own envelope. The transport session itself does
 not change state during this transition.
 
-V2 user and platform access/refresh tokens have dedicated audiences that V1
-validators do not accept. Third-party JWT issuance remains an authenticated
+V2 user and platform access/refresh tokens have dedicated audiences. The
+audiences of the retired Transport V1 session tokens are accepted nowhere and
+stay reserved, so a third-party token can never carry one. Third-party JWT issuance remains an authenticated
 application operation; those tokens are outputs for external services, not V2
 transport credentials.
 
@@ -309,12 +311,8 @@ Privatemode's cache-affinity shard header includes a stable hash prefix of the
 salt, allowing its API gateway to correlate requests while that namespace is
 unchanged. Cache isolation therefore does not provide request unlinkability.
 
-Legacy V1 clients do not supply a cache root. OpenSecret derives their Continuum
-salts with the Continuum label and verified user UUID, keyed by a random
-32-byte secret held only in the backend process. Those salts remain stable
-within that process; restart or a different backend replica cold-starts the
-namespace. No database migration or additional configured secret is required.
-Legacy Tinfoil's `SHA-256(user UUID)` behavior is unchanged.
+A completion request without a root is refused. There is no fallback
+namespace, so none can be computed from the user identifier alone.
 
 ### Request record encryption
 
@@ -483,10 +481,10 @@ For example, usage exhaustion returns
 Other application and provider errors retain their existing body shape. These
 codes grant no automatic replay permission and request neither a new session
 nor token refresh. V2 authenticates the logical status, headers and body inside
-its outer HTTP 200 response; V1 retains its existing HTTP error representation.
+its outer HTTP 200 response.
 
-Retained flat fields preserve legacy V1 message parsers, while the nested error
-is readable by existing OpenAI clients over V2. Research clients using
+Retained flat fields preserve existing message parsers, while the nested error
+is readable by existing OpenAI clients. Research clients using
 structured status/code classification against backends without these additions
 can still encounter the flat-body V2 parsing problem; supporting that
 combination requires separate client adaptation. This contract does not change
@@ -500,8 +498,7 @@ OpenAI-compatible `error` described above: the same `message`, the static
 `code`, and a `type` of `invalid_request_error` for 4xx or `server_error`
 otherwise. The code is also carried by `x-opensecret-error-code`, alongside
 `x-opensecret-error-contract: 1`. V2 authenticates the logical status, headers
-and body; V1 uses its existing HTTP error representation with the classified
-status/message.
+and body.
 
 | Failure | Public HTTP status | Error code |
 | --- | --- | --- |
@@ -643,8 +640,8 @@ the exact attested session across the browser redirect. The Apple front-channel
 ID token is not the proof used here; verification uses the signed ID token from
 the token endpoint. This redirect proof does not replace `/auth/apple/native`:
 that route verifies the submitted signed identity token and preserves its
-existing optional client-provided nonce behavior. V1 keeps its existing OAuth
-URL and state behavior.
+existing optional client-provided nonce behavior. Every redirect authorization
+is bound this way; there is no unbound authorization URL or state.
 
 ## Refresh, retry, and downgrade rules
 
@@ -671,7 +668,7 @@ above. The resend uses the new session and a fresh request ID; a second failure
 is returned to the caller. This applies to ordinary managed requests including
 mutations and inference, not just reads.
 
-This deliberately matches V1's best-effort session recovery behavior. An
+Session recovery is deliberately best-effort. An
 untrusted intermediary can let the original request execute, replace its
 response with a forged recovery hint, and cause the client to submit the
 operation again under a new session. The per-session replay set cannot prevent
@@ -686,13 +683,11 @@ the original operation is still returned as failed. A lost response remains an
 ambiguous outcome. Prepared native-handoff redemption and session-bound OAuth
 callbacks cannot move to a fresh session; their flows must restart instead.
 
-V2 clients do not fall back to V1 when session establishment or a request
-fails. The narrow recovery hints never authenticate response content or permit
-plaintext credentials; logical credentials remain inside the encrypted resend.
-V1 and V2 use separate session stores, record formats, and internal token
-audiences. Existing
-raw API keys remain the same inference-only application capability across both
-transports; the transport does not rotate them.
+There is no other transport to fall back to when session establishment or a
+request fails. The narrow recovery hints never authenticate response content or
+permit plaintext credentials; logical credentials remain inside the encrypted
+resend. Raw API keys remain an inference-only application capability; the
+transport does not rotate them.
 
 ## Native application handoff
 
@@ -720,31 +715,50 @@ session replay set prevents duplicate redemption within the live session.
 Prepared redemption does not use managed session-recovery retries: losing its
 bound session requires a new handoff and grant.
 
-## V1 compatibility
+## Transport V1 is retired
 
-Transport V2 is an additive network boundary. Its decrypted logical methods,
-targets, headers, bodies, statuses, and streams are dispatched through the same
-application routers used by V1. A logical target such as `/v1/chat/completions`
-inside a V2 envelope is not a V1 transport request.
+Transport V1 was the earlier client transport: `GET /attestation/{nonce}` and
+`POST /key_exchange` produced a per-session key, application routes were
+served directly, credentials travelled in a plaintext `Authorization` header,
+and JSON bodies and SSE events were encrypted one field at a time. The server
+no longer implements any of it.
 
-The legacy attestation/session endpoints, outer bearer behavior, encrypted-body
-shape, response shape, OAuth behavior, and `SHA-256(user UUID)` Tinfoil cache
-namespace remain unchanged for released V1 clients. A new server therefore
-continues to serve old clients. New V2 clients speak only V2. Existing V1 user
-or platform JWT sessions require fresh V2 authentication rather than token
-migration; login, registration, OAuth, and native handoff are valid V2 entry
-paths, while existing raw inference-only API keys remain usable. V1 cache
-entries do not share the new V2 namespace, and V1 traffic does not gain V2's
-credential confidentiality, whole-request binding, or replay guarantees.
-This transport change adds no database migration, schema backfill, runtime
-environment variable, deployed secret, or additional service.
+The listener serves exactly four plaintext surfaces:
 
-## Rollout gates
+- `GET /health-check`, process liveness;
+- `GET /attestation/{nonce}`, the public attestation document described below;
+- `POST /v1/remote/relay-access`, the relay fleet's service-credential
+  admission check; and
+- `POST /v2/session` and `POST /v2/request`.
 
-Before enabling V2 clients in production:
+Every application route is reachable only as a logical target inside a V2
+envelope. A logical target such as `/v1/chat/completions` names an API
+version, not a transport. The application router is not mounted on the
+listener, and each route independently refuses a request the gateway did not
+decrypt: only the gateway can attach the in-process session marker, and
+authentication reads only the credential the envelope carried, never an outer
+header.
 
-1. Deploy the V2-capable backend first and prove released V1 clients still use
-   their unchanged paths.
+A released V1 client can neither establish nor use a session and must be
+updated: the attestation document carries no key, `POST /key_exchange` does not
+exist, and a request it sends under a session it already held finds no route.
+V1 access and refresh tokens are accepted nowhere; a V2 client
+authenticates afresh through login, registration, OAuth, or native handoff.
+Raw inference-only API keys are unaffected and are presented as an `api_key`
+credential.
+
+`GET /attestation/{nonce}` remains as a public attestation document, not as a
+handshake. It returns a fresh document carrying the caller's nonce (at most
+512 bytes) and no public key, and it establishes no session and stores no
+state. The apps' verification page and deployment checks use it to inspect
+the enclave's measurements. A client that needs a confidential channel uses
+`POST /v2/session`, whose attestation is bound to its handshake transcript.
+
+## Deployment requirements
+
+1. Confirm that no supported client still depends on Transport V1 before
+   deploying a backend without it; such a client cannot be served afterwards
+   without rolling the backend back.
 2. Build and verify the production EIF, publish the reviewed PCR evidence, and
    confirm each client enforces the intended PCR policy before key derivation.
 3. Keep each V2 session's normal traffic on the enclave process that created
@@ -752,8 +766,7 @@ Before enabling V2 clients in production:
    persistence](https://developers.cloudflare.com/load-balancing/additional-options/dns-persistence/)
    can meet this requirement; HTTP-header affinity does not apply in DNS-only
    mode. Verify the actual topology and persistence rather than inferring it
-   from a hostname. For a proxied HTTP deployment whose multiple origins rely
-   on cookie affinity, preserve the existing cookie policy for V1 and add a
+   from a hostname. For a proxied HTTP deployment with multiple origins, use a
    [custom load-balancing
    rule](https://developers.cloudflare.com/load-balancing/additional-options/load-balancing-rules/)
    matching `starts_with(http.request.uri.path, "/v2/")` that overrides only
@@ -762,9 +775,8 @@ Before enabling V2 clients in production:
    on `x-opensecret-routing-key`, requires that header, and uses the maximum
    3,600-second idle TTL. Canonical clients retire the absolute 3,600-second
    enclave session 30 seconds early, before an otherwise-idle affinity entry
-   can expire. Global replacement of cookie affinity would break released V1
-   clients, while cookie affinity alone is insufficient for V2 because V2
-   deliberately omits credentials and rejects outer cookies. Header affinity
+   can expire. Cookie affinity is insufficient for V2 because V2 deliberately
+   omits credentials and rejects outer cookies. Header affinity
    also cannot use Cloudflare's sticky zero-downtime failover; an origin loss
    therefore requires a fresh attestation and session. Only the marked outer
    `400` recovery cases permit one automatic resend; network failure alone
@@ -790,9 +802,8 @@ Before enabling V2 clients in production:
 8. Load-test concurrent large requests against the production enclave memory
    profile and set operational admission and headroom accordingly. The
    protocol intentionally has no custom aggregate memory reservation layer.
-9. Retain a coordinated rollback plan. Rolling the backend back below V2 after
-   publishing V2-only clients strands those clients; they intentionally do not
-   downgrade or transmit credentials over V1.
+9. Retain a coordinated rollback plan. Clients speak only V2 and never
+   downgrade, so a rollback target must itself serve V2.
 
 ## Diagnostics
 

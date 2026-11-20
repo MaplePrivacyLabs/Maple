@@ -1,7 +1,6 @@
 use crate::error::{Error, Result};
-use crate::types::{SessionState, TokenPair};
+use crate::types::TokenPair;
 use std::sync::{Arc, RwLock};
-use uuid::Uuid;
 use zeroize::Zeroizing;
 
 #[derive(Debug, Clone)]
@@ -36,21 +35,18 @@ struct CredentialState {
 }
 
 pub struct SessionManager {
-    session: Arc<RwLock<Option<SessionState>>>,
     credentials: Arc<RwLock<CredentialState>>,
 }
 
 impl SessionManager {
     pub fn new() -> Self {
         Self {
-            session: Arc::new(RwLock::new(None)),
             credentials: Arc::new(RwLock::new(CredentialState::default())),
         }
     }
 
     pub fn new_with_api_key(api_key: String) -> Self {
         Self {
-            session: Arc::new(RwLock::new(None)),
             credentials: Arc::new(RwLock::new(CredentialState {
                 api_key: Some(api_key),
                 generation: 1,
@@ -87,39 +83,6 @@ impl SessionManager {
         credentials.api_key = None;
         credentials.generation = credentials.generation.wrapping_add(1);
         credentials.api_key_generation = credentials.api_key_generation.wrapping_add(1);
-        Ok(())
-    }
-
-    pub fn set_session(&self, session_id: Uuid, session_key: [u8; 32]) -> Result<()> {
-        let mut session_guard = self
-            .session
-            .write()
-            .map_err(|e| Error::Session(format!("Failed to acquire session write lock: {}", e)))?;
-
-        *session_guard = Some(SessionState {
-            session_id,
-            session_key,
-        });
-
-        Ok(())
-    }
-
-    pub fn get_session(&self) -> Result<Option<SessionState>> {
-        let session_guard = self
-            .session
-            .read()
-            .map_err(|e| Error::Session(format!("Failed to acquire session read lock: {}", e)))?;
-
-        Ok(session_guard.clone())
-    }
-
-    pub fn clear_session(&self) -> Result<()> {
-        let mut session_guard = self
-            .session
-            .write()
-            .map_err(|e| Error::Session(format!("Failed to acquire session write lock: {}", e)))?;
-
-        *session_guard = None;
         Ok(())
     }
 
@@ -368,7 +331,6 @@ impl SessionManager {
     }
 
     pub fn clear_all(&self) -> Result<()> {
-        self.clear_session()?;
         let mut credentials = self.credentials.write().map_err(|e| {
             Error::Authentication(format!("Failed to acquire credentials write lock: {}", e))
         })?;
@@ -389,7 +351,6 @@ impl SessionManager {
             return Ok(false);
         }
 
-        self.clear_session()?;
         credentials.tokens = None;
         credentials.api_key = None;
         credentials.generation = credentials.generation.wrapping_add(1);
@@ -408,28 +369,6 @@ impl Default for SessionManager {
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    #[test]
-    fn test_session_management() {
-        let manager = SessionManager::new();
-
-        // Initially empty
-        assert!(manager.get_session().unwrap().is_none());
-
-        // Set session
-        let session_id = Uuid::new_v4();
-        let session_key = [0u8; 32];
-        manager.set_session(session_id, session_key).unwrap();
-
-        // Retrieve session
-        let session = manager.get_session().unwrap().unwrap();
-        assert_eq!(session.session_id, session_id);
-        assert_eq!(session.session_key, session_key);
-
-        // Clear session
-        manager.clear_session().unwrap();
-        assert!(manager.get_session().unwrap().is_none());
-    }
 
     #[test]
     fn test_token_management() {

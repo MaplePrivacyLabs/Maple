@@ -304,11 +304,11 @@ signed PCR history on a miss from
 production and `pcrDevHistory.json` for development. The existing verification
 key, custom history URL overrides, and redirect rejection are unchanged.
 Embedded roots are versioned with each shipped SDK: editing or pruning in-tree
-roots does not replace the roots in published packages. Older published SDKs and
-installed clients still use the legacy
-`OpenSecretCloud/opensecret` URLs, which remain a manual compatibility mirror.
-Changing source defaults does not update those clients or publish an SDK. See
-the [backend compatibility procedure](../services/opensecret/docs/pcr-compatibility.md).
+roots does not replace the roots in published packages. SDKs before 4.0 read the
+`OpenSecretCloud/opensecret` URLs instead. That copy is retired and receives no
+new approvals: those SDKs speak only Transport V1, which the backend no longer
+serves. See the
+[signed PCR procedure](../services/opensecret/docs/pcr-compatibility.md).
 
 Inspect the publishable npm artifact with:
 

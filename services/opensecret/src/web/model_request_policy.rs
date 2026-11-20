@@ -238,18 +238,21 @@ fn rename_developer_role(body: &mut Map<String, Value>) {
 mod tests {
     use super::*;
     use crate::model_config::{
-        DEEPSEEK_V4_1_FLASH_MODEL_ID, GLM_5_3_FLASH_MODEL_ID, GLM_5_3_MODEL_ID,
-        GPT_OSS_120B_MODEL_ID, KIMI_K3_1_PRO_MODEL_ID,
+        DEEPSEEK_V4_1_FLASH_MODEL_ID, DEEPSEEK_V4_1_FLASH_UNCENSORED_MODEL_ID,
+        GLM_5_3_FLASH_MODEL_ID, GLM_5_3_MODEL_ID, GPT_OSS_120B_MODEL_ID, KIMI_K3_1_PRO_MODEL_ID,
+        KIMI_K3_1_PRO_UNCENSORED_MODEL_ID,
     };
 
-    const REASONING_MODELS: [&str; 7] = [
+    const REASONING_MODELS: [&str; 9] = [
         GPT_OSS_120B_MODEL_ID,
         "gpt-oss-safeguard-120b",
         "gemma4-31b",
         KIMI_K3_1_PRO_MODEL_ID,
+        KIMI_K3_1_PRO_UNCENSORED_MODEL_ID,
         GLM_5_3_MODEL_ID,
         GLM_5_3_FLASH_MODEL_ID,
         DEEPSEEK_V4_1_FLASH_MODEL_ID,
+        DEEPSEEK_V4_1_FLASH_UNCENSORED_MODEL_ID,
     ];
 
     /// Tinfoil's deployed vLLM passes top-level `reasoning_effort` to the
@@ -345,19 +348,32 @@ mod tests {
             message,
             "Unsupported value: 'none' is not supported with the 'glm-5-3' model. Supported values are: 'low', 'high', 'max'."
         );
-        for rejected in ["none", "medium"] {
-            let message = resolve(
-                KIMI_K3_1_PRO_MODEL_ID,
-                json!(rejected),
-                ModelSelection::Explicit,
-            )
-            .unwrap_err();
-            assert_eq!(
-                message,
-                format!(
-                    "Unsupported value: '{rejected}' is not supported with the 'kimi-k3-1-pro' model. Supported values are: 'low', 'high', 'max'."
-                )
-            );
+        for (model, name) in [
+            (KIMI_K3_1_PRO_MODEL_ID, "kimi-k3-1-pro"),
+            (
+                KIMI_K3_1_PRO_UNCENSORED_MODEL_ID,
+                "kimi-k3-1-pro-uncensored",
+            ),
+        ] {
+            for rejected in ["none", "minimal", "medium", "xhigh"] {
+                let message =
+                    resolve(model, json!(rejected), ModelSelection::Explicit).unwrap_err();
+                assert_eq!(
+                    message,
+                    format!(
+                        "Unsupported value: '{rejected}' is not supported with the '{name}' model. Supported values are: 'low', 'high', 'max'."
+                    )
+                );
+            }
+            for accepted in ["low", "high", "max"] {
+                assert_eq!(
+                    resolve(model, json!(accepted), ModelSelection::Explicit),
+                    Ok(EffectiveReasoningEffort::Set(
+                        ReasoningEffort::parse(accepted).unwrap()
+                    )),
+                    "{model} {accepted}"
+                );
+            }
         }
     }
 
@@ -375,6 +391,9 @@ mod tests {
             (GPT_OSS_120B_MODEL_ID, "max", "high"),
             (KIMI_K3_1_PRO_MODEL_ID, "medium", "high"),
             (KIMI_K3_1_PRO_MODEL_ID, "none", "low"),
+            (KIMI_K3_1_PRO_UNCENSORED_MODEL_ID, "medium", "high"),
+            (KIMI_K3_1_PRO_UNCENSORED_MODEL_ID, "none", "low"),
+            (KIMI_K3_1_PRO_UNCENSORED_MODEL_ID, "xhigh", "max"),
             (DEEPSEEK_V4_1_FLASH_MODEL_ID, "minimal", "low"),
             (DEEPSEEK_V4_1_FLASH_MODEL_ID, "medium", "high"),
             ("gemma4-31b", "none", "none"),
@@ -487,6 +506,7 @@ mod tests {
             GLM_5_3_FLASH_MODEL_ID,
             GPT_OSS_120B_MODEL_ID,
             KIMI_K3_1_PRO_MODEL_ID,
+            KIMI_K3_1_PRO_UNCENSORED_MODEL_ID,
         ] {
             let mut request = body(json!({
                 "model": model,
@@ -527,7 +547,11 @@ mod tests {
 
     #[test]
     fn optional_models_keep_their_thinking_switches() {
-        for model in [DEEPSEEK_V4_1_FLASH_MODEL_ID, "gemma4-31b"] {
+        for model in [
+            DEEPSEEK_V4_1_FLASH_MODEL_ID,
+            DEEPSEEK_V4_1_FLASH_UNCENSORED_MODEL_ID,
+            "gemma4-31b",
+        ] {
             let mut request = body(json!({
                 "model": model,
                 "messages": [],
@@ -547,15 +571,15 @@ mod tests {
             {"role": "developer", "content": "Be terse."},
             {"role": "user", "content": "hi"}
         ]);
-        let mut kimi = body(json!({"model": KIMI_K3_1_PRO_MODEL_ID, "messages": messages}));
-        apply_model_request_policy(
-            &mut kimi,
-            KIMI_K3_1_PRO_MODEL_ID,
-            EffectiveReasoningEffort::Unchanged,
-        );
-        assert_eq!(kimi["messages"][0]["role"], "system");
-        assert_eq!(kimi["messages"][0]["content"], "Be terse.");
-        assert_eq!(kimi["messages"][1]["role"], "user");
+        for model in [KIMI_K3_1_PRO_MODEL_ID, KIMI_K3_1_PRO_UNCENSORED_MODEL_ID] {
+            let mut kimi = body(json!({"model": model, "messages": messages}));
+            apply_model_request_policy(&mut kimi, model, EffectiveReasoningEffort::Unchanged);
+            assert_eq!(kimi["messages"][0]["role"], "system", "{model}");
+            assert_eq!(kimi["messages"][0]["content"], "Be terse.", "{model}");
+            assert_eq!(kimi["messages"][1]["role"], "user", "{model}");
+            // No effort named: the model's own default (max) stands.
+            assert!(kimi.get("reasoning_effort").is_none(), "{model}");
+        }
 
         let mut gpt_oss = body(json!({"model": GPT_OSS_120B_MODEL_ID, "messages": messages}));
         apply_model_request_policy(
