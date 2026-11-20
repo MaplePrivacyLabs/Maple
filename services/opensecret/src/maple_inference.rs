@@ -198,12 +198,12 @@ const I02_CURRENT_RELEASE: ReleasePin = ReleasePin {
 // uncensored release must not become eligible through this stock route.
 const I03_CURRENT_RELEASE: ReleasePin = ReleasePin {
     repo: "MaplePrivacyLabs/inference-kimi-k3-1-pro",
-    tag: "v0.1.0",
-    digest: "f657858484733a838e2bc040668854cb1f871985e757a46985113ec140dd51a2",
+    tag: "v0.2.5",
+    digest: "04f20127da49f217f38ab77811fbc28569d3d3449a3e9d3df60a6d013619df48",
     registers: &[
-        "0e50784891d87b95d07d35e3022303729d856c2c37726ae2e22047f21d44a77864914d56a57ae2dc2904fae030ab4241",
+        "abf70017eeafe941c049b3b49c04619a7d34d8827fe1ea8026e00205b638d96319fa4525f7aa468e7c4f09650c9deb13",
         "758adac43a82a5f3146342660caefea0a7714414dd9055c4a56d1502273d85bbad86d625096a206c9335c23d05df3f99",
-        "3dfcc61427ff4dfe5814e6aa47d81c82d39180e9a142155f8efb2304c82ef4ae69934ebfb67afa10cb75126584a01739",
+        "dccca72bf432e2d6d1cb4002c0ab7020d05467d6328f4f8152e2cb7d7ebd7aeef69850bcef2ac301433906ea53273955",
     ],
 };
 
@@ -561,19 +561,19 @@ mod tests {
             release.release.repo,
             "MaplePrivacyLabs/inference-kimi-k3-1-pro"
         );
-        assert_eq!(release.release.tag, "v0.1.0");
+        assert_eq!(release.release.tag, "v0.2.5");
         assert_eq!(
             release.release.digest,
-            "f657858484733a838e2bc040668854cb1f871985e757a46985113ec140dd51a2"
+            "04f20127da49f217f38ab77811fbc28569d3d3449a3e9d3df60a6d013619df48"
         );
         assert_eq!(
             release.measurement.type_,
             PredicateType::SnpTdxMultiPlatformV1
         );
         assert_eq!(release.measurement.registers, [
-            "0e50784891d87b95d07d35e3022303729d856c2c37726ae2e22047f21d44a77864914d56a57ae2dc2904fae030ab4241",
+            "abf70017eeafe941c049b3b49c04619a7d34d8827fe1ea8026e00205b638d96319fa4525f7aa468e7c4f09650c9deb13",
             "758adac43a82a5f3146342660caefea0a7714414dd9055c4a56d1502273d85bbad86d625096a206c9335c23d05df3f99",
-            "3dfcc61427ff4dfe5814e6aa47d81c82d39180e9a142155f8efb2304c82ef4ae69934ebfb67afa10cb75126584a01739",
+            "dccca72bf432e2d6d1cb4002c0ab7020d05467d6328f4f8152e2cb7d7ebd7aeef69850bcef2ac301433906ea53273955",
         ]);
         let policy = i03
             .direct_policy()
@@ -724,13 +724,7 @@ mod tests {
     fn retired_release_is_not_approved_on_either_guest() {
         for instance in MapleInstanceId::ALL {
             for approved in approved_releases(endpoint(instance)) {
-                // A tag names a release only within its repository. The
-                // retired one is the stock DeepSeek repository's; i03's stock
-                // Kimi release is another repository's `v0.1.0`.
-                assert!(
-                    approved.release.repo != "MaplePrivacyLabs/inference-deepseek"
-                        || approved.release.tag != "v0.1.0"
-                );
+                assert_ne!(approved.release.tag, "v0.1.0");
                 assert_ne!(
                     approved.release.digest,
                     "2d69e8544e5b2706d0e6004bc0ac925dc9abd79cb284f9400c26c9d145e25b00"
