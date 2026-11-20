@@ -242,6 +242,9 @@ export async function requestNewVerificationCode(): Promise<void> {
   );
 }
 
+// Fetches the public attestation document (`GET /attestation/{nonce}`). The
+// SDK's own sessions use Transport V2 instead; `verifyAttestation` is the
+// caller, for checks that verify an enclave without opening a session.
 export async function fetchAttestationDocument(
   nonce: string,
   explicitApiUrl?: string
@@ -253,27 +256,6 @@ export async function fetchAttestationDocument(
   }
   const data = await response.json();
   return data.attestation_document;
-}
-
-export async function keyExchange(
-  clientPublicKey: string,
-  nonce: string,
-  explicitApiUrl?: string
-): Promise<{ encrypted_session_key: string; session_id: string }> {
-  const url = explicitApiUrl || apiUrl;
-  const response = await fetch(`${url}/key_exchange`, {
-    method: "POST",
-    headers: {
-      "Content-Type": "application/json"
-    },
-    body: JSON.stringify({ client_public_key: clientPublicKey, nonce })
-  });
-
-  if (!response.ok) {
-    throw new Error("Key exchange failed");
-  }
-
-  return response.json();
 }
 
 export async function requestPasswordReset(

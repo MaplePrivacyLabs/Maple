@@ -1302,26 +1302,28 @@ mod tests {
 
     #[test]
     fn test_apply_responses_model_defaults_preserves_kimi_reasoning_history() {
-        let mut chat_request = json!({
-            "model": "kimi-k3-1-pro",
-            "chat_template_kwargs": {
-                "foo": "bar"
-            }
-        });
+        for model in ["kimi-k3-1-pro", "kimi-k3-1-pro-uncensored"] {
+            let mut chat_request = json!({
+                "model": model,
+                "chat_template_kwargs": {
+                    "foo": "bar"
+                }
+            });
 
-        apply_responses_model_defaults(
-            &mut chat_request,
-            crate::model_config::model_config("kimi-k3-1-pro").responses,
-            "kimi-k3-1-pro",
-            EffectiveReasoningEffort::Unchanged,
-        );
+            apply_responses_model_defaults(
+                &mut chat_request,
+                crate::model_config::model_config(model).responses,
+                model,
+                EffectiveReasoningEffort::Unchanged,
+            );
 
-        assert_eq!(
-            chat_request["chat_template_kwargs"]["preserve_thinking"],
-            true
-        );
-        assert_eq!(chat_request["chat_template_kwargs"]["foo"], "bar");
-        assert!(chat_request.get("include_reasoning").is_none());
+            assert_eq!(
+                chat_request["chat_template_kwargs"]["preserve_thinking"], true,
+                "{model}"
+            );
+            assert_eq!(chat_request["chat_template_kwargs"]["foo"], "bar");
+            assert!(chat_request.get("include_reasoning").is_none());
+        }
     }
 
     #[test]
@@ -1540,6 +1542,7 @@ mod tests {
             "deepseek-v4-1-flash",
             "glm-5-3",
             "kimi-k3-1-pro",
+            "kimi-k3-1-pro-uncensored",
             "gpt-oss-120b",
         ] {
             for effort in [None, Some("low"), Some("high")] {
@@ -1634,6 +1637,9 @@ mod tests {
             ("glm-5-3", "low"),
             ("glm-5-3-flash", "max"),
             ("kimi-k3-1-pro", "high"),
+            ("kimi-k3-1-pro-uncensored", "low"),
+            ("kimi-k3-1-pro-uncensored", "high"),
+            ("kimi-k3-1-pro-uncensored", "max"),
             ("deepseek-v4-1-flash", "xhigh"),
             ("gpt-oss-120b", "medium"),
         ] {
@@ -1706,6 +1712,24 @@ mod tests {
             ("glm-5-3", "none", ModelSelection::Explicit, false),
             ("glm-5-3", "medium", ModelSelection::Alias, true),
             ("kimi-k3-1-pro", "none", ModelSelection::Explicit, false),
+            (
+                "kimi-k3-1-pro-uncensored",
+                "none",
+                ModelSelection::Explicit,
+                false,
+            ),
+            (
+                "kimi-k3-1-pro-uncensored",
+                "medium",
+                ModelSelection::Explicit,
+                false,
+            ),
+            (
+                "kimi-k3-1-pro-uncensored",
+                "max",
+                ModelSelection::Explicit,
+                true,
+            ),
             ("gpt-oss-120b", "max", ModelSelection::Explicit, false),
             ("gpt-oss-120b", "max", ModelSelection::Alias, true),
         ] {
@@ -3038,6 +3062,8 @@ mod tests {
             ("gemma4-31b", false, 1.0, 0.95, Some(64)),
             ("kimi-k3-1-pro", false, 1.0, 0.95, None),
             ("kimi-k3-1-pro", true, 1.0, 0.95, None),
+            ("kimi-k3-1-pro-uncensored", false, 1.0, 0.95, None),
+            ("kimi-k3-1-pro-uncensored", true, 1.0, 0.95, None),
             ("gpt-oss-120b", true, 1.0, 1.0, None),
             ("llama3-3-70b", false, 0.6, 0.9, None),
         ] {
@@ -3078,14 +3104,22 @@ mod tests {
                 Err(ApiError::BadRequest)
             ));
         }
-        let uncensored = crate::model_config::DEEPSEEK_V4_1_FLASH_UNCENSORED_MODEL_ID;
-        assert_eq!(
-            resolve_responses_model(uncensored, "tinfoil", ModelPlan::Paid).unwrap(),
-            uncensored
-        );
+        for uncensored in [
+            crate::model_config::DEEPSEEK_V4_1_FLASH_UNCENSORED_MODEL_ID,
+            crate::model_config::KIMI_K3_1_PRO_UNCENSORED_MODEL_ID,
+        ] {
+            assert_eq!(
+                resolve_responses_model(uncensored, "tinfoil", ModelPlan::Paid).unwrap(),
+                uncensored
+            );
+            assert!(matches!(
+                resolve_responses_model(uncensored, "tinfoil", ModelPlan::Free),
+                Err(ApiError::ModelNotAvailableOnPlan)
+            ));
+        }
         assert!(matches!(
-            resolve_responses_model(uncensored, "tinfoil", ModelPlan::Free),
-            Err(ApiError::ModelNotAvailableOnPlan)
+            resolve_responses_model("kimi-k3-1-pro-uncensored-v2", "tinfoil", ModelPlan::Paid),
+            Err(ApiError::BadRequest)
         ));
         assert_eq!(
             resolve_responses_model("kimi-k3-1-pro", "tinfoil", ModelPlan::Paid).unwrap(),
@@ -3387,6 +3421,78 @@ mod tests {
             assert_eq!(request["stream"], false);
             assert_eq!(request["messages"][1]["content"], prompt);
         }
+    }
+
+    /// The complete model turn the dedicated node receives for the uncensored
+    /// Kimi model, before the send adds the backend-owned `cache_salt`.
+    #[test]
+    fn uncensored_kimi_model_turn_matches_stock_kimi_except_for_its_name() {
+        let prompt = [
+            json!({"role": "system", "content": "Be terse."}),
+            json!({"role": "user", "content": "hello"}),
+            json!({"role": "assistant", "content": "hi", "reasoning": "greet back"}),
+            json!({"role": "user", "content": "again"}),
+        ];
+        let turn = |model: &str, effort: Option<&str>, tools: bool| {
+            let mut body = match effort {
+                Some(effort) => responses_request_with_effort(model, effort),
+                None => responses_request_for_model(model),
+            };
+            body.max_output_tokens = Some(4096);
+            if tools {
+                body.tool_choice = Some("auto".to_string());
+                body.tools = Some(json!([{ "type": "web_search" }]));
+            }
+            build_model_turn_request(&body, &prompt, tools)
+        };
+
+        let default = turn("kimi-k3-1-pro-uncensored", None, false);
+        assert_eq!(
+            default,
+            json!({
+                "model": "kimi-k3-1-pro-uncensored",
+                "messages": prompt,
+                "max_tokens": 4096,
+                "stream": true,
+                "stream_options": {"include_usage": true},
+                "repetition_detection": {
+                    "max_pattern_size": 64, "min_pattern_size": 4, "min_count": 16
+                },
+                "temperature": 1.0,
+                "top_p": 0.95,
+                "chat_template_kwargs": {"preserve_thinking": true},
+            })
+        );
+
+        for effort in [None, Some("low"), Some("high"), Some("max")] {
+            for tools in [false, true] {
+                let uncensored = turn("kimi-k3-1-pro-uncensored", effort, tools);
+                let mut stock = turn("kimi-k3-1-pro", effort, tools);
+                assert_eq!(stock["model"], "kimi-k3-1-pro");
+                stock["model"] = json!("kimi-k3-1-pro-uncensored");
+                assert_eq!(uncensored, stock, "{effort:?} tools={tools}");
+                assert_eq!(
+                    uncensored
+                        .get("reasoning_effort")
+                        .and_then(serde_json::Value::as_str),
+                    effort
+                );
+                assert_eq!(uncensored.get("tools").is_some(), tools);
+                // Replayed reasoning stays on the assistant message as `reasoning`.
+                assert_eq!(uncensored["messages"][2]["reasoning"], "greet back");
+                assert!(uncensored["messages"][2].get("reasoning_content").is_none());
+            }
+        }
+        // Reasoning is mandatory. An explicit `none` or `medium` is rejected
+        // on arrival; the turn builder itself only ever clamps.
+        assert_eq!(
+            turn("kimi-k3-1-pro-uncensored", Some("none"), false)["reasoning_effort"],
+            "low"
+        );
+        assert_eq!(
+            turn("kimi-k3-1-pro-uncensored", Some("medium"), false)["reasoning_effort"],
+            "high"
+        );
     }
 
     #[test]
@@ -6671,7 +6777,6 @@ async fn ensure_message_started(
 #[allow(clippy::too_many_arguments)]
 async fn start_responses_assistant_turn(
     state: &Arc<AppState>,
-    user: &User,
     body: &ResponsesCreateRequest,
     pinned_completion: &PinnedCompletionRequest,
     headers: &HeaderMap,
@@ -6712,7 +6817,6 @@ async fn start_responses_assistant_turn(
 
     start_chat_completion_response_for_execution(
         state,
-        user,
         chat_request.take(),
         headers,
         CompletionExecutionContext::for_pinned(billing_context, pinned_completion, cache_policy),
@@ -7074,7 +7178,6 @@ async fn setup_completion_processor(
                 loop {
                     match start_responses_assistant_turn(
                         state,
-                        user,
                         body,
                         pinned_completion,
                         headers,
@@ -7696,7 +7799,6 @@ async fn create_streaming_preparation_response(
                     let turn_body = model_turn_request_without_user_payload(&work.body);
                     let first_started = match start_responses_assistant_turn(
                         &state,
-                        &user,
                         &turn_body,
                         &work.pinned_completion,
                         &headers,
@@ -7742,7 +7844,6 @@ async fn create_streaming_preparation_response(
                             .await?;
                             start_responses_assistant_turn(
                                 &state,
-                                &user,
                                 &turn_body,
                                 &work.pinned_completion,
                                 &headers,
@@ -7888,7 +7989,6 @@ async fn create_response_stream_inner(
 ) -> Result<Response, ApiError> {
     let client_app = ClientApp::from_headers(&headers);
     let cache_policy = CompletionCachePolicy::for_request(
-        &session_id,
         cache_namespace_root.map(|Extension(root)| root),
         user.uuid,
     )?;
@@ -8352,7 +8452,6 @@ async fn create_response_stream_inner(
         execution_policy.deadline,
         start_responses_assistant_turn(
             &state,
-            &user,
             &model_turn_body,
             &pinned_completion,
             &headers,
@@ -8416,7 +8515,6 @@ async fn create_response_stream_inner(
                 execution_policy.deadline,
                 start_responses_assistant_turn(
                     &state,
-                    &user,
                     &model_turn_body,
                     &pinned_completion,
                     &headers,
@@ -8623,7 +8721,6 @@ fn response_client_sse(
     preparation_start: Option<oneshot::Sender<()>>,
 ) -> Response {
     let response_uuid = response_for_stream.uuid;
-    let require_explicit_terminal = session_id.is_v2();
     let mut client_execution_guard = Some(client_execution_guard);
     // Storage and execution are already running; the body only translates the
     // ordered client channel into encrypted SSE events.
@@ -9043,7 +9140,7 @@ fn response_client_sse(
             }
         }
 
-        if require_explicit_terminal && !saw_terminal {
+        if !saw_terminal {
             error!("Responses client stream closed without a terminal event");
             // No storage-authoritative terminal arrived. Fail the body so the
             // V2 gateway emits an authenticated transport error, without claiming
@@ -9123,22 +9220,15 @@ pub(crate) fn responses_sse_body_failure_for_test() -> Response {
     ]))
 }
 
-/// Helper to create encrypted SSE event
+/// Builds one logical SSE event. The Transport V2 gateway encrypts the whole
+/// response stream, so the event data is ordinary JSON.
 pub async fn encrypt_event(
-    state: &AppState,
-    transport_session: &TransportSession,
+    _state: &AppState,
+    _transport_session: &TransportSession,
     event_type: &str,
     payload: &Value,
 ) -> Result<Event, ApiError> {
-    let payload_str = payload.to_string();
-    let event_data = transport_session
-        .encode_sse_data(state, &payload_str)
-        .await
-        .map_err(|e| {
-            error!("Failed to encode event data: {:?}", e);
-            ApiError::InternalServerError
-        })?;
-    Ok(Event::default().event(event_type).data(event_data))
+    Ok(Event::default().event(event_type).data(payload.to_string()))
 }
 
 /// GET /v1/responses/{id} - Retrieve a single response

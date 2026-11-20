@@ -3,8 +3,9 @@
 This operator runbook remains manual. Run repository-local build and `just`
 commands from `services/opensecret/` in the Maple monorepo using its pinned Nix
 flake. The root EIF approval workflow builds dev/prod and compares measurements
-without updating approvals. The reviewer-gated
-[EIF release workflow](#eif-release-workflow) is the only CI path that signs.
+without updating approvals. Only reviewer-gated workflows sign: the
+[EIF release workflow](#eif-release-workflow) for Production and the
+[Dev release statement workflow](release-statements.md) for Dev.
 For legacy client compatibility, follow
 [the PCR publication procedure](pcr-compatibility.md).
 
@@ -20,18 +21,23 @@ credential-isolation and publication gates.
 
 ## EIF release workflow
 
-`opensecret-eif-release.yml` (`OpenSecret EIF release`) produces a signed
-approval from CI. It is manual only: dispatch it on `master` with the
-environment (`dev` or `prod`), and leave `dry_run` checked to build, attest and
-compare without signing.
+`opensecret-eif-release.yml` (`OpenSecret EIF release`) builds and attests
+an EIF candidate and, for Production, produces a signed approval from CI. It is
+manual only: dispatch it on `master` with the environment (`dev` or `prod`),
+and leave `dry_run` checked to build, attest and compare without signing.
+A `dev` build is never signed here: approve it by dispatching
+`opensecret-release-statement-dev.yml` with this run's ID, whose one gated job
+signs the legacy approval and the Sigstore release statement together and
+pushes the same approval branch. See [release statements](release-statements.md).
 
 1. The `build` job runs on the trusted ARM64 runner with FlakeHub cache, builds
    the EIF, copies `image.eif` and `pcr.json` into a workflow artifact named
-   `opensecret-eif-<env>-<commit>` together with `SHA256SUMS` and
-   `handoff.json`, attests the artifact, and reports whether the approved
-   snapshot already covers the measurements.
-2. With `dry_run` unchecked and new measurements, the `sign` job waits for
-   approval of the protected `pcr-signing` environment. It downloads the
+   `opensecret-eif-<env>-<commit>` together with `handoff.json` (build mode,
+   source commit, EIF digest and measurements) and a `SHA256SUMS` covering all
+   three, attests every file listed in `SHA256SUMS`, and reports whether the
+   approved snapshot already covers the measurements.
+2. For `prod`, with `dry_run` unchecked and new measurements, the `sign` job
+   waits for approval of the protected `pcr-signing` environment. It downloads the
    attested artifact, resolves the existing signing key through Bitwarden's
    Secrets Manager action using that environment's read-only machine token, and
    runs the same `append-pcr-<env>` recipe operators use. The key reaches only
@@ -46,9 +52,9 @@ compare without signing.
    approval check compares against its updated file. Open the pull request
    yourself; the approval checks then rebuild and compare on that PR, and the
    root `pcr-compatibility` check verifies every signature.
-   After merging, mirror the four files to the legacy repository with the
-   manual [compatibility procedure](pcr-compatibility.md) and verify both
-   public locations.
+   After merging, verify the published files with the
+   [signed PCR procedure](pcr-compatibility.md). The legacy repository copy
+   is retired and is not updated; that page records the one exception.
 
 The workflow never creates a GitHub Release or tag: `/releases/latest` and the
 updater `latest.json` belong to the Maple desktop application. It does not

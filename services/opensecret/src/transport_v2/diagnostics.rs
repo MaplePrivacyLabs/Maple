@@ -37,7 +37,6 @@ const ROUTE_CLASSES: &[(&[&str], &str)] = &[
     (&["health-check"], "health_check"),
     (&["ok"], "ok"),
     (&["attestation"], "attestation"),
-    (&["key_exchange"], "key_exchange"),
     (&["protected"], "protected"),
     (&["login"], "login"),
     (&["logout"], "login"),

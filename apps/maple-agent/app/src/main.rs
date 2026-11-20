@@ -157,20 +157,22 @@ enum HostCommand {
 
 #[derive(Debug, Subcommand, PartialEq, Eq)]
 enum RemoteCommand {
+    /// Show this computer's remote access state and paired computers.
     Status,
+    /// Enable remote access on this computer.
     Enable,
+    /// Disable remote access on this computer; paired computers are kept.
     Disable,
+    /// List this account's discoverable computers.
     Discover,
     /// Display a new five-minute, single-attempt code on this computer.
     BeginPairing,
+    /// Cancel this computer's current pairing window.
     CancelPairing,
     /// Pair with an endpoint from Discover; the code is prompted privately.
-    Pair {
-        endpoint: String,
-    },
-    Revoke {
-        endpoint: String,
-    },
+    Pair { endpoint: String },
+    /// Revoke a pairing on this computer; the other computer is unchanged.
+    Revoke { endpoint: String },
 }
 
 fn run_remote(command: RemoteCommand) -> Result<(), String> {
@@ -196,7 +198,48 @@ fn run_remote(command: RemoteCommand) -> Result<(), String> {
     let value: serde_json::Value = backend
         .runtime_handle()
         .block_on(backend.remote_setting(method, params))?;
+    let value = display_byte_arrays_as_hex(value);
     write_remote_output(&mut std::io::stdout().lock(), &value)
+}
+
+/// Rewrites the raw byte arrays the host serializes for pairing capabilities
+/// as hex strings, matching the endpoint strings in the same output. Display
+/// only: the store and the wire format keep the raw arrays.
+fn display_byte_arrays_as_hex(mut value: serde_json::Value) -> serde_json::Value {
+    const BYTE_ARRAY_KEYS: [&str; 3] = ["grant", "host_grant", "pending_confirmation"];
+    match &mut value {
+        serde_json::Value::Object(map) => {
+            for (key, child) in map.iter_mut() {
+                let hex = (BYTE_ARRAY_KEYS.contains(&key.as_str()))
+                    .then(|| match child {
+                        serde_json::Value::Array(bytes)
+                            if bytes.len() == 16
+                                && bytes.iter().all(|b| b.as_u64().is_some_and(|b| b <= 255)) =>
+                        {
+                            Some(bytes.iter().fold(String::with_capacity(32), |mut acc, b| {
+                                use std::fmt::Write;
+                                let _ = write!(acc, "{:02x}", b.as_u64().unwrap());
+                                acc
+                            }))
+                        }
+                        _ => None,
+                    })
+                    .flatten();
+                match hex {
+                    Some(hex) => *child = serde_json::Value::String(hex),
+                    None => *child = display_byte_arrays_as_hex(std::mem::take(child)),
+                }
+            }
+            value
+        }
+        serde_json::Value::Array(items) => {
+            for item in items {
+                *item = display_byte_arrays_as_hex(std::mem::take(item));
+            }
+            value
+        }
+        _ => value,
+    }
 }
 
 fn write_remote_output(
@@ -951,6 +994,46 @@ mod tests {
     fn parse(args: &[&str]) -> Result<Option<Mode>, clap::Error> {
         super::parse_cli(std::iter::once("maple-agent").chain(args.iter().copied()))
             .map(|cli| cli.mode)
+    }
+
+    #[test]
+    fn remote_output_renders_byte_arrays_as_hex() {
+        let value = serde_json::json!({
+            "peers": {
+                "ab".repeat(32): {
+                    "name": "other",
+                    "grant": [0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15],
+                    "controls_this_computer": true,
+                    "can_connect": true,
+                    "host_grant": [255, 254, 253, 252, 251, 250, 249, 248, 247, 246, 245, 244, 243, 242, 241, 240],
+                    "pending_confirmation": null
+                }
+            }
+        });
+        let rendered = super::display_byte_arrays_as_hex(value);
+        let peers = &rendered["peers"];
+        let peer = &peers[peers.as_object().unwrap().keys().next().unwrap()];
+        assert_eq!(peer["grant"], "000102030405060708090a0b0c0d0e0f");
+        assert_eq!(peer["host_grant"], "fffefdfcfbfaf9f8f7f6f5f4f3f2f1f0");
+        assert_eq!(peer["pending_confirmation"], serde_json::Value::Null);
+        assert_eq!(peer["controls_this_computer"], true);
+    }
+
+    #[test]
+    fn remote_output_leaves_non_byte_arrays_alone() {
+        let value = serde_json::json!({
+            "grant": [1, 2, 3],
+            "attempted_windows": [[1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16]],
+            "note": "grant is not a string"
+        });
+        let rendered = super::display_byte_arrays_as_hex(value);
+        assert_eq!(rendered["grant"], serde_json::json!([1, 2, 3]));
+        // Not a byte-array key: untouched even though it nests 16 ints.
+        assert_eq!(
+            rendered["attempted_windows"][0].as_array().map(Vec::len),
+            Some(16)
+        );
+        assert_eq!(rendered["note"], "grant is not a string");
     }
 
     #[test]

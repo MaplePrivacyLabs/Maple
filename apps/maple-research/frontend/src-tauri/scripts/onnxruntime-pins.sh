@@ -1,24 +1,19 @@
 #!/usr/bin/env bash
 
-onnxruntime_linux_x64_archive_sha256_for_version() {
-  case "$1" in
-    1.23.2)
-      printf '%s\n' "1fa4dcaef22f6f7d5cd81b28c2800414350c10116f5fdd46a2160082551c5f9b"
-      ;;
-    *)
-      echo "No pinned Linux x64 ONNX Runtime archive SHA-256 for version '$1'." >&2
-      return 1
-      ;;
-  esac
+# Linux and Windows take their library from Microsoft's official NuGet package.
+# The package pin guards the download; the per-platform library pins below are
+# what a build is held to.
+onnxruntime_nuget_package_url_for_version() {
+  printf '%s\n' "https://api.nuget.org/v3-flatcontainer/microsoft.ml.onnxruntime/$1/microsoft.ml.onnxruntime.$1.nupkg"
 }
 
-onnxruntime_linux_aarch64_archive_sha256_for_version() {
+onnxruntime_nuget_package_sha256_for_version() {
   case "$1" in
     1.23.2)
-      printf '%s\n' "7c63c73560ed76b1fac6cff8204ffe34fe180e70d6582b5332ec094810241e5c"
+      printf '%s\n' "25fe172f7fcdf34f2b5b02c8b997f6b88abc282956849d4af4335af23d0c4e4a"
       ;;
     *)
-      echo "No pinned Linux aarch64 ONNX Runtime archive SHA-256 for version '$1'." >&2
+      echo "No pinned ONNX Runtime NuGet package SHA-256 for version '$1'." >&2
       return 1
       ;;
   esac
@@ -48,37 +43,28 @@ onnxruntime_linux_aarch64_dylib_sha256_for_version() {
   esac
 }
 
-onnxruntime_macos_universal2_archive_sha256_for_version() {
+# macOS takes one library per architecture from the NuGet package and joins
+# them. Microsoft signs these files separately from the universal library its
+# release archive carried, so the code is the same but the hashes are not.
+onnxruntime_macos_x64_dylib_sha256_for_version() {
   case "$1" in
     1.23.2)
-      printf '%s\n' "49ae8e3a66ccb18d98ad3fe7f5906b6d7887df8a5edd40f49eb2b14e20885809"
+      printf '%s\n' "8c9c78de65ea3786f987c0d980e9c1b13a3a5fbc6b3e2965ba05b450e6e4c054"
       ;;
     *)
-      echo "No pinned macOS universal2 ONNX Runtime archive SHA-256 for version '$1'." >&2
+      echo "No pinned macOS x64 ONNX Runtime dylib SHA-256 for version '$1'." >&2
       return 1
       ;;
   esac
 }
 
-onnxruntime_macos_universal2_dylib_sha256_for_version() {
+onnxruntime_macos_arm64_dylib_sha256_for_version() {
   case "$1" in
     1.23.2)
-      printf '%s\n' "6fee21a0dbcaa98fe082cb4f7ed07ec5def439df36198f47b61dc205e7d2a1fa"
+      printf '%s\n' "d306d2bc768540766c7ed8a1e0ff05d2870c77a934ebeee4a7bafa1b732ef299"
       ;;
     *)
-      echo "No pinned macOS universal2 ONNX Runtime dylib SHA-256 for version '$1'." >&2
-      return 1
-      ;;
-  esac
-}
-
-onnxruntime_windows_x64_archive_sha256_for_version() {
-  case "$1" in
-    1.23.2)
-      printf '%s\n' "0b38df9af21834e41e73d602d90db5cb06dbd1ca618948b8f1d66d607ac9f3cd"
-      ;;
-    *)
-      echo "No pinned Windows x64 ONNX Runtime archive SHA-256 for version '$1'." >&2
+      echo "No pinned macOS arm64 ONNX Runtime dylib SHA-256 for version '$1'." >&2
       return 1
       ;;
   esac
@@ -162,6 +148,34 @@ onnxruntime_ios_commit_for_version() {
       return 1
       ;;
   esac
+}
+
+# Git remotes that serve the pinned iOS source commit, tried in order. The
+# commit ID pins the source and the library hashes below pin the build output,
+# so a remote decides availability, never content. Microsoft's repository has
+# returned 404 since 2026-11-17. Maple's fork keeps the commit under the tag
+# maple-pin-v<version>, so a new pin needs a new tag there; Intel's public fork
+# carries the same commit without a ref.
+onnxruntime_ios_source_remotes() {
+  printf '%s\n' \
+    "https://github.com/microsoft/onnxruntime.git" \
+    "https://github.com/MaplePrivacyLabs/onnxruntime.git" \
+    "https://github.com/intel/onnxruntime.git"
+}
+
+# Fetch one commit into the current repository as FETCH_HEAD from the first
+# remote that serves it. Never prompts: a missing repository asks for a login.
+onnxruntime_ios_fetch_source_commit() {
+  local commit="$1" remote
+  while IFS= read -r remote; do
+    echo "Fetching ONNX Runtime ${commit} from ${remote}"
+    if GIT_TERMINAL_PROMPT=0 git fetch --depth 1 "${remote}" "${commit}" </dev/null; then
+      return 0
+    fi
+    echo "${remote} did not serve ${commit}." >&2
+  done < <(onnxruntime_ios_source_remotes)
+  echo "No source remote served ONNX Runtime commit ${commit}." >&2
+  return 1
 }
 
 onnxruntime_ios_device_lib_sha256_for_version() {

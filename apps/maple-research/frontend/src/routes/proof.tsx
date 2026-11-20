@@ -541,7 +541,7 @@ function ProofFAQ() {
           <p className="mt-4 text-[hsl(var(--marketing-text-muted))]">
             Yes. Our{" "}
             <a
-              href="https://github.com/OpenSecretCloud/opensecret"
+              href="https://github.com/MaplePrivacyLabs/Maple/tree/master/services/opensecret"
               target="_blank"
               rel="noopener noreferrer"
               className="text-foreground hover:text-foreground/80 underline"
@@ -621,7 +621,7 @@ function Verify() {
             </a>{" "}
             and{" "}
             <a
-              href="https://github.com/OpenSecretCloud/opensecret"
+              href="https://github.com/MaplePrivacyLabs/Maple/tree/master/services/opensecret"
               target="_blank"
               rel="noopener noreferrer"
               className="text-foreground hover:text-foreground/80 underline"
@@ -674,7 +674,7 @@ function Verify() {
             </a>
             {" and "}
             <a
-              href="https://github.com/OpenSecretCloud/opensecret"
+              href="https://github.com/MaplePrivacyLabs/Maple/tree/master/services/opensecret"
               target="_blank"
               rel="noopener noreferrer"
               className="text-foreground hover:text-foreground/80 underline"

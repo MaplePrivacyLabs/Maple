@@ -8,7 +8,6 @@
         "@peculiar/x509": "1.14.3",
         "@stablelib/base64": "2.0.1",
         "@stablelib/chacha20poly1305": "2.0.1",
-        "@stablelib/random": "2.0.1",
         "cbor2": "1.12.0",
         "openai": "6.0.0",
         "tweetnacl": "1.0.3",
@@ -286,8 +285,6 @@
     "@stablelib/int": ["@stablelib/int@2.0.1", "", {}, "sha512-Ht63fQp3wz/F8U4AlXEPb7hfJOIILs8Lq55jgtD7KueWtyjhVuzcsGLSTAWtZs3XJDZYdF1WcSKn+kBtbzupww=="],
 
     "@stablelib/poly1305": ["@stablelib/poly1305@2.0.1", "", { "dependencies": { "@stablelib/constant-time": "^2.0.1", "@stablelib/wipe": "^2.0.1" } }, "sha512-D8xfZcL/5zeVARJ9I2fZOUCnZvsJx8G4JDQvD+ecsnaCildPtqZDwqqjtOc4cfHAdScrMjOzUVsssjXUTBw3YQ=="],
-
-    "@stablelib/random": ["@stablelib/random@2.0.1", "", { "dependencies": { "@stablelib/binary": "^2.0.1", "@stablelib/wipe": "^2.0.1" } }, "sha512-W6GAtXEEs7r+dSbuBsvoFmlyL3gLxle41tQkjKu17dDWtDdjhVUbtRfRCQcCUeczwkgjQxMPopgwYEvxXtHXGw=="],
 
     "@stablelib/wipe": ["@stablelib/wipe@2.0.1", "", {}, "sha512-1eU2K9EgOcV4qc9jcP6G72xxZxEm5PfeI5H55l08W95b4oRJaqhmlWRc4xZAm6IVSKhVNxMi66V67hCzzuMTAg=="],
 

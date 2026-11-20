@@ -1060,7 +1060,7 @@ mod tests {
         RouteIdentity,
     };
     use crate::provider_registry::{
-        MapleInstanceId, ProviderId, RouteSelectionSource, DUAL_INSTANCE_TEST_REGISTRY,
+        ProviderId, RouteSelectionSource, DUAL_INSTANCE_TEST_INSTANCES, DUAL_INSTANCE_TEST_REGISTRY,
     };
     use std::sync::{Arc, Barrier};
     use std::thread;
@@ -2514,7 +2514,7 @@ mod tests {
     fn maple_replica_probe_leases_and_recovery_do_not_cross_instance_boundaries() {
         let state = ShadowHealthState::new(&DUAL_INSTANCE_TEST_REGISTRY);
         let start = Instant::now();
-        let routes = MapleInstanceId::ALL.map(|instance| {
+        let routes = DUAL_INSTANCE_TEST_INSTANCES.map(|instance| {
             route(
                 ProviderId::Maple(instance),
                 "deepseek-v4-1-flash",

@@ -69,8 +69,8 @@ call site's unavailable, timeout, denial, fallback, and success semantics.
 Completion requests use Router V2. Keep image and title helpers on the request's
 authenticated account and plan routing context. A helper candidate identifies
 a public model; resolve its provider through shared routing rather than pinning
-an independently guessed provider. Router retirement does not remove Transport
-V1 or change the public API versions.
+an independently guessed provider. Router retirement does not change the
+public API versions.
 
 Trace alias resolution separately from model selection and provider selection.
 Router V2 resolves an Auto alias to its tier's preferred model, then

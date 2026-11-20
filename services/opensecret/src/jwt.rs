@@ -6,7 +6,6 @@ use std::sync::Arc;
 use axum::{
     body::Body,
     extract::{Request, State},
-    http::header,
     middleware::Next,
     response::IntoResponse,
 };
@@ -34,15 +33,13 @@ use crate::{
     web::encryption_middleware::TransportSession,
 };
 
-pub const USER_ACCESS: &str = "access";
-pub const USER_REFRESH: &str = "refresh";
+// Audiences of the retired pre-V2 session tokens. Nothing issues or accepts
+// them; they stay reserved so a third-party token can never carry one.
+const RETIRED_SESSION_AUDIENCES: [&str; 4] =
+    ["access", "refresh", "platform_access", "platform_refresh"];
 
-pub const PLATFORM_ACCESS: &str = "platform_access";
-pub const PLATFORM_REFRESH: &str = "platform_refresh";
-// Every internal Transport V2 audience intentionally exceeds the existing
-// 50-byte third-party audience limit. Reserving these values therefore does
-// not newly reject any audience that a V1 caller could issue before Transport
-// V2 existed.
+// Every internal audience intentionally exceeds the 50-byte third-party
+// audience limit, so no third-party token can carry one.
 pub const TRANSPORT_V2_USER_ACCESS: &str = "urn:opensecret:internal:transport-v2:user:access-token";
 pub const TRANSPORT_V2_USER_REFRESH: &str =
     "urn:opensecret:internal:transport-v2:user:refresh-token";
@@ -62,29 +59,9 @@ pub const USER_TOKEN_FORMAT_V2: u8 = 2;
 
 #[derive(Debug, Clone)]
 pub enum TokenType {
-    Access,
-    Refresh,
     TransportV2Access,
     TransportV2Refresh,
     ThirdParty { aud: Option<String>, azp: String },
-}
-
-impl TokenType {
-    pub(crate) const fn access_for_transport(is_transport_v2: bool) -> Self {
-        if is_transport_v2 {
-            Self::TransportV2Access
-        } else {
-            Self::Access
-        }
-    }
-
-    pub(crate) const fn refresh_for_transport(is_transport_v2: bool) -> Self {
-        if is_transport_v2 {
-            Self::TransportV2Refresh
-        } else {
-            Self::Refresh
-        }
-    }
 }
 
 #[derive(Clone)]
@@ -262,11 +239,7 @@ impl AuthContext {
 impl TokenType {
     pub fn validate_third_party_audience(aud: &str) -> Result<(), ApiError> {
         // Validate third party audience can't use our internal audience types
-        const RESERVED_AUDIENCES: [&str; 9] = [
-            USER_ACCESS,
-            USER_REFRESH,
-            PLATFORM_ACCESS,
-            PLATFORM_REFRESH,
+        const RESERVED_AUDIENCES: [&str; 5] = [
             TRANSPORT_V2_USER_ACCESS,
             TRANSPORT_V2_USER_REFRESH,
             TRANSPORT_V2_PLATFORM_ACCESS,
@@ -275,7 +248,7 @@ impl TokenType {
         ];
 
         // 1. Check for reserved audiences
-        if RESERVED_AUDIENCES.contains(&aud) {
+        if RESERVED_AUDIENCES.contains(&aud) || RETIRED_SESSION_AUDIENCES.contains(&aud) {
             tracing::error!(
                 "Third-party tokens cannot use internal audience types: {}",
                 aud
@@ -463,10 +436,7 @@ impl NewToken {
                     Duration::hours(1),
                 )
             }
-            TokenType::Access
-            | TokenType::Refresh
-            | TokenType::TransportV2Access
-            | TokenType::TransportV2Refresh => {
+            TokenType::TransportV2Access | TokenType::TransportV2Refresh => {
                 tracing::error!("User access/refresh tokens require AuthContext");
                 return Err(ApiError::BadRequest);
             }
@@ -531,14 +501,6 @@ impl NewToken {
         }
 
         let (aud, duration) = match &token_type {
-            TokenType::Access => (
-                Some(USER_ACCESS.to_string()),
-                Duration::minutes(app_state.config.access_token_maxage),
-            ),
-            TokenType::Refresh => (
-                Some(USER_REFRESH.to_string()),
-                Duration::days(app_state.config.refresh_token_maxage),
-            ),
             TokenType::TransportV2Access => (
                 Some(TRANSPORT_V2_USER_ACCESS.to_string()),
                 Duration::minutes(app_state.config.access_token_maxage),
@@ -600,16 +562,6 @@ impl NewToken {
         app_state: &AppState,
     ) -> Result<Self, ApiError> {
         let (aud, azp, duration) = match token_type {
-            TokenType::Access => (
-                PLATFORM_ACCESS.to_string(),
-                None,
-                Duration::minutes(app_state.config.access_token_maxage),
-            ),
-            TokenType::Refresh => (
-                PLATFORM_REFRESH.to_string(),
-                None,
-                Duration::days(app_state.config.refresh_token_maxage),
-            ),
             TokenType::TransportV2Access => (
                 TRANSPORT_V2_PLATFORM_ACCESS.to_string(),
                 None,
@@ -867,39 +819,28 @@ pub async fn generate_jwt_secret(
     }
 }
 
+/// The bearer token the Transport V2 gateway decrypted from the request
+/// envelope. A request that did not come through the gateway has no transport
+/// session and therefore no credential; outer HTTP headers are never read.
+fn bearer_credential(req: &Request<Body>) -> Option<&str> {
+    req.extensions().get::<TransportSession>()?;
+    req.extensions()
+        .get::<Credential>()
+        .filter(|credential| credential.kind() == CredentialKind::Bearer)
+        .map(Credential::value)
+}
+
 pub async fn validate_jwt(
     State(data): State<Arc<AppState>>,
     mut req: Request<Body>,
     next: Next,
 ) -> impl IntoResponse {
-    let is_transport_v2 = req
-        .extensions()
-        .get::<TransportSession>()
-        .is_some_and(TransportSession::is_v2);
-    let token = if is_transport_v2 {
-        match req.extensions().get::<Credential>() {
-            Some(credential) if credential.kind() == CredentialKind::Bearer => credential.value(),
-            _ => return ApiError::InvalidJwt.into_response(),
-        }
-    } else {
-        match req
-            .headers()
-            .get(header::AUTHORIZATION)
-            .and_then(|auth_header| auth_header.to_str().ok())
-            .and_then(|auth_value| auth_value.strip_prefix("Bearer "))
-        {
-            Some(token) => token,
-            None => return ApiError::InvalidJwt.into_response(),
-        }
+    let Some(token) = bearer_credential(&req) else {
+        return ApiError::InvalidJwt.into_response();
     };
 
-    let expected_audience = if is_transport_v2 {
-        TRANSPORT_V2_USER_ACCESS
-    } else {
-        USER_ACCESS
-    };
     let (claims, access_token_expired) =
-        match validate_access_token_for_auth(token, &data, expected_audience) {
+        match validate_access_token_for_auth(token, &data, TRANSPORT_V2_USER_ACCESS) {
             Ok(validation) => validation,
             Err(_) => return ApiError::InvalidJwt.into_response(),
         };
@@ -952,34 +893,12 @@ pub async fn validate_platform_jwt(
     mut req: Request<Body>,
     next: Next,
 ) -> impl IntoResponse {
-    let is_transport_v2 = req
-        .extensions()
-        .get::<TransportSession>()
-        .is_some_and(TransportSession::is_v2);
-    let token = if is_transport_v2 {
-        match req.extensions().get::<Credential>() {
-            Some(credential) if credential.kind() == CredentialKind::Bearer => credential.value(),
-            _ => return ApiError::InvalidJwt.into_response(),
-        }
-    } else {
-        match req
-            .headers()
-            .get(header::AUTHORIZATION)
-            .and_then(|auth_header| auth_header.to_str().ok())
-            .and_then(|auth_value| auth_value.strip_prefix("Bearer "))
-        {
-            Some(token) => token,
-            None => return ApiError::InvalidJwt.into_response(),
-        }
+    let Some(token) = bearer_credential(&req) else {
+        return ApiError::InvalidJwt.into_response();
     };
 
-    let expected_audience = if is_transport_v2 {
-        TRANSPORT_V2_PLATFORM_ACCESS
-    } else {
-        PLATFORM_ACCESS
-    };
     let (claims, access_token_expired) =
-        match validate_access_token_for_auth(token, &data, expected_audience) {
+        match validate_access_token_for_auth(token, &data, TRANSPORT_V2_PLATFORM_ACCESS) {
             Ok(validation) => validation,
             Err(_) => return ApiError::InvalidJwt.into_response(),
         };
@@ -1044,7 +963,7 @@ fn validate_token_with_keys(
 fn is_access_token_audience(audience: &str) -> bool {
     matches!(
         audience,
-        USER_ACCESS | PLATFORM_ACCESS | TRANSPORT_V2_USER_ACCESS | TRANSPORT_V2_PLATFORM_ACCESS
+        TRANSPORT_V2_USER_ACCESS | TRANSPORT_V2_PLATFORM_ACCESS
     )
 }
 
@@ -1173,21 +1092,24 @@ mod tests {
         let other_keys = test_keys(2);
         let expired = Utc::now() - Duration::minutes(1);
 
-        let expired_access = signed_test_token(&trusted_keys, USER_ACCESS, Some(expired));
+        let expired_access =
+            signed_test_token(&trusted_keys, TRANSPORT_V2_USER_ACCESS, Some(expired));
         assert!(matches!(
-            validate_token_with_keys(&expired_access, &trusted_keys, USER_ACCESS),
+            validate_token_with_keys(&expired_access, &trusted_keys, TRANSPORT_V2_USER_ACCESS),
             Err(ApiError::AccessTokenExpired)
         ));
 
-        let wrong_audience = signed_test_token(&trusted_keys, USER_REFRESH, Some(expired));
+        let wrong_audience =
+            signed_test_token(&trusted_keys, TRANSPORT_V2_USER_REFRESH, Some(expired));
         assert!(matches!(
-            validate_token_with_keys(&wrong_audience, &trusted_keys, USER_ACCESS),
+            validate_token_with_keys(&wrong_audience, &trusted_keys, TRANSPORT_V2_USER_ACCESS),
             Err(ApiError::InvalidJwt)
         ));
 
-        let wrong_signature = signed_test_token(&other_keys, USER_ACCESS, Some(expired));
+        let wrong_signature =
+            signed_test_token(&other_keys, TRANSPORT_V2_USER_ACCESS, Some(expired));
         assert!(matches!(
-            validate_token_with_keys(&wrong_signature, &trusted_keys, USER_ACCESS),
+            validate_token_with_keys(&wrong_signature, &trusted_keys, TRANSPORT_V2_USER_ACCESS),
             Err(ApiError::InvalidJwt)
         ));
     }
@@ -1197,27 +1119,23 @@ mod tests {
         let keys = test_keys(3);
         let expired = Utc::now() - Duration::minutes(1);
 
-        let refresh = signed_test_token(&keys, USER_REFRESH, Some(expired));
+        let refresh = signed_test_token(&keys, TRANSPORT_V2_USER_REFRESH, Some(expired));
         assert!(matches!(
-            validate_token_with_keys(&refresh, &keys, USER_REFRESH),
+            validate_token_with_keys(&refresh, &keys, TRANSPORT_V2_USER_REFRESH),
             Err(ApiError::InvalidJwt)
         ));
 
-        let platform_access = signed_test_token(&keys, PLATFORM_ACCESS, Some(expired));
+        let platform_access = signed_test_token(&keys, TRANSPORT_V2_PLATFORM_ACCESS, Some(expired));
         assert!(matches!(
-            validate_token_with_keys(&platform_access, &keys, PLATFORM_ACCESS),
+            validate_token_with_keys(&platform_access, &keys, TRANSPORT_V2_PLATFORM_ACCESS),
             Err(ApiError::AccessTokenExpired)
         ));
     }
 
     #[test]
-    fn token_audiences_are_exactly_separated_across_transport_and_principal_kinds() {
+    fn token_audiences_are_exactly_separated_across_principal_and_token_kinds() {
         let keys = test_keys(6);
         let audiences = [
-            USER_ACCESS,
-            USER_REFRESH,
-            PLATFORM_ACCESS,
-            PLATFORM_REFRESH,
             TRANSPORT_V2_USER_ACCESS,
             TRANSPORT_V2_USER_REFRESH,
             TRANSPORT_V2_PLATFORM_ACCESS,
@@ -1248,8 +1166,37 @@ mod tests {
         ] {
             assert!(
                 transport_v2_audience.len() > 50,
-                "internal V2 audiences must remain outside V1's existing third-party audience space"
+                "internal audiences must remain outside the third-party audience space"
             );
+        }
+    }
+
+    #[test]
+    fn retired_session_audiences_are_reserved_and_never_accepted() {
+        let keys = test_keys(10);
+        for retired_audience in RETIRED_SESSION_AUDIENCES {
+            assert!(TokenType::validate_third_party_audience(retired_audience).is_err());
+            assert!(!is_access_token_audience(retired_audience));
+
+            let token = signed_test_token(
+                &keys,
+                retired_audience,
+                Some(Utc::now() + Duration::minutes(5)),
+            );
+            for accepted_audience in [
+                TRANSPORT_V2_USER_ACCESS,
+                TRANSPORT_V2_USER_REFRESH,
+                TRANSPORT_V2_PLATFORM_ACCESS,
+                TRANSPORT_V2_PLATFORM_REFRESH,
+            ] {
+                assert!(
+                    matches!(
+                        validate_token_with_keys(&token, &keys, accepted_audience),
+                        Err(ApiError::InvalidJwt)
+                    ),
+                    "a {retired_audience} token was validated as {accepted_audience}"
+                );
+            }
         }
     }
 
@@ -1310,7 +1257,7 @@ mod tests {
         assert!(TokenType::validate_third_party_audience(TRANSPORT_V2_NATIVE_HANDOFF).is_err());
         assert!(
             TRANSPORT_V2_NATIVE_HANDOFF.len() > 50,
-            "the handoff audience must remain outside V1's existing third-party audience space"
+            "the handoff audience must remain outside the third-party audience space"
         );
     }
 
@@ -1353,13 +1300,13 @@ mod tests {
         let malformed_binding = URL_SAFE_NO_PAD.encode([7u8; 31]);
         let token = signed_test_token_with_auth_binding(
             &keys,
-            USER_ACCESS,
+            TRANSPORT_V2_USER_ACCESS,
             Some(Utc::now() - Duration::minutes(1)),
             Some(malformed_binding),
         );
 
         let (claims, access_token_expired) =
-            validate_token_with_keys_for_auth(&token, &keys, USER_ACCESS).unwrap();
+            validate_token_with_keys_for_auth(&token, &keys, TRANSPORT_V2_USER_ACCESS).unwrap();
         assert!(access_token_expired);
         assert!(matches!(
             AuthContext::from_claims(&claims),
@@ -1370,16 +1317,20 @@ mod tests {
     #[test]
     fn valid_access_and_malformed_tokens_do_not_report_expiration() {
         let keys = test_keys(4);
-        let valid = signed_test_token(&keys, USER_ACCESS, Some(Utc::now() + Duration::minutes(5)));
-        let missing_expiration = signed_test_token(&keys, USER_ACCESS, None);
+        let valid = signed_test_token(
+            &keys,
+            TRANSPORT_V2_USER_ACCESS,
+            Some(Utc::now() + Duration::minutes(5)),
+        );
+        let missing_expiration = signed_test_token(&keys, TRANSPORT_V2_USER_ACCESS, None);
 
-        assert!(validate_token_with_keys(&valid, &keys, USER_ACCESS).is_ok());
+        assert!(validate_token_with_keys(&valid, &keys, TRANSPORT_V2_USER_ACCESS).is_ok());
         assert!(matches!(
-            validate_token_with_keys(&missing_expiration, &keys, USER_ACCESS),
+            validate_token_with_keys(&missing_expiration, &keys, TRANSPORT_V2_USER_ACCESS),
             Err(ApiError::InvalidJwt)
         ));
         assert!(matches!(
-            validate_token_with_keys("not-a-jwt", &keys, USER_ACCESS),
+            validate_token_with_keys("not-a-jwt", &keys, TRANSPORT_V2_USER_ACCESS),
             Err(ApiError::InvalidJwt)
         ));
     }
@@ -1429,7 +1380,7 @@ mod tests {
         let auth_context = AuthContext::new(AuthMethod::Password, 7, [3u8; 32]);
         let mut claims = CustomClaims {
             sub: Uuid::nil().to_string(),
-            aud: Some(USER_ACCESS.to_string()),
+            aud: Some(TRANSPORT_V2_USER_ACCESS.to_string()),
             azp: None,
             role: None,
             token_format: None,
@@ -1450,8 +1401,8 @@ mod tests {
     }
 
     #[test]
-    fn auth_context_rejects_legacy_user_access_and_refresh_claim_shapes() {
-        for audience in [USER_ACCESS, USER_REFRESH] {
+    fn auth_context_rejects_user_claims_without_an_auth_context() {
+        for audience in [TRANSPORT_V2_USER_ACCESS, TRANSPORT_V2_USER_REFRESH] {
             let claims = CustomClaims {
                 sub: Uuid::nil().to_string(),
                 aud: Some(audience.to_string()),
@@ -1465,7 +1416,7 @@ mod tests {
 
             assert!(
                 AuthContext::from_claims(&claims).is_err(),
-                "legacy {audience} claims without auth context must be rejected"
+                "{audience} claims without auth context must be rejected"
             );
         }
     }
@@ -1474,7 +1425,7 @@ mod tests {
     fn auth_context_rejects_bad_method() {
         let mut claims = CustomClaims {
             sub: Uuid::nil().to_string(),
-            aud: Some(USER_ACCESS.to_string()),
+            aud: Some(TRANSPORT_V2_USER_ACCESS.to_string()),
             azp: None,
             role: None,
             token_format: None,
@@ -1492,7 +1443,7 @@ mod tests {
     fn auth_context_rejects_wrong_binding_length() {
         let mut claims = CustomClaims {
             sub: Uuid::nil().to_string(),
-            aud: Some(USER_ACCESS.to_string()),
+            aud: Some(TRANSPORT_V2_USER_ACCESS.to_string()),
             azp: None,
             role: None,
             token_format: None,
