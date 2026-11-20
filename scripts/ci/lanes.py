@@ -88,7 +88,7 @@ NOT_YET_TRACKED = frozenset({"sdk/rust/build.rs", "proxy/build.rs"})
 # What Research builds from the in-tree TypeScript SDK.
 SDK_TS_BUILD = ("sdk/src/**", "!sdk/src/lib/test/**", "sdk/package.json", "sdk/bun.lock",
                 "sdk/bunfig.toml", "sdk/tsconfig*.json", "sdk/vite.config.ts", "sdk/.npmrc")
-SDK_TS = ("sdk/src/**", "sdk/package.json", "sdk/bun.lock", "sdk/bunfig.toml",
+SDK_TS = ("sdk/src/**", "sdk/test/fixtures/**", "sdk/package.json", "sdk/bun.lock", "sdk/bunfig.toml",
           "sdk/tsconfig*.json", "sdk/vite.config.ts", "sdk/.npmrc", "sdk/flake.*")
 
 AGENT = ("apps/maple-agent/**",)
@@ -317,9 +317,13 @@ LANES: Tuple[Lane, ...] = (
     ), runner=GITHUB, run="nix flake check --no-update-lock-file --print-build-logs", timeout=15, hook="repo"),
 
     # The SDKs, proxy and container. build-sdk-publish.sh is the publishers' own builder.
-    Lane("sdk-ts", SDK_TS + ("sdk/.prettierrc.json", "sdk/eslint.config.js", "sdk/justfile", "sdk/.env.example",
-                             "sdk/LICENSE.md", "scripts/ci/build-sdk-publish.sh",
-                             "scripts/ci/check-sdk-package-consumers.py"),
+    # The SDK's tests compare its embedded release-approval trust inputs with the
+    # reviewed copies under opensecret-release/, so a change to either selects it.
+    Lane("sdk-ts", SDK_TS + ("sdk/.prettierrc.json", "sdk/.prettierignore", "sdk/eslint.config.js", "sdk/justfile",
+                             "sdk/.env.example", "sdk/LICENSE.md", "scripts/ci/build-sdk-publish.sh",
+                             "scripts/ci/check-sdk-package-consumers.py",
+                             "scripts/ci/opensecret-release/dev-signing-key.pem",
+                             "scripts/ci/opensecret-release/trusted_root.json"),
          runner=GITHUB, run='./scripts/ci/build-sdk-publish.sh npm "$(mktemp -d)"', hook="sdk_ts"),
     Lane("sdk-rust", ("sdk/rust/**", "sdk/rust-toolchain.toml", "sdk/flake.*", "scripts/ci/build-sdk-publish.sh",
                       "scripts/ci/sdk_crates_upload.py"),
