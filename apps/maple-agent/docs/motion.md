@@ -71,8 +71,10 @@ of `app/src/ui/effort_slider.rs` and `app/src/ui/chat/effort.rs`, and they
 stay out of the tokens on purpose: nothing else should move like it.
 
 Press feedback is immediate (`.active()`), and focus rings appear at once.
-Looping indicators (spinners, the waiting dots, the running ring) use the
-shared 15 fps `ticker` clock and pause in background windows.
+Looping indicators (spinners, the waiting dots, a running task's breathing
+dot and title shine) use the shared 15 fps `ticker` clock and pause in
+background windows and under reduced motion, resting on a full dot and a
+plain title.
 
 ## Where motion applies
 
@@ -101,6 +103,7 @@ shared 15 fps `ticker` clock and pause in background windows.
 | Disclosure chevrons | rotate 90°, `TOGGLE` | same, reversed |
 | Sidebar collapse | width eases, `PANEL` | same, reversed |
 | Task status in the sidebar, project folders | indicators and folder icons cross-fade, `TOGGLE` | same |
+| A running task in the sidebar | grey dot breathes every 2.4 s; on dark a soft band crosses the title, then rests (4.8 s cycle) | stops at once when the run ends |
 
 Loading spinners for work that usually finishes quickly (opening a task)
 appear only after 300 ms, so fast loads never flash a spinner.

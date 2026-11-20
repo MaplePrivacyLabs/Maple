@@ -29,6 +29,25 @@ pub struct MorphText {
     color: Option<Hsla>,
     instant: bool,
     shine: Option<(Duration, Hsla)>,
+    shine_band: ShineBand,
+}
+
+/// How wide the shine's band is and how long it rests between passes.
+#[derive(Clone, Copy)]
+struct ShineBand {
+    /// The band's half-width, as a fraction of the line.
+    reach: f32,
+    /// The share of each cycle the band spends off the line.
+    rest: f32,
+}
+
+impl Default for ShineBand {
+    fn default() -> Self {
+        Self {
+            reach: 0.3,
+            rest: 0.,
+        }
+    }
 }
 
 /// Morphing text in the surrounding text style; `id` keeps its state
@@ -40,6 +59,7 @@ pub fn morph_text(id: impl Into<ElementId>, text: impl Into<SharedString>) -> Mo
         color: None,
         instant: false,
         shine: None,
+        shine_band: ShineBand::default(),
     }
 }
 
@@ -66,15 +86,31 @@ impl MorphText {
         self.shine = Some((cycle, color.into()));
         self
     }
+
+    /// Shape the shine: a band `reach` of the line wide on each side of
+    /// its centre, crossing in the first `1 - rest` of each cycle and
+    /// resting off the line for the remainder. The defaults (0.3, no
+    /// rest) are the transcript's thinking line.
+    pub fn shine_band(mut self, reach: f32, rest: f32) -> Self {
+        self.shine_band = ShineBand {
+            reach: reach.max(0.01),
+            rest: rest.clamp(0., 0.95),
+        };
+        self
+    }
 }
 
 /// How much of the shine a letter `at` of the way along the line takes
-/// when the band is `phase` of the way through its pass.
-fn shine_level(at: f32, phase: f32) -> f32 {
-    // The band enters and leaves past the ends of the line.
-    const REACH: f32 = 0.3;
-    let head = -REACH + phase * (1. + 2. * REACH);
-    crate::ui::motion::smoothstep((1. - (at - head).abs() / REACH).max(0.))
+/// when the cycle is `phase` of the way through.
+fn shine_level(at: f32, phase: f32, band: ShineBand) -> f32 {
+    let pass = phase / (1. - band.rest);
+    if pass >= 1. {
+        return 0.;
+    }
+    // The band enters and leaves past the ends of the line, so it is
+    // off the line at both ends of its pass and a rest adds no snap.
+    let head = -band.reach + pass * (1. + 2. * band.reach);
+    crate::ui::motion::smoothstep((1. - (at - head).abs() / band.reach).max(0.))
 }
 
 /// One letter and where it sits from the line's start.
@@ -322,6 +358,7 @@ impl Element for MorphText {
             .shine
             .filter(|_| !crate::ui::motion::loops_paused(window, cx))
             .map(|(cycle, color)| (crate::ui::motion::phase(cycle), color));
+        let band = self.shine_band;
         let animating = window.with_element_state::<State, _>(id, |state, window| {
             let state = state.unwrap_or_default();
             let progress = state.progress(Instant::now());
@@ -330,7 +367,7 @@ impl Element for MorphText {
             // A letter `x` along the line takes the shine where the band is.
             let tint = |x: Pixels| match shine {
                 Some((phase, shine)) if state.width > px(0.) => {
-                    mix(color, shine, shine_level(x / state.width, phase))
+                    mix(color, shine, shine_level(x / state.width, phase, band))
                 }
                 _ => color,
             };
@@ -466,5 +503,25 @@ mod tests {
                 .all(|pair| pair[0].0 < pair[1].0 && pair[0].1 < pair[1].1)
         );
         assert!(common_letters(&letters("Low"), &letters("Off")).is_empty());
+    }
+
+    #[test]
+    fn a_resting_band_leaves_the_line_and_returns_without_a_snap() {
+        let band = ShineBand {
+            reach: 0.55,
+            rest: 0.3,
+        };
+        // Off the whole line from the end of the pass through the rest,
+        // and at the start of the next pass, so the loop point is dark.
+        for at in [0., 0.5, 1.] {
+            assert_eq!(shine_level(at, 0., band), 0.);
+            assert_eq!(shine_level(at, 0.7, band), 0.);
+            assert_eq!(shine_level(at, 0.85, band), 0.);
+            assert!(shine_level(at, 0.6999, band) < 0.01);
+        }
+        // Halfway through the pass the band sits on the middle of the line.
+        assert!((shine_level(0.5, 0.35, band) - 1.).abs() < 1e-4);
+        // Without a rest the thinking line's band never pauses.
+        assert!(shine_level(1., 0.95, ShineBand::default()) > 0.);
     }
 }

@@ -2506,7 +2506,6 @@ impl Sidebar {
                                     task_title(
                                         &task.title,
                                         task.activity == Some(SessionActivity::Running),
-                                        selected,
                                     ),
                                     hover_group,
                                     row_bg,

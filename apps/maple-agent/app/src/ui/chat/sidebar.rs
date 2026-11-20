@@ -4330,11 +4330,7 @@ impl Sidebar {
                     .map(|column| match rename_field {
                         Some(field) => column.child(field),
                         None => column.child(row_line(
-                            task_title(
-                                &row.title,
-                                activity == Some(SessionActivity::Running),
-                                is_selected,
-                            ),
+                            task_title(&row.title, activity == Some(SessionActivity::Running)),
                             hover_group,
                             row_bg,
                             hover_bg,
@@ -4554,48 +4550,45 @@ fn row_fade_background(color: u32) -> gpui::Background {
     )
 }
 
-/// One pass of a running task's shine across its title: the pace of the
-/// transcript's "Maple is thinking" line, so the two read as one signal.
-const TITLE_SHINE: Duration = Duration::from_millis(1900);
+/// One cycle of a running task's shine: a soft band crosses the title,
+/// then rests off it, twice the dot's breath so the two stay in step.
+const TITLE_SHINE: Duration = Duration::from_millis(4800);
+/// The shine's half-width, as a share of the title, and the share of
+/// [`TITLE_SHINE`] it rests between passes.
+const TITLE_SHINE_REACH: f32 = 0.55;
+const TITLE_SHINE_REST: f32 = 0.3;
 
-/// A task's title. While the task runs, a brighter band sweeps across the
-/// words, the transcript's thinking shine, and the words rest a step
-/// dimmer under it as the thinking line's do: secondary ink on a selected
-/// row, muted otherwise, as the row's metadata. The band holds still when
+/// A task's title. While the task runs on dark, a soft brighter band
+/// crosses the words, then rests; the words keep the row's own ink, so
+/// a running title reads as plainly as any other. Light has no ink
+/// brighter than its text, so there the title holds still and the
+/// breathing dot carries the state alone. The band holds still when
 /// loops do, under reduced motion and in a background window.
-fn task_title(title: &SharedString, running: bool, selected: bool) -> AnyElement {
-    if !running {
+fn task_title(title: &SharedString, running: bool) -> AnyElement {
+    if !running || theme::is_light() {
         return title.clone().into_any_element();
     }
     morph_text("task-title", title.clone())
-        .color(gpui::rgb(if selected {
-            theme::text_secondary()
-        } else {
-            theme::text_muted()
-        }))
-        .shine(TITLE_SHINE, gpui::rgb(theme::text_heading()))
+        .shine(TITLE_SHINE, gpui::rgb(theme::sidebar_running_shine()))
+        .shine_band(TITLE_SHINE_REACH, TITLE_SHINE_REST)
         .into_any_element()
 }
 
-/// One breath of the waiting mark's halo: slower than the title's shine,
-/// so a task that needs you reads as calm rather than urgent. The fade runs
-/// on the shared low-rate clock, where a fade reads smooth.
-const NEEDS_YOU_BREATH: Duration = Duration::from_millis(2400);
+/// One breath of the running dot: calm, so a sidebar of running tasks
+/// does not flicker. The fade runs on the shared low-rate clock, where a
+/// fade reads smooth.
+const RUNNING_BREATH: Duration = Duration::from_millis(2400);
 
-/// A coral dot in an edged coral halo while a question waits, an alert
-/// once a run failed unseen, and a plain green dot once one completed
-/// unseen. The halo's edge keeps the waiting and finished marks apart by
-/// shape, not by colour alone, on every row fill, and the halo breathes
-/// (see [`NEEDS_YOU_BREATH`]) so a waiting task draws the eye. The coral is
-/// the ink the transcript's line rests in while Maple waits on you. A
-/// running task shows nothing here: its title shines instead (see
-/// [`task_title`]).
-/// Every state sits centered in one box the size of the largest, which a
-/// running row keeps empty, so the title's width stays put as states
-/// change, and one state cross-fades into the next over
-/// [`motion::TOGGLE`]. The box is keyed by `spinner_id`, which names the
-/// task, so an indicator that first appears (a list that loads, a row that
-/// scrolls in) shows its state at once.
+/// A grey dot that breathes while the task runs, a coral reply bubble
+/// while a question waits, an alert once a run failed unseen, and a green
+/// dot once one completed unseen. The marks that ask for you are line
+/// icons and the passive ones are dots, so they differ by shape and not
+/// by colour alone. Every state sits centered in one box the size of the
+/// largest, so the title's width stays put as states change, and one
+/// state cross-fades into the next over [`motion::TOGGLE`]. The box is
+/// keyed by `spinner_id`, which names the task, so an indicator that
+/// first appears (a list that loads, a row that scrolls in) shows its
+/// state at once.
 fn activity_indicator(spinner_id: &SharedString, activity: SessionActivity) -> AnyElement {
     let layer = |name: &'static str, state: SessionActivity, glyph: fn() -> AnyElement| {
         motion::animated(
@@ -4618,23 +4611,19 @@ fn activity_indicator(spinner_id: &SharedString, activity: SessionActivity) -> A
             },
         )
     };
-    fn needs_you() -> AnyElement {
-        motion::ticker("needs-you-breath", NEEDS_YOU_BREATH, |phase| {
-            let coral = gpui::rgb(theme::accent_ink());
-            // Centred on the resting look, so a paused loop's rest frame
-            // (phase 0, the wave's midpoint) is the halo as it stands still.
-            let fill = motion::pulse(phase, 0., 0.16, 0.40);
-            let edge = motion::pulse(phase, 0., 0.5, 0.9);
+    fn running() -> AnyElement {
+        motion::ticker("running-breath", RUNNING_BREATH, |phase| {
+            let grey = gpui::rgb(theme::sidebar_running());
+            // Phase 0 is the full dot, so a paused loop rests on it.
+            let breath = motion::pulse(phase, 0.25, 0., 1.);
             div()
-                .size(px(13.))
+                .size(px(8.))
                 .rounded_full()
-                .bg(coral.alpha(fill))
-                .border_1()
-                .border_color(coral.alpha(edge))
-                .flex()
-                .items_center()
-                .justify_center()
-                .child(div().size(px(5.)).rounded_full().bg(coral))
+                .bg(grey.alpha(0.5 + 0.5 * breath))
+                .shadow(vec![
+                    gpui::BoxShadow::new(px(0.), px(0.), grey.alpha(0.3 * breath).into())
+                        .blur_radius(px(4.)),
+                ])
                 .into_any_element()
         })
         .into_any_element()
@@ -4644,7 +4633,10 @@ fn activity_indicator(spinner_id: &SharedString, activity: SessionActivity) -> A
         .relative()
         .size(px(13.))
         .flex_none()
-        .child(layer("needs-you", SessionActivity::NeedsYou, needs_you))
+        .child(layer("running", SessionActivity::Running, running))
+        .child(layer("needs-you", SessionActivity::NeedsYou, || {
+            icon("message-square", px(13.), theme::accent_ink()).into_any_element()
+        }))
         .child(layer("failed", SessionActivity::Failed, || {
             icon("circle-alert", px(13.), theme::status_error()).into_any_element()
         }))
@@ -4652,7 +4644,7 @@ fn activity_indicator(spinner_id: &SharedString, activity: SessionActivity) -> A
             div()
                 .size(px(8.))
                 .rounded_full()
-                .bg(gpui::rgb(theme::status_success()))
+                .bg(gpui::rgb(theme::sidebar_finished()))
                 .into_any_element()
         }))
         .into_any_element()
