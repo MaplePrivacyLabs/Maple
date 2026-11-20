@@ -26,10 +26,7 @@ async fn assert_client_app_gateway_roundtrip(
                 // Attribution is telemetry only: transport credential identity
                 // and kind must survive unchanged, including an absent credential.
                 assert!(request.extensions().get::<Credential>() == expected_credential.as_ref());
-                assert!(request
-                    .extensions()
-                    .get::<TransportSession>()
-                    .is_some_and(TransportSession::is_v2));
+                assert!(request.extensions().get::<TransportSession>().is_some());
                 (StatusCode::OK, "attribution-inspected")
             }
         }),

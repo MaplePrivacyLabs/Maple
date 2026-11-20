@@ -20,10 +20,12 @@ not change the shipped Maple application identity.
 | [`docs/`](docs/) | Shared deployment documentation |
 | [`scripts/`](scripts/) and [`.github/workflows/`](.github/workflows/) | Shared validation and release entry points |
 
-The backend import and legacy PCR publication contract are recorded in
+The backend import is recorded in
 [the backend migration note](docs/opensecret-import.md). The original
-[OpenSecret repository](https://github.com/OpenSecretCloud/opensecret) remains
-available for installed clients' signed PCR histories. The GPUI import history
+[OpenSecret repository](https://github.com/OpenSecretCloud/opensecret) stays
+public as history; its signed PCR copy is retired and gets no new approvals
+([signed PCR files](services/opensecret/docs/pcr-compatibility.md)).
+The GPUI import history
 and upstream follow-up branches are recorded in
 [the Agent migration note](docs/maple-agent-import.md).
 

@@ -286,9 +286,6 @@ async fn register(
     Extension(user): Extension<User>,
     Decrypted(request): Decrypted<RegisterRemoteDevice>,
 ) -> Result<Response, ApiError> {
-    if !session.is_v2() {
-        return Err(ApiError::BadRequest);
-    }
     let worker = state.clone();
     let value = tokio::task::spawn_blocking(move || register_inner(&worker, &user, request))
         .await
@@ -301,9 +298,6 @@ async fn list(
     Extension(session): Extension<TransportSession>,
     Extension(user): Extension<User>,
 ) -> Result<Response, ApiError> {
-    if !session.is_v2() {
-        return Err(ApiError::BadRequest);
-    }
     let worker = state.clone();
     let devices = tokio::task::spawn_blocking(move || {
         let now = Utc::now().timestamp();
@@ -404,9 +398,6 @@ async fn admit(
     Extension(user): Extension<User>,
     Decrypted(request): Decrypted<RemoteAdmissionRequest>,
 ) -> Result<Response, ApiError> {
-    if !session.is_v2() {
-        return Err(ApiError::BadRequest);
-    }
     let worker = state.clone();
     let value = tokio::task::spawn_blocking(move || admit_inner(&worker, &user, request))
         .await
@@ -420,9 +411,6 @@ async fn check(
     Extension(user): Extension<User>,
     Decrypted(request): Decrypted<CheckRemoteAdmission>,
 ) -> Result<Response, ApiError> {
-    if !session.is_v2() {
-        return Err(ApiError::BadRequest);
-    }
     let worker = state.clone();
     let valid = tokio::task::spawn_blocking(move || {
         let id = admission_id(&request.handle)?;

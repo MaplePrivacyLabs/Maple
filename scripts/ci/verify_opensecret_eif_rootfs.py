@@ -300,8 +300,11 @@ def verify_candidate(mode: str, candidate: Path, source_sha: str, openssl: str,
     pcr_sha = sha256_file(candidate / "pcr.json")
     require(eif_sha == sha256_file(eif_output / "image.eif"), "candidate EIF differs from derivation output")
     require(pcr_sha == sha256_file(eif_output / "pcr.json"), "candidate PCR differs from derivation output")
+    handoff_sha = sha256_file(candidate / "handoff.json")
+    # The build script's exact output: the attestation covers all three files.
     sums = (candidate / "SHA256SUMS").read_text()
-    require(sums == f"{eif_sha}  image.eif\n{pcr_sha}  pcr.json\n", "candidate SHA256SUMS mismatch")
+    require(sums == f"{eif_sha}  image.eif\n{pcr_sha}  pcr.json\n{handoff_sha}  handoff.json\n",
+            "candidate SHA256SUMS mismatch")
     pcr = json.loads((candidate / "pcr.json").read_text())
     require(isinstance(pcr, dict) and set(pcr) == {"HashAlgorithm", "PCR0", "PCR1", "PCR2"},
             "candidate PCR JSON has unexpected fields")
@@ -310,7 +313,9 @@ def verify_candidate(mode: str, candidate: Path, source_sha: str, openssl: str,
         for key in ("PCR0", "PCR1", "PCR2")
     ), "candidate measurements are malformed")
     handoff = json.loads((candidate / "handoff.json").read_text())
-    require(isinstance(handoff, dict) and handoff.get("environment") == mode
+    require(isinstance(handoff, dict)
+            and set(handoff) == {"environment", "source_sha", "eif_sha256", "measurements", "approval_needed"}
+            and handoff.get("environment") == mode
             and handoff.get("source_sha") == source_sha
             and handoff.get("eif_sha256") == eif_sha
             and handoff.get("measurements") == pcr,

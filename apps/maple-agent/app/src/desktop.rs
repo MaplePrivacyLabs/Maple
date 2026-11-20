@@ -2482,6 +2482,8 @@ mod local_api_tests;
 #[cfg(target_os = "macos")]
 mod native_quit;
 #[cfg(target_os = "macos")]
+mod native_redraw;
+#[cfg(target_os = "macos")]
 mod native_window;
 
 fn persistence_feedback_message(
@@ -4607,6 +4609,12 @@ pub fn run() {
                 #[cfg(target_os = "windows")]
                 update_restart_pending: Default::default(),
             });
+            // Recovery for windows that stop painting after a display
+            // change (issue 1640); without it the app still works.
+            #[cfg(target_os = "macos")]
+            if let Err(error) = native_redraw::install(cx) {
+                log::warn!("display change redraw is unavailable: {error}");
+            }
             #[cfg(target_os = "macos")]
             if let Err(error) = native_quit::install(cx) {
                 // This view has no encryption controls and cannot close or

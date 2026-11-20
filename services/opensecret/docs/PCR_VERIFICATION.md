@@ -2,9 +2,9 @@
 
 This document describes the PCR (Platform Configuration Register) verification system used to validate Nitro Enclave measurements.
 
-For Maple operations, follow the [manual PCR compatibility procedure](pcr-compatibility.md).
+For Maple operations, follow the [signed PCR procedure](pcr-compatibility.md).
 It preserves the existing verification key and publishes reviewed signed files
-to both the monorepo and the legacy repository before a deployment needs them.
+in the monorepo before a deployment needs them.
 The examples below explain the format and an independent deployment's initial
 setup; generating a new key is not part of routine Maple PCR updates. The SDKs
 already implement verification, so clients should use their supported APIs.

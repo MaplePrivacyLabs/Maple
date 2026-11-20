@@ -21,8 +21,7 @@ The Continuum proxy deliberately has no shared prompt-cache default.
 OpenSecret injects user-bound `cache_salt` values into completion requests;
 explicit salts enable reuse without `--sharedPromptCache`. Do not add a
 proxy-wide salt to the launch command. See the
-[provider cache contract](transport-v2-protocol.md#provider-cache-root) for
-V1/V2 scope and restart behavior.
+[provider cache contract](transport-v2-protocol.md#provider-cache-root).
 
 ## One-time setup
 

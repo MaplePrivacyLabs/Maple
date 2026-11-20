@@ -924,7 +924,6 @@ fn opensecret_error_kind_message(error: maple_sdk::Error) -> String {
             ATTESTATION_VERIFICATION_ERROR_MESSAGE.to_string()
         }
         maple_sdk::Error::Session(_)
-        | maple_sdk::Error::KeyExchange(_)
         | maple_sdk::Error::Encryption(_)
         | maple_sdk::Error::Decryption(_)
         | maple_sdk::Error::InvalidResponse(_)
@@ -1067,7 +1066,6 @@ pub(crate) fn opensecret_error_category(error: &maple_sdk::Error) -> &'static st
         maple_sdk::Error::Crypto(_) => "crypto",
         maple_sdk::Error::AttestationVerificationFailed(_) => "attestation",
         maple_sdk::Error::Session(_) => "session",
-        maple_sdk::Error::KeyExchange(_) => "key_exchange",
         maple_sdk::Error::Encryption(_) => "encryption",
         maple_sdk::Error::Decryption(_) => "decryption",
         maple_sdk::Error::Authentication(_) => "authentication",

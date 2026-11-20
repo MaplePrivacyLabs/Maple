@@ -1279,5 +1279,12 @@
     "PCR1": "e83dc536d4cf82daf0e0821e7fdbddf25cd76090602cb67bef7c9d5ab2914417ee6a94bd0c9c1e7ed15a3c3c3bfcc0a3",
     "timestamp": 1794952722,
     "signature": "hPm6MAY30sL7ezyb7NC/kBBFVAIb/GS9qmLT2GTLSyAOJ+CVz1YLvaMk5SQWAuXg5AhP3oYkJBDsWLNaCVwq9jBej8cNySaCgwponAYbxKgvfh6UH1uy46qbYD2YasKd"
+  },
+  {
+    "PCR2": "b3d544ecb79162c6d78dd0c38bf17e99e873dc40d16bcde72125d0362a20e5633697070e3144875ed357b5e36205ed8e",
+    "PCR0": "6cfb8b4d03c028f3dfd140368b644ae6886a700314933add0db1b232c1cc375da741ac117b8009100bf3aa8c1115526e",
+    "PCR1": "e83dc536d4cf82daf0e0821e7fdbddf25cd76090602cb67bef7c9d5ab2914417ee6a94bd0c9c1e7ed15a3c3c3bfcc0a3",
+    "timestamp": 1795063404,
+    "signature": "cdYECbSCVL2ITAvr5EbBKnzie7VL3BcbBoUekJ8LKvIhHrREFHrmzyBZJvbSDEEYWgydsO8GfE5O0StykicO+SKajb+zEmDQrkP6N7jbIW4SzARFbPpd+WkeqUaci455"
   }
 ]

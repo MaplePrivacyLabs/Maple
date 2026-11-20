@@ -64,6 +64,8 @@ fn summary(entry: &McpCatalogEntry) -> gpui::SharedString {
         "zapier" => tr("settings-catalog-summary-zapier"),
         "vana" => tr("settings-catalog-summary-vana"),
         "home-assistant" => tr("settings-catalog-summary-home-assistant"),
+        "privacy" => tr("settings-catalog-summary-privacy"),
+        "ynab" => tr("settings-catalog-summary-ynab"),
         "atlassian" => tr("settings-catalog-summary-atlassian"),
         "linear" => tr("settings-catalog-summary-linear"),
         "monday" => tr("settings-catalog-summary-monday"),

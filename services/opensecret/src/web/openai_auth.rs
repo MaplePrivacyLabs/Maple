@@ -1,13 +1,11 @@
-use crate::jwt::{
-    validate_access_token_for_auth, AuthContext, TRANSPORT_V2_USER_ACCESS, USER_ACCESS,
-};
+use crate::jwt::{validate_access_token_for_auth, AuthContext, TRANSPORT_V2_USER_ACCESS};
 use crate::transport_v2::envelope::{Credential, CredentialKind};
 use crate::web::encryption_middleware::TransportSession;
 use crate::ApiError;
 use axum::{
     body::Body,
     extract::State,
-    http::{header, Request},
+    http::Request,
     middleware::Next,
     response::{IntoResponse, Response},
 };
@@ -32,34 +30,20 @@ pub async fn validate_openai_auth(
     mut req: Request<Body>,
     next: Next,
 ) -> Response {
-    let is_transport_v2 = req
-        .extensions()
-        .get::<TransportSession>()
-        .is_some_and(TransportSession::is_v2);
-    let presented = if is_transport_v2 {
-        match req.extensions().get::<Credential>() {
-            Some(credential) if credential.kind() == CredentialKind::ApiKey => {
-                PresentedCredential::ApiKey(credential.value())
-            }
-            Some(credential) if credential.kind() == CredentialKind::Bearer => {
-                PresentedCredential::Bearer(credential.value())
-            }
-            _ => return ApiError::InvalidJwt.into_response(),
+    // Credentials arrive only inside the Transport V2 envelope. A request
+    // that did not come through the gateway has no transport session, and
+    // outer HTTP headers are never read.
+    if req.extensions().get::<TransportSession>().is_none() {
+        return ApiError::InvalidJwt.into_response();
+    }
+    let presented = match req.extensions().get::<Credential>() {
+        Some(credential) if credential.kind() == CredentialKind::ApiKey => {
+            PresentedCredential::ApiKey(credential.value())
         }
-    } else {
-        let Some(value) = req
-            .headers()
-            .get(header::AUTHORIZATION)
-            .and_then(|value| value.to_str().ok())
-            .and_then(|value| value.strip_prefix("Bearer "))
-        else {
-            return ApiError::InvalidJwt.into_response();
-        };
-        if value.contains('.') {
-            PresentedCredential::Bearer(value)
-        } else {
-            PresentedCredential::ApiKey(value)
+        Some(credential) if credential.kind() == CredentialKind::Bearer => {
+            PresentedCredential::Bearer(credential.value())
         }
+        _ => return ApiError::InvalidJwt.into_response(),
     };
 
     let token = match presented {
@@ -84,26 +68,16 @@ pub async fn validate_openai_auth(
                     }
                 }
             }
-            Err(_) if is_transport_v2 => return ApiError::Unauthorized.into_response(),
-            // Preserve V1's legacy behavior: a non-UUID bearer without dots
-            // falls through to JWT validation and returns InvalidJwt.
-            Err(_) => api_key,
+            Err(_) => return ApiError::Unauthorized.into_response(),
         },
         PresentedCredential::Bearer(token) => token,
     };
 
-    let (claims, access_token_expired) = match validate_access_token_for_auth(
-        token,
-        &data,
-        if is_transport_v2 {
-            TRANSPORT_V2_USER_ACCESS
-        } else {
-            USER_ACCESS
-        },
-    ) {
-        Ok(validation) => validation,
-        Err(_) => return ApiError::InvalidJwt.into_response(),
-    };
+    let (claims, access_token_expired) =
+        match validate_access_token_for_auth(token, &data, TRANSPORT_V2_USER_ACCESS) {
+            Ok(validation) => validation,
+            Err(_) => return ApiError::InvalidJwt.into_response(),
+        };
 
     let auth_context = match AuthContext::from_claims(&claims) {
         Ok(auth_context) => auth_context,
@@ -157,16 +131,7 @@ pub async fn validate_optional_openai_auth(
     req: Request<Body>,
     next: Next,
 ) -> Response {
-    let is_transport_v2 = req
-        .extensions()
-        .get::<TransportSession>()
-        .is_some_and(TransportSession::is_v2);
-    let has_credential = if is_transport_v2 {
-        req.extensions().get::<Credential>().is_some()
-    } else {
-        req.headers().contains_key(header::AUTHORIZATION)
-    };
-    if !has_credential {
+    if req.extensions().get::<Credential>().is_none() {
         return next.run(req).await;
     }
 

@@ -795,7 +795,16 @@ impl AcpConnectionContext {
                     "reasoningEfforts": state
                         .levels
                         .iter()
-                        .map(|level| serde_json::json!({"value": level.as_str()}))
+                        // `id` and `label` as well as `value`: clients
+                        // differ on which key they read, and one that
+                        // requires an absent key drops the whole list.
+                        .map(|level| {
+                            serde_json::json!({
+                                "id": level.as_str(),
+                                "value": level.as_str(),
+                                "label": level.as_str(),
+                            })
+                        })
                         .collect::<Vec<_>>(),
                     "reasoningEffort": state.current.as_str(),
                 }),

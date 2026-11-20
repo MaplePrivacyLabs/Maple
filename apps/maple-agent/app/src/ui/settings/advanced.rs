@@ -52,9 +52,13 @@ impl AdvancedState {
                             window.focus(&application_focus, cx)
                         })
                         // Enter submits once the word is right; a wrong word
-                        // shows the notice, as the button does.
-                        .on_enter(move |_text, _window, cx| {
-                            let _ = screen.update(cx, |screen, cx| screen.erase_local_store(cx));
+                        // shows the notice, as the button does. The handler
+                        // passes its own text: this field cannot be read
+                        // while it handles the key.
+                        .on_enter(move |confirmation, _window, cx| {
+                            let _ = screen.update(cx, |screen, cx| {
+                                screen.erase_local_store_with(confirmation, cx)
+                            });
                         })
                 })
             },
@@ -488,11 +492,17 @@ impl SettingsScreen {
         )
     }
 
+    /// Erase with the word now in the field. Not for the field's own Enter
+    /// handler, which must pass its text to `erase_local_store_with`.
     pub(super) fn erase_local_store(&mut self, cx: &mut Context<Self>) {
+        let confirmation = self.advanced.confirmation.read(cx).text();
+        self.erase_local_store_with(confirmation, cx);
+    }
+
+    fn erase_local_store_with(&mut self, confirmation: String, cx: &mut Context<Self>) {
         if self.advanced.busy || !self.advanced.available() {
             return;
         }
-        let confirmation = self.advanced.confirmation.read(cx).text();
         if confirmation != "ERASE" {
             self.advanced.notice = Some(UiText::key(
                 "settings-advanced-type-erase-exactly-to-continue",
