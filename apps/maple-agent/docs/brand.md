@@ -191,6 +191,8 @@ the dark background.
 | `status_success` | `#7b8f4a` | `#8fa35a` | success |
 | `status_warning` | `#b45309` Amber 700 | `#d4a35a` | warning; the kit's `#d4a35a` is 2.3:1 on white |
 | `status_error` | `#d05e41` | `#e07052` | error |
+| `sidebar_running`, `sidebar_running_shine` | `#8c8d96` Pebble 500 / no shine | `#babccb` Pebble 300 / `#f7f7f9` | a running task's breathing dot, and the band across its title on dark |
+| `sidebar_finished` | `#18a44e` | `#4fc298` | the dot of a task that finished unseen |
 | `display_text` | `#474854` Pebble 800 | `#babccb` Pebble 300 | Array titles; large type can sit dimmer than body |
 
 The 60 / 30 / 10 rule maps to: workspace and transcript on `bg_app`;

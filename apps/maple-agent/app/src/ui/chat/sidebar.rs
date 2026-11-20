@@ -78,7 +78,6 @@ pub(crate) struct BrowseState {
 use std::cell::RefCell;
 use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
-use std::time::Duration;
 
 use gpui::{
     AnyElement, AppContext, Context, Div, Entity, EventEmitter, Focusable, SharedString,
@@ -95,6 +94,7 @@ use crate::backend::AgentBackend;
 use crate::settings::{SidebarGroup, SidebarItemKey, SidebarOrder, SidebarSort, SidebarView};
 use crate::ui::i18n::{MessageCache, UiText, tr, tr_args};
 use crate::ui::icons::{icon, wordmark};
+use crate::ui::morph_text::morph_text;
 use crate::ui::motion;
 use crate::ui::popup::{Menu, MenuItem, Placement, Popup};
 use crate::ui::text_input::TextInput;
@@ -4000,6 +4000,7 @@ impl Sidebar {
                                 &root.row_group,
                                 "square-pen",
                                 tr("chat-new-task"),
+                                false,
                             )
                             .aria_label(root.new_task_label.clone())
                             .tooltip(widgets::tooltip(root.new_task_label.clone(), None))
@@ -4164,10 +4165,15 @@ impl Sidebar {
         cx: &mut Context<Self>,
     ) -> Div {
         let (pinned, rung) = state;
+        // The menu opens below the row and takes the pointer's hover with
+        // it; the strip keeps its fill so the open button still covers the
+        // title, as a project header's does.
+        let open = self.popup.is_open(&target.popup_key());
         let rename = target.clone();
         let advance = target.clone();
         let step = rung.step();
         hover_actions(&row.group, hover_bg)
+            .when(open, |strip| strip.bg(gpui::rgb(hover_bg)))
             .pl_0()
             .when(pinned, |overlay| overlay.right(px(26.)))
             .when(!pinned, |overlay| overlay.right_0().rounded_r(ROW_RADIUS))
@@ -4179,6 +4185,7 @@ impl Sidebar {
                     .bottom_0()
                     .right_full()
                     .w(ROW_FADE)
+                    .when(open, |fade| fade.bg(row_fade_background(hover_bg)))
                     .group_hover(row.group.clone(), |style| {
                         style.bg(row_fade_background(hover_bg))
                     }),
@@ -4261,7 +4268,12 @@ impl Sidebar {
         } else {
             theme::bg_sidebar_row_hover()
         };
-        let row_bg = if is_selected {
+        // An open menu holds the row in its hover fill, as a project
+        // header's does, so the action strip over it never shows as a patch.
+        let menu_open = self.popup.is_open(&SidebarPopup::Task(row.id.clone()));
+        let row_bg = if menu_open {
+            hover_bg
+        } else if is_selected {
             theme::bg_sidebar_row_selected()
         } else {
             theme::bg_sidebar()
@@ -4277,7 +4289,10 @@ impl Sidebar {
             .role(gpui::Role::ListBoxOption)
             .accessibility_id(row.id.to_string())
             .aria_label(row.title.clone())
-            .aria_description(row.metadata.clone())
+            .when_some(
+                self.activity_description(activity, &row.metadata),
+                |row, text| row.aria_description(text),
+            )
             .aria_selected(is_selected)
             .when(application_selected, |row| row.aria_active_descendant())
             .group(row.group.clone())
@@ -4297,6 +4312,7 @@ impl Sidebar {
             // no hover actions over it, so the edit is plain to see.
             .hover_bg(gpui::rgb(hover_bg))
             .when(renaming || self.dragging, |row| row.highlighted(false))
+            .when(menu_open, |row| row.highlighted(true))
             .when(!renaming && !self.dragging, |row| {
                 row.hover(|style| style.cursor_pointer())
             })
@@ -4312,9 +4328,12 @@ impl Sidebar {
                     .flex_col()
                     .map(|column| match rename_field {
                         Some(field) => column.child(field),
-                        None => {
-                            column.child(row_line(row.title.clone(), hover_group, row_bg, hover_bg))
-                        }
+                        None => column.child(row_line(
+                            task_title(&row.title, activity == Some(SessionActivity::Running)),
+                            hover_group,
+                            row_bg,
+                            hover_bg,
+                        )),
                     })
                     .when(self.show_task_metadata(is_pinned, archived), |column| {
                         column.child(
@@ -4342,8 +4361,9 @@ impl Sidebar {
                         .items_center()
                         .justify_center()
                         .rounded(theme::RADIUS_SM)
-                        .hover_bg(gpui::rgb(theme::bg_sidebar_row_selected()))
+                        .hover_bg(theme::overlay_hover())
                         .hover(|style| style.cursor_pointer())
+                        .active(|style| style.bg(theme::overlay_press()))
                         .tooltip(widgets::tooltip(tr("chat-unpin"), None))
                         .on_click(cx.listener(move |this, _event, _window, cx| {
                             cx.stop_propagation();
@@ -4493,7 +4513,7 @@ fn one_line(text: &str) -> SharedString {
 
 /// Fade a line into its row background; renames and drags omit the hover group.
 fn row_line(
-    text: SharedString,
+    text: impl IntoElement,
     hover_group: Option<&SharedString>,
     row_bg: u32,
     hover_bg: u32,
@@ -4529,23 +4549,46 @@ fn row_fade_background(color: u32) -> gpui::Background {
     )
 }
 
-/// One breath of the running ring's dot.
-const RUNNING_BREATH: Duration = Duration::from_millis(1600);
+/// The running shine's half-width, as a share of the title, and the share of
+/// [`motion::RUNNING_SHINE`] it rests between passes.
+const TITLE_SHINE_REACH: f32 = 0.55;
+const TITLE_SHINE_REST: f32 = 0.3;
 
-/// A coral dot while a question waits, a ring with a breathing dot while
-/// the task runs, an alert once a run failed unseen, and a green dot once
-/// one completed unseen. The two dots differ by color; the ring and the
-/// alert differ by shape. The ring runs on the shared low-rate clock, so
-/// any number of running rows cost one repaint per interval; `spinner_id`
-/// is prebuilt so render allocates nothing. Every state sits centered in
-/// one box the size of the largest, so the center stays put as states
-/// change, and one state cross-fades into the next over
-/// [`motion::TOGGLE`]. The box is keyed by `spinner_id`, which names the
-/// task, so an indicator that first appears (a list that loads, a row that
-/// scrolls in) shows its state at once.
+/// A task's title. While the task runs on dark, a soft brighter band
+/// crosses the words, then rests; the words keep the row's own ink, so
+/// a running title reads as plainly as any other. Light has no ink
+/// brighter than its text, so there the title holds still and the
+/// breathing dot carries the state alone. The band holds still when
+/// loops do, under reduced motion and in a background window.
+fn task_title(title: &SharedString, running: bool) -> AnyElement {
+    if !running || theme::is_light() {
+        return title.clone().into_any_element();
+    }
+    // A renamed or newly titled task swaps its words at once: a letter
+    // morph would break the title's shaping mid-run for nothing.
+    morph_text("task-title", title.clone())
+        .instant(true)
+        .shine(
+            motion::RUNNING_SHINE,
+            gpui::rgb(theme::sidebar_running_shine()),
+        )
+        .shine_band(TITLE_SHINE_REACH, TITLE_SHINE_REST)
+        .into_any_element()
+}
+
+/// A grey dot that breathes while the task runs, an amber reply bubble
+/// while a question waits (the colour of a pending state, apart from the
+/// failed alert's red), an alert once a run failed unseen, and a green dot
+/// once one completed unseen. The marks that ask for you are line icons
+/// and the passive ones are dots, so they differ by shape and not by
+/// colour alone. Every state sits centered in one box the size of the
+/// largest, so the title's width stays put as states change, and one
+/// state cross-fades into the next over [`motion::TOGGLE`]. The box is
+/// keyed by `spinner_id`, which names the task, so an indicator that
+/// first appears (a list that loads, a row that scrolls in) shows its
+/// state at once.
 fn activity_indicator(spinner_id: &SharedString, activity: SessionActivity) -> AnyElement {
-    let layer = |name: &'static str, state: SessionActivity| {
-        let spinner_id = spinner_id.clone();
+    let layer = |name: &'static str, state: SessionActivity, glyph: fn() -> AnyElement| {
         motion::animated(
             name,
             if activity == state { 1. } else { 0. },
@@ -4554,13 +4597,6 @@ fn activity_indicator(spinner_id: &SharedString, activity: SessionActivity) -> A
                 if shown <= 0. {
                     return div().into_any_element();
                 }
-                let dot = |color: u32| {
-                    div()
-                        .size(px(8.))
-                        .rounded_full()
-                        .bg(gpui::rgb(color))
-                        .into_any_element()
-                };
                 div()
                     .absolute()
                     .inset_0()
@@ -4568,53 +4604,83 @@ fn activity_indicator(spinner_id: &SharedString, activity: SessionActivity) -> A
                     .items_center()
                     .justify_center()
                     .opacity(shown)
-                    .child(match state {
-                        SessionActivity::NeedsYou => dot(theme::accent()),
-                        SessionActivity::Running => running_ring(spinner_id.clone()),
-                        SessionActivity::Failed => {
-                            icon("circle-alert", px(13.), theme::status_error()).into_any_element()
-                        }
-                        SessionActivity::CompletedUnread => dot(theme::status_success()),
-                    })
+                    .child(glyph())
                     .into_any_element()
             },
         )
     };
+    fn running() -> AnyElement {
+        motion::ticker("running-breath", motion::RUNNING_BREATH, |phase| {
+            let grey = gpui::rgb(theme::sidebar_running());
+            // Phase 0 is the full dot, so a paused loop rests on it.
+            let breath = motion::pulse(phase, 0.25, 0., 1.);
+            div()
+                .size(px(8.))
+                .rounded_full()
+                .bg(grey.alpha(0.5 + 0.5 * breath))
+                .shadow(vec![
+                    gpui::BoxShadow::new(px(0.), px(0.), grey.alpha(0.3 * breath).into())
+                        .blur_radius(px(4.)),
+                ])
+                .into_any_element()
+        })
+        .into_any_element()
+    }
     div()
         .id(spinner_id.clone())
         .relative()
         .size(px(13.))
         .flex_none()
-        .child(layer("needs-you", SessionActivity::NeedsYou))
-        .child(layer("running", SessionActivity::Running))
-        .child(layer("failed", SessionActivity::Failed))
-        .child(layer("completed", SessionActivity::CompletedUnread))
+        .child(layer("running", SessionActivity::Running, running))
+        .child(layer("needs-you", SessionActivity::NeedsYou, || {
+            icon("message-square", px(13.), theme::status_warning()).into_any_element()
+        }))
+        .child(layer("failed", SessionActivity::Failed, || {
+            icon("circle-alert", px(13.), theme::status_error()).into_any_element()
+        }))
+        .child(layer("completed", SessionActivity::CompletedUnread, || {
+            div()
+                .size(px(8.))
+                .rounded_full()
+                .bg(gpui::rgb(theme::sidebar_finished()))
+                .into_any_element()
+        }))
         .into_any_element()
 }
 
-/// The running state: a coral ring whose center dot fades in and out. A
-/// fade reads as smooth at the shared clock's low frame rate, where a
-/// turning arc steps visibly.
-fn running_ring(id: SharedString) -> AnyElement {
-    motion::ticker(id, RUNNING_BREATH, |phase| {
-        div()
-            .size(px(12.))
-            .flex()
-            .items_center()
-            .justify_center()
-            .rounded_full()
-            .border_1()
-            .border_color(gpui::rgb(theme::accent()))
-            .child(
-                div()
-                    .size(px(6.))
-                    .rounded_full()
-                    .bg(gpui::rgb(theme::accent()))
-                    .opacity(motion::pulse(phase, 0., 0.3, 1.)),
+impl Sidebar {
+    /// A task row's accessibility description: its status, which the
+    /// indicator and the title's shine only show, ahead of its project
+    /// details. Nothing when there is neither. Rows render on every shine
+    /// frame, so a cache hit borrows the details and allocates nothing.
+    pub(super) fn activity_description(
+        &self,
+        activity: Option<SessionActivity>,
+        details: &SharedString,
+    ) -> Option<SharedString> {
+        let Some(activity) = activity else {
+            return (!details.is_empty()).then(|| details.clone());
+        };
+        let key = match activity {
+            SessionActivity::Running => "chat-task-running",
+            SessionActivity::NeedsYou => "chat-task-needs-you",
+            SessionActivity::Failed => "chat-task-failed",
+            SessionActivity::CompletedUnread => "chat-task-finished-unseen",
+        };
+        if details.is_empty() {
+            return Some(tr(key));
+        }
+        Some(self.messages.computed(key, details, || {
+            let status = tr(key);
+            tr_args(
+                "chat-task-status-details",
+                [
+                    ("status", status.as_ref().into()),
+                    ("details", details.as_ref().into()),
+                ],
             )
-            .into_any_element()
-    })
-    .into_any_element()
+        }))
+    }
 }
 
 /// The strip over a row's end that holds its hover buttons, with the
@@ -4640,7 +4706,7 @@ pub(super) fn row_action(
     on_click: impl Fn(&gpui::ClickEvent, &mut Window, &mut gpui::App) + 'static,
 ) -> crate::ui::motion::HoverBackground {
     let label = label.into();
-    row_button(id, group, icon_name, label.clone())
+    row_button(id, group, icon_name, label.clone(), false)
         .tooltip(widgets::tooltip(label, None))
         .on_click(on_click)
 }
@@ -4654,11 +4720,7 @@ fn row_menu_button(
     open: bool,
 ) -> crate::ui::motion::HoverBackground {
     let label = label.into();
-    row_button(id, group, "ellipsis", label).when(open, |button| {
-        button
-            .opacity(1.)
-            .bg(gpui::rgb(theme::bg_sidebar_row_selected()))
-    })
+    row_button(id, group, "ellipsis", label, open).when(open, |button| button.opacity(1.))
 }
 
 /// An icon button of the Projects header. It stays pressed, without its
@@ -4692,11 +4754,16 @@ fn header_button(
 }
 
 /// The small icon button a sidebar row shows while it is hovered.
+/// `pressed` holds it in its press fill, under the pointer too, while its
+/// menu is open. Its fills are overlays, not solid colours: the row
+/// beneath may be resting, hovered, selected or both, and a hover and a
+/// press must read past each of them.
 fn row_button(
     id: SharedString,
     group: &SharedString,
     icon_name: &'static str,
     label: impl Into<SharedString>,
+    pressed: bool,
 ) -> crate::ui::motion::HoverBackground {
     let label = label.into();
     div()
@@ -4712,9 +4779,14 @@ fn row_button(
         .rounded(theme::RADIUS_SM)
         .opacity(0.)
         .group_hover(group.clone(), |style| style.opacity(1.))
-        .hover_bg(gpui::rgb(theme::bg_sidebar_row_selected()))
+        .when(pressed, |button| button.bg(theme::overlay_press()))
+        .hover_bg(if pressed {
+            theme::overlay_press()
+        } else {
+            theme::overlay_hover()
+        })
         .hover(|style| style.cursor_pointer())
-        .active(|style| style.bg(gpui::rgb(theme::border())))
+        .active(|style| style.bg(theme::overlay_press()))
         .child(icon(icon_name, px(14.), theme::text_secondary()))
 }
 
