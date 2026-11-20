@@ -870,7 +870,6 @@ mod tests {
         assert_eq!(prompt_token_budget("llama3-3-70b"), 131_072);
         assert_eq!(prompt_token_budget("glm-5-3"), 262_144);
         assert_eq!(prompt_token_budget("kimi-k3-1-pro"), 262_144);
-        assert_eq!(prompt_token_budget("kimi-k3-1-pro-uncensored"), 262_144);
         assert_eq!(prompt_token_budget("glm-5-3-flash"), 1_048_576);
         assert_eq!(prompt_token_budget("deepseek-v4-1-flash"), 1_048_576);
     }
@@ -2425,9 +2424,7 @@ mod tests {
             }),
         ];
 
-        // The uncensored checkpoint keeps Kimi's chat template, so it needs
-        // the same ids; its DeepSeek counterpart keeps the caller's.
-        let mut uncensored_kimi = messages.clone();
+        // The uncensored DeepSeek checkpoint keeps the caller's ids.
         let mut uncensored_deepseek = messages.clone();
         let untouched = messages.clone();
 
@@ -2438,16 +2435,6 @@ mod tests {
         let normalized_once = messages.clone();
         normalize_tool_call_ids_for_model(&mut messages, "kimi-k3-1-pro");
         assert_eq!(messages, normalized_once);
-
-        assert!(model_uses_kimi_tool_call_ids(
-            crate::model_config::KIMI_K3_1_PRO_UNCENSORED_MODEL_ID
-        ));
-        normalize_tool_call_ids_for_model(
-            &mut uncensored_kimi,
-            crate::model_config::KIMI_K3_1_PRO_UNCENSORED_MODEL_ID,
-        );
-        assert_eq!(uncensored_kimi, normalized_once);
-        assert!(tool_call_ids_are_kimi_compatible(&uncensored_kimi));
 
         normalize_tool_call_ids_for_model(
             &mut uncensored_deepseek,

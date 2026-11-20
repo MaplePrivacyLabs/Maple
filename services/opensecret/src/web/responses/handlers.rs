@@ -1302,28 +1302,26 @@ mod tests {
 
     #[test]
     fn test_apply_responses_model_defaults_preserves_kimi_reasoning_history() {
-        for model in ["kimi-k3-1-pro", "kimi-k3-1-pro-uncensored"] {
-            let mut chat_request = json!({
-                "model": model,
-                "chat_template_kwargs": {
-                    "foo": "bar"
-                }
-            });
+        let mut chat_request = json!({
+            "model": "kimi-k3-1-pro",
+            "chat_template_kwargs": {
+                "foo": "bar"
+            }
+        });
 
-            apply_responses_model_defaults(
-                &mut chat_request,
-                crate::model_config::model_config(model).responses,
-                model,
-                EffectiveReasoningEffort::Unchanged,
-            );
+        apply_responses_model_defaults(
+            &mut chat_request,
+            crate::model_config::model_config("kimi-k3-1-pro").responses,
+            "kimi-k3-1-pro",
+            EffectiveReasoningEffort::Unchanged,
+        );
 
-            assert_eq!(
-                chat_request["chat_template_kwargs"]["preserve_thinking"], true,
-                "{model}"
-            );
-            assert_eq!(chat_request["chat_template_kwargs"]["foo"], "bar");
-            assert!(chat_request.get("include_reasoning").is_none());
-        }
+        assert_eq!(
+            chat_request["chat_template_kwargs"]["preserve_thinking"],
+            true
+        );
+        assert_eq!(chat_request["chat_template_kwargs"]["foo"], "bar");
+        assert!(chat_request.get("include_reasoning").is_none());
     }
 
     #[test]
@@ -1542,7 +1540,6 @@ mod tests {
             "deepseek-v4-1-flash",
             "glm-5-3",
             "kimi-k3-1-pro",
-            "kimi-k3-1-pro-uncensored",
             "gpt-oss-120b",
         ] {
             for effort in [None, Some("low"), Some("high")] {
@@ -1636,10 +1633,9 @@ mod tests {
         for (model, effort) in [
             ("glm-5-3", "low"),
             ("glm-5-3-flash", "max"),
+            ("kimi-k3-1-pro", "low"),
             ("kimi-k3-1-pro", "high"),
-            ("kimi-k3-1-pro-uncensored", "low"),
-            ("kimi-k3-1-pro-uncensored", "high"),
-            ("kimi-k3-1-pro-uncensored", "max"),
+            ("kimi-k3-1-pro", "max"),
             ("deepseek-v4-1-flash", "xhigh"),
             ("gpt-oss-120b", "medium"),
         ] {
@@ -1712,24 +1708,8 @@ mod tests {
             ("glm-5-3", "none", ModelSelection::Explicit, false),
             ("glm-5-3", "medium", ModelSelection::Alias, true),
             ("kimi-k3-1-pro", "none", ModelSelection::Explicit, false),
-            (
-                "kimi-k3-1-pro-uncensored",
-                "none",
-                ModelSelection::Explicit,
-                false,
-            ),
-            (
-                "kimi-k3-1-pro-uncensored",
-                "medium",
-                ModelSelection::Explicit,
-                false,
-            ),
-            (
-                "kimi-k3-1-pro-uncensored",
-                "max",
-                ModelSelection::Explicit,
-                true,
-            ),
+            ("kimi-k3-1-pro", "medium", ModelSelection::Explicit, false),
+            ("kimi-k3-1-pro", "max", ModelSelection::Explicit, true),
             ("gpt-oss-120b", "max", ModelSelection::Explicit, false),
             ("gpt-oss-120b", "max", ModelSelection::Alias, true),
         ] {
@@ -3062,8 +3042,6 @@ mod tests {
             ("gemma4-31b", false, 1.0, 0.95, Some(64)),
             ("kimi-k3-1-pro", false, 1.0, 0.95, None),
             ("kimi-k3-1-pro", true, 1.0, 0.95, None),
-            ("kimi-k3-1-pro-uncensored", false, 1.0, 0.95, None),
-            ("kimi-k3-1-pro-uncensored", true, 1.0, 0.95, None),
             ("gpt-oss-120b", true, 1.0, 1.0, None),
             ("llama3-3-70b", false, 0.6, 0.9, None),
         ] {
@@ -3104,21 +3082,18 @@ mod tests {
                 Err(ApiError::BadRequest)
             ));
         }
-        for uncensored in [
-            crate::model_config::DEEPSEEK_V4_1_FLASH_UNCENSORED_MODEL_ID,
-            crate::model_config::KIMI_K3_1_PRO_UNCENSORED_MODEL_ID,
-        ] {
-            assert_eq!(
-                resolve_responses_model(uncensored, "tinfoil", ModelPlan::Paid).unwrap(),
-                uncensored
-            );
-            assert!(matches!(
-                resolve_responses_model(uncensored, "tinfoil", ModelPlan::Free),
-                Err(ApiError::ModelNotAvailableOnPlan)
-            ));
-        }
+        let uncensored = crate::model_config::DEEPSEEK_V4_1_FLASH_UNCENSORED_MODEL_ID;
+        assert_eq!(
+            resolve_responses_model(uncensored, "tinfoil", ModelPlan::Paid).unwrap(),
+            uncensored
+        );
         assert!(matches!(
-            resolve_responses_model("kimi-k3-1-pro-uncensored-v2", "tinfoil", ModelPlan::Paid),
+            resolve_responses_model(uncensored, "tinfoil", ModelPlan::Free),
+            Err(ApiError::ModelNotAvailableOnPlan)
+        ));
+        // A longer unknown name is not a public model, whatever it starts with.
+        assert!(matches!(
+            resolve_responses_model("kimi-k3-1-pro-v2", "tinfoil", ModelPlan::Paid),
             Err(ApiError::BadRequest)
         ));
         assert_eq!(
@@ -3423,20 +3398,20 @@ mod tests {
         }
     }
 
-    /// The complete model turn the dedicated node receives for the uncensored
-    /// Kimi model, before the send adds the backend-owned `cache_salt`.
+    /// The complete Kimi model turn, before the send adds the backend-owned
+    /// cache field. Dedicated i03 and shared Tinfoil receive the same turn.
     #[test]
-    fn uncensored_kimi_model_turn_matches_stock_kimi_except_for_its_name() {
+    fn kimi_model_turn_carries_its_sampling_reasoning_and_replayed_history() {
         let prompt = [
             json!({"role": "system", "content": "Be terse."}),
             json!({"role": "user", "content": "hello"}),
             json!({"role": "assistant", "content": "hi", "reasoning": "greet back"}),
             json!({"role": "user", "content": "again"}),
         ];
-        let turn = |model: &str, effort: Option<&str>, tools: bool| {
+        let turn = |effort: Option<&str>, tools: bool| {
             let mut body = match effort {
-                Some(effort) => responses_request_with_effort(model, effort),
-                None => responses_request_for_model(model),
+                Some(effort) => responses_request_with_effort("kimi-k3-1-pro", effort),
+                None => responses_request_for_model("kimi-k3-1-pro"),
             };
             body.max_output_tokens = Some(4096);
             if tools {
@@ -3446,11 +3421,10 @@ mod tests {
             build_model_turn_request(&body, &prompt, tools)
         };
 
-        let default = turn("kimi-k3-1-pro-uncensored", None, false);
         assert_eq!(
-            default,
+            turn(None, false),
             json!({
-                "model": "kimi-k3-1-pro-uncensored",
+                "model": "kimi-k3-1-pro",
                 "messages": prompt,
                 "max_tokens": 4096,
                 "stream": true,
@@ -3466,33 +3440,24 @@ mod tests {
 
         for effort in [None, Some("low"), Some("high"), Some("max")] {
             for tools in [false, true] {
-                let uncensored = turn("kimi-k3-1-pro-uncensored", effort, tools);
-                let mut stock = turn("kimi-k3-1-pro", effort, tools);
-                assert_eq!(stock["model"], "kimi-k3-1-pro");
-                stock["model"] = json!("kimi-k3-1-pro-uncensored");
-                assert_eq!(uncensored, stock, "{effort:?} tools={tools}");
+                let request = turn(effort, tools);
+                assert_eq!(request["model"], "kimi-k3-1-pro");
                 assert_eq!(
-                    uncensored
+                    request
                         .get("reasoning_effort")
                         .and_then(serde_json::Value::as_str),
                     effort
                 );
-                assert_eq!(uncensored.get("tools").is_some(), tools);
+                assert_eq!(request.get("tools").is_some(), tools);
                 // Replayed reasoning stays on the assistant message as `reasoning`.
-                assert_eq!(uncensored["messages"][2]["reasoning"], "greet back");
-                assert!(uncensored["messages"][2].get("reasoning_content").is_none());
+                assert_eq!(request["messages"][2]["reasoning"], "greet back");
+                assert!(request["messages"][2].get("reasoning_content").is_none());
             }
         }
         // Reasoning is mandatory. An explicit `none` or `medium` is rejected
         // on arrival; the turn builder itself only ever clamps.
-        assert_eq!(
-            turn("kimi-k3-1-pro-uncensored", Some("none"), false)["reasoning_effort"],
-            "low"
-        );
-        assert_eq!(
-            turn("kimi-k3-1-pro-uncensored", Some("medium"), false)["reasoning_effort"],
-            "high"
-        );
+        assert_eq!(turn(Some("none"), false)["reasoning_effort"], "low");
+        assert_eq!(turn(Some("medium"), false)["reasoning_effort"], "high");
     }
 
     #[test]

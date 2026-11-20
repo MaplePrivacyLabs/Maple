@@ -518,8 +518,7 @@ mod tests {
     use crate::model_config::{
         ModelAliasTargets, ModelPlan, AUTO_POWERFUL_MODEL_ID, AUTO_QUICK_MODEL_ID,
         DEEPSEEK_V4_1_FLASH_MODEL_ID, DEEPSEEK_V4_1_FLASH_UNCENSORED_MODEL_ID,
-        GLM_5_3_FLASH_MODEL_ID, GLM_5_3_MODEL_ID, KIMI_K3_1_PRO_MODEL_ID,
-        KIMI_K3_1_PRO_UNCENSORED_MODEL_ID, QUICK_MODEL_ID,
+        GLM_5_3_FLASH_MODEL_ID, GLM_5_3_MODEL_ID, KIMI_K3_1_PRO_MODEL_ID, QUICK_MODEL_ID,
     };
     use crate::provider_registry::{
         MapleInstanceId, DUAL_INSTANCE_TEST_INSTANCES, DUAL_INSTANCE_TEST_REGISTRY,
@@ -796,9 +795,33 @@ mod tests {
                 continuum_available: true,
                 expected_access: true,
                 expected_public_model: KIMI_K3_1_PRO_MODEL_ID,
+                expected_provider: "maple-i03",
+                expected_provider_model: KIMI_K3_1_PRO_MODEL_ID,
+                expected_source: RouteSelectionSource::StaticSplit,
+            },
+            Case {
+                name: "explicit K3.1 Pro shared Tinfoil bucket",
+                selector: KIMI_K3_1_PRO_MODEL_ID,
+                plan: ModelPlan::Paid,
+                bucket: 0,
+                continuum_available: true,
+                expected_access: true,
+                expected_public_model: KIMI_K3_1_PRO_MODEL_ID,
                 expected_provider: "tinfoil",
                 expected_provider_model: KIMI_K3_1_PRO_MODEL_ID,
                 expected_source: RouteSelectionSource::StaticSplit,
+            },
+            Case {
+                name: "explicit K3.1 Pro on shared Tinfoil without a Maple guest",
+                selector: KIMI_K3_1_PRO_MODEL_ID,
+                plan: ModelPlan::Paid,
+                bucket: 73,
+                continuum_available: false,
+                expected_access: true,
+                expected_public_model: KIMI_K3_1_PRO_MODEL_ID,
+                expected_provider: "tinfoil",
+                expected_provider_model: KIMI_K3_1_PRO_MODEL_ID,
+                expected_source: RouteSelectionSource::Fallback,
             },
             Case {
                 name: "explicit GLM 5.3 Tinfoil bucket",
@@ -896,7 +919,8 @@ mod tests {
                 case.name
             );
             let weighted_model = case.expected_public_model == GLM_5_3_MODEL_ID
-                || case.expected_public_model == QUICK_MODEL_ID;
+                || case.expected_public_model == QUICK_MODEL_ID
+                || case.expected_public_model == KIMI_K3_1_PRO_MODEL_ID;
             let expected_bucket = if weighted_model && case.continuum_available {
                 Some(case.bucket)
             } else {
@@ -2513,13 +2537,18 @@ mod tests {
     }
 
     #[test]
-    fn uncensored_kimi_routes_only_to_ready_i03_and_never_to_another_route() {
+    fn stock_kimi_uses_ready_i03_and_falls_back_to_shared_tinfoil() {
         let i03 = ProviderId::Maple(MapleInstanceId::I03);
-        let model = KIMI_K3_1_PRO_UNCENSORED_MODEL_ID;
+        let model = KIMI_K3_1_PRO_MODEL_ID;
         let i03_route = RouteKey {
             provider: i03,
             provider_model_id: model.to_owned(),
         };
+        let shared_route = RouteKey {
+            provider: ProviderId::Tinfoil,
+            provider_model_id: model.to_owned(),
+        };
+        let shared_only = ConfiguredProviders::none().with_provider(ProviderId::Tinfoil);
         // i03 with its approved release withheld: the client builds no direct
         // target or transport for it, so it is never ready, while every other
         // provider is. Readiness comes from the real target selection.
@@ -2549,115 +2578,160 @@ mod tests {
             InferenceSurface::Internal,
         ] {
             let router = ProviderRouter::default();
-            let mut uncensored = intent(model, model);
-            uncensored.surface = surface;
-            let mut stock = intent(KIMI_K3_1_PRO_MODEL_ID, KIMI_K3_1_PRO_MODEL_ID);
-            stock.surface = surface;
-            // Remembered routes on other providers must not become fallbacks.
-            for provider in [ProviderId::Tinfoil, ProviderId::Maple(MapleInstanceId::I01)] {
-                router.sticky_routes().record(
-                    uncensored.account_uuid,
-                    surface,
-                    model,
-                    StickyRoute {
-                        public_model_id: model.to_owned(),
-                        provider,
-                        provider_model_id: model.to_owned(),
-                    },
+            let mut request = intent(model, model);
+            request.account_uuid = uuid_for_bucket(75);
+            request.surface = surface;
+
+            // Until i03 attests against its approved release, shared Tinfoil
+            // serves every account, including one whose bucket is i03's.
+            for proxies in [
+                &unconfigured,
+                &proxy_router_with_both_providers(),
+                &proxy_router_with_both_providers()
+                    .with_maple_api_key(Some("test-key".to_string())),
+            ] {
+                let shared = router
+                    .select_active_completion_route(proxies, &request)
+                    .unwrap();
+                assert_eq!(shared.provider, ProviderId::Tinfoil);
+                assert_eq!(shared.selection_source, RouteSelectionSource::Fallback);
+                assert_eq!(shared.public_model_id, model);
+                assert_eq!(shared.provider_model_id, model);
+                assert_eq!(shared.response_model_id, model);
+                assert_eq!(
+                    router.model_availability(proxies, &[model])[model],
+                    ModelAvailability::Available(shared_only)
                 );
-                for proxies in [
-                    &unconfigured,
-                    &proxy_router_with_both_providers(),
-                    &proxy_router_with_both_providers()
-                        .with_maple_api_key(Some("test-key".to_string())),
-                ] {
-                    assert_eq!(
-                        router
-                            .select_active_completion_route(proxies, &uncensored)
-                            .unwrap_err(),
-                        ProviderRoutingError::NoEligibleRoute(model.to_owned())
-                    );
-                    assert_eq!(
-                        router
-                            .select_active_completion_route_excluding(
-                                proxies,
-                                &uncensored,
-                                &HashSet::new()
-                            )
-                            .unwrap_err(),
-                        ProviderRoutingError::NoEligibleRoute(model.to_owned())
-                    );
-                    assert_eq!(
-                        router.shadow_completion_plan(proxies, &uncensored),
-                        Err(RoutePlanningError::NoEligibleRoute(model.to_owned()))
-                    );
-                    assert_eq!(
-                        router.model_availability(proxies, &[model])[model],
-                        ModelAvailability::NotConfigured
-                    );
-                    // Stock Kimi is a different model and is unaffected.
-                    let shared = router
-                        .select_active_completion_route(proxies, &stock)
-                        .unwrap();
-                    assert_eq!(shared.provider, ProviderId::Tinfoil);
-                    assert_eq!(shared.public_model_id, KIMI_K3_1_PRO_MODEL_ID);
-                }
             }
             assert!(router.shadow_health_snapshot(&i03_route).is_some());
 
-            let selected = router
-                .select_active_completion_route(&ready, &uncensored)
+            // The same router sees verified readiness without a restart.
+            let dedicated = router
+                .select_active_completion_route(&ready, &request)
                 .unwrap();
-            assert_eq!(selected.provider, i03);
-            assert_eq!(selected.proxy.provider_name, "maple-i03");
-            assert_eq!(selected.proxy.base_url, "https://i03.tfinf.maple.ai");
-            assert_eq!(selected.public_model_id, model);
-            assert_eq!(selected.provider_model_id, model);
-            assert_eq!(selected.response_model_id, model);
-            assert_eq!(selected.bucket, None);
-            assert_eq!(selected.selection_source, RouteSelectionSource::StaticSplit);
-            assert_eq!(selected.identity().route_key(), i03_route);
+            assert_eq!(dedicated.provider, i03);
+            assert_eq!(dedicated.proxy.provider_name, "maple-i03");
+            assert_eq!(dedicated.proxy.base_url, "https://i03.tfinf.maple.ai");
+            assert_eq!(dedicated.public_model_id, model);
+            assert_eq!(dedicated.provider_model_id, model);
+            assert_eq!(dedicated.response_model_id, model);
+            assert_eq!(dedicated.bucket, Some(75));
+            assert_eq!(
+                dedicated.selection_source,
+                RouteSelectionSource::StaticSplit
+            );
+            assert_eq!(dedicated.identity().route_key(), i03_route);
             assert_eq!(
                 router.model_availability(&ready, &[model])[model],
-                ModelAvailability::Available(ConfiguredProviders::none().with_provider(i03))
+                ModelAvailability::Available(shared_only.with_provider(i03))
             );
-            let plan = router.shadow_completion_plan(&ready, &uncensored).unwrap();
-            assert_eq!(plan.eligible_routes.len(), 1);
-            assert_eq!(plan.eligible_routes[0].provider, i03);
-            let shared = router
-                .select_active_completion_route(&ready, &stock)
-                .unwrap();
-            assert_eq!(shared.provider, ProviderId::Tinfoil);
-            assert_eq!(shared.provider_model_id, KIMI_K3_1_PRO_MODEL_ID);
+            assert_eq!(
+                router
+                    .shadow_completion_plan(&ready, &request)
+                    .unwrap()
+                    .eligible_routes
+                    .len(),
+                2
+            );
 
-            // Stock Kimi capacity is a separate resource on a separate provider.
+            let mut counts = [0; 2];
+            let mut fresh = request.clone();
+            for bucket in 0..100u8 {
+                fresh.account_uuid = Uuid::from_u128(u128::from(bucket) + 200);
+                let selected = router
+                    .select_active_completion_route(&ready, &fresh)
+                    .unwrap();
+                counts[usize::from(selected.provider == i03)] += 1;
+                assert_eq!(
+                    selected.provider,
+                    if bucket == 0 {
+                        ProviderId::Tinfoil
+                    } else {
+                        i03
+                    }
+                );
+                assert_eq!(selected.proxy.provider_name, selected.provider.as_str());
+                assert_eq!(selected.provider_model_id, model);
+            }
+            assert_eq!(counts, [1, 99]);
+
+            // An account warmed on shared Tinfoil keeps that route while it
+            // stays eligible.
+            let mut warmed = request.clone();
+            warmed.account_uuid = uuid_for_bucket(175);
+            let shared = router
+                .select_active_completion_route(&unconfigured, &warmed)
+                .unwrap();
+            router.remember_route(&warmed, &shared);
+            let sticky = router
+                .select_active_completion_route(&ready, &warmed)
+                .unwrap();
+            assert_eq!(sticky.provider, ProviderId::Tinfoil);
+            assert_eq!(sticky.selection_source, RouteSelectionSource::Sticky);
+
+            // A planned but unsent attempt on i03 may move to shared Tinfoil,
+            // the same model, and no further.
+            let retry = router
+                .select_active_completion_route_excluding(
+                    &ready,
+                    &request,
+                    &HashSet::from([i03_route.clone()]),
+                )
+                .unwrap();
+            assert_eq!(retry.provider, ProviderId::Tinfoil);
+            assert_eq!(retry.selection_source, RouteSelectionSource::Fallback);
+            assert_eq!(
+                router
+                    .select_active_completion_route_excluding(
+                        &ready,
+                        &request,
+                        &HashSet::from([i03_route.clone(), shared_route.clone()])
+                    )
+                    .unwrap_err(),
+                ProviderRoutingError::NoEligibleRoute(model.to_owned())
+            );
+
+            // A saturated or failing i03 moves new requests to shared Tinfoil.
+            open_route_with_capacity_failure(&router, i03, model, model, 503, 60);
+            let fallback = router
+                .select_active_completion_route(&ready, &request)
+                .unwrap();
+            assert_eq!(fallback.provider, ProviderId::Tinfoil);
+            assert_eq!(fallback.selection_source, RouteSelectionSource::Fallback);
+            assert_eq!(fallback.public_model_id, model);
+            assert_eq!(
+                router.model_availability(&ready, &[model])[model],
+                ModelAvailability::Available(shared_only)
+            );
+
+            // Shared capacity is a separate resource: its failure leaves i03
+            // serving, including the one shared bucket.
+            let other_router = ProviderRouter::default();
             open_route_with_capacity_failure(
-                &router,
+                &other_router,
                 ProviderId::Tinfoil,
-                KIMI_K3_1_PRO_MODEL_ID,
-                KIMI_K3_1_PRO_MODEL_ID,
+                model,
+                model,
                 429,
                 60,
             );
-            assert!(matches!(
-                router.select_active_completion_route(&ready, &stock),
-                Err(ProviderRoutingError::CapacityUnavailable { model, .. })
-                    if model == KIMI_K3_1_PRO_MODEL_ID
-            ));
+            let mut shared_bucket = request.clone();
+            shared_bucket.account_uuid = uuid_for_bucket(0);
+            let moved = other_router
+                .select_active_completion_route(&ready, &shared_bucket)
+                .unwrap();
+            assert_eq!(moved.provider, i03);
+            assert_eq!(moved.selection_source, RouteSelectionSource::Fallback);
             assert_eq!(
-                router
-                    .select_active_completion_route(&ready, &uncensored)
-                    .unwrap()
-                    .provider,
-                i03
+                other_router.model_availability(&ready, &[model])[model],
+                ModelAvailability::Available(ConfiguredProviders::none().with_provider(i03))
             );
 
-            // A saturated or failing i03 is a capacity result for this model,
-            // never a move to stock Kimi or to another guest.
-            let other_router = ProviderRouter::default();
+            // With both routes unavailable the model reports capacity. No
+            // other model or guest stands in.
             open_route_with_capacity_failure(&other_router, i03, model, model, 503, 60);
             assert!(matches!(
-                other_router.select_active_completion_route(&ready, &uncensored),
+                other_router.select_active_completion_route(&ready, &request),
                 Err(ProviderRoutingError::CapacityUnavailable { model: unavailable, .. })
                     if unavailable == model
             ));
@@ -2665,23 +2739,6 @@ mod tests {
                 other_router.model_availability(&ready, &[model])[model],
                 ModelAvailability::Unavailable { .. }
             ));
-            assert_eq!(
-                other_router
-                    .select_active_completion_route(&ready, &stock)
-                    .unwrap()
-                    .provider,
-                ProviderId::Tinfoil
-            );
-            assert_eq!(
-                router
-                    .select_active_completion_route_excluding(
-                        &ready,
-                        &uncensored,
-                        &HashSet::from([i03_route.clone()])
-                    )
-                    .unwrap_err(),
-                ProviderRoutingError::NoEligibleRoute(model.to_owned())
-            );
         }
     }
 
