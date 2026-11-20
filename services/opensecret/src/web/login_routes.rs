@@ -1,4 +1,5 @@
 use crate::transport_v2::envelope::{Credential, CredentialKind};
+use crate::web::encryption_middleware::TransportSession;
 use crate::web::password_policy::validate_password;
 use crate::User;
 use crate::{
@@ -7,12 +8,8 @@ use crate::{
     jwt::{validate_token, AuthContext, NewToken, TokenType},
     models::email_verification::NewEmailVerification,
 };
-use crate::{jwt::USER_REFRESH, web::encryption_middleware::TransportSession};
 use crate::{
-    web::encryption_middleware::{
-        decrypt_request, encrypt_response, require_transport_v2, require_v2_transport_session,
-        Decrypted,
-    },
+    web::encryption_middleware::{decrypt_request, encrypt_response, Decrypted},
     Error,
 };
 use crate::{ApiError, AppState};
@@ -159,10 +156,7 @@ pub fn router(app_state: Arc<AppState>) -> Router<()> {
         )
         .route(
             "/refresh",
-            post(refresh_token).layer(from_fn_with_state(
-                app_state.clone(),
-                prepare_refresh_request,
-            )),
+            post(refresh_token).layer(from_fn(prepare_refresh_request)),
         )
         .route(
             "/verify-email/:code",
@@ -182,17 +176,11 @@ pub fn router(app_state: Arc<AppState>) -> Router<()> {
                 decrypt_request::<PasswordResetConfirmPayload>,
             )),
         )
-        // The v2 options sub-router keeps its own v2-transport gate, merged in
-        // after the legacy defenses so only v2 reset routes require it.
         .merge(password_reset_v2_router(app_state.clone()))
         .with_state(app_state)
 }
 
-/// The transport-v2 password-reset options sub-router.
-///
-/// Layer ordering within this sub-router places `require_transport_v2`
-/// outermost, so legacy v1 transport sessions are rejected before any request
-/// body is decrypted or reset proof is verified. The state is intentionally
+/// The recovery-aware password-reset sub-router. The state is intentionally
 /// kept so `router()` erases it once with `.with_state`.
 fn password_reset_v2_router(app_state: Arc<AppState>) -> Router<Arc<AppState>> {
     Router::new()
@@ -210,7 +198,6 @@ fn password_reset_v2_router(app_state: Arc<AppState>) -> Router<Arc<AppState>> {
                 decrypt_request::<CompletePasswordResetV2Request>,
             )),
         )
-        .route_layer(from_fn(require_transport_v2))
 }
 
 #[derive(Serialize)]
@@ -221,7 +208,7 @@ pub struct AuthResponse {
     pub refresh_token: String,
 }
 
-#[derive(Deserialize, Clone)]
+#[derive(Clone)]
 pub struct RefreshRequest {
     refresh_token: String,
 }
@@ -240,33 +227,27 @@ pub struct RefreshResponse {
     refresh_token: String,
 }
 
+/// Takes the refresh token from the request envelope's resumption credential.
+/// A refresh request has no logical body.
 async fn prepare_refresh_request(
-    State(state): State<Arc<AppState>>,
     mut request: Request<Body>,
     next: Next,
 ) -> Result<Response, ApiError> {
-    let is_transport_v2 = request
-        .extensions()
-        .get::<TransportSession>()
-        .is_some_and(TransportSession::is_v2);
-    if is_transport_v2 {
-        if request.body().size_hint().exact() != Some(0) {
-            return Err(ApiError::BadRequest);
-        }
-        let refresh_token = request
-            .extensions()
-            .get::<Credential>()
-            .filter(|credential| credential.kind() == CredentialKind::Resumption)
-            .map(|credential| credential.value().to_string())
-            .ok_or(ApiError::InvalidJwt)?;
-        request
-            .extensions_mut()
-            .insert(RefreshRequest { refresh_token });
-        return Ok(next.run(request).await);
+    if request.extensions().get::<TransportSession>().is_none()
+        || request.body().size_hint().exact() != Some(0)
+    {
+        return Err(ApiError::BadRequest);
     }
-
-    let headers = request.headers().clone();
-    decrypt_request::<RefreshRequest>(State(state), headers, request, next).await
+    let refresh_token = request
+        .extensions()
+        .get::<Credential>()
+        .filter(|credential| credential.kind() == CredentialKind::Resumption)
+        .map(|credential| credential.value().to_string())
+        .ok_or(ApiError::InvalidJwt)?;
+    request
+        .extensions_mut()
+        .insert(RefreshRequest { refresh_token });
+    Ok(next.run(request).await)
 }
 
 #[derive(Deserialize, Clone)]
@@ -279,16 +260,12 @@ pub async fn login(
     Decrypted(creds): Decrypted<Credentials>,
     Extension(session_id): Extension<TransportSession>,
 ) -> Result<Response, ApiError> {
-    let auth_response = login_internal(data.clone(), creds, session_id.is_v2()).await?;
+    let auth_response = login_internal(data.clone(), creds).await?;
     let result = encrypt_response(&data, &session_id, &auth_response).await;
     result
 }
 
-async fn login_internal(
-    data: Arc<AppState>,
-    creds: Credentials,
-    is_transport_v2: bool,
-) -> Result<AuthResponse, ApiError> {
+async fn login_internal(data: Arc<AppState>, creds: Credentials) -> Result<AuthResponse, ApiError> {
     // First get the project by client_id and verify it's active
     let project = data
         .db
@@ -356,13 +333,13 @@ async fn login_internal(
         Ok(Some(authenticated_user)) => {
             let access_token = NewToken::new_with_auth_context(
                 &authenticated_user.user,
-                TokenType::access_for_transport(is_transport_v2),
+                TokenType::TransportV2Access,
                 &data,
                 &authenticated_user.auth_context,
             )?;
             let refresh_token = NewToken::new_with_auth_context(
                 &authenticated_user.user,
-                TokenType::refresh_for_transport(is_transport_v2),
+                TokenType::TransportV2Refresh,
                 &data,
                 &authenticated_user.auth_context,
             )?;
@@ -431,7 +408,6 @@ pub async fn register(
             password: creds.password,
             client_id: creds.client_id,
         },
-        session_id.is_v2(),
     )
     .await?;
 
@@ -494,12 +470,11 @@ pub async fn refresh_token(
 ) -> Result<Response, ApiError> {
     info!("Refresh token request received");
 
-    let refresh_audience = if session_id.is_v2() {
-        crate::jwt::TRANSPORT_V2_USER_REFRESH
-    } else {
-        USER_REFRESH
-    };
-    let claims = validate_token(&refresh_request.refresh_token, &data, refresh_audience)?;
+    let claims = validate_token(
+        &refresh_request.refresh_token,
+        &data,
+        crate::jwt::TRANSPORT_V2_USER_REFRESH,
+    )?;
 
     // Audience check is now handled by validate_token
     let user_id = Uuid::parse_str(&claims.sub).map_err(|_| ApiError::InvalidJwt)?;
@@ -513,15 +488,11 @@ pub async fn refresh_token(
     data.verify_seed_wrap_for_auth_context(&user, &auth_context)
         .map_err(|_| ApiError::InvalidJwt)?;
 
-    let new_access_token = NewToken::new_with_auth_context(
-        &user,
-        TokenType::access_for_transport(session_id.is_v2()),
-        &data,
-        &auth_context,
-    )?;
+    let new_access_token =
+        NewToken::new_with_auth_context(&user, TokenType::TransportV2Access, &data, &auth_context)?;
     let new_refresh_token = NewToken::new_with_auth_context(
         &user,
-        TokenType::refresh_for_transport(session_id.is_v2()),
+        TokenType::TransportV2Refresh,
         &data,
         &auth_context,
     )?;
@@ -720,7 +691,7 @@ fn map_reset_proof_error(e: Error) -> ApiError {
     }
 }
 
-/// Transport-v2 password reset options.
+/// Recovery-aware password reset options.
 ///
 /// Verifies the existing email reset proof — the same proof legacy
 /// `/password-reset/confirm` verifies, mapped onto one sanitized error — and
@@ -733,11 +704,6 @@ pub async fn password_reset_v2_options(
     Extension(transport_session): Extension<TransportSession>,
     Decrypted(request): Decrypted<PasswordResetV2OptionsRequest>,
 ) -> Result<Response, ApiError> {
-    // Defense-in-depth: the sub-router middleware already rejected non-v2
-    // transports before decryption; this guard keeps the handler
-    // self-sufficient if it is ever reachable from a mis-wired router.
-    require_v2_transport_session(&transport_session)?;
-
     // The project client id scopes the email to exactly one account space.
     let project = data
         .db
@@ -786,7 +752,7 @@ fn map_preserving_completion_error(e: Error) -> ApiError {
     }
 }
 
-/// Transport-v2 password reset completion.
+/// Recovery-aware password reset completion.
 ///
 /// Re-verifies the existing email reset proof — the same read-only proof the
 /// options route verifies — and then performs the requested completion:
@@ -809,11 +775,6 @@ pub async fn password_reset_v2_complete(
     Extension(transport_session): Extension<TransportSession>,
     Decrypted(request): Decrypted<CompletePasswordResetV2Request>,
 ) -> Result<Response, ApiError> {
-    // Defense-in-depth: the sub-router middleware already rejected non-v2
-    // transports before decryption; this guard keeps the handler
-    // self-sufficient if it is ever reachable from a mis-wired router.
-    require_v2_transport_session(&transport_session)?;
-
     // Reject invalid new passwords before verifying or consuming the reset proof.
     validate_password(&request.new_password)?;
 
@@ -877,17 +838,16 @@ pub async fn password_reset_v2_complete(
         }
     };
 
-    // Tokens are bound to the new password credential, matching the session
-    // transport the completion arrived on.
+    // Tokens are bound to the new password credential.
     let access_token = NewToken::new_with_auth_context(
         &user,
-        TokenType::access_for_transport(transport_session.is_v2()),
+        TokenType::TransportV2Access,
         &data,
         &new_auth_context,
     )?;
     let refresh_token = NewToken::new_with_auth_context(
         &user,
-        TokenType::refresh_for_transport(transport_session.is_v2()),
+        TokenType::TransportV2Refresh,
         &data,
         &new_auth_context,
     )?;

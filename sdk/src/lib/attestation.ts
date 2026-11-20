@@ -25,6 +25,14 @@ const AttestationDocumentSchema = z.object({
 
 export type AttestationDocument = z.infer<typeof AttestationDocumentSchema>;
 
+// Result shape of the providers' `getAttestation`. Transport V2 never exposes a
+// traffic key, so `sessionKey` is always null; the field stays for consumers
+// typed against the published context.
+export interface Attestation {
+  sessionKey: Uint8Array | null;
+  sessionId: string | null;
+}
+
 const ParsedAttestationDocumentSchema = z.object({
   protected: z.instanceof(Uint8Array),
   // There's an "unprotected" header in the CBOR, but we never use it
@@ -319,6 +327,9 @@ async function fakeAuthenticate(
   return zodParsed;
 }
 
+// Fetches and verifies the public attestation document for `nonce`. Nothing in
+// the SDK's Transport V2 path calls this: it stays for deployment checks that
+// import this module directly to verify an enclave without opening a session.
 export async function verifyAttestation(
   nonce: string,
   explicitApiUrl?: string

@@ -46,7 +46,6 @@
     "@peculiar/x509": "1.14.3",
     "@stablelib/base64": "2.0.1",
     "@stablelib/chacha20poly1305": "2.0.1",
-    "@stablelib/random": "2.0.1",
     "cbor2": "1.12.0",
     "openai": "6.0.0",
     "tweetnacl": "1.0.3",

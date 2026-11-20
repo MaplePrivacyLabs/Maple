@@ -72,9 +72,6 @@ async fn create_native_handoff_grant(
     Extension(auth_context): Extension<AuthContext>,
     Decrypted(request): Decrypted<NativeHandoffGrantRequest>,
 ) -> Result<Response, ApiError> {
-    if !session.is_v2() {
-        return Err(ApiError::BadRequest);
-    }
     let target_session_id =
         SessionId::from_str(&request.native_session_id).map_err(|_| ApiError::BadRequest)?;
     let mut issued = issue_native_handoff_grant(
@@ -107,7 +104,7 @@ async fn redeem_native_handoff(
     cache_root: Option<Extension<CacheNamespaceRoot>>,
     Decrypted(request): Decrypted<NativeHandoffRedeemRequest>,
 ) -> Result<Response, ApiError> {
-    let session_id = session.v2_session_id().ok_or(ApiError::BadRequest)?;
+    let session_id = session.session_id();
     if credential.is_some() || cache_root.is_some() {
         return Err(ApiError::BadRequest);
     }

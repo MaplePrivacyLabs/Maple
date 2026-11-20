@@ -7,8 +7,7 @@ use crate::email::{
 use crate::encrypt::encrypt_key_deterministic;
 use crate::encrypt::generate_random;
 use crate::encrypt::{
-    decrypt_with_key, decrypt_with_kms, encrypt_with_key, validate_aes_256_key_length, CustomRng,
-    GenKeyResult,
+    decrypt_with_key, decrypt_with_kms, encrypt_with_key, validate_aes_256_key_length, GenKeyResult,
 };
 use crate::jwt::validate_platform_jwt;
 use crate::login_routes::RegisterCredentials;
@@ -22,14 +21,12 @@ use crate::sqs::SqsEventPublisher;
 use crate::web::dev_spend_gate::require_internal;
 use crate::web::openai_auth::{validate_openai_auth, validate_optional_openai_auth};
 use crate::web::platform_login_routes;
+use crate::web::platform_routes;
 use crate::web::{
     conversation_projects_routes, conversations_routes, health_routes, instructions_routes,
     login_routes, native_handoff_routes, oauth_routes, openai_models_routes, openai_routes,
     protected_routes, recovery_router, responses_routes, system_one_routes, web_routes,
 };
-use crate::{attestation_routes::SessionState, web::platform_routes};
-use bounded_ttl_cache::BoundedTtlCache;
-use lease_aware_cache::{CacheLease, InsertError as SessionInsertError, LeaseAwareTtlCache};
 
 use crate::jwt::{AuthContext, AuthMethod};
 use crate::models::user_seed_wrappings::{NewUserSeedWrapping, UserSeedWrappingError};
@@ -66,12 +63,8 @@ use axum::{
 };
 use base64::engine::general_purpose;
 use base64::Engine as _;
-use chacha20poly1305::aead::Aead;
-use chacha20poly1305::KeyInit;
-use chacha20poly1305::{ChaCha20Poly1305, Key, Nonce};
 use diesel::Connection;
 use password_auth::{generate_hash, verify_password, VerifyError};
-use rand_core::{CryptoRng, RngCore};
 use secp256k1::SecretKey;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
@@ -80,7 +73,6 @@ use std::collections::HashSet;
 use std::env;
 use std::fmt;
 use std::io::Write;
-use std::num::NonZeroUsize;
 use std::str::FromStr;
 use std::sync::{Arc, Mutex as StdMutex};
 use std::time::Duration;
@@ -94,7 +86,6 @@ use tracing_subscriber::{layer::SubscriberExt, util::SubscriberInitExt, EnvFilte
 use uuid::Uuid;
 use vsock::{VsockAddr, VsockStream};
 use web::attestation_routes;
-use x25519_dalek::{EphemeralSecret, PublicKey};
 
 mod apple_signin;
 mod aws_credentials;
@@ -111,7 +102,6 @@ mod inference;
 mod inference_planning;
 mod jwt;
 mod kagi;
-mod lease_aware_cache;
 mod log_redaction;
 mod maple_inference;
 mod message_signing;
@@ -131,7 +121,6 @@ mod provider_routing;
 mod proxy_config;
 mod recovery_code;
 mod remote_enrollment;
-mod secret_cache_maintenance;
 #[cfg(test)]
 mod security_invariants;
 mod seed_wrapping;
@@ -173,11 +162,6 @@ const KAGI_API_KEY_NAME: &str = "kagi_api_key";
 const OS_FLAGS_API_KEY_NAME: &str = "os_flags_api_key";
 const OS_FLAGS_BASE_URL_NAME: &str = "os_flags_base_url";
 const BILLING_ACCESS_TIMEOUT_SECS: u64 = 5;
-const MAX_ATTESTATION_NONCE_BYTES: usize = 512;
-const MAX_PENDING_ATTESTATIONS: usize = 65_536;
-const PENDING_ATTESTATION_TTL: Duration = Duration::from_secs(5 * 60);
-const MAX_ENCRYPTION_SESSIONS: usize = 2_097_152;
-const ENCRYPTION_SESSION_IDLE_TTL: Duration = Duration::from_secs(65 * 60);
 
 pub(crate) const ERROR_CONTRACT_HEADER: &str = "x-opensecret-error-contract";
 pub(crate) const ERROR_CODE_HEADER: &str = "x-opensecret-error-code";
@@ -188,54 +172,6 @@ const ACCESS_TOKEN_EXPIRED_ERROR_CODE: &str = "access_token_expired";
 const IMAGE_DESCRIPTION_UNAVAILABLE_ERROR_CODE: &str = "image_description_unavailable";
 pub(crate) const INFERENCE_CAPACITY_ERROR_CODE: &str = "inference_capacity";
 const CLIENT_REPLAY_SAFE: &str = "safe";
-
-type PendingAttestationKey = [u8; 32];
-pub(crate) type SessionLease = CacheLease<SessionState>;
-
-fn validate_attestation_nonce(nonce: &str) -> Result<(), ApiError> {
-    if nonce.len() > MAX_ATTESTATION_NONCE_BYTES {
-        return Err(ApiError::BadRequest);
-    }
-    Ok(())
-}
-
-fn attestation_nonce_key(nonce: &str) -> PendingAttestationKey {
-    Sha256::digest(nonce.as_bytes()).into()
-}
-
-#[cfg(test)]
-mod pending_attestation_key_tests {
-    use super::*;
-
-    #[test]
-    fn nonce_limit_is_measured_in_bytes() {
-        assert!(validate_attestation_nonce(&"a".repeat(512)).is_ok());
-        assert!(matches!(
-            validate_attestation_nonce(&"a".repeat(513)),
-            Err(ApiError::BadRequest)
-        ));
-
-        assert!(validate_attestation_nonce(&"é".repeat(256)).is_ok());
-        assert!(matches!(
-            validate_attestation_nonce(&"é".repeat(257)),
-            Err(ApiError::BadRequest)
-        ));
-    }
-
-    #[test]
-    fn cache_key_is_a_fixed_sha256_digest() {
-        let first_nonce = Uuid::new_v4().to_string();
-        let different_nonce = Uuid::new_v4().to_string();
-        let first = attestation_nonce_key(&first_nonce);
-
-        assert_eq!(first, attestation_nonce_key(&first_nonce));
-        assert_ne!(first, attestation_nonce_key(&different_nonce));
-        assert_eq!(std::mem::size_of_val(&first), 32);
-
-        let expected: PendingAttestationKey = Sha256::digest(first_nonce.as_bytes()).into();
-        assert_eq!(first, expected);
-    }
-}
 
 #[derive(Debug, Clone, Deserialize, Serialize)]
 pub struct EnclaveRequest {
@@ -435,9 +371,6 @@ pub enum ApiError {
     #[error("Bad Request")]
     BadRequest,
 
-    #[error("Bad Request")]
-    SessionNotFound,
-
     #[error("Conflict")]
     Conflict,
 
@@ -547,7 +480,6 @@ impl IntoResponse for ApiError {
             ApiError::BadRequest => StatusCode::BAD_REQUEST,
             ApiError::PasswordTooShort => StatusCode::BAD_REQUEST,
             ApiError::PasswordTooLong => StatusCode::BAD_REQUEST,
-            ApiError::SessionNotFound => StatusCode::BAD_REQUEST,
             ApiError::Conflict => StatusCode::CONFLICT,
             ApiError::InvalidInviteCode => StatusCode::UNAUTHORIZED,
             ApiError::RefreshFailed => StatusCode::UNAUTHORIZED,
@@ -596,7 +528,6 @@ impl IntoResponse for ApiError {
             _ => (None, None),
         };
         let error_code = match &self {
-            ApiError::SessionNotFound => Some(SESSION_NOT_FOUND_ERROR_CODE),
             ApiError::BillingCleanupUnavailable => Some("billing_account_deletion_failed"),
             ApiError::AccessTokenExpired => Some(ACCESS_TOKEN_EXPIRED_ERROR_CODE),
             ApiError::ImageDescriptionUnavailable => Some(IMAGE_DESCRIPTION_UNAVAILABLE_ERROR_CODE),
@@ -832,17 +763,6 @@ mod api_error_contract_tests {
             StatusCode::UNPROCESSABLE_ENTITY,
             body.as_bytes(),
             Some("system_one_too_many_questions"),
-        )
-        .await;
-    }
-
-    #[tokio::test]
-    async fn session_not_found_adds_code_without_changing_legacy_response() {
-        assert_error_response(
-            ApiError::SessionNotFound,
-            StatusCode::BAD_REQUEST,
-            br#"{"status":400,"message":"Bad Request"}"#,
-            Some(SESSION_NOT_FOUND_ERROR_CODE),
         )
         .await;
     }
@@ -1103,8 +1023,6 @@ pub struct AppState {
     provider_router: Arc<ProviderRouter>,
     rate_limits: web::rate_limit::RateLimits,
     resend_api_key: Option<String>,
-    ephemeral_keys: Arc<RwLock<BoundedTtlCache<PendingAttestationKey, EphemeralSecret>>>,
-    session_states: Arc<tokio::sync::Mutex<LeaseAwareTtlCache<Uuid, SessionState>>>,
     oauth_manager: Arc<OAuthManager>,
     sqs_publisher: Option<Arc<SqsEventPublisher>>,
     billing_client: Option<BillingClient>,
@@ -1566,16 +1484,6 @@ impl AppStateBuilder {
             provider_router,
             rate_limits: self.rate_limits,
             resend_api_key: self.resend_api_key,
-            ephemeral_keys: Arc::new(RwLock::new(BoundedTtlCache::new(
-                NonZeroUsize::new(MAX_PENDING_ATTESTATIONS)
-                    .expect("pending attestation capacity must be non-zero"),
-                PENDING_ATTESTATION_TTL,
-            ))),
-            session_states: Arc::new(tokio::sync::Mutex::new(LeaseAwareTtlCache::new(
-                NonZeroUsize::new(MAX_ENCRYPTION_SESSIONS)
-                    .expect("encryption session capacity must be non-zero"),
-                ENCRYPTION_SESSION_IDLE_TTL,
-            ))),
             oauth_manager,
             sqs_publisher,
             billing_client,
@@ -2218,143 +2126,6 @@ impl AppState {
 
     pub async fn get_enclave_key(&self) -> Vec<u8> {
         self.enclave_key.clone()
-    }
-
-    pub async fn create_ephemeral_key(&self, nonce: &str) -> Result<PublicKey, ApiError> {
-        validate_attestation_nonce(nonce)?;
-        let custom_rng = CustomRng::new();
-
-        // Use a wrapper that implements RngCore and CryptoRng
-        let mut rng_wrapper = AsyncRngWrapper::new(custom_rng);
-
-        // Create the EphemeralSecret using the RngCore implementation
-        let ephemeral_secret = EphemeralSecret::random_from_rng(&mut rng_wrapper);
-        let public_key = PublicKey::from(&ephemeral_secret);
-
-        self.ephemeral_keys
-            .write()
-            .await
-            .insert_evicting(attestation_nonce_key(nonce), ephemeral_secret);
-
-        Ok(public_key)
-    }
-
-    pub async fn get_and_remove_ephemeral_secret(
-        &self,
-        nonce: &str,
-    ) -> Result<Option<EphemeralSecret>, ApiError> {
-        validate_attestation_nonce(nonce)?;
-        Ok(self
-            .ephemeral_keys
-            .write()
-            .await
-            .take_live(&attestation_nonce_key(nonce)))
-    }
-
-    pub(crate) async fn store_session_state(
-        &self,
-        session_id: Uuid,
-        session_state: SessionState,
-    ) -> Result<(), ApiError> {
-        match self
-            .session_states
-            .lock()
-            .await
-            .insert_evicting(session_id, session_state)
-        {
-            Ok(_) => Ok(()),
-            Err(SessionInsertError::DuplicateKey) => Err(ApiError::InternalServerError),
-            Err(SessionInsertError::AllEntriesLeased) => Err(ApiError::TooManyRequests),
-        }
-    }
-
-    pub(crate) async fn acquire_request_session(
-        &self,
-        session_id: &Uuid,
-    ) -> Result<SessionLease, ApiError> {
-        self.session_states
-            .lock()
-            .await
-            .acquire(session_id)
-            .ok_or(ApiError::SessionNotFound)
-    }
-
-    pub(crate) async fn touch_session(&self, session_id: &Uuid) -> Result<(), ApiError> {
-        if self.session_states.lock().await.touch(session_id) {
-            Ok(())
-        } else {
-            Err(ApiError::BadRequest)
-        }
-    }
-
-    pub(crate) async fn decrypt_session_data(
-        &self,
-        session_id: &Uuid,
-        session_lease: &SessionLease,
-        encrypted_data: &str,
-    ) -> Result<Vec<u8>, ApiError> {
-        let decoded_data = general_purpose::STANDARD
-            .decode(encrypted_data)
-            .map_err(|e| {
-                tracing::error!("Failed to decode base64 data: {:?}", e);
-                ApiError::BadRequest
-            })?;
-
-        if decoded_data.len() < 12 {
-            tracing::error!("Decoded data is too short");
-            return Err(ApiError::BadRequest);
-        }
-
-        let (nonce, ciphertext) = decoded_data.split_at(12);
-        let nonce_array: [u8; 12] = nonce.try_into().map_err(|e| {
-            tracing::error!("Failed to convert nonce: {:?}", e);
-            ApiError::BadRequest
-        })?;
-
-        let decrypted = session_lease
-            .value()
-            .decrypt(ciphertext, &nonce_array)
-            .map_err(|e| {
-                tracing::error!("Decryption failed: {:?}", e);
-                e
-            })?;
-
-        // Invalid ciphertext must not extend an attacker's retained session.
-        self.touch_session(session_id).await?;
-        Ok(decrypted)
-    }
-
-    pub async fn encrypt_session_data(
-        &self,
-        session_id: &Uuid,
-        data: &[u8],
-    ) -> Result<Vec<u8>, ApiError> {
-        let session_lease = self
-            .session_states
-            .lock()
-            .await
-            .acquire(session_id)
-            .ok_or(ApiError::BadRequest)?;
-
-        let session_key = session_lease.value().get_session_key();
-        let key = Key::from_slice(session_key.as_ref());
-
-        let nonce_bytes: [u8; 12] = crate::encrypt::generate_random();
-        let nonce = Nonce::from_slice(&nonce_bytes);
-
-        let cipher = ChaCha20Poly1305::new(key);
-
-        let mut encrypted_data = nonce_bytes.to_vec();
-        encrypted_data.extend_from_slice(
-            &cipher
-                .encrypt(nonce, data)
-                .map_err(|_| ApiError::InternalServerError)?,
-        );
-
-        if !self.session_states.lock().await.touch(session_id) {
-            return Err(ApiError::BadRequest);
-        }
-        Ok(encrypted_data)
     }
 
     async fn create_password_reset_request(
@@ -3799,38 +3570,6 @@ async fn retrieve_google_client_id(
     }
 }
 
-struct AsyncRngWrapper {
-    inner: CustomRng,
-}
-
-impl AsyncRngWrapper {
-    fn new(inner: CustomRng) -> Self {
-        AsyncRngWrapper { inner }
-    }
-}
-
-impl RngCore for AsyncRngWrapper {
-    fn next_u32(&mut self) -> u32 {
-        futures::executor::block_on(self.inner.next_u32())
-    }
-
-    fn next_u64(&mut self) -> u64 {
-        futures::executor::block_on(self.inner.next_u64())
-    }
-
-    fn fill_bytes(&mut self, dest: &mut [u8]) {
-        futures::executor::block_on(self.inner.fill_bytes(dest))
-    }
-
-    fn try_fill_bytes(&mut self, dest: &mut [u8]) -> Result<(), rand_core::Error> {
-        futures::executor::block_on(self.inner.fill_bytes(dest));
-        Ok(())
-    }
-}
-
-// Implement CryptoRng for AsyncRngWrapper
-impl CryptoRng for AsyncRngWrapper {}
-
 pub fn generate_reset_hash(password: String) -> String {
     let mut hasher = Sha256::new();
     hasher.update(password.as_bytes());
@@ -4035,6 +3774,9 @@ async fn retrieve_kagi_api_key(
     }
 }
 
+/// The application routers. They are reachable only inside a Transport V2
+/// envelope: every route parses a body the gateway already decrypted and
+/// authenticates with the credential the envelope carried.
 fn application_routes(app_state: Arc<AppState>) -> Router<()> {
     protected_routes(app_state.clone())
         .merge(
@@ -4043,7 +3785,6 @@ fn application_routes(app_state: Arc<AppState>) -> Router<()> {
         )
         .route_layer(from_fn_with_state(app_state.clone(), validate_jwt))
         .merge(recovery_router(app_state.clone()))
-        .merge(web::remote::relay::router(app_state.clone()))
         .merge(login_routes(app_state.clone()))
         .merge(
             openai_routes(app_state.clone())
@@ -4089,6 +3830,27 @@ fn application_routes(app_state: Arc<AppState>) -> Router<()> {
             platform_routes(app_state.clone())
                 .route_layer(from_fn_with_state(app_state.clone(), validate_platform_jwt)),
         )
+}
+
+/// Everything a client reaches through the Transport V2 gateway.
+fn transport_v2_application(app_state: Arc<AppState>) -> Router<()> {
+    application_routes(app_state.clone())
+        .merge(health_routes())
+        .merge(native_handoff_routes(app_state))
+        .layer(from_fn(add_error_contract_header))
+}
+
+/// The listener's plaintext surface: liveness, the public attestation
+/// document, the relay fleet's service-credential admission check, and the
+/// Transport V2 endpoints. Application routes are deliberately absent.
+fn public_routes(
+    app_state: Arc<AppState>,
+    transport_v2_gateway: &transport_v2::gateway::TransportV2Gateway,
+) -> Router<()> {
+    health_routes()
+        .merge(attestation_routes::router(app_state.clone()))
+        .merge(web::remote::relay::router(app_state))
+        .merge(transport_v2_gateway.router())
 }
 
 #[tokio::main]
@@ -4455,19 +4217,12 @@ async fn main() -> Result<(), Error> {
         // allow requests from any origin
         .allow_origin(Any);
 
-    let application = application_routes(app_state.clone());
-    let v2_application = application
-        .clone()
-        .merge(health_routes())
-        .merge(native_handoff_routes(app_state.clone()))
-        .layer(from_fn(add_error_contract_header));
-    let transport_v2_gateway =
-        transport_v2::gateway::TransportV2Gateway::new(app_state.clone(), v2_application);
+    let transport_v2_gateway = transport_v2::gateway::TransportV2Gateway::new(
+        app_state.clone(),
+        transport_v2_application(app_state.clone()),
+    );
 
-    let app = application
-        .merge(health_routes())
-        .merge(attestation_routes::router(app_state.clone()))
-        .merge(transport_v2_gateway.router())
+    let app = public_routes(app_state.clone(), &transport_v2_gateway)
         .layer(cors)
         .layer(from_fn(add_error_contract_header));
 
@@ -4479,9 +4234,6 @@ async fn main() -> Result<(), Error> {
 
     tokio::select! {
         result = axum::serve(listener, app.into_make_service()) => Ok(result?),
-        _ = secret_cache_maintenance::run(app_state) => {
-            unreachable!("secret cache maintenance runs until the server stops")
-        }
         _ = transport_v2_gateway.run_maintenance() => {
             unreachable!("transport-v2 session maintenance runs until the server stops")
         }

@@ -1411,7 +1411,6 @@ impl Upstream<'_> {
         apply_provider_managed_request_fields(
             &mut body,
             &self.proxy.provider_name,
-            self.user.uuid,
             self.cache_policy,
         );
         let payload = serde_json::to_vec(&Value::Object(body)).map_err(|e| {
@@ -1817,7 +1816,6 @@ async fn system_one(
         &state,
         &user,
         auth_method,
-        &session_id,
         cache_namespace_root.map(|axum::Extension(root)| root),
         "system one",
     )

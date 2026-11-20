@@ -1,7 +1,7 @@
-//! Private, dormant client engine for the second attested transport.
+//! Private client engine for Transport V2, the SDK's only attested transport.
 //!
-//! This module owns only the wire protocol. The existing public SDK remains on
-//! transport v1 until a later stack layer deliberately adapts it to this API.
+//! This module owns only the wire protocol. `OpenSecretClient` adapts the
+//! public SDK API to it.
 
 pub(crate) mod client;
 mod crypto;

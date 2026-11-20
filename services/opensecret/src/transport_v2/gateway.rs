@@ -460,7 +460,7 @@ fn build_application_request(
     }
     request
         .extensions_mut()
-        .insert(TransportSession::v2(session_id));
+        .insert(TransportSession::new(session_id));
     request.extensions_mut().insert(request_id);
     if let Some(credential) = parts.credential {
         request.extensions_mut().insert(credential);
@@ -1097,10 +1097,7 @@ mod tests {
                 assert_eq!(request.method(), Method::POST);
                 assert_eq!(request.uri().query(), Some("answer=42"));
                 assert_eq!(request.headers().get("x-logical").unwrap(), "present");
-                assert!(request
-                    .extensions()
-                    .get::<TransportSession>()
-                    .is_some_and(TransportSession::is_v2));
+                assert!(request.extensions().get::<TransportSession>().is_some());
                 assert_eq!(
                     request.extensions().get::<RequestId>(),
                     Some(&RequestId::from_bytes([0x11; 16]))
@@ -1445,7 +1442,7 @@ mod tests {
                     let dispatches = Arc::clone(&dispatches);
                     async move {
                         dispatches.fetch_add(1, Ordering::SeqCst);
-                        ApiError::SessionNotFound.into_response()
+                        ApiError::AccessTokenExpired.into_response()
                     }
                 }
             }),
@@ -1464,8 +1461,8 @@ mod tests {
             .unwrap();
         let records = decrypt_records(&test.client, request_id, response).await;
         assert!(matches!(&records[0], ResponseRecord::Start(start)
-            if start.status() == 400 && start.headers().iter().any(|header|
-                header.name() == crate::ERROR_CODE_HEADER && header.value() == "session_not_found")));
+            if start.status() == 401 && start.headers().iter().any(|header|
+                header.name() == crate::ERROR_CODE_HEADER && header.value() == "access_token_expired")));
         assert_eq!(dispatches.load(Ordering::SeqCst), 1);
         let response = router
             .oneshot(outer_request(test.server.id(), &test.routing_key, record))

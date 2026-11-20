@@ -8,8 +8,7 @@ use crate::private_key::{
 use crate::recovery_code::RecoveryCode;
 use crate::seed_wrapping::new_recovery_seed_wrapping;
 use crate::web::encryption_middleware::{
-    decrypt_request, encrypt_response, require_transport_v2, require_v2_transport_session,
-    Decrypted, TransportSession,
+    decrypt_request, encrypt_response, Decrypted, TransportSession,
 };
 use crate::web::password_policy::validate_password;
 use crate::Error;
@@ -21,7 +20,6 @@ use crate::{
 // BIP-85 constants
 const BIP85_PURPOSE: u32 = 83696968; // BIP-85 purpose value
 const BIP85_APPLICATION_BIP39: u32 = 39; // Application number for BIP-39 mnemonics
-use axum::middleware::from_fn;
 use axum::middleware::from_fn_with_state;
 use axum::Extension;
 use axum::{
@@ -803,13 +801,13 @@ pub async fn change_password(
                 Ok(new_auth_context) => {
                     let access_token = NewToken::new_with_auth_context(
                         &user,
-                        TokenType::access_for_transport(session_id.is_v2()),
+                        TokenType::TransportV2Access,
                         &data,
                         &new_auth_context,
                     )?;
                     let refresh_token = NewToken::new_with_auth_context(
                         &user,
-                        TokenType::refresh_for_transport(session_id.is_v2()),
+                        TokenType::TransportV2Refresh,
                         &data,
                         &new_auth_context,
                     )?;
@@ -1385,8 +1383,7 @@ pub async fn delete_api_key(
 ///
 /// Carries its own `validate_jwt` layer so it can be merged outside the
 /// shared `protected_routes` JWT scope (which would otherwise validate the
-/// same JWT twice), plus the v2-transport gate that rejects legacy v1
-/// sessions before any recovery logic runs.
+/// same JWT twice).
 pub fn recovery_router(app_state: Arc<AppState>) -> Router<()> {
     Router::new()
         .route(
@@ -1416,7 +1413,6 @@ pub fn recovery_router(app_state: Arc<AppState>) -> Router<()> {
             )),
         )
         .route_layer(from_fn_with_state(app_state.clone(), validate_jwt))
-        .route_layer(from_fn(require_transport_v2))
         .with_state(app_state)
 }
 
@@ -1481,7 +1477,6 @@ pub async fn recovery_status(
     Extension(user): Extension<User>,
     Extension(transport_session): Extension<TransportSession>,
 ) -> Result<Response, ApiError> {
-    require_v2_transport_session(&transport_session)?;
     let status = data.db.get_recovery_wrap(user.uuid).map_err(|e| {
         error!("Failed to load recovery status: {:?}", e);
         ApiError::InternalServerError
@@ -1502,7 +1497,6 @@ pub async fn enroll_recovery(
     Extension(transport_session): Extension<TransportSession>,
     Decrypted(request): Decrypted<EnrollRecoveryRequest>,
 ) -> Result<Response, ApiError> {
-    require_v2_transport_session(&transport_session)?;
     require_email_password_user(&user)?;
     require_current_password(&data, &user, request.current_password).await?;
 
@@ -1562,7 +1556,6 @@ pub async fn rotate_recovery(
     Extension(transport_session): Extension<TransportSession>,
     Decrypted(request): Decrypted<RotateRecoveryRequest>,
 ) -> Result<Response, ApiError> {
-    require_v2_transport_session(&transport_session)?;
     require_email_password_user(&user)?;
     require_current_password(&data, &user, request.current_password).await?;
 
@@ -1615,7 +1608,6 @@ pub async fn disable_recovery(
     Extension(transport_session): Extension<TransportSession>,
     Decrypted(request): Decrypted<DisableRecoveryRequest>,
 ) -> Result<Response, ApiError> {
-    require_v2_transport_session(&transport_session)?;
     require_email_password_user(&user)?;
     require_current_password(&data, &user, request.current_password).await?;
 
@@ -2121,12 +2113,7 @@ mod api_key_validation_tests {
 #[cfg(test)]
 mod recovery_guard_tests {
     use super::*;
-    use crate::transport_v2::crypto::SessionId;
-    use axum::body::Body;
-    use axum::http::{Request, Request as HttpRequest, StatusCode};
-    use axum::routing::get;
     use serde_json::json;
-    use tower::ServiceExt;
 
     fn user_fixture(email: Option<&str>, password_enc: Option<Vec<u8>>) -> User {
         serde_json::from_value(json!({
@@ -2140,21 +2127,6 @@ mod recovery_guard_tests {
             "project_id": 1,
         }))
         .expect("user fixture should deserialize")
-    }
-
-    #[test]
-    fn v1_session_is_rejected_at_handler_boundary() {
-        let session = TransportSession::v1(Uuid::new_v4());
-        assert!(
-            require_v2_transport_session(&session).is_err(),
-            "a v1 transport session must not reach recovery handler logic"
-        );
-    }
-
-    #[test]
-    fn v2_session_passes_handler_boundary_guard() {
-        let session = TransportSession::v2(SessionId::from_bytes([0x22; 16]));
-        assert!(require_v2_transport_session(&session).is_ok());
     }
 
     #[test]
@@ -2173,70 +2145,5 @@ mod recovery_guard_tests {
     fn email_password_users_can_manage_recovery() {
         let password_user = user_fixture(Some("user@example.com"), Some(vec![1, 2, 3]));
         assert!(require_email_password_user(&password_user).is_ok());
-    }
-
-    #[tokio::test]
-    async fn recovery_router_rejects_v1_transport_session() {
-        let router = recovery_test_router();
-        let request = HttpRequest::builder()
-            .uri("/protected/recovery-code")
-            .body(Body::empty())
-            .unwrap();
-        // In production the v1 gateway inserts this extension; the test
-        // reproduces an authenticated-but-v1 transport reaching the router.
-        let extension = TransportSession::v1(Uuid::new_v4());
-        let request = attach_transport(request, extension);
-        let response = router.oneshot(request).await.unwrap();
-        assert_eq!(response.status(), StatusCode::BAD_REQUEST);
-    }
-
-    #[tokio::test]
-    async fn recovery_router_rejects_missing_transport_session() {
-        let router = recovery_test_router();
-        let request = HttpRequest::builder()
-            .uri("/protected/recovery-code")
-            .body(Body::empty())
-            .unwrap();
-        let response = router.oneshot(request).await.unwrap();
-        assert_eq!(response.status(), StatusCode::BAD_REQUEST);
-    }
-
-    #[tokio::test]
-    async fn recovery_router_accepts_v2_transport_session() {
-        let router = recovery_test_router();
-        let request = HttpRequest::builder()
-            .uri("/protected/recovery-code")
-            .body(Body::empty())
-            .unwrap();
-        let extension = TransportSession::v2(SessionId::from_bytes([0x22; 16]));
-        let request = attach_transport(request, extension);
-        let response = router.oneshot(request).await.unwrap();
-        assert_eq!(response.status(), StatusCode::OK);
-    }
-
-    fn attach_transport(request: Request<Body>, session: TransportSession) -> Request<Body> {
-        let (mut parts, body) = request.into_parts();
-        parts.extensions.insert(session);
-        Request::from_parts(parts, body)
-    }
-
-    fn recovery_test_router() -> Router<()> {
-        Router::new()
-            .route(
-                "/protected/recovery-code",
-                get(
-                    |Extension(session): Extension<TransportSession>| async move {
-                        // This handler would perform recovery status work; the
-                        // test handler only reports whether the transport gate
-                        // let it run.
-                        if session.is_v2() {
-                            StatusCode::OK
-                        } else {
-                            StatusCode::CONFLICT
-                        }
-                    },
-                ),
-            )
-            .layer(from_fn(require_transport_v2))
     }
 }
