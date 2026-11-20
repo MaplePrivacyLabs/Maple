@@ -50,6 +50,7 @@ mod sending;
 mod sidebar;
 mod speech;
 mod staging;
+mod step;
 mod summaries;
 #[cfg(test)]
 mod tests;
@@ -227,6 +228,9 @@ struct TranscriptCtx<'a> {
     /// How far the row's just-opened details are through fading in; 1 at
     /// rest.
     reveal: f32,
+    /// For a step: whether the thread's rail runs on to the steps drawn
+    /// right above and below it.
+    rail: step::Rail,
 }
 
 /// Text-to-speech progress for one message.
@@ -847,9 +851,8 @@ pub struct ChatScreen {
     toggled_tools: HashSet<String>,
     /// Each row's place in its turn, rebuilt or extended with `timeline`.
     turns: turn::Turns,
-    /// Lead item ids of turns whose line was clicked; membership inverts
-    /// the `tool_details` default for whether that turn's steps show.
-    toggled_turns: HashSet<String>,
+    /// Chunk lead ids whose disclosure differs from `tool_details`.
+    toggled_chunks: HashSet<String>,
     /// How long finished turns worked, by lead item id. Only turns this
     /// window timed have one.
     turn_worked: HashMap<String, std::time::Duration>,
@@ -1695,7 +1698,7 @@ impl ChatScreen {
             loading_since: None,
             toggled_tools: HashSet::new(),
             turns: turn::Turns::default(),
-            toggled_turns: HashSet::new(),
+            toggled_chunks: HashSet::new(),
             turn_worked: HashMap::new(),
             run_clocks: HashMap::new(),
             run_tick_pending: std::cell::Cell::new(false),
@@ -3777,7 +3780,7 @@ impl ChatScreen {
         self.attachment_queue.clear();
         self.attachment_viewport = 0..0;
         self.toggled_tools.clear();
-        self.toggled_turns.clear();
+        self.toggled_chunks.clear();
         self.turn_worked.clear();
         if let Some(composer) = self.composer.clone() {
             composer.update(cx, |input, cx| input.reset_vim_context(cx));
@@ -6355,6 +6358,7 @@ impl ChatScreen {
                 } = item;
                 let existing = &mut self.timeline[index];
                 let part = turn::part(existing);
+                let step_before = turn::step_info(existing);
                 existing.revision = incoming_revision;
                 if let Some(label) = incoming_label {
                     match &mut existing.label {
@@ -6390,11 +6394,17 @@ impl ChatScreen {
                     existing.output = incoming_output.or_else(|| existing.output.take());
                     existing.merge = incoming_merge;
                 }
-                // A row that became a step, or stopped being one, moves
-                // every row after it to another place in its turn.
                 if turn::part(&self.timeline[index]) != part {
                     self.turns.rebuild(&self.timeline);
-                    self.list_state.remeasure_items(index..self.timeline.len());
+                    // A changed boundary can merge or split an earlier
+                    // header. Remeasure without moving the scroll anchor.
+                    self.list_state.remeasure_items(0..self.timeline.len());
+                } else if let Some(lead) = self.turns.update_step(
+                    index,
+                    step_before,
+                    turn::step_info(&self.timeline[index]),
+                ) {
+                    self.list_state.remeasure_items(lead..lead + 1);
                 }
                 index
             }
@@ -6409,6 +6419,17 @@ impl ChatScreen {
                 self.turns.push(&item);
                 self.timeline.push(item);
                 self.list_state.splice(index..index, 1);
+                // The step before a new one loses the gap under it, so
+                // the rail joins them: its height changed too.
+                if index > 0
+                    && matches!(self.turns.row(index), turn::TurnRow::Step(_))
+                    && self.turns.row(index - 1) != turn::TurnRow::Plain
+                {
+                    self.list_state.remeasure_items(index - 1..index);
+                }
+                if let turn::TurnRow::Step(lead) = self.turns.row(index) {
+                    self.list_state.remeasure_items(lead..lead + 1);
+                }
                 self.time_arrival(session_id, index);
                 index
             }

@@ -85,13 +85,13 @@ the shared 15 fps `ticker` clock and pause in background windows.
 | Screen change (Chat ↔ Settings) and Settings sections | new content fades in, `REVEAL` | immediate |
 | Empty state ↔ conversation (first message, opening a task, New Task) | the composer changes place at once | at once |
 | Switching tasks | transcript fades in when its snapshot lands, `REVEAL` | immediate |
-| Live transcript rows at the end of the thread (sent message, reply, thinking, tool card, error, stop notice) | height grows from 0 and the row fades in, `ENTER`, so older rows glide up; scrolled up, a fade and 6 px rise | — |
+| Live transcript rows at the end of the thread (sent message, reply, thinking, tool call, error, stop notice) | height grows from 0 and the row fades in, `ENTER`, so older rows glide up; scrolled up, a fade and 6 px rise | — |
 | Sent message | the composer empties at once and the bubble's slot opens from the height it gave up, so the thread does not drop; the bubble rises in, the real row takes its exact place, and "Sending…" and the turn's line share one slot under it | — |
-| Tool status | spinner leaves at once, the outcome fades in, `TOGGLE` | — |
+| A step's state | a running step is dim and inks at once when it finishes; nothing on it loops, the turn's line carries the motion | — |
 | Disclosed details (tool output, thinking) | fade in, `REVEAL` | immediate |
 | Streaming text | grows in place, no animation | — |
 | A turn's line ("Maple is thinking", "Worked for 11s") | fades in under the transcript, `REVEAL`, and keeps its place when the turn's first step takes it into the list; while Maple works a shine crosses the words and the mark's blocks shrink and grow one at a time to draw the M (up the left side, through the notch, down the right; never along the bottom), then the mark rests a moment before it draws again; never both shining; the words morph when they change and the time counts whole seconds | immediate |
-| A turn's steps, shown from its line | fade in, `REVEAL`; the chevron turns, `TOGGLE` | immediate |
+| Activity chunks between visible messages, shown from their inline headers | fade in independently, `REVEAL`; each chevron turns, `TOGGLE` | immediate |
 | Notices, queued messages, cards above the composer | fade and rise, `ENTER` | immediate |
 | Files attached to the draft | fade and 6 px rise, `ENTER` | immediate |
 | Composer and multi-line fields | height eases to the new line count, `resize(distance)` | same |
@@ -102,6 +102,12 @@ the shared 15 fps `ticker` clock and pause in background windows.
 | Disclosure chevrons | rotate 90°, `TOGGLE` | same, reversed |
 | Sidebar collapse | width eases, `PANEL` | same, reversed |
 | Task status in the sidebar, project folders | indicators and folder icons cross-fade, `TOGGLE` | same |
+
+The turn's line stays informational and keeps one clock for the whole turn.
+Each activity chunk has its own disclosure; folding one leaves the other
+chunks and the assistant's explanations alone. Tool details keep their own
+disclosure state. Chunk headers use the same hover and chevron motion as
+other controls; they do not add another looping indicator.
 
 Loading spinners for work that usually finishes quickly (opening a task)
 appear only after 300 ms, so fast loads never flash a spinner.

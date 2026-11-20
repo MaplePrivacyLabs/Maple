@@ -1607,6 +1607,12 @@ chat-turn-worked = Gearbeitet
 chat-turn-worked-seconds = { $seconds } s gearbeitet
 # $minutes is a whole number of minutes; $seconds is the rest, under 60.
 chat-turn-worked-minutes = { $minutes } min { $seconds } s gearbeitet
+# $count is the number of tool and thinking steps in one activity chunk.
+chat-activity-steps =
+    { $count ->
+        [one] { $count } Schritt
+       *[other] { $count } Schritte
+    }
 chat-settings = Einstellungen
 chat-usage = Nutzung
 chat-usage-unavailable = Nutzung nicht verfügbar
@@ -1721,7 +1727,6 @@ chat-thinking-save-failed = Denkstufe konnte nicht gespeichert werden: { $error 
 chat-composer-placeholder = Bitte Maple, in diesem Ordner zu arbeiten…
 chat-side-thread-placeholder = Stelle eine Nebenfrage (Esc verlässt das Gespräch)…
 chat-queue-edit-placeholder = Bearbeite die eingereihte Nachricht und sende sie, um ihren Platz zu behalten. Escape verwirft sie.
-chat-status-completed = abgeschlossen
 chat-status-failed = fehlgeschlagen
 chat-status-stopped = gestoppt
 chat-status-running = läuft

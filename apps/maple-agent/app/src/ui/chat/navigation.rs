@@ -661,9 +661,9 @@ impl ChatScreen {
         let Some(&(index, _)) = self.timeline_index.get(&item_id) else {
             return;
         };
-        // On a turn's first step the selection is the turn's line.
-        if self.turns.row(index) == TurnRow::Lead {
-            self.toggle_turn(&item_id, cx);
+        // A chunk's first row selects its disclosure header.
+        if matches!(self.turns.row(index), TurnRow::Lead | TurnRow::Chunk) {
+            self.toggle_chunk(&item_id, cx);
             return;
         }
         let Some(item) = self.timeline.get(index) else {
@@ -710,13 +710,13 @@ impl ChatScreen {
             return;
         }
         let current = self.tool_details != self.toggled_tools.contains(item_id);
-        // A turn's first step sits under the turn's line: the line opens
-        // before the step's details do, and folds after them.
-        if self.turns.row(index) == TurnRow::Lead
-            && self.turn_open(index) != expanded
+        // Open the chunk before its first step's details, and fold it
+        // after those details have closed.
+        if matches!(self.turns.row(index), TurnRow::Lead | TurnRow::Chunk)
+            && self.chunk_open(index) != expanded
             && (expanded || !current)
         {
-            self.toggle_turn(item_id, cx);
+            self.toggle_chunk(item_id, cx);
             return;
         }
         if current != expanded {
@@ -803,18 +803,16 @@ impl ChatScreen {
             .collect()
     }
 
-    /// Whether the selection can rest on the row at `index`. A step under
-    /// a folded line draws nothing, and a turn's first step always draws
-    /// the line.
+    /// A folded chunk keeps its header navigable and hides its later steps.
     fn timeline_row_navigable(&self, index: usize, item: &AgentTimelineItem) -> bool {
         match self.turns.row(index) {
-            TurnRow::Lead => true,
-            TurnRow::Step(lead) => self.turn_open(lead) && timeline_item_is_navigable(item),
+            TurnRow::Lead | TurnRow::Chunk => true,
+            TurnRow::Step(lead) => self.chunk_open(lead) && timeline_item_is_navigable(item),
             TurnRow::Plain => timeline_item_is_navigable(item),
         }
     }
 
-    /// A turn folded: a selection on one of its steps moves to its line.
+    /// Folding a chunk moves a hidden selection to its header.
     pub(super) fn keep_application_selection_shown(&mut self, lead: usize) {
         if !self.application_vim_enabled {
             return;
@@ -1228,7 +1226,7 @@ impl ChatScreen {
     }
 }
 
-fn timeline_item_is_navigable(item: &AgentTimelineItem) -> bool {
+pub(super) fn timeline_item_is_navigable(item: &AgentTimelineItem) -> bool {
     if item.item_type == "internal" {
         return false;
     }

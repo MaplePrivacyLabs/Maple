@@ -1553,6 +1553,8 @@ chat-turn-worked = 작업 완료
 chat-turn-worked-seconds = { $seconds }초 동안 작업했어요
 # $minutes is a whole number of minutes; $seconds is the rest, under 60.
 chat-turn-worked-minutes = { $minutes }분 { $seconds }초 동안 작업했어요
+# $count is the number of tool and thinking steps in one activity chunk.
+chat-activity-steps = 단계 { $count }개
 chat-settings = 설정
 chat-usage = 사용량
 chat-usage-unavailable = 사용량을 확인할 수 없음
@@ -1667,7 +1669,6 @@ chat-thinking-save-failed = 사고 수준을 저장하지 못했어요: { $error
 chat-composer-placeholder = 이 폴더에서 할 작업을 Maple에 요청하세요…
 chat-side-thread-placeholder = 곁가지 질문을 입력하세요(Esc로 스레드 나가기)…
 chat-queue-edit-placeholder = 대기 중인 메시지를 편집한 뒤 보내면 순서가 유지돼요. Escape를 누르면 취소돼요.
-chat-status-completed = 완료됨
 chat-status-failed = 실패
 chat-status-stopped = 중지됨
 chat-status-running = 실행 중
