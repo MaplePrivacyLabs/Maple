@@ -1254,8 +1254,8 @@ const loadLegacyChats = async () => {
 This implementation guide was developed by analyzing multiple sources across the OpenSecret ecosystem. Here are all the key references that provided the knowledge for this implementation:
 
 ### 1. OpenSecret Backend Documentation
-- **Source**: the public `OpenSecretCloud/opensecret` repository; current
-  `src/web/responses/` source supersedes this historical guide
+- **Source**: the backend, now at `services/opensecret/` in this repository;
+  current `src/web/responses/` source supersedes this historical guide
 - **Content**: Detailed backend implementation of conversations/responses API
 - **Key Insights**:
   - Backend auto-generates titles from first message
