@@ -181,8 +181,11 @@ impl Element for EmptyTitle {
                     line_height,
                     wrap,
                     elapsed_ms: elapsed,
-                    peak: if light { 0.55 } else { 1. },
-                    white: Hsla::from(gpui::rgb(0xf7f7f9)),
+                    peak: if light { 0.9 } else { 1. },
+                    // On a dark ground the letters catch white light. On a
+                    // light one white only fades dark ink, so the light is
+                    // the brand's coral there.
+                    color: Hsla::from(gpui::rgb(if light { theme::accent() } else { 0xf7f7f9 })),
                 },
             );
             window.request_animation_frame();
@@ -280,7 +283,7 @@ struct Glint<'a> {
     wrap: Option<Pixels>,
     elapsed_ms: f32,
     peak: f32,
-    white: Hsla,
+    color: Hsla,
 }
 
 fn paint_glint(
@@ -342,7 +345,7 @@ fn paint_row_glint(
                 glint.text,
                 glint.font_size,
                 glint.style,
-                glint.white,
+                glint.color,
                 alpha,
                 glint.wrap,
             );
@@ -387,7 +390,7 @@ pub(crate) fn ink_alpha(entrance: bool, elapsed_ms: Option<f32>, paused: bool) -
     }
 }
 
-/// White overlay on a point of the title. `x` and `y` run `0..=1` across
+/// The light's strength on a point of the title. `x` and `y` run `0..=1` across
 /// the line; `y` is 0 at the top. `0` outside the glint.
 pub(crate) fn sheen_overlay(x: f32, y: f32, elapsed_ms: f32) -> f32 {
     let arrival = START_MS + x.clamp(0., 1.) * TRAVEL_MS + y.clamp(0., 1.) * RAKE_MS;
