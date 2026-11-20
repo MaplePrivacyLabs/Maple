@@ -390,18 +390,38 @@ impl Element for MorphText {
                     (true, state)
                 }
                 _ if shine.is_some() => {
-                    // One line with a run per letter, so the shine does
-                    // not disturb the spacing of the words.
-                    let runs: Vec<_> = state
-                        .letters
-                        .iter()
-                        .map(|letter| {
-                            let mut run = style.to_run(letter.text.len());
-                            run.color = tint(letter.x);
-                            run
-                        })
-                        .collect();
-                    draw(window, cx, &state.text, &runs, px(0.), px(0.));
+                    // The resting line's one layout, each glyph painted in
+                    // its own tint. A text run per colour would split the
+                    // shaping wherever the colour changes, so letters lose
+                    // their kerning, and shift, as the band passes.
+                    let layout = window.text_system().layout_line(
+                        &state.text,
+                        font_size,
+                        &[style.to_run(state.text.len())],
+                        None,
+                    );
+                    let padding_top = (line_height - layout.ascent - layout.descent) / 2.;
+                    let baseline = point(bounds.left(), bounds.top() + padding_top + layout.ascent);
+                    for run in &layout.runs {
+                        for glyph in &run.glyphs {
+                            let origin = baseline + glyph.position;
+                            if glyph.is_emoji {
+                                window
+                                    .paint_emoji(origin, run.font_id, glyph.id, font_size)
+                                    .ok();
+                            } else {
+                                window
+                                    .paint_glyph(
+                                        origin,
+                                        run.font_id,
+                                        glyph.id,
+                                        font_size,
+                                        tint(glyph.position.x),
+                                    )
+                                    .ok();
+                            }
+                        }
+                    }
                     (false, state)
                 }
                 _ => {
