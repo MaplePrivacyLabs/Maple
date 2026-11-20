@@ -89,8 +89,8 @@ impl MorphText {
 
     /// Shape the shine: a band `reach` of the line wide on each side of
     /// its centre, crossing in the first `1 - rest` of each cycle and
-    /// resting off the line for the remainder. The defaults (0.3, no
-    /// rest) are the transcript's thinking line.
+    /// resting off the line for the remainder. Without it the band is 0.3
+    /// of the line wide and crosses without a rest.
     pub fn shine_band(mut self, reach: f32, rest: f32) -> Self {
         self.shine_band = ShineBand {
             reach: reach.max(0.01),
@@ -359,13 +359,16 @@ impl Element for MorphText {
             .filter(|_| !crate::ui::motion::loops_paused(window, cx))
             .map(|(cycle, color)| (crate::ui::motion::phase(cycle), color));
         let band = self.shine_band;
+        // While the band rests off the line the text paints as one plain
+        // run; the loop clock keeps ticking so the next pass still starts.
+        let passing = shine.filter(|(phase, _)| *phase < 1. - band.rest);
         let animating = window.with_element_state::<State, _>(id, |state, window| {
             let state = state.unwrap_or_default();
             let progress = state.progress(Instant::now());
             let eased = progress.map(ease);
             let color = state.visual_color(eased, fallback);
             // A letter `x` along the line takes the shine where the band is.
-            let tint = |x: Pixels| match shine {
+            let tint = |x: Pixels| match passing {
                 Some((phase, shine)) if state.width > px(0.) => {
                     mix(color, shine, shine_level(x / state.width, phase, band))
                 }
@@ -426,7 +429,7 @@ impl Element for MorphText {
                     }
                     (true, state)
                 }
-                _ if shine.is_some() => {
+                _ if passing.is_some() => {
                     // The resting line's one layout, each glyph painted in
                     // its own tint. A text run per colour would split the
                     // shaping wherever the colour changes, so letters lose
@@ -521,7 +524,7 @@ mod tests {
         }
         // Halfway through the pass the band sits on the middle of the line.
         assert!((shine_level(0.5, 0.35, band) - 1.).abs() < 1e-4);
-        // Without a rest the thinking line's band never pauses.
+        // Without a rest the default band never pauses.
         assert!(shine_level(1., 0.95, ShineBand::default()) > 0.);
     }
 }

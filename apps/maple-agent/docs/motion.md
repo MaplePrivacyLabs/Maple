@@ -103,7 +103,7 @@ plain title.
 | Disclosure chevrons | rotate 90°, `TOGGLE` | same, reversed |
 | Sidebar collapse | width eases, `PANEL` | same, reversed |
 | Task status in the sidebar, project folders | indicators and folder icons cross-fade, `TOGGLE` | same |
-| A running task in the sidebar | grey dot breathes every 2.4 s; on dark a soft band crosses the title, then rests (4.8 s cycle) | stops at once when the run ends |
+| A running task in the sidebar | grey dot breathes, `RUNNING_BREATH` (2.4 s); on dark a soft band crosses the title, then rests, `RUNNING_SHINE` (4.8 s) | stops at once when the run ends |
 
 Loading spinners for work that usually finishes quickly (opening a task)
 appear only after 300 ms, so fast loads never flash a spinner.

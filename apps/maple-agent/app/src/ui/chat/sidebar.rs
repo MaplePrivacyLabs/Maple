@@ -78,7 +78,6 @@ pub(crate) struct BrowseState {
 use std::cell::RefCell;
 use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
-use std::time::Duration;
 
 use gpui::{
     AnyElement, AppContext, Context, Div, Entity, EventEmitter, Focusable, SharedString,
@@ -4550,11 +4549,8 @@ fn row_fade_background(color: u32) -> gpui::Background {
     )
 }
 
-/// One cycle of a running task's shine: a soft band crosses the title,
-/// then rests off it, twice the dot's breath so the two stay in step.
-const TITLE_SHINE: Duration = Duration::from_millis(4800);
-/// The shine's half-width, as a share of the title, and the share of
-/// [`TITLE_SHINE`] it rests between passes.
+/// The running shine's half-width, as a share of the title, and the share of
+/// [`motion::RUNNING_SHINE`] it rests between passes.
 const TITLE_SHINE_REACH: f32 = 0.55;
 const TITLE_SHINE_REST: f32 = 0.3;
 
@@ -4568,22 +4564,24 @@ fn task_title(title: &SharedString, running: bool) -> AnyElement {
     if !running || theme::is_light() {
         return title.clone().into_any_element();
     }
+    // A renamed or newly titled task swaps its words at once: a letter
+    // morph would break the title's shaping mid-run for nothing.
     morph_text("task-title", title.clone())
-        .shine(TITLE_SHINE, gpui::rgb(theme::sidebar_running_shine()))
+        .instant(true)
+        .shine(
+            motion::RUNNING_SHINE,
+            gpui::rgb(theme::sidebar_running_shine()),
+        )
         .shine_band(TITLE_SHINE_REACH, TITLE_SHINE_REST)
         .into_any_element()
 }
 
-/// One breath of the running dot: calm, so a sidebar of running tasks
-/// does not flicker. The fade runs on the shared low-rate clock, where a
-/// fade reads smooth.
-const RUNNING_BREATH: Duration = Duration::from_millis(2400);
-
-/// A grey dot that breathes while the task runs, a coral reply bubble
-/// while a question waits, an alert once a run failed unseen, and a green
-/// dot once one completed unseen. The marks that ask for you are line
-/// icons and the passive ones are dots, so they differ by shape and not
-/// by colour alone. Every state sits centered in one box the size of the
+/// A grey dot that breathes while the task runs, an amber reply bubble
+/// while a question waits (the colour of a pending state, apart from the
+/// failed alert's red), an alert once a run failed unseen, and a green dot
+/// once one completed unseen. The marks that ask for you are line icons
+/// and the passive ones are dots, so they differ by shape and not by
+/// colour alone. Every state sits centered in one box the size of the
 /// largest, so the title's width stays put as states change, and one
 /// state cross-fades into the next over [`motion::TOGGLE`]. The box is
 /// keyed by `spinner_id`, which names the task, so an indicator that
@@ -4612,7 +4610,7 @@ fn activity_indicator(spinner_id: &SharedString, activity: SessionActivity) -> A
         )
     };
     fn running() -> AnyElement {
-        motion::ticker("running-breath", RUNNING_BREATH, |phase| {
+        motion::ticker("running-breath", motion::RUNNING_BREATH, |phase| {
             let grey = gpui::rgb(theme::sidebar_running());
             // Phase 0 is the full dot, so a paused loop rests on it.
             let breath = motion::pulse(phase, 0.25, 0., 1.);
@@ -4635,7 +4633,7 @@ fn activity_indicator(spinner_id: &SharedString, activity: SessionActivity) -> A
         .flex_none()
         .child(layer("running", SessionActivity::Running, running))
         .child(layer("needs-you", SessionActivity::NeedsYou, || {
-            icon("message-square", px(13.), theme::accent_ink()).into_any_element()
+            icon("message-square", px(13.), theme::status_warning()).into_any_element()
         }))
         .child(layer("failed", SessionActivity::Failed, || {
             icon("circle-alert", px(13.), theme::status_error()).into_any_element()
