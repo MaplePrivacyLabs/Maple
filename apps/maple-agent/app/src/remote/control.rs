@@ -313,6 +313,8 @@ async fn serve_request(
                 },
                 send_id: request.send_id,
                 params: if request.method == wire::Method::TaskBootstrap {
+                    // No request: this computer picks the folder and model,
+                    // as it does for its own desktop's start.
                     serde_json::json!([node.account, null])
                 } else {
                     request.params
