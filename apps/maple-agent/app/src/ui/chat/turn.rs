@@ -25,10 +25,13 @@ use crate::ui::{icons::icon, widgets};
 /// still. The time counts whole seconds, so one repaint a second is enough.
 const RUN_TICK: Duration = Duration::from_secs(1);
 
-/// One lap of the pulse around the mark's outline, and one pass of the
+/// One drawing of the mark's M with the rest after it, and one pass of the
 /// shine across the line's words. Only the words shine; the mark moves
 /// instead.
-const MARK_CYCLE: Duration = Duration::from_millis(2400);
+const MARK_CYCLE: Duration = Duration::from_millis(2600);
+/// The share of `MARK_CYCLE` the pulse spends drawing the M. The mark holds
+/// still for what is left, about 0.6 s, before the next drawing.
+const MARK_STROKE: f32 = 0.77;
 const SHINE_CYCLE: Duration = Duration::from_millis(1900);
 
 /// A transcript row's place in its turn and activity chunk.
@@ -380,7 +383,7 @@ pub(super) fn live_elapsed(worked: Duration) -> String {
 
 #[derive(Clone, Copy)]
 enum Mark {
-    /// The blocks around the M's outline shrink and grow, one after another.
+    /// The blocks along the M's stroke shrink and grow, one after another.
     Working,
     /// Nothing is running: the mark rests in the running tone.
     Resting,
@@ -388,31 +391,47 @@ enum Mark {
     Waiting,
 }
 
+/// The stroke that draws the M, by (row, column): up the left side, through
+/// the notch, and down the right side. The bottom edge is not part of the
+/// letter, so the pulse never runs along it.
+const MARK_PATH: [(usize, usize); 13] = [
+    (4, 0),
+    (3, 0),
+    (2, 0),
+    (1, 0),
+    (0, 0),
+    (1, 1),
+    (2, 2),
+    (1, 3),
+    (0, 4),
+    (1, 4),
+    (2, 4),
+    (3, 4),
+    (4, 4),
+];
+
+/// How far the block at (`row`, `column`) has shrunk, 0 to 1, when a
+/// working mark is `phase` through its cycle. The pulse enters at the
+/// bottom left, leaves at the bottom right, and then every block rests
+/// until the cycle starts again. Blocks off the stroke hold still.
+fn mark_pulse(row: usize, column: usize, phase: f32) -> f32 {
+    /// How many blocks either side of its head the pulse reaches.
+    const REACH: f32 = 1.5;
+    let Some(index) = MARK_PATH.iter().position(|&at| at == (row, column)) else {
+        return 0.;
+    };
+    // The head starts clear of the first block and ends clear of the last,
+    // so the pulse comes in and goes out whole. Past `MARK_STROKE` it is
+    // beyond every block.
+    let travel = MARK_PATH.len() as f32 - 1. + 2. * REACH;
+    let head = phase / MARK_STROKE * travel - REACH;
+    motion::smoothstep((1. - (index as f32 - head).abs() / REACH).max(0.))
+}
+
 /// The Maple mark on a 5 by 5 grid: a block with the notch of the M cut
-/// from its top edge. `phase` is how far a working mark's pulse is around
-/// the outline.
+/// from its top edge. `phase` is how far a working mark is through its
+/// cycle.
 fn maple_mark(mark: Mark, phase: f32) -> Div {
-    /// The M's outline, by (row, column), all the way around: up the left
-    /// side, through the notch, down the right side, and back along the
-    /// bottom.
-    const OUTLINE: [(usize, usize); 16] = [
-        (4, 0),
-        (3, 0),
-        (2, 0),
-        (1, 0),
-        (0, 0),
-        (1, 1),
-        (2, 2),
-        (1, 3),
-        (0, 4),
-        (1, 4),
-        (2, 4),
-        (3, 4),
-        (4, 4),
-        (4, 3),
-        (4, 2),
-        (4, 1),
-    ];
     const SHAPE: [[bool; 5]; 5] = [
         [true, false, false, false, true],
         [true, true, false, true, true],
@@ -440,19 +459,7 @@ fn maple_mark(mark: Mark, phase: f32) -> Div {
             } else {
                 match mark {
                     Mark::Working => {
-                        // The pulse laps the outline without a rest, so
-                        // it is measured the short way round. Blocks
-                        // inside the outline hold still.
-                        let count = OUTLINE.len() as f32;
-                        let head = phase * count;
-                        let level = OUTLINE.iter().position(|&at| at == (row, column)).map_or(
-                            0.,
-                            |index| {
-                                let apart = (index as f32 - head).abs();
-                                let apart = apart.min(count - apart);
-                                motion::smoothstep((1. - apart / 1.5).max(0.))
-                            },
-                        );
+                        let level = mark_pulse(row, column, phase);
                         cell.child(
                             block
                                 .size(CELL * (1. - 0.6 * level))
@@ -1155,5 +1162,41 @@ mod tests {
         assert_eq!(live_elapsed(Duration::from_millis(6_890)), "6s");
         assert_eq!(live_elapsed(Duration::from_millis(59_999)), "59s");
         assert_eq!(live_elapsed(Duration::from_secs(64)), "1:04");
+    }
+
+    /// The pulse draws the letter: it starts at the bottom left, ends at
+    /// the bottom right, never runs along the bottom edge, and then every
+    /// block rests before the next drawing.
+    #[test]
+    fn the_mark_draws_an_m_and_rests_before_the_next() {
+        let shrunk = |phase: f32| -> Vec<(usize, usize)> {
+            (0..5)
+                .flat_map(|row| (0..5).map(move |column| (row, column)))
+                .filter(|&(row, column)| mark_pulse(row, column, phase) > 0.5)
+                .collect()
+        };
+        assert_eq!(shrunk(0.), [], "the pulse comes in from rest");
+        let first = (1..100)
+            .map(|step| shrunk(step as f32 / 100.))
+            .find(|blocks| !blocks.is_empty());
+        assert_eq!(first, Some(vec![(4, 0)]), "it begins at the bottom left");
+        let last = (1..100)
+            .rev()
+            .map(|step| shrunk(step as f32 / 100.))
+            .find(|blocks| !blocks.is_empty());
+        assert_eq!(last, Some(vec![(4, 4)]), "it ends at the bottom right");
+        for step in 0..=100 {
+            let phase = step as f32 / 100.;
+            for column in 1..4 {
+                assert_eq!(mark_pulse(4, column, phase), 0., "bottom edge at {phase}");
+            }
+            if phase >= MARK_STROKE {
+                assert_eq!(shrunk(phase), [], "the mark rests at {phase}");
+            }
+        }
+        assert!(
+            MARK_CYCLE.mul_f32(1. - MARK_STROKE) >= Duration::from_millis(500),
+            "the rest is long enough to read as a pause"
+        );
     }
 }
