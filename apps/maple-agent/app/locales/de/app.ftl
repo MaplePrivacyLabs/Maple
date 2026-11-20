@@ -1585,6 +1585,9 @@ chat-question-label = Frage von Maple
 chat-permission-label = Diese Aktion erlauben?
 chat-permission-allow = Einmal erlauben
 chat-permission-deny = Ablehnen
+chat-permission-note-placeholder = Oder sag Maple, was es stattdessen tun soll…
+# $mode is the name of the task's permission mode, for example Auto.
+chat-permission-mode-hint = Im Modus „{ $mode }“ fragt Maple vor Aktionen wie dieser
 chat-permission-reason-secrets = Dies liest Geheimnisse oder Zugangsdaten.
 chat-permission-reason-secrets-leaving = Dies könnte Geheimnisse von diesem Computer nach außen senden.
 chat-permission-reason-sends-out = Dies sendet oder veröffentlicht etwas außerhalb dieses Computers.
@@ -1599,6 +1602,25 @@ chat-permission-reason-uncertain = Maple ist nicht sicher, ob diese Aktion siche
 chat-permission-reason-unavailable = Maple konnte diese Aktion nicht prüfen.
 chat-permission-reason-too-long = Diese Aktion ist zu lang, um von Maple geprüft zu werden.
 chat-thinking-label = Maple denkt nach
+chat-turn-working = Maple arbeitet
+chat-turn-writing = Maple schreibt
+chat-turn-waiting = Wartet auf dich
+chat-turn-worked = Gearbeitet
+# $seconds is a whole number of seconds, under 60.
+chat-turn-worked-seconds = { $seconds } s gearbeitet
+# $minutes is a whole number of minutes; $seconds is the rest, under 60.
+chat-turn-worked-minutes = { $minutes } min { $seconds } s gearbeitet
+# $count is the number of files a turn changed.
+chat-turn-files-changed = { $count ->
+    [one] { $count } Datei geändert
+   *[other] { $count } Dateien geändert
+    }
+# $count is the number of tool and thinking steps in one activity chunk.
+chat-activity-steps =
+    { $count ->
+        [one] { $count } Schritt
+       *[other] { $count } Schritte
+    }
 chat-settings = Einstellungen
 chat-usage = Nutzung
 chat-usage-unavailable = Nutzung nicht verfügbar
@@ -1718,7 +1740,6 @@ chat-thinking-save-failed = Denkstufe konnte nicht gespeichert werden: { $error 
 chat-composer-placeholder = Bitte Maple, in diesem Ordner zu arbeiten…
 chat-side-thread-placeholder = Stelle eine Nebenfrage (Esc verlässt das Gespräch)…
 chat-queue-edit-placeholder = Bearbeite die eingereihte Nachricht und sende sie, um ihren Platz zu behalten. Escape verwirft sie.
-chat-status-completed = abgeschlossen
 chat-status-failed = fehlgeschlagen
 chat-status-stopped = gestoppt
 chat-status-running = läuft

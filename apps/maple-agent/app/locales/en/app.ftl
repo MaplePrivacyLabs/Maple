@@ -1585,6 +1585,9 @@ chat-question-label = Question from Maple
 chat-permission-label = Allow this action?
 chat-permission-allow = Allow once
 chat-permission-deny = Deny
+chat-permission-note-placeholder = Or tell Maple what to do instead…
+# $mode is the name of the task's permission mode, for example Auto.
+chat-permission-mode-hint = { $mode } asks before actions like this
 chat-permission-reason-secrets = This reads secrets or credentials.
 chat-permission-reason-secrets-leaving = This could send secrets off this computer.
 chat-permission-reason-sends-out = This sends or publishes something outside this computer.
@@ -1599,6 +1602,25 @@ chat-permission-reason-uncertain = Maple isn't sure this is safe to run.
 chat-permission-reason-unavailable = Maple couldn't check this action.
 chat-permission-reason-too-long = This action is too long for Maple to check.
 chat-thinking-label = Maple is thinking
+chat-turn-working = Maple is working
+chat-turn-writing = Maple is writing
+chat-turn-waiting = Waiting for you
+chat-turn-worked = Worked
+# $seconds is a whole number of seconds, under 60.
+chat-turn-worked-seconds = Worked for { $seconds }s
+# $minutes is a whole number of minutes; $seconds is the rest, under 60.
+chat-turn-worked-minutes = Worked for { $minutes }m { $seconds }s
+# $count is the number of files a turn changed.
+chat-turn-files-changed = { $count ->
+    [one] { $count } file changed
+   *[other] { $count } files changed
+    }
+# $count is the number of tool and thinking steps in one activity chunk.
+chat-activity-steps =
+    { $count ->
+        [one] { $count } step
+       *[other] { $count } steps
+    }
 chat-settings = Settings
 chat-usage = Usage
 chat-usage-unavailable = Usage unavailable
@@ -1719,7 +1741,6 @@ chat-thinking-save-failed = Could not save the thinking level: { $error }
 chat-composer-placeholder = Ask Maple to work in this folder…
 chat-side-thread-placeholder = Ask a side question (Esc to leave the thread)…
 chat-queue-edit-placeholder = Edit the queued message, then send to keep its place. Escape discards.
-chat-status-completed = completed
 chat-status-failed = failed
 chat-status-stopped = stopped
 chat-status-running = running
