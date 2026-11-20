@@ -259,6 +259,11 @@ impl ChatScreen {
             .enumerate()
             .map(|(i, item)| (item.id.clone(), (i, 0)))
             .collect();
+        self.turns.rebuild(&self.timeline);
+        self.toggled_turns
+            .retain(|id| self.timeline_index.contains_key(id));
+        self.turn_worked
+            .retain(|id, _| self.timeline_index.contains_key(id));
         self.markdown_cache.clear();
         self.derived.clear();
         self.messages = Default::default();

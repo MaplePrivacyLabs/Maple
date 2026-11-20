@@ -1545,6 +1545,14 @@ chat-permission-reason-uncertain = Maple이 이 동작의 안전 여부를 확�
 chat-permission-reason-unavailable = Maple이 이 동작을 검사하지 못했어요.
 chat-permission-reason-too-long = 이 동작은 너무 길어 Maple이 검사할 수 없어요.
 chat-thinking-label = Maple이 생각하는 중이에요
+chat-turn-working = Maple이 작업하는 중이에요
+chat-turn-writing = Maple이 작성하는 중이에요
+chat-turn-waiting = 응답을 기다리고 있어요
+chat-turn-worked = 작업 완료
+# $seconds is a whole number of seconds, under 60.
+chat-turn-worked-seconds = { $seconds }초 동안 작업했어요
+# $minutes is a whole number of minutes; $seconds is the rest, under 60.
+chat-turn-worked-minutes = { $minutes }분 { $seconds }초 동안 작업했어요
 chat-settings = 설정
 chat-usage = 사용량
 chat-usage-unavailable = 사용량을 확인할 수 없음
