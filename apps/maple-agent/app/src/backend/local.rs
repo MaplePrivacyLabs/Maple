@@ -583,6 +583,25 @@ fn gui_start_root(
     }
 }
 
+/// The request a GUI start runs with: one that names no folder starts in
+/// `gui_start_root`. This computer's desktop sends its model and no folder.
+/// A paired controller's start arrives with no request at all, and it is a
+/// GUI start too: it reads its project from the same navigation, which names
+/// `gui_project_root`, so that folder has to be on disk for its first task.
+fn gui_start_request(
+    request: Option<AgentStartRequest>,
+    config: &maple_agent::agent::AgentConfig,
+    workspace: Option<&std::path::Path>,
+) -> AgentStartRequest {
+    match request {
+        Some(request) if request.project_root.is_some() => request,
+        rootless => AgentStartRequest {
+            project_root: gui_start_root(config, workspace),
+            model: rootless.and_then(|request| request.model),
+        },
+    }
+}
+
 #[derive(Clone, Eq, PartialEq)]
 struct PersistedAuthRecord {
     owner: maple_agent::store::records::CredentialOwner,
@@ -2689,29 +2708,19 @@ impl LocalBackend {
         let session = self.session_for(user_id).await?;
         // The agent falls back to the process working directory when no root
         // is given. That is right for `maple acp`, not for the GUI: pick the
-        // saved root or the built-in workspace instead.
-        let request = match request {
-            Some(AgentStartRequest {
-                project_root: None,
-                model,
-            }) => {
-                let config = handle.load_config().await?;
-                let workspace = self
-                    .open_store()?
-                    .maple_workspace_path()
-                    .map_err(|e| e.to_string())?;
-                Some(AgentStartRequest {
-                    project_root: gui_start_root(&config, workspace.as_deref()),
-                    model,
-                })
-            }
-            other => other,
-        };
+        // saved root or the built-in workspace instead. Only GUIs start a
+        // runtime here, this computer's desktop and paired controllers.
+        let config = handle.load_config().await?;
+        let workspace = self
+            .open_store()?
+            .maple_workspace_path()
+            .map_err(|e| e.to_string())?;
+        let request = gui_start_request(request, &config, workspace.as_deref());
         // A wedged enclave connection must surface as an error, not an
         // eternal spinner.
         tokio::time::timeout(
             std::time::Duration::from_secs(60),
-            handle.start(session, request),
+            handle.start(session, Some(request)),
         )
         .await
         .map_err(|_| "Runtime start timed out. Check your connection and retry.".to_string())?
@@ -3827,6 +3836,46 @@ mod project_names_tests;
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_start_that_names_no_folder_is_a_gui_start_with_or_without_a_request() {
+        let saved = tempfile::tempdir().unwrap();
+        let saved_root = saved.path().to_string_lossy().to_string();
+        let config = maple_agent::agent::AgentConfig {
+            default_project_root: Some(saved_root.clone()),
+            ..Default::default()
+        };
+        let desktop = AgentStartRequest {
+            project_root: None,
+            model: Some("fixture-model".into()),
+        };
+        // A paired controller's start arrives with no request; the desktop's
+        // carries its model and no folder. Both start in the saved folder.
+        for (request, model) in [(None, None), (Some(desktop), Some("fixture-model"))] {
+            let start = gui_start_request(request, &config, None);
+            assert_eq!(start.project_root.as_deref(), Some(saved_root.as_str()));
+            assert_eq!(start.model.as_deref(), model);
+        }
+
+        // With no saved folder the built-in workspace is the root, and the
+        // start is what creates it. This stand-in is not the real workspace,
+        // so creating it is refused and the start lands in home. Getting home
+        // back, not the stand-in and not the process working directory, shows
+        // a start with no request reached the workspace-creating path without
+        // this test touching the real Documents folder.
+        let stand_in = saved.path().join("Maple").join("Workspace");
+        let start = gui_start_request(None, &Default::default(), Some(&stand_in));
+        assert_eq!(start.project_root, fallback_project_root());
+        assert!(!stand_in.exists());
+
+        // A start that names its folder keeps it.
+        let named = AgentStartRequest {
+            project_root: Some("/named/by/the/caller".into()),
+            model: None,
+        };
+        let start = gui_start_request(Some(named), &config, Some(&stand_in));
+        assert_eq!(start.project_root.as_deref(), Some("/named/by/the/caller"));
+    }
 
     #[tokio::test]
     async fn remote_mcp_host_boundary_accepts_write_only_values_and_keeps_account_fences() {
