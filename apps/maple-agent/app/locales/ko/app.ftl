@@ -1531,6 +1531,9 @@ chat-question-label = Maple의 질문
 chat-permission-label = 이 동작을 허용할까요?
 chat-permission-allow = 한 번 허용
 chat-permission-deny = 거부
+chat-permission-note-placeholder = 또는 Maple에게 대신 할 일을 알려주세요…
+# $mode is the name of the task's permission mode, for example Auto.
+chat-permission-mode-hint = '{ $mode }' 모드는 이런 동작을 하기 전에 물어봐요
 chat-permission-reason-secrets = 비밀 정보 또는 자격 증명을 읽어요.
 chat-permission-reason-secrets-leaving = 비밀 정보를 이 컴퓨터 밖으로 보낼 수 있어요.
 chat-permission-reason-sends-out = 이 컴퓨터 밖으로 무언가를 보내거나 게시해요.
@@ -1545,6 +1548,18 @@ chat-permission-reason-uncertain = Maple이 이 동작의 안전 여부를 확�
 chat-permission-reason-unavailable = Maple이 이 동작을 검사하지 못했어요.
 chat-permission-reason-too-long = 이 동작은 너무 길어 Maple이 검사할 수 없어요.
 chat-thinking-label = Maple이 생각하는 중이에요
+chat-turn-working = Maple이 작업하는 중이에요
+chat-turn-writing = Maple이 작성하는 중이에요
+chat-turn-waiting = 응답을 기다리고 있어요
+chat-turn-worked = 작업 완료
+# $seconds is a whole number of seconds, under 60.
+chat-turn-worked-seconds = { $seconds }초 동안 작업했어요
+# $minutes is a whole number of minutes; $seconds is the rest, under 60.
+chat-turn-worked-minutes = { $minutes }분 { $seconds }초 동안 작업했어요
+# $count is the number of files a turn changed.
+chat-turn-files-changed = 파일 { $count }개 변경됨
+# $count is the number of tool and thinking steps in one activity chunk.
+chat-activity-steps = 단계 { $count }개
 chat-settings = 설정
 chat-usage = 사용량
 chat-usage-unavailable = 사용량을 확인할 수 없음
@@ -1664,7 +1679,6 @@ chat-thinking-save-failed = 사고 수준을 저장하지 못했어요: { $error
 chat-composer-placeholder = 이 폴더에서 할 작업을 Maple에 요청하세요…
 chat-side-thread-placeholder = 곁가지 질문을 입력하세요(Esc로 스레드 나가기)…
 chat-queue-edit-placeholder = 대기 중인 메시지를 편집한 뒤 보내면 순서가 유지돼요. Escape를 누르면 취소돼요.
-chat-status-completed = 완료됨
 chat-status-failed = 실패
 chat-status-stopped = 중지됨
 chat-status-running = 실행 중

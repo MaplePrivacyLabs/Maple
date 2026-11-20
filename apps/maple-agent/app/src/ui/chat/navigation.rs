@@ -14,6 +14,7 @@ use super::ChatScreen;
 use super::commands::ChatCommand;
 use super::composer::ComposerControl;
 use super::transcript::{PlanStatus, attachment_refs, has_tool_input, plan_entries, plan_finished};
+use super::turn::TurnRow;
 use crate::ui::application_vim::{self, CountOutcome, CountState, SpatialDirection};
 use crate::ui::i18n::UiText;
 use crate::ui::text_input::vim::VimMode;
@@ -660,6 +661,11 @@ impl ChatScreen {
         let Some(&(index, _)) = self.timeline_index.get(&item_id) else {
             return;
         };
+        // A chunk's first row selects its disclosure header.
+        if matches!(self.turns.row(index), TurnRow::Lead | TurnRow::Chunk) {
+            self.toggle_chunk(&item_id, cx);
+            return;
+        }
         let Some(item) = self.timeline.get(index) else {
             return;
         };
@@ -704,6 +710,15 @@ impl ChatScreen {
             return;
         }
         let current = self.tool_details != self.toggled_tools.contains(item_id);
+        // Open the chunk before its first step's details, and fold it
+        // after those details have closed.
+        if matches!(self.turns.row(index), TurnRow::Lead | TurnRow::Chunk)
+            && self.chunk_open(index) != expanded
+            && (expanded || !current)
+        {
+            self.toggle_chunk(item_id, cx);
+            return;
+        }
         if current != expanded {
             if !self.toggled_tools.insert(item_id.to_owned()) {
                 self.toggled_tools.remove(item_id);
@@ -782,9 +797,38 @@ impl ChatScreen {
     pub(super) fn navigable_timeline_ids(&self) -> Vec<String> {
         self.timeline
             .iter()
-            .filter(|item| timeline_item_is_navigable(item))
-            .map(|item| item.id.clone())
+            .enumerate()
+            .filter(|(index, item)| self.timeline_row_navigable(*index, item))
+            .map(|(_, item)| item.id.clone())
             .collect()
+    }
+
+    /// A folded chunk keeps its header navigable and hides its later steps.
+    fn timeline_row_navigable(&self, index: usize, item: &AgentTimelineItem) -> bool {
+        match self.turns.row(index) {
+            TurnRow::Lead | TurnRow::Chunk => true,
+            TurnRow::Step(lead) => self.chunk_open(lead) && timeline_item_is_navigable(item),
+            TurnRow::Plain => timeline_item_is_navigable(item),
+        }
+    }
+
+    /// Folding a chunk moves a hidden selection to its header.
+    pub(super) fn keep_application_selection_shown(&mut self, lead: usize) {
+        if !self.application_vim_enabled {
+            return;
+        }
+        let Some(task_id) = self.selected_session.clone() else {
+            return;
+        };
+        let hidden = self
+            .selected_transcript_id()
+            .and_then(|id| self.timeline_index.get(id))
+            .is_some_and(|(index, _)| self.turns.row(*index) == TurnRow::Step(lead));
+        if hidden && let Some(item) = self.timeline.get(lead) {
+            self.application_vim
+                .transcript_by_task
+                .insert(task_id, item.id.clone());
+        }
     }
 
     fn ensure_transcript_application_selection(&mut self) {
@@ -935,8 +979,10 @@ impl ChatScreen {
         let newest = self
             .timeline
             .iter()
+            .enumerate()
             .rev()
-            .find(|item| timeline_item_is_navigable(item));
+            .find(|(index, item)| self.timeline_row_navigable(*index, item))
+            .map(|(_, item)| item);
         if let Some(item) = newest {
             self.application_vim
                 .transcript_by_task
@@ -962,10 +1008,11 @@ impl ChatScreen {
         cx: &mut Context<Self>,
     ) {
         if !self.application_vim_enabled
-            || !self
-                .timeline
-                .iter()
-                .any(|item| item.id == item_id && timeline_item_is_navigable(item))
+            || !self.timeline_index.get(item_id).is_some_and(|(index, _)| {
+                self.timeline
+                    .get(*index)
+                    .is_some_and(|item| self.timeline_row_navigable(*index, item))
+            })
         {
             return;
         }
@@ -1179,7 +1226,7 @@ impl ChatScreen {
     }
 }
 
-fn timeline_item_is_navigable(item: &AgentTimelineItem) -> bool {
+pub(super) fn timeline_item_is_navigable(item: &AgentTimelineItem) -> bool {
     if item.item_type == "internal" {
         return false;
     }

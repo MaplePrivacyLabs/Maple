@@ -1,6 +1,7 @@
 # English each translation was last reviewed against. Written by `just translations-reviewed`.
 chat-absolute-path a2ba378ac24704c4
 chat-active 196d1c9462f99ad3
+chat-activity-steps a12bb21490dd0f51
 chat-agent-task-cancelled e26bb0917a4c240b
 chat-agents-running 15f7861d7b1f2dc3
 chat-all-settings f521b783e34e05d0
@@ -230,6 +231,8 @@ chat-page-settled-retry 7819952f23b4deca
 chat-permission-allow 48955332314aface
 chat-permission-deny 247877b375d74e51
 chat-permission-label 003c13cd34c8664b
+chat-permission-mode-hint 3d0a17c847edd1fc
+chat-permission-note-placeholder c0d5f880b0115262
 chat-permission-reason-changes-outside-project 419d3ad8e0d467ef
 chat-permission-reason-changes-project be40ea472bf88e4c
 chat-permission-reason-destructive 7abdcab1435c106b
@@ -351,7 +354,6 @@ chat-staging-unsafe-directory 13ed7aa88e08c0a8
 chat-starting f00ec83fc396c4b0
 chat-starting-agent 0e61b8da983ef787
 chat-status-allowed 11310a7438dc9e0c
-chat-status-completed f7f8f9dd4adb3a0c
 chat-status-denied deee947bb13482c4
 chat-status-done 54904e435ce0c52e
 chat-status-failed 3aa7979f86ebefa0
@@ -401,6 +403,13 @@ chat-trust-description 1e3842500e30ef07
 chat-trust-keep d6e02ad22aeeeba6
 chat-trust-saved 92a4e34ef0b734ae
 chat-trust-title 4a6389783686eec6
+chat-turn-files-changed 708debceb2de53ea
+chat-turn-waiting 130514d0bacc91a7
+chat-turn-worked 5dcfb6d76e519bf9
+chat-turn-worked-minutes 9b13b6f2c1f967be
+chat-turn-worked-seconds 4807eaf86de7008a
+chat-turn-working e96e500129b24c76
+chat-turn-writing 99f475aed0d017b8
 chat-unpin 4aee1206999bb9d1
 chat-unpin-task b4d9f9b7b531c64a
 chat-untrust-project ff48514cda33c012
