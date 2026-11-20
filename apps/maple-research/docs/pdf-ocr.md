@@ -16,7 +16,7 @@ The runtime is part of the application package; users do not download it when op
 | Linux | Microsoft's x64 or aarch64 shared library, installed under Maple's private library directory. |
 | Windows | Microsoft's x64 DLL, installed next to `maple.exe` and loaded by its explicit path. |
 | Android | Microsoft's official Android AAR, with `libonnxruntime.so` staged for arm64-v8a, armeabi-v7a, x86, and x86_64. |
-| iOS | A deterministic device/simulator XCFramework built from the pinned Microsoft source commit and linked statically. The commit is fetched from Microsoft's repository or, when that is unavailable, from a public fork; the commit ID and the pinned library hashes decide what is accepted. |
+| iOS | A deterministic device/simulator XCFramework built from the pinned Microsoft source commit and linked statically. The commit is fetched from Microsoft's repository or, when that is unavailable, from [Maple's fork](https://github.com/MaplePrivacyLabs/onnxruntime) or another public fork; the commit ID and the pinned library hashes decide what is accepted. |
 
 Maple owns loader policy through PDFOxide's loader-neutral `ocr-ort` feature. Dynamic targets initialize the exact packaged library before OCR creates a session. iOS initializes the same Rust API against its static library. Cargo resolves exactly one `ort` version per target.
 

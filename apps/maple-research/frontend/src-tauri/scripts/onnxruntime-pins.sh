@@ -153,10 +153,13 @@ onnxruntime_ios_commit_for_version() {
 # Git remotes that serve the pinned iOS source commit, tried in order. The
 # commit ID pins the source and the library hashes below pin the build output,
 # so a remote decides availability, never content. Microsoft's repository has
-# returned 404 since 2026-11-17; Intel's public fork carries the same commit.
+# returned 404 since 2026-11-17. Maple's fork keeps the commit under the tag
+# maple-pin-v<version>, so a new pin needs a new tag there; Intel's public fork
+# carries the same commit without a ref.
 onnxruntime_ios_source_remotes() {
   printf '%s\n' \
     "https://github.com/microsoft/onnxruntime.git" \
+    "https://github.com/MaplePrivacyLabs/onnxruntime.git" \
     "https://github.com/intel/onnxruntime.git"
 }
 
