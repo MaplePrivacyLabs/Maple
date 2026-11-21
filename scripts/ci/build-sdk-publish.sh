@@ -29,7 +29,10 @@ import subprocess
 import sys
 
 root, stage = map(Path, sys.argv[1:])
-tracked = subprocess.check_output(["git", "-C", str(root), "ls-files", "-z", "sdk"])
+# The SDK's tests compare its embedded trust inputs with these reviewed copies.
+trust_anchors = ["scripts/ci/opensecret-release/dev-signing-key.pem",
+                 "scripts/ci/opensecret-release/trusted_root.json"]
+tracked = subprocess.check_output(["git", "-C", str(root), "ls-files", "-z", "sdk", *trust_anchors])
 for raw in tracked.split(b"\0"):
     if not raw:
         continue
@@ -84,6 +87,8 @@ nix develop --no-update-lock-file ./sdk -c bash -euo pipefail -c '
           --timeout 30000
       bun --no-env-file pm pack --ignore-scripts --filename "${build_dir}/package.tgz"
       python3 -I "${repo_root}/scripts/ci/check-sdk-package-consumers.py" \
+        "${build_dir}/sdk" "${build_dir}/package.tgz"
+      python3 -I "${repo_root}/scripts/ci/check-sdk-packed-release-evidence.py" \
         "${build_dir}/sdk" "${build_dir}/package.tgz"
       cp "${build_dir}/package.tgz" "${output_dir}/package.tgz"
       ;;

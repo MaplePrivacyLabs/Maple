@@ -157,6 +157,14 @@ class LaneTableTests(unittest.TestCase):
         # SDK tests are not Research build inputs.
         self.assertNotIn("research-web", selected(["sdk/src/lib/test/ai.test.ts"], PR))
 
+    def test_reviewed_release_trust_inputs_select_the_typescript_sdk(self):
+        # The SDK lane compares its embedded copies with these reviewed files.
+        for path in ("scripts/ci/opensecret-release/dev-signing-key.pem",
+                     "scripts/ci/opensecret-release/trusted_root.json"):
+            for event in (PR, PUSH):
+                with self.subTest(path=path, event=event):
+                    self.assertIn("sdk-ts", selected([path], event))
+
     def test_release_metadata_and_publisher_inputs_select_the_repo_lane(self):
         for path in ("apps/maple-research/frontend/package.json", "apps/maple-research/frontend/src-tauri/Cargo.toml",
                      "apps/maple-research/frontend/src-tauri/tauri.conf.json", "proxy/justfile", ".github/CODEOWNERS",
@@ -581,6 +589,7 @@ class OpenSecretLaneTests(unittest.TestCase):
             (backend + "pcrDev.json", {"os-pcr"}, {"os-pcr"}),
             (backend + "docs/nitro-deploy.md", set(), set()),
             ("sdk/test/integration/bootstrap.sql", {"os-sdk-e2e"}, {"os-sdk-e2e"}),
+            ("sdk/test/fixtures/managed-key/manifest.json", {"sdk-ts", "os-sdk-e2e"}, {"sdk-ts", "os-sdk-e2e"}),
             ("scripts/ci/build_opensecret_eif.sh", {"os-eif", "repo"}, {"repo"}),
             (".gitmodules", OPENSECRET_ALL, OPENSECRET_ALL - {"os-eif"}),
             (backend + "Cargo.lock", OPENSECRET_ALL | {"deps-opensecret"}, OPENSECRET_ALL - {"os-eif"} | {

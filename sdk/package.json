@@ -43,6 +43,8 @@
     "fast-uri": "3.1.9"
   },
   "dependencies": {
+    "@freedomofpress/crypto-browser": "0.3.0",
+    "@freedomofpress/sigstore-browser": "git+https://github.com/MaplePrivacyLabs/sigstore-browser.git#b2b056000dec3e70f4fe5fd00f8ec2ae44758308",
     "@peculiar/x509": "1.14.3",
     "@stablelib/base64": "2.0.1",
     "@stablelib/chacha20poly1305": "2.0.1",
