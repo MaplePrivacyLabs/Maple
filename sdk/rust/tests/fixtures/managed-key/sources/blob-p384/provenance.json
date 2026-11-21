@@ -1,0 +1,11 @@
+{
+  "detail": "Cosign v3.1.4 sign-blob, throwaway P-384 key, log2025-1.rekor.sigstore.dev index 206090685, 2026-11-19T15:13:51Z",
+  "tool": "cosign v3.1.4 (source commit 0e48502cf5ef34e2e60bbd3617aa19945712f705, linux-amd64 sha256 424e2c97d0b45fd7a6b608a87f090f35633f4c23ece5f092d48bba11aaf4bbfa)",
+  "command": "cosign sign-blob --key <throwaway key> --signing-config ../signing-config.v0.2.json --trusted-root ../trusted_root.production.json --bundle bundle.sigstore.json --yes artifact.bin",
+  "key": "throwaway P-384 key generated for this signature only; private key deleted afterwards",
+  "log": "https://log2025-1.rekor.sigstore.dev (Rekor v2)",
+  "log_index": 206090685,
+  "signed_at": "2026-11-19T15:13:51Z",
+  "timestamp_authority": "https://timestamp.sigstore.dev/api/v1/timestamp",
+  "verified_with": "cosign v3.1.4 verify-blob --use-signed-timestamps --trusted-root ../trusted_root.production.json: Verified OK"
+}

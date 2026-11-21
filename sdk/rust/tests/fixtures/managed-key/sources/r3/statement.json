@@ -1,0 +1,28 @@
+{
+  "_type": "https://in-toto.io/Statement/v1",
+  "subject": [
+    {
+      "name": "synthetic-artifact-r3.bin",
+      "digest": {
+        "sha256": "dba26f75c3d8c049c5ab75baf6ff338c4b7c2a117684feee2e933fda83532c85"
+      }
+    }
+  ],
+  "predicateType": "https://example.com/sigstore-test/release-approval/v1",
+  "predicate": {
+    "environment": "test-environment-a",
+    "source": {
+      "repository": "https://example.com/synthetic/not-a-repository",
+      "commit": "0123456789abcdef0123456789abcdef01234567"
+    },
+    "measurements": {
+      "PCR0": "777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777",
+      "PCR1": "888888888888888888888888888888888888888888888888888888888888888888888888888888888888888888888888",
+      "PCR2": "999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999"
+    },
+    "build": {
+      "runId": "0",
+      "runAttempt": 1
+    }
+  }
+}

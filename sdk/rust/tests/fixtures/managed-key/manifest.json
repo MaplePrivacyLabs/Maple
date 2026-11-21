@@ -1,0 +1,1937 @@
+{
+  "description": "Managed-key DSSE and messageSignature / Rekor v2 / RFC 3161 test vectors. See README.md and PROFILE.md.",
+  "generator": "generate.py",
+  "sources": {
+    "r1": {
+      "detail": "Cosign v3.1.4 attest-blob, throwaway P-384 key, log2025-1.rekor.sigstore.dev index 203224330, 2026-11-17T20:47:29Z",
+      "tool": "cosign v3.1.4 (source commit 0e48502cf5ef34e2e60bbd3617aa19945712f705, linux-amd64 sha256 424e2c97d0b45fd7a6b608a87f090f35633f4c23ece5f092d48bba11aaf4bbfa)",
+      "command": "cosign attest-blob --key <throwaway key> --statement statement.json --signing-config ../signing-config.v0.2.json --trusted-root ../trusted_root.production.json --bundle bundle.sigstore.json --yes artifact.bin",
+      "key": "throwaway P-384 key generated for this signature only; private key deleted afterwards",
+      "log": "https://log2025-1.rekor.sigstore.dev (Rekor v2)",
+      "log_index": 203224330,
+      "signed_at": "2026-11-17T20:47:29Z",
+      "timestamp_authority": "https://timestamp.sigstore.dev/api/v1/timestamp",
+      "verified_with": "cosign v3.1.4 verify-blob-attestation --use-signed-timestamps --trusted-root ../trusted_root.production.json: Verified OK"
+    },
+    "r2": {
+      "detail": "Cosign v3.1.4 attest-blob, throwaway P-384 key, log2025-1.rekor.sigstore.dev index 203225009, 2026-11-17T20:48:15Z",
+      "tool": "cosign v3.1.4 (source commit 0e48502cf5ef34e2e60bbd3617aa19945712f705, linux-amd64 sha256 424e2c97d0b45fd7a6b608a87f090f35633f4c23ece5f092d48bba11aaf4bbfa)",
+      "command": "cosign attest-blob --key <throwaway key> --statement statement.json --signing-config ../signing-config.v0.2.json --trusted-root ../trusted_root.production.json --bundle bundle.sigstore.json --yes artifact.bin",
+      "key": "throwaway P-384 key generated for this signature only; private key deleted afterwards",
+      "log": "https://log2025-1.rekor.sigstore.dev (Rekor v2)",
+      "log_index": 203225009,
+      "signed_at": "2026-11-17T20:48:15Z",
+      "timestamp_authority": "https://timestamp.sigstore.dev/api/v1/timestamp",
+      "verified_with": "cosign v3.1.4 verify-blob-attestation --use-signed-timestamps --trusted-root ../trusted_root.production.json: Verified OK"
+    },
+    "r3": {
+      "detail": "Cosign v3.1.4 attest-blob, throwaway P-256 key, log2025-1.rekor.sigstore.dev index 203225522, 2026-11-17T20:48:44Z",
+      "tool": "cosign v3.1.4 (source commit 0e48502cf5ef34e2e60bbd3617aa19945712f705, linux-amd64 sha256 424e2c97d0b45fd7a6b608a87f090f35633f4c23ece5f092d48bba11aaf4bbfa)",
+      "command": "cosign attest-blob --key <throwaway key> --statement statement.json --signing-config ../signing-config.v0.2.json --trusted-root ../trusted_root.production.json --bundle bundle.sigstore.json --yes artifact.bin",
+      "key": "throwaway P-256 key generated for this signature only; private key deleted afterwards",
+      "log": "https://log2025-1.rekor.sigstore.dev (Rekor v2)",
+      "log_index": 203225522,
+      "signed_at": "2026-11-17T20:48:44Z",
+      "timestamp_authority": "https://timestamp.sigstore.dev/api/v1/timestamp",
+      "verified_with": "cosign v3.1.4 verify-blob-attestation --use-signed-timestamps --trusted-root ../trusted_root.production.json: Verified OK"
+    },
+    "blob-p384": {
+      "detail": "Cosign v3.1.4 sign-blob, throwaway P-384 key, log2025-1.rekor.sigstore.dev index 206090685, 2026-11-19T15:13:51Z",
+      "tool": "cosign v3.1.4 (source commit 0e48502cf5ef34e2e60bbd3617aa19945712f705, linux-amd64 sha256 424e2c97d0b45fd7a6b608a87f090f35633f4c23ece5f092d48bba11aaf4bbfa)",
+      "command": "cosign sign-blob --key <throwaway key> --signing-config ../signing-config.v0.2.json --trusted-root ../trusted_root.production.json --bundle bundle.sigstore.json --yes artifact.bin",
+      "key": "throwaway P-384 key generated for this signature only; private key deleted afterwards",
+      "log": "https://log2025-1.rekor.sigstore.dev (Rekor v2)",
+      "log_index": 206090685,
+      "signed_at": "2026-11-19T15:13:51Z",
+      "timestamp_authority": "https://timestamp.sigstore.dev/api/v1/timestamp",
+      "verified_with": "cosign v3.1.4 verify-blob --use-signed-timestamps --trusted-root ../trusted_root.production.json: Verified OK"
+    },
+    "blob-p256b": {
+      "detail": "Cosign v3.1.4 sign-blob, throwaway P-256 key, log2025-1.rekor.sigstore.dev index 206171412, 2026-11-19T16:09:22Z",
+      "tool": "cosign v3.1.4 (source commit 0e48502cf5ef34e2e60bbd3617aa19945712f705, linux-amd64 sha256 424e2c97d0b45fd7a6b608a87f090f35633f4c23ece5f092d48bba11aaf4bbfa)",
+      "command": "cosign sign-blob --key <throwaway key> --signing-config ../signing-config.v0.2.json --trusted-root ../trusted_root.production.json --bundle bundle.sigstore.json --yes artifact.bin",
+      "key": "throwaway P-256 key generated for this signature only; private key deleted afterwards",
+      "log": "https://log2025-1.rekor.sigstore.dev (Rekor v2)",
+      "log_index": 206171412,
+      "signed_at": "2026-11-19T16:09:22Z",
+      "timestamp_authority": "https://timestamp.sigstore.dev/api/v1/timestamp",
+      "verified_with": "cosign v3.1.4 verify-blob --use-signed-timestamps --trusted-root ../trusted_root.production.json: Verified OK"
+    }
+  },
+  "test_logs": {
+    "test-log-a.rekor.example.com": {
+      "origin": "test-log-a.rekor.example.com",
+      "log_id": "NPPS23Orcle5riSorgV1IScFXGgBbI4v7O2EgUspwPM=",
+      "rekor_api": 2
+    },
+    "test-log-b.rekor.example.com": {
+      "origin": "test-log-b.rekor.example.com",
+      "log_id": "gs3vw4WIODjbujOANlZvnlA/WH4G/SNxHjS1ui+1zoU=",
+      "rekor_api": 2
+    },
+    "test-log-v1.rekor.example.com": {
+      "origin": "test-log-v1.rekor.example.com - 1",
+      "log_id": "PoeMkSWYiAcucIYN5oK91CcuykklwYVksPylTDRohJY=",
+      "rekor_api": 1
+    }
+  },
+  "vectors": [
+    {
+      "id": "p384-rekor2-dsse-tsa",
+      "description": "P-384 managed key, DSSE in-toto statement, Rekor v2 hashedrekord 0.0.2 entry, RFC 3161 timestamp",
+      "category": "positive",
+      "bundle": "vectors/p384-rekor2-dsse-tsa/bundle.sigstore.json",
+      "trusted_root": "roots/production.json",
+      "key": "keys/r1.pub",
+      "artifact": "artifacts/r1.bin",
+      "source": {
+        "kind": "real",
+        "detail": "Cosign v3.1.4 attest-blob, throwaway P-384 key, log2025-1.rekor.sigstore.dev index 203224330, 2026-11-17T20:47:29Z"
+      },
+      "parent": null,
+      "mutation": null,
+      "expected": {
+        "library": {
+          "result": "accept"
+        },
+        "library_checkpoint_log_binding": {
+          "result": "accept"
+        },
+        "profile": {
+          "result": "accept"
+        }
+      },
+      "cosign": "accept"
+    },
+    {
+      "id": "p384-rekor2-dsse-tsa-second-key",
+      "description": "Second P-384 positive: different key and statement",
+      "category": "positive",
+      "bundle": "vectors/p384-rekor2-dsse-tsa-second-key/bundle.sigstore.json",
+      "trusted_root": "roots/production.json",
+      "key": "keys/r2.pub",
+      "artifact": "artifacts/r2.bin",
+      "source": {
+        "kind": "real",
+        "detail": "Cosign v3.1.4 attest-blob, throwaway P-384 key, log2025-1.rekor.sigstore.dev index 203225009, 2026-11-17T20:48:15Z"
+      },
+      "parent": null,
+      "mutation": null,
+      "expected": {
+        "library": {
+          "result": "accept"
+        },
+        "library_checkpoint_log_binding": {
+          "result": "accept"
+        },
+        "profile": {
+          "result": "accept"
+        }
+      },
+      "cosign": "accept"
+    },
+    {
+      "id": "p256-rekor2-dsse-tsa",
+      "description": "P-256 managed key, DSSE, Rekor v2, RFC 3161 timestamp",
+      "category": "positive",
+      "bundle": "vectors/p256-rekor2-dsse-tsa/bundle.sigstore.json",
+      "trusted_root": "roots/production.json",
+      "key": "keys/r3.pub",
+      "artifact": "artifacts/r3.bin",
+      "source": {
+        "kind": "real",
+        "detail": "Cosign v3.1.4 attest-blob, throwaway P-256 key, log2025-1.rekor.sigstore.dev index 203225522, 2026-11-17T20:48:44Z"
+      },
+      "parent": null,
+      "mutation": null,
+      "expected": {
+        "library": {
+          "result": "accept"
+        },
+        "library_checkpoint_log_binding": {
+          "result": "accept"
+        },
+        "profile": {
+          "result": "accept"
+        }
+      },
+      "cosign": "accept"
+    },
+    {
+      "id": "p384-checkpoint-witnesses-removed",
+      "description": "Checkpoint keeps only the log's own signature line",
+      "category": "positive",
+      "bundle": "vectors/p384-checkpoint-witnesses-removed/bundle.sigstore.json",
+      "trusted_root": "roots/production.json",
+      "key": "keys/r1.pub",
+      "artifact": "artifacts/r1.bin",
+      "source": {
+        "kind": "derived",
+        "detail": "single documented mutation of the parent, made by generate.py"
+      },
+      "parent": "p384-rekor2-dsse-tsa",
+      "mutation": "remove every witness cosignature line from the checkpoint",
+      "expected": {
+        "library": {
+          "result": "accept"
+        },
+        "library_checkpoint_log_binding": {
+          "result": "accept"
+        },
+        "profile": {
+          "result": "accept"
+        }
+      },
+      "cosign": "accept"
+    },
+    {
+      "id": "p384-checkpoint-log-signature-last",
+      "description": "Log signature line after the witness lines",
+      "category": "positive",
+      "bundle": "vectors/p384-checkpoint-log-signature-last/bundle.sigstore.json",
+      "trusted_root": "roots/production.json",
+      "key": "keys/r1.pub",
+      "artifact": "artifacts/r1.bin",
+      "source": {
+        "kind": "derived",
+        "detail": "single documented mutation of the parent, made by generate.py"
+      },
+      "parent": "p384-rekor2-dsse-tsa",
+      "mutation": "move the log's signature line after the witness cosignature lines",
+      "expected": {
+        "library": {
+          "result": "accept"
+        },
+        "library_checkpoint_log_binding": {
+          "result": "accept"
+        },
+        "profile": {
+          "result": "accept"
+        }
+      },
+      "cosign": "accept"
+    },
+    {
+      "id": "p384-rekor2-blob-tsa",
+      "description": "P-384 managed key, messageSignature over the artifact, Rekor v2 hashedrekord 0.0.2 entry, RFC 3161 timestamp",
+      "category": "positive",
+      "bundle": "vectors/p384-rekor2-blob-tsa/bundle.sigstore.json",
+      "trusted_root": "roots/production.json",
+      "key": "keys/blob-p384.pub",
+      "artifact": "artifacts/blob-p384.bin",
+      "source": {
+        "kind": "real",
+        "detail": "Cosign v3.1.4 sign-blob, throwaway P-384 key, log2025-1.rekor.sigstore.dev index 206090685, 2026-11-19T15:13:51Z"
+      },
+      "parent": null,
+      "mutation": null,
+      "expected": {
+        "library": {
+          "result": "accept"
+        },
+        "library_checkpoint_log_binding": {
+          "result": "accept"
+        },
+        "profile": {
+          "result": "accept"
+        }
+      },
+      "cosign": "accept"
+    },
+    {
+      "id": "p384-blob-verified-with-other-key",
+      "description": "Bundle checked against a different approved key (e.g. another environment's), with that key's hint",
+      "category": "standard-negative",
+      "bundle": "vectors/p384-blob-verified-with-other-key/bundle.sigstore.json",
+      "trusted_root": "roots/production.json",
+      "key": "keys/r2.pub",
+      "artifact": "artifacts/blob-p384.bin",
+      "source": {
+        "kind": "derived",
+        "detail": "single documented mutation of the parent, made by generate.py"
+      },
+      "parent": "p384-rekor2-blob-tsa",
+      "mutation": "set publicKey.hint to the r2 key's hint and verify with the r2 key",
+      "expected": {
+        "library": {
+          "result": "reject",
+          "error": "SignatureInvalid",
+          "message": "signature verification failed",
+          "code": "message-signature-invalid"
+        },
+        "library_checkpoint_log_binding": {
+          "result": "reject",
+          "error": "SignatureInvalid",
+          "message": "signature verification failed",
+          "code": "message-signature-invalid"
+        },
+        "profile": {
+          "result": "reject",
+          "clause": "MK-8",
+          "reason": "library verification fails",
+          "code": "message-signature-invalid"
+        }
+      },
+      "cosign": "reject"
+    },
+    {
+      "id": "p384-blob-artifact-mismatch",
+      "description": "Bundle verified against a different artifact than the one that was signed",
+      "category": "standard-negative",
+      "bundle": "vectors/p384-blob-artifact-mismatch/bundle.sigstore.json",
+      "trusted_root": "roots/production.json",
+      "key": "keys/blob-p384.pub",
+      "artifact": "artifacts/r1.bin",
+      "source": {
+        "kind": "derived",
+        "detail": "single documented mutation of the parent, made by generate.py"
+      },
+      "parent": "p384-rekor2-blob-tsa",
+      "mutation": "verify against the bytes of artifacts/r1.bin instead of the signed artifact",
+      "expected": {
+        "library": {
+          "result": "reject",
+          "error": "ArtifactMismatch",
+          "message": "message digest in bundle does not match artifact hash",
+          "code": "artifact-mismatch"
+        },
+        "library_checkpoint_log_binding": {
+          "result": "reject",
+          "error": "ArtifactMismatch",
+          "message": "message digest in bundle does not match artifact hash",
+          "code": "artifact-mismatch"
+        },
+        "profile": {
+          "result": "reject",
+          "clause": "MK-8",
+          "reason": "library verification fails",
+          "code": "artifact-mismatch"
+        }
+      },
+      "cosign": "reject"
+    },
+    {
+      "id": "p384-blob-digest-algorithm-sha256",
+      "description": "messageSignature digest labelled SHA2_256; digest bytes unchanged (SHA2_384)",
+      "category": "standard-negative",
+      "bundle": "vectors/p384-blob-digest-algorithm-sha256/bundle.sigstore.json",
+      "trusted_root": "roots/production.json",
+      "key": "keys/blob-p384.pub",
+      "artifact": "artifacts/blob-p384.bin",
+      "source": {
+        "kind": "derived",
+        "detail": "single documented mutation of the parent, made by generate.py"
+      },
+      "parent": "p384-rekor2-blob-tsa",
+      "mutation": "set messageDigest.algorithm to SHA2_256, keeping the SHA2_384 digest",
+      "expected": {
+        "library": {
+          "result": "reject",
+          "error": "ArtifactMismatch",
+          "message": "message digest in bundle does not match artifact hash",
+          "code": "artifact-mismatch"
+        },
+        "library_checkpoint_log_binding": {
+          "result": "reject",
+          "error": "ArtifactMismatch",
+          "message": "message digest in bundle does not match artifact hash",
+          "code": "artifact-mismatch"
+        },
+        "profile": {
+          "result": "reject",
+          "clause": "MK-8",
+          "reason": "library verification fails",
+          "code": "artifact-mismatch"
+        }
+      },
+      "cosign": "reject"
+    },
+    {
+      "id": "p384-blob-digest-replaced",
+      "description": "messageSignature digest replaced by the SHA2_256 of the artifact; label kept (SHA2_384)",
+      "category": "standard-negative",
+      "bundle": "vectors/p384-blob-digest-replaced/bundle.sigstore.json",
+      "trusted_root": "roots/production.json",
+      "key": "keys/blob-p384.pub",
+      "artifact": "artifacts/blob-p384.bin",
+      "source": {
+        "kind": "derived",
+        "detail": "single documented mutation of the parent, made by generate.py"
+      },
+      "parent": "p384-rekor2-blob-tsa",
+      "mutation": "replace messageDigest.digest with the SHA2_256 of the artifact, keeping algorithm SHA2_384",
+      "expected": {
+        "library": {
+          "result": "reject",
+          "error": "ArtifactMismatch",
+          "message": "message digest in bundle does not match artifact hash",
+          "code": "artifact-mismatch"
+        },
+        "library_checkpoint_log_binding": {
+          "result": "reject",
+          "error": "ArtifactMismatch",
+          "message": "message digest in bundle does not match artifact hash",
+          "code": "artifact-mismatch"
+        },
+        "profile": {
+          "result": "reject",
+          "clause": "MK-8",
+          "reason": "library verification fails",
+          "code": "artifact-mismatch"
+        }
+      },
+      "cosign": "reject"
+    },
+    {
+      "id": "p384-blob-signature-substituted",
+      "description": "messageSignature replaced by another key's signature over a different message, with that signature's own timestamp; ECDSA is randomized, so a second valid signature from the same key would verify",
+      "category": "standard-negative",
+      "bundle": "vectors/p384-blob-signature-substituted/bundle.sigstore.json",
+      "trusted_root": "roots/production.json",
+      "key": "keys/blob-p384.pub",
+      "artifact": "artifacts/blob-p384.bin",
+      "source": {
+        "kind": "derived",
+        "detail": "single documented mutation of the parent, made by generate.py"
+      },
+      "parent": "p384-rekor2-blob-tsa",
+      "mutation": "replace the messageSignature signature and the RFC 3161 timestamp with those of p256-rekor2-dsse-tsa",
+      "expected": {
+        "library": {
+          "result": "reject",
+          "error": "SignatureInvalid",
+          "message": "signature verification failed",
+          "code": "message-signature-invalid"
+        },
+        "library_checkpoint_log_binding": {
+          "result": "reject",
+          "error": "SignatureInvalid",
+          "message": "signature verification failed",
+          "code": "message-signature-invalid"
+        },
+        "profile": {
+          "result": "reject",
+          "clause": "MK-8",
+          "reason": "library verification fails",
+          "code": "message-signature-invalid"
+        }
+      },
+      "cosign": "reject"
+    },
+    {
+      "id": "p256-rekor2-blob-tsa",
+      "description": "P-256 managed key, messageSignature over the artifact, Rekor v2 hashedrekord 0.0.2 entry, RFC 3161 timestamp",
+      "category": "positive",
+      "bundle": "vectors/p256-rekor2-blob-tsa/bundle.sigstore.json",
+      "trusted_root": "roots/production.json",
+      "key": "keys/blob-p256b.pub",
+      "artifact": "artifacts/blob-p256b.bin",
+      "source": {
+        "kind": "real",
+        "detail": "Cosign v3.1.4 sign-blob, throwaway P-256 key, log2025-1.rekor.sigstore.dev index 206171412, 2026-11-19T16:09:22Z"
+      },
+      "parent": null,
+      "mutation": null,
+      "expected": {
+        "library": {
+          "result": "accept"
+        },
+        "library_checkpoint_log_binding": {
+          "result": "accept"
+        },
+        "profile": {
+          "result": "accept"
+        }
+      },
+      "cosign": "accept"
+    },
+    {
+      "id": "p256-blob-verified-with-other-key",
+      "description": "Bundle checked against a different approved key (e.g. another environment's), with that key's hint",
+      "category": "standard-negative",
+      "bundle": "vectors/p256-blob-verified-with-other-key/bundle.sigstore.json",
+      "trusted_root": "roots/production.json",
+      "key": "keys/r3.pub",
+      "artifact": "artifacts/blob-p256b.bin",
+      "source": {
+        "kind": "derived",
+        "detail": "single documented mutation of the parent, made by generate.py"
+      },
+      "parent": "p256-rekor2-blob-tsa",
+      "mutation": "set publicKey.hint to the r3 key's hint and verify with the r3 key",
+      "expected": {
+        "library": {
+          "result": "reject",
+          "error": "SignatureInvalid",
+          "message": "signature verification failed",
+          "code": "message-signature-invalid"
+        },
+        "library_checkpoint_log_binding": {
+          "result": "reject",
+          "error": "SignatureInvalid",
+          "message": "signature verification failed",
+          "code": "message-signature-invalid"
+        },
+        "profile": {
+          "result": "reject",
+          "clause": "MK-8",
+          "reason": "library verification fails",
+          "code": "message-signature-invalid"
+        }
+      },
+      "cosign": "reject"
+    },
+    {
+      "id": "p256-blob-artifact-mismatch",
+      "description": "Bundle verified against a different artifact than the one that was signed",
+      "category": "standard-negative",
+      "bundle": "vectors/p256-blob-artifact-mismatch/bundle.sigstore.json",
+      "trusted_root": "roots/production.json",
+      "key": "keys/blob-p256b.pub",
+      "artifact": "artifacts/r1.bin",
+      "source": {
+        "kind": "derived",
+        "detail": "single documented mutation of the parent, made by generate.py"
+      },
+      "parent": "p256-rekor2-blob-tsa",
+      "mutation": "verify against the bytes of artifacts/r1.bin instead of the signed artifact",
+      "expected": {
+        "library": {
+          "result": "reject",
+          "error": "ArtifactMismatch",
+          "message": "message digest in bundle does not match artifact hash",
+          "code": "artifact-mismatch"
+        },
+        "library_checkpoint_log_binding": {
+          "result": "reject",
+          "error": "ArtifactMismatch",
+          "message": "message digest in bundle does not match artifact hash",
+          "code": "artifact-mismatch"
+        },
+        "profile": {
+          "result": "reject",
+          "clause": "MK-8",
+          "reason": "library verification fails",
+          "code": "artifact-mismatch"
+        }
+      },
+      "cosign": "reject"
+    },
+    {
+      "id": "p256-blob-digest-algorithm-sha384",
+      "description": "messageSignature digest labelled SHA2_384; digest bytes unchanged (SHA2_256)",
+      "category": "standard-negative",
+      "bundle": "vectors/p256-blob-digest-algorithm-sha384/bundle.sigstore.json",
+      "trusted_root": "roots/production.json",
+      "key": "keys/blob-p256b.pub",
+      "artifact": "artifacts/blob-p256b.bin",
+      "source": {
+        "kind": "derived",
+        "detail": "single documented mutation of the parent, made by generate.py"
+      },
+      "parent": "p256-rekor2-blob-tsa",
+      "mutation": "set messageDigest.algorithm to SHA2_384, keeping the SHA2_256 digest",
+      "expected": {
+        "library": {
+          "result": "reject",
+          "error": "ArtifactMismatch",
+          "message": "message digest in bundle does not match artifact hash",
+          "code": "artifact-mismatch"
+        },
+        "library_checkpoint_log_binding": {
+          "result": "reject",
+          "error": "ArtifactMismatch",
+          "message": "message digest in bundle does not match artifact hash",
+          "code": "artifact-mismatch"
+        },
+        "profile": {
+          "result": "reject",
+          "clause": "MK-8",
+          "reason": "library verification fails",
+          "code": "artifact-mismatch"
+        }
+      },
+      "cosign": "reject"
+    },
+    {
+      "id": "p256-blob-digest-replaced",
+      "description": "messageSignature digest replaced by the SHA2_384 of the artifact; label kept (SHA2_256)",
+      "category": "standard-negative",
+      "bundle": "vectors/p256-blob-digest-replaced/bundle.sigstore.json",
+      "trusted_root": "roots/production.json",
+      "key": "keys/blob-p256b.pub",
+      "artifact": "artifacts/blob-p256b.bin",
+      "source": {
+        "kind": "derived",
+        "detail": "single documented mutation of the parent, made by generate.py"
+      },
+      "parent": "p256-rekor2-blob-tsa",
+      "mutation": "replace messageDigest.digest with the SHA2_384 of the artifact, keeping algorithm SHA2_256",
+      "expected": {
+        "library": {
+          "result": "reject",
+          "error": "ArtifactMismatch",
+          "message": "message digest in bundle does not match artifact hash",
+          "code": "artifact-mismatch"
+        },
+        "library_checkpoint_log_binding": {
+          "result": "reject",
+          "error": "ArtifactMismatch",
+          "message": "message digest in bundle does not match artifact hash",
+          "code": "artifact-mismatch"
+        },
+        "profile": {
+          "result": "reject",
+          "clause": "MK-8",
+          "reason": "library verification fails",
+          "code": "artifact-mismatch"
+        }
+      },
+      "cosign": "reject"
+    },
+    {
+      "id": "p256-blob-signature-substituted",
+      "description": "messageSignature replaced by another key's signature over a different message, with that signature's own timestamp; ECDSA is randomized, so a second valid signature from the same key would verify",
+      "category": "standard-negative",
+      "bundle": "vectors/p256-blob-signature-substituted/bundle.sigstore.json",
+      "trusted_root": "roots/production.json",
+      "key": "keys/blob-p256b.pub",
+      "artifact": "artifacts/blob-p256b.bin",
+      "source": {
+        "kind": "derived",
+        "detail": "single documented mutation of the parent, made by generate.py"
+      },
+      "parent": "p256-rekor2-blob-tsa",
+      "mutation": "replace the messageSignature signature and the RFC 3161 timestamp with those of p256-rekor2-dsse-tsa",
+      "expected": {
+        "library": {
+          "result": "reject",
+          "error": "SignatureInvalid",
+          "message": "signature verification failed",
+          "code": "message-signature-invalid"
+        },
+        "library_checkpoint_log_binding": {
+          "result": "reject",
+          "error": "SignatureInvalid",
+          "message": "signature verification failed",
+          "code": "message-signature-invalid"
+        },
+        "profile": {
+          "result": "reject",
+          "clause": "MK-8",
+          "reason": "library verification fails",
+          "code": "message-signature-invalid"
+        }
+      },
+      "cosign": "reject"
+    },
+    {
+      "id": "p384-payload-pcr-tampered",
+      "description": "Signed statement altered: one PCR0 digit changed",
+      "category": "standard-negative",
+      "bundle": "vectors/p384-payload-pcr-tampered/bundle.sigstore.json",
+      "trusted_root": "roots/production.json",
+      "key": "keys/r1.pub",
+      "artifact": "artifacts/r1.bin",
+      "source": {
+        "kind": "derived",
+        "detail": "single documented mutation of the parent, made by generate.py"
+      },
+      "parent": "p384-rekor2-dsse-tsa",
+      "mutation": "change the first hex digit of predicate.measurements.PCR0 in the DSSE payload",
+      "expected": {
+        "library": {
+          "result": "reject",
+          "error": "SignatureInvalid",
+          "message": "DSSE signature verification failed",
+          "code": "dsse-signature-invalid"
+        },
+        "library_checkpoint_log_binding": {
+          "result": "reject",
+          "error": "SignatureInvalid",
+          "message": "DSSE signature verification failed",
+          "code": "dsse-signature-invalid"
+        },
+        "profile": {
+          "result": "reject",
+          "clause": "MK-8",
+          "reason": "library verification fails",
+          "code": "dsse-signature-invalid"
+        }
+      },
+      "cosign": "reject"
+    },
+    {
+      "id": "p384-signature-substituted",
+      "description": "DSSE signature replaced by another key's valid signature over another statement, with that signature's own timestamp",
+      "category": "standard-negative",
+      "bundle": "vectors/p384-signature-substituted/bundle.sigstore.json",
+      "trusted_root": "roots/production.json",
+      "key": "keys/r1.pub",
+      "artifact": "artifacts/r1.bin",
+      "source": {
+        "kind": "derived",
+        "detail": "single documented mutation of the parent, made by generate.py"
+      },
+      "parent": "p384-rekor2-dsse-tsa",
+      "mutation": "replace the DSSE signature and the RFC 3161 timestamp with those of p384-rekor2-dsse-tsa-second-key",
+      "expected": {
+        "library": {
+          "result": "reject",
+          "error": "SignatureInvalid",
+          "message": "DSSE signature verification failed",
+          "code": "dsse-signature-invalid"
+        },
+        "library_checkpoint_log_binding": {
+          "result": "reject",
+          "error": "SignatureInvalid",
+          "message": "DSSE signature verification failed",
+          "code": "dsse-signature-invalid"
+        },
+        "profile": {
+          "result": "reject",
+          "clause": "MK-8",
+          "reason": "library verification fails",
+          "code": "dsse-signature-invalid"
+        }
+      },
+      "cosign": "reject"
+    },
+    {
+      "id": "p384-verified-with-other-key",
+      "description": "Bundle checked against a different approved key (e.g. another environment's), with that key's hint",
+      "category": "standard-negative",
+      "bundle": "vectors/p384-verified-with-other-key/bundle.sigstore.json",
+      "trusted_root": "roots/production.json",
+      "key": "keys/r2.pub",
+      "artifact": "artifacts/r1.bin",
+      "source": {
+        "kind": "derived",
+        "detail": "single documented mutation of the parent, made by generate.py"
+      },
+      "parent": "p384-rekor2-dsse-tsa",
+      "mutation": "set publicKey.hint to the second key's hint and verify with the second key",
+      "expected": {
+        "library": {
+          "result": "reject",
+          "error": "SignatureInvalid",
+          "message": "DSSE signature verification failed",
+          "code": "dsse-signature-invalid"
+        },
+        "library_checkpoint_log_binding": {
+          "result": "reject",
+          "error": "SignatureInvalid",
+          "message": "DSSE signature verification failed",
+          "code": "dsse-signature-invalid"
+        },
+        "profile": {
+          "result": "reject",
+          "clause": "MK-8",
+          "reason": "library verification fails",
+          "code": "dsse-signature-invalid"
+        }
+      },
+      "cosign": "reject"
+    },
+    {
+      "id": "p384-inclusion-proof-corrupted",
+      "description": "One inclusion proof hash altered",
+      "category": "standard-negative",
+      "bundle": "vectors/p384-inclusion-proof-corrupted/bundle.sigstore.json",
+      "trusted_root": "roots/production.json",
+      "key": "keys/r1.pub",
+      "artifact": "artifacts/r1.bin",
+      "source": {
+        "kind": "derived",
+        "detail": "single documented mutation of the parent, made by generate.py"
+      },
+      "parent": "p384-rekor2-dsse-tsa",
+      "mutation": "flip the low bit of the first byte of inclusionProof.hashes[0]",
+      "expected": {
+        "library": {
+          "result": "reject",
+          "error": "TransparencyLog.InclusionProof",
+          "message": "inclusion proof verification failed",
+          "code": "inclusion-proof-invalid"
+        },
+        "library_checkpoint_log_binding": {
+          "result": "reject",
+          "error": "TransparencyLog.InclusionProof",
+          "message": "inclusion proof verification failed",
+          "code": "inclusion-proof-invalid"
+        },
+        "profile": {
+          "result": "reject",
+          "clause": "MK-8",
+          "reason": "library verification fails",
+          "code": "inclusion-proof-invalid"
+        }
+      },
+      "cosign": "reject"
+    },
+    {
+      "id": "p384-inclusion-proof-removed",
+      "description": "The only log entry has no inclusion proof",
+      "category": "standard-negative",
+      "bundle": "vectors/p384-inclusion-proof-removed/bundle.sigstore.json",
+      "trusted_root": "roots/production.json",
+      "key": "keys/r1.pub",
+      "artifact": "artifacts/r1.bin",
+      "source": {
+        "kind": "derived",
+        "detail": "single documented mutation of the parent, made by generate.py"
+      },
+      "parent": "p384-rekor2-dsse-tsa",
+      "mutation": "remove inclusionProof from the log entry",
+      "expected": {
+        "library": {
+          "result": "reject",
+          "error": "Bundle",
+          "message": "bundle must have an inclusion proof",
+          "code": "inclusion-proof-missing"
+        },
+        "library_checkpoint_log_binding": {
+          "result": "reject",
+          "error": "Bundle",
+          "message": "bundle must have an inclusion proof",
+          "code": "inclusion-proof-missing"
+        },
+        "profile": {
+          "result": "reject",
+          "clause": "MK-8",
+          "reason": "library verification fails",
+          "code": "inclusion-proof-missing"
+        }
+      },
+      "cosign": "reject"
+    },
+    {
+      "id": "p384-checkpoint-signature-corrupted",
+      "description": "The log's checkpoint signature altered",
+      "category": "standard-negative",
+      "bundle": "vectors/p384-checkpoint-signature-corrupted/bundle.sigstore.json",
+      "trusted_root": "roots/production.json",
+      "key": "keys/r1.pub",
+      "artifact": "artifacts/r1.bin",
+      "source": {
+        "kind": "derived",
+        "detail": "single documented mutation of the parent, made by generate.py"
+      },
+      "parent": "p384-rekor2-dsse-tsa",
+      "mutation": "flip the low bit of the last byte of the log's checkpoint signature",
+      "expected": {
+        "library": {
+          "result": "reject",
+          "error": "TransparencyLog.Checkpoint",
+          "message": "No valid Rekor signature found on checkpoint",
+          "code": "checkpoint-signature-invalid"
+        },
+        "library_checkpoint_log_binding": {
+          "result": "reject",
+          "error": "TransparencyLog.Checkpoint",
+          "message": "checkpoint has no valid signature from the entry's log",
+          "code": "checkpoint-signature-invalid"
+        },
+        "profile": {
+          "result": "reject",
+          "clause": "MK-8",
+          "reason": "library verification fails",
+          "code": "checkpoint-signature-invalid"
+        }
+      },
+      "cosign": "reject"
+    },
+    {
+      "id": "p384-checkpoint-log-signature-removed",
+      "description": "Checkpoint carries only witness cosignatures",
+      "category": "standard-negative",
+      "bundle": "vectors/p384-checkpoint-log-signature-removed/bundle.sigstore.json",
+      "trusted_root": "roots/production.json",
+      "key": "keys/r1.pub",
+      "artifact": "artifacts/r1.bin",
+      "source": {
+        "kind": "derived",
+        "detail": "single documented mutation of the parent, made by generate.py"
+      },
+      "parent": "p384-rekor2-dsse-tsa",
+      "mutation": "remove the log's own signature line from the checkpoint, keeping the witness lines",
+      "expected": {
+        "library": {
+          "result": "reject",
+          "error": "TransparencyLog.Checkpoint",
+          "message": "No matching Rekor key found for checkpoint signature",
+          "code": "checkpoint-signature-invalid"
+        },
+        "library_checkpoint_log_binding": {
+          "result": "reject",
+          "error": "TransparencyLog.Checkpoint",
+          "message": "checkpoint has no valid signature from the entry's log",
+          "code": "checkpoint-signature-invalid"
+        },
+        "profile": {
+          "result": "reject",
+          "clause": "MK-8",
+          "reason": "library verification fails",
+          "code": "checkpoint-signature-invalid"
+        }
+      },
+      "cosign": "reject"
+    },
+    {
+      "id": "p384-checkpoint-root-hash-altered",
+      "description": "Checkpoint root hash altered (signature no longer covers it)",
+      "category": "standard-negative",
+      "bundle": "vectors/p384-checkpoint-root-hash-altered/bundle.sigstore.json",
+      "trusted_root": "roots/production.json",
+      "key": "keys/r1.pub",
+      "artifact": "artifacts/r1.bin",
+      "source": {
+        "kind": "derived",
+        "detail": "single documented mutation of the parent, made by generate.py"
+      },
+      "parent": "p384-rekor2-dsse-tsa",
+      "mutation": "flip the low bit of the first byte of the checkpoint root hash",
+      "expected": {
+        "library": {
+          "result": "reject",
+          "error": "TransparencyLog.InclusionProof",
+          "message": "inclusion proof verification failed",
+          "code": "inclusion-proof-invalid"
+        },
+        "library_checkpoint_log_binding": {
+          "result": "reject",
+          "error": "TransparencyLog.InclusionProof",
+          "message": "inclusion proof verification failed",
+          "code": "inclusion-proof-invalid"
+        },
+        "profile": {
+          "result": "reject",
+          "clause": "MK-8",
+          "reason": "library verification fails",
+          "code": "inclusion-proof-invalid"
+        }
+      },
+      "cosign": "reject"
+    },
+    {
+      "id": "p384-entry-names-another-trusted-log",
+      "description": "Entry's log ID points at another log in the trusted root (Rekor v1 production); the checkpoint is still the real one from log2025-1",
+      "category": "binding-negative",
+      "bundle": "vectors/p384-entry-names-another-trusted-log/bundle.sigstore.json",
+      "trusted_root": "roots/production.json",
+      "key": "keys/r1.pub",
+      "artifact": "artifacts/r1.bin",
+      "source": {
+        "kind": "derived",
+        "detail": "single documented mutation of the parent, made by generate.py"
+      },
+      "parent": "p384-rekor2-dsse-tsa",
+      "mutation": "set logId.keyId to the trusted root's rekor.sigstore.dev log ID",
+      "expected": {
+        "library": {
+          "result": "accept"
+        },
+        "library_checkpoint_log_binding": {
+          "result": "reject",
+          "error": "TransparencyLog.Checkpoint",
+          "message": "does not match the entry's log \"rekor.sigstore.dev\"",
+          "code": "checkpoint-origin-mismatch"
+        },
+        "profile": {
+          "result": "reject",
+          "clause": "MK-8",
+          "reason": "checkpoint is not from the entry's log",
+          "code": "checkpoint-origin-mismatch"
+        }
+      },
+      "cosign": "reject"
+    },
+    {
+      "id": "p384-timestamp-tampered",
+      "description": "RFC 3161 timestamp token altered",
+      "category": "standard-negative",
+      "bundle": "vectors/p384-timestamp-tampered/bundle.sigstore.json",
+      "trusted_root": "roots/production.json",
+      "key": "keys/r1.pub",
+      "artifact": "artifacts/r1.bin",
+      "source": {
+        "kind": "derived",
+        "detail": "single documented mutation of the parent, made by generate.py"
+      },
+      "parent": "p384-rekor2-dsse-tsa",
+      "mutation": "flip the low bit of the last byte of the timestamp token (its signature)",
+      "expected": {
+        "library": {
+          "result": "reject",
+          "error": "Timestamp.Invalid",
+          "message": "Failed to verify timestamp signature: Verification error: ECDSA_P384_SHA256 signature invalid",
+          "code": "timestamp-signature-invalid"
+        },
+        "library_checkpoint_log_binding": {
+          "result": "reject",
+          "error": "Timestamp.Invalid",
+          "message": "Failed to verify timestamp signature: Verification error: ECDSA_P384_SHA256 signature invalid",
+          "code": "timestamp-signature-invalid"
+        },
+        "profile": {
+          "result": "reject",
+          "clause": "MK-7",
+          "reason": "the timestamp does not verify",
+          "code": "timestamp-signature-invalid"
+        }
+      },
+      "cosign": "reject"
+    },
+    {
+      "id": "p384-timestamp-untrusted-authority",
+      "description": "Unmodified bundle checked against a trusted root whose timestamp authority is a different one (Sigstore staging)",
+      "category": "standard-negative",
+      "bundle": "vectors/p384-timestamp-untrusted-authority/bundle.sigstore.json",
+      "trusted_root": "roots/production-staging-tsa.json",
+      "key": "keys/r1.pub",
+      "artifact": "artifacts/r1.bin",
+      "source": {
+        "kind": "derived",
+        "detail": "single documented mutation of the parent, made by generate.py"
+      },
+      "parent": "p384-rekor2-dsse-tsa",
+      "mutation": "trusted root only: replace timestampAuthorities with the staging root's",
+      "expected": {
+        "library": {
+          "result": "reject",
+          "error": "Timestamp.Invalid",
+          "message": "CMS signer does not match any trusted TSA certificate",
+          "code": "timestamp-untrusted-authority"
+        },
+        "library_checkpoint_log_binding": {
+          "result": "reject",
+          "error": "Timestamp.Invalid",
+          "message": "CMS signer does not match any trusted TSA certificate",
+          "code": "timestamp-untrusted-authority"
+        },
+        "profile": {
+          "result": "reject",
+          "clause": "MK-7",
+          "reason": "the timestamp does not verify",
+          "code": "timestamp-untrusted-authority"
+        }
+      },
+      "cosign": "reject"
+    },
+    {
+      "id": "p384-timestamp-from-other-signature",
+      "description": "A valid timestamp from the same authority, but over a different signature",
+      "category": "standard-negative",
+      "bundle": "vectors/p384-timestamp-from-other-signature/bundle.sigstore.json",
+      "trusted_root": "roots/production.json",
+      "key": "keys/r1.pub",
+      "artifact": "artifacts/r1.bin",
+      "source": {
+        "kind": "derived",
+        "detail": "single documented mutation of the parent, made by generate.py"
+      },
+      "parent": "p384-rekor2-dsse-tsa",
+      "mutation": "replace the RFC 3161 timestamp with p384-rekor2-dsse-tsa-second-key's",
+      "expected": {
+        "library": {
+          "result": "reject",
+          "error": "Timestamp.Invalid",
+          "message": "Timestamp message hash mismatch",
+          "code": "timestamp-message-mismatch"
+        },
+        "library_checkpoint_log_binding": {
+          "result": "reject",
+          "error": "Timestamp.Invalid",
+          "message": "Timestamp message hash mismatch",
+          "code": "timestamp-message-mismatch"
+        },
+        "profile": {
+          "result": "reject",
+          "clause": "MK-7",
+          "reason": "the timestamp does not verify",
+          "code": "timestamp-message-mismatch"
+        }
+      },
+      "cosign": "reject"
+    },
+    {
+      "id": "p384-timestamp-removed",
+      "description": "No RFC 3161 timestamp",
+      "category": "profile-negative",
+      "bundle": "vectors/p384-timestamp-removed/bundle.sigstore.json",
+      "trusted_root": "roots/production.json",
+      "key": "keys/r1.pub",
+      "artifact": "artifacts/r1.bin",
+      "source": {
+        "kind": "derived",
+        "detail": "single documented mutation of the parent, made by generate.py"
+      },
+      "parent": "p384-rekor2-dsse-tsa",
+      "mutation": "empty timestampVerificationData.rfc3161Timestamps",
+      "expected": {
+        "library": {
+          "result": "accept"
+        },
+        "library_checkpoint_log_binding": {
+          "result": "accept"
+        },
+        "profile": {
+          "result": "reject",
+          "clause": "MK-7",
+          "reason": "exactly one timestamp is required",
+          "code": "timestamp-count"
+        }
+      },
+      "cosign": "reject"
+    },
+    {
+      "id": "p384-timestamp-duplicated",
+      "description": "The same timestamp twice",
+      "category": "profile-negative",
+      "bundle": "vectors/p384-timestamp-duplicated/bundle.sigstore.json",
+      "trusted_root": "roots/production.json",
+      "key": "keys/r1.pub",
+      "artifact": "artifacts/r1.bin",
+      "source": {
+        "kind": "derived",
+        "detail": "single documented mutation of the parent, made by generate.py"
+      },
+      "parent": "p384-rekor2-dsse-tsa",
+      "mutation": "append a second copy of the RFC 3161 timestamp",
+      "expected": {
+        "library": {
+          "result": "accept"
+        },
+        "library_checkpoint_log_binding": {
+          "result": "accept"
+        },
+        "profile": {
+          "result": "reject",
+          "clause": "MK-7",
+          "reason": "exactly one timestamp is required",
+          "code": "timestamp-count"
+        }
+      },
+      "cosign": null
+    },
+    {
+      "id": "p384-tlog-entry-duplicated",
+      "description": "The same log entry twice",
+      "category": "profile-negative",
+      "bundle": "vectors/p384-tlog-entry-duplicated/bundle.sigstore.json",
+      "trusted_root": "roots/production.json",
+      "key": "keys/r1.pub",
+      "artifact": "artifacts/r1.bin",
+      "source": {
+        "kind": "derived",
+        "detail": "single documented mutation of the parent, made by generate.py"
+      },
+      "parent": "p384-rekor2-dsse-tsa",
+      "mutation": "append a second copy of the log entry",
+      "expected": {
+        "library": {
+          "result": "accept"
+        },
+        "library_checkpoint_log_binding": {
+          "result": "accept"
+        },
+        "profile": {
+          "result": "reject",
+          "clause": "MK-5",
+          "reason": "exactly one log entry is required",
+          "code": "tlog-entry-count"
+        }
+      },
+      "cosign": null
+    },
+    {
+      "id": "p384-extra-entry-without-proof",
+      "description": "A second, proofless copy of the log entry (the library requires a proof on at least one entry, not on each)",
+      "category": "profile-negative",
+      "bundle": "vectors/p384-extra-entry-without-proof/bundle.sigstore.json",
+      "trusted_root": "roots/production.json",
+      "key": "keys/r1.pub",
+      "artifact": "artifacts/r1.bin",
+      "source": {
+        "kind": "derived",
+        "detail": "single documented mutation of the parent, made by generate.py"
+      },
+      "parent": "p384-rekor2-dsse-tsa",
+      "mutation": "append a copy of the log entry without its inclusion proof",
+      "expected": {
+        "library": {
+          "result": "accept"
+        },
+        "library_checkpoint_log_binding": {
+          "result": "accept"
+        },
+        "profile": {
+          "result": "reject",
+          "clause": "MK-5",
+          "reason": "exactly one log entry is required",
+          "code": "tlog-entry-count"
+        }
+      },
+      "cosign": null
+    },
+    {
+      "id": "p384-rekor2-integrated-time-added",
+      "description": "Rekor v2 entry carrying an (unauthenticated) integratedTime",
+      "category": "profile-negative",
+      "bundle": "vectors/p384-rekor2-integrated-time-added/bundle.sigstore.json",
+      "trusted_root": "roots/production.json",
+      "key": "keys/r1.pub",
+      "artifact": "artifacts/r1.bin",
+      "source": {
+        "kind": "derived",
+        "detail": "single documented mutation of the parent, made by generate.py"
+      },
+      "parent": "p384-rekor2-dsse-tsa",
+      "mutation": "add integratedTime 1794873600 to the log entry",
+      "expected": {
+        "library": {
+          "result": "accept"
+        },
+        "library_checkpoint_log_binding": {
+          "result": "accept"
+        },
+        "profile": {
+          "result": "reject",
+          "clause": "MK-6",
+          "reason": "no integrated time is allowed",
+          "code": "integrated-time-present"
+        }
+      },
+      "cosign": null
+    },
+    {
+      "id": "p384-rekor2-integrated-time-zero-string",
+      "description": "Rekor v2 entry carrying integratedTime \"0\": present, though zero or null",
+      "category": "profile-negative",
+      "bundle": "vectors/p384-rekor2-integrated-time-zero-string/bundle.sigstore.json",
+      "trusted_root": "roots/production.json",
+      "key": "keys/r1.pub",
+      "artifact": "artifacts/r1.bin",
+      "source": {
+        "kind": "derived",
+        "detail": "single documented mutation of the parent, made by generate.py"
+      },
+      "parent": "p384-rekor2-dsse-tsa",
+      "mutation": "add integratedTime \"0\" to the log entry",
+      "expected": {
+        "library": {
+          "result": "accept"
+        },
+        "library_checkpoint_log_binding": {
+          "result": "accept"
+        },
+        "profile": {
+          "result": "reject",
+          "clause": "MK-6",
+          "reason": "no integrated time field is allowed",
+          "code": "integrated-time-present"
+        }
+      },
+      "cosign": null
+    },
+    {
+      "id": "p384-rekor2-integrated-time-zero-number",
+      "description": "Rekor v2 entry carrying integratedTime 0: present, though zero or null",
+      "category": "profile-negative",
+      "bundle": "vectors/p384-rekor2-integrated-time-zero-number/bundle.sigstore.json",
+      "trusted_root": "roots/production.json",
+      "key": "keys/r1.pub",
+      "artifact": "artifacts/r1.bin",
+      "source": {
+        "kind": "derived",
+        "detail": "single documented mutation of the parent, made by generate.py"
+      },
+      "parent": "p384-rekor2-dsse-tsa",
+      "mutation": "add integratedTime 0 to the log entry",
+      "expected": {
+        "library": {
+          "result": "accept"
+        },
+        "library_checkpoint_log_binding": {
+          "result": "accept"
+        },
+        "profile": {
+          "result": "reject",
+          "clause": "MK-6",
+          "reason": "no integrated time field is allowed",
+          "code": "integrated-time-present"
+        }
+      },
+      "cosign": null
+    },
+    {
+      "id": "p384-rekor2-integrated-time-null",
+      "description": "Rekor v2 entry carrying integratedTime null: present, though zero or null",
+      "category": "profile-negative",
+      "bundle": "vectors/p384-rekor2-integrated-time-null/bundle.sigstore.json",
+      "trusted_root": "roots/production.json",
+      "key": "keys/r1.pub",
+      "artifact": "artifacts/r1.bin",
+      "source": {
+        "kind": "derived",
+        "detail": "single documented mutation of the parent, made by generate.py"
+      },
+      "parent": "p384-rekor2-dsse-tsa",
+      "mutation": "add integratedTime null to the log entry",
+      "expected": {
+        "library": {
+          "result": "reject",
+          "error": "Parse",
+          "message": "invalid type: null, expected a protobuf int64",
+          "code": "bundle-malformed"
+        },
+        "library_checkpoint_log_binding": {
+          "result": "reject",
+          "error": "Parse",
+          "message": "invalid type: null, expected a protobuf int64",
+          "code": "bundle-malformed"
+        },
+        "profile": {
+          "result": "reject",
+          "clause": "MK-6",
+          "reason": "no integrated time field is allowed",
+          "code": "integrated-time-present"
+        }
+      },
+      "cosign": null
+    },
+    {
+      "id": "p384-rekor2-inclusion-promise-added",
+      "description": "Rekor v2 entry carrying an inclusion promise (SET)",
+      "category": "profile-negative",
+      "bundle": "vectors/p384-rekor2-inclusion-promise-added/bundle.sigstore.json",
+      "trusted_root": "roots/production.json",
+      "key": "keys/r1.pub",
+      "artifact": "artifacts/r1.bin",
+      "source": {
+        "kind": "derived",
+        "detail": "single documented mutation of the parent, made by generate.py"
+      },
+      "parent": "p384-rekor2-dsse-tsa",
+      "mutation": "add an inclusionPromise with an empty signature to the log entry",
+      "expected": {
+        "library": {
+          "result": "reject",
+          "error": "TransparencyLog.InclusionPromise",
+          "message": "SET verification failed",
+          "code": "inclusion-promise-invalid"
+        },
+        "library_checkpoint_log_binding": {
+          "result": "reject",
+          "error": "TransparencyLog.InclusionPromise",
+          "message": "SET verification failed",
+          "code": "inclusion-promise-invalid"
+        },
+        "profile": {
+          "result": "reject",
+          "clause": "MK-6",
+          "reason": "no inclusion promise is allowed",
+          "code": "inclusion-promise-present"
+        }
+      },
+      "cosign": null
+    },
+    {
+      "id": "p384-media-type-v0.2",
+      "description": "Media type relabelled as bundle v0.2",
+      "category": "profile-negative",
+      "bundle": "vectors/p384-media-type-v0.2/bundle.sigstore.json",
+      "trusted_root": "roots/production.json",
+      "key": "keys/r1.pub",
+      "artifact": "artifacts/r1.bin",
+      "source": {
+        "kind": "derived",
+        "detail": "single documented mutation of the parent, made by generate.py"
+      },
+      "parent": "p384-rekor2-dsse-tsa",
+      "mutation": "set mediaType to the v0.2 media type",
+      "expected": {
+        "library": {
+          "result": "accept"
+        },
+        "library_checkpoint_log_binding": {
+          "result": "accept"
+        },
+        "profile": {
+          "result": "reject",
+          "clause": "MK-1",
+          "reason": "only the v0.3 media type is accepted",
+          "code": "media-type-unsupported"
+        }
+      },
+      "cosign": null
+    },
+    {
+      "id": "p384-media-type-missing",
+      "description": "No media type",
+      "category": "profile-negative",
+      "bundle": "vectors/p384-media-type-missing/bundle.sigstore.json",
+      "trusted_root": "roots/production.json",
+      "key": "keys/r1.pub",
+      "artifact": "artifacts/r1.bin",
+      "source": {
+        "kind": "derived",
+        "detail": "single documented mutation of the parent, made by generate.py"
+      },
+      "parent": "p384-rekor2-dsse-tsa",
+      "mutation": "remove mediaType",
+      "expected": {
+        "library": {
+          "result": "reject",
+          "error": "Bundle",
+          "message": "bundles must have an inclusion promise",
+          "code": "inclusion-promise-missing"
+        },
+        "library_checkpoint_log_binding": {
+          "result": "reject",
+          "error": "Bundle",
+          "message": "bundles must have an inclusion promise",
+          "code": "inclusion-promise-missing"
+        },
+        "profile": {
+          "result": "reject",
+          "clause": "MK-1",
+          "reason": "only the v0.3 media type is accepted",
+          "code": "media-type-unsupported"
+        }
+      },
+      "cosign": null
+    },
+    {
+      "id": "p384-duplicate-dsse-envelope-key",
+      "description": "Bundle JSON with the dsseEnvelope member twice: the signed envelope first, another key's envelope and statement second. This library keeps the first; a parser that keeps the last would read the other statement",
+      "category": "profile-negative",
+      "bundle": "vectors/p384-duplicate-dsse-envelope-key/bundle.sigstore.json",
+      "trusted_root": "roots/production.json",
+      "key": "keys/r1.pub",
+      "artifact": "artifacts/r1.bin",
+      "source": {
+        "kind": "derived",
+        "detail": "single documented mutation of the parent, made by generate.py"
+      },
+      "parent": "p384-rekor2-dsse-tsa",
+      "mutation": "insert a second dsseEnvelope member (the second key's envelope) after the original one",
+      "expected": {
+        "library": {
+          "result": "accept"
+        },
+        "library_checkpoint_log_binding": {
+          "result": "accept"
+        },
+        "profile": {
+          "result": "reject",
+          "clause": "MK-4",
+          "reason": "duplicate JSON keys are rejected",
+          "code": "duplicate-json-key"
+        }
+      },
+      "cosign": null
+    },
+    {
+      "id": "p384-conflicting-content",
+      "description": "Both a DSSE envelope and a message signature",
+      "category": "profile-negative",
+      "bundle": "vectors/p384-conflicting-content/bundle.sigstore.json",
+      "trusted_root": "roots/production.json",
+      "key": "keys/r1.pub",
+      "artifact": "artifacts/r1.bin",
+      "source": {
+        "kind": "derived",
+        "detail": "single documented mutation of the parent, made by generate.py"
+      },
+      "parent": "p384-rekor2-dsse-tsa",
+      "mutation": "add a messageSignature member beside dsseEnvelope",
+      "expected": {
+        "library": {
+          "result": "accept"
+        },
+        "library_checkpoint_log_binding": {
+          "result": "accept"
+        },
+        "profile": {
+          "result": "reject",
+          "clause": "MK-4",
+          "reason": "conflicting content variants are rejected",
+          "code": "conflicting-oneof"
+        }
+      },
+      "cosign": null
+    },
+    {
+      "id": "p384-relogged",
+      "description": "The real P-384 entry, unchanged, in synthetic test log A",
+      "category": "positive",
+      "bundle": "vectors/p384-relogged/bundle.sigstore.json",
+      "trusted_root": "roots/test.json",
+      "key": "keys/r1.pub",
+      "artifact": "artifacts/r1.bin",
+      "source": {
+        "kind": "derived",
+        "detail": "parent's log entry re-logged in a synthetic test log (roots/test.json) by generate.py"
+      },
+      "parent": "p384-rekor2-dsse-tsa",
+      "mutation": "re-log the unchanged entry body at index 1 of a two-leaf tree in test log A",
+      "expected": {
+        "library": {
+          "result": "accept"
+        },
+        "library_checkpoint_log_binding": {
+          "result": "accept"
+        },
+        "profile": {
+          "result": "accept"
+        }
+      },
+      "cosign": "accept"
+    },
+    {
+      "id": "p256-relogged",
+      "description": "The real P-256 entry, unchanged, in synthetic test log A",
+      "category": "positive",
+      "bundle": "vectors/p256-relogged/bundle.sigstore.json",
+      "trusted_root": "roots/test.json",
+      "key": "keys/r3.pub",
+      "artifact": "artifacts/r3.bin",
+      "source": {
+        "kind": "derived",
+        "detail": "parent's log entry re-logged in a synthetic test log (roots/test.json) by generate.py"
+      },
+      "parent": "p256-rekor2-dsse-tsa",
+      "mutation": "re-log the unchanged entry body at index 1 of a two-leaf tree in test log A",
+      "expected": {
+        "library": {
+          "result": "accept"
+        },
+        "library_checkpoint_log_binding": {
+          "result": "accept"
+        },
+        "profile": {
+          "result": "accept"
+        }
+      },
+      "cosign": "accept"
+    },
+    {
+      "id": "p384-key-details-p256",
+      "description": "P-384 key logged with P-256 key details",
+      "category": "standard-negative",
+      "bundle": "vectors/p384-key-details-p256/bundle.sigstore.json",
+      "trusted_root": "roots/test.json",
+      "key": "keys/r1.pub",
+      "artifact": "artifacts/r1.bin",
+      "source": {
+        "kind": "derived",
+        "detail": "single documented mutation of the parent, made by generate.py"
+      },
+      "parent": "p384-relogged",
+      "mutation": "set keyDetails to PKIX_ECDSA_P256_SHA_256; re-log the changed body in test log A",
+      "expected": {
+        "library": {
+          "result": "reject",
+          "error": "TransparencyLog.EntryMismatch",
+          "message": "key details PKIX_ECDSA_P256_SHA_256 do not match its EcdsaP384 key",
+          "code": "tlog-key-details-mismatch"
+        },
+        "library_checkpoint_log_binding": {
+          "result": "reject",
+          "error": "TransparencyLog.EntryMismatch",
+          "message": "key details PKIX_ECDSA_P256_SHA_256 do not match its EcdsaP384 key",
+          "code": "tlog-key-details-mismatch"
+        },
+        "profile": {
+          "result": "reject",
+          "clause": "MK-8",
+          "reason": "library verification fails",
+          "code": "tlog-key-details-mismatch"
+        }
+      },
+      "cosign": "reject"
+    },
+    {
+      "id": "p256-key-labelled-p384",
+      "description": "Wrong curve: a P-256 key logged as P-384, with an otherwise consistent SHA-384 digest of the PAE",
+      "category": "standard-negative",
+      "bundle": "vectors/p256-key-labelled-p384/bundle.sigstore.json",
+      "trusted_root": "roots/test.json",
+      "key": "keys/r3.pub",
+      "artifact": "artifacts/r3.bin",
+      "source": {
+        "kind": "derived",
+        "detail": "single documented mutation of the parent, made by generate.py"
+      },
+      "parent": "p256-relogged",
+      "mutation": "set keyDetails to PKIX_ECDSA_P384_SHA_384, algorithm to SHA2_384 and digest to SHA-384(PAE); re-log the changed body in test log A",
+      "expected": {
+        "library": {
+          "result": "reject",
+          "error": "TransparencyLog.EntryMismatch",
+          "message": "key details PKIX_ECDSA_P384_SHA_384 do not match its EcdsaP256 key",
+          "code": "tlog-key-details-mismatch"
+        },
+        "library_checkpoint_log_binding": {
+          "result": "reject",
+          "error": "TransparencyLog.EntryMismatch",
+          "message": "key details PKIX_ECDSA_P384_SHA_384 do not match its EcdsaP256 key",
+          "code": "tlog-key-details-mismatch"
+        },
+        "profile": {
+          "result": "reject",
+          "clause": "MK-8",
+          "reason": "library verification fails",
+          "code": "tlog-key-details-mismatch"
+        }
+      },
+      "cosign": "reject"
+    },
+    {
+      "id": "p384-digest-algorithm-sha256",
+      "description": "P-384 entry carrying SHA-256 of the PAE",
+      "category": "standard-negative",
+      "bundle": "vectors/p384-digest-algorithm-sha256/bundle.sigstore.json",
+      "trusted_root": "roots/test.json",
+      "key": "keys/r1.pub",
+      "artifact": "artifacts/r1.bin",
+      "source": {
+        "kind": "derived",
+        "detail": "single documented mutation of the parent, made by generate.py"
+      },
+      "parent": "p384-relogged",
+      "mutation": "set algorithm to SHA2_256 and digest to SHA-256(PAE); re-log the changed body in test log A",
+      "expected": {
+        "library": {
+          "result": "reject",
+          "error": "TransparencyLog.EntryMismatch",
+          "message": "digest algorithm SHA2_256 does not match key details PKIX_ECDSA_P384_SHA_384",
+          "code": "tlog-digest-algorithm-mismatch"
+        },
+        "library_checkpoint_log_binding": {
+          "result": "reject",
+          "error": "TransparencyLog.EntryMismatch",
+          "message": "digest algorithm SHA2_256 does not match key details PKIX_ECDSA_P384_SHA_384",
+          "code": "tlog-digest-algorithm-mismatch"
+        },
+        "profile": {
+          "result": "reject",
+          "clause": "MK-8",
+          "reason": "library verification fails",
+          "code": "tlog-digest-algorithm-mismatch"
+        }
+      },
+      "cosign": "reject"
+    },
+    {
+      "id": "p384-digest-truncated",
+      "description": "SHA2_384 digest truncated to 32 bytes",
+      "category": "standard-negative",
+      "bundle": "vectors/p384-digest-truncated/bundle.sigstore.json",
+      "trusted_root": "roots/test.json",
+      "key": "keys/r1.pub",
+      "artifact": "artifacts/r1.bin",
+      "source": {
+        "kind": "derived",
+        "detail": "single documented mutation of the parent, made by generate.py"
+      },
+      "parent": "p384-relogged",
+      "mutation": "truncate the logged digest to its first 32 bytes; re-log the changed body in test log A",
+      "expected": {
+        "library": {
+          "result": "reject",
+          "error": "TransparencyLog.MalformedEntry",
+          "message": "SHA2_384 digest is 32 bytes, expected 48",
+          "code": "tlog-digest-malformed"
+        },
+        "library_checkpoint_log_binding": {
+          "result": "reject",
+          "error": "TransparencyLog.MalformedEntry",
+          "message": "SHA2_384 digest is 32 bytes, expected 48",
+          "code": "tlog-digest-malformed"
+        },
+        "profile": {
+          "result": "reject",
+          "clause": "MK-8",
+          "reason": "library verification fails",
+          "code": "tlog-digest-malformed"
+        }
+      },
+      "cosign": "reject"
+    },
+    {
+      "id": "p384-digest-altered",
+      "description": "Logged digest altered",
+      "category": "standard-negative",
+      "bundle": "vectors/p384-digest-altered/bundle.sigstore.json",
+      "trusted_root": "roots/test.json",
+      "key": "keys/r1.pub",
+      "artifact": "artifacts/r1.bin",
+      "source": {
+        "kind": "derived",
+        "detail": "single documented mutation of the parent, made by generate.py"
+      },
+      "parent": "p384-relogged",
+      "mutation": "flip the low bit of the first byte of the logged digest; re-log the changed body in test log A",
+      "expected": {
+        "library": {
+          "result": "reject",
+          "error": "ArtifactMismatch",
+          "message": "artifact hash mismatch for hashedrekord entry",
+          "code": "tlog-digest-mismatch"
+        },
+        "library_checkpoint_log_binding": {
+          "result": "reject",
+          "error": "ArtifactMismatch",
+          "message": "artifact hash mismatch for hashedrekord entry",
+          "code": "tlog-digest-mismatch"
+        },
+        "profile": {
+          "result": "reject",
+          "clause": "MK-8",
+          "reason": "library verification fails",
+          "code": "tlog-digest-mismatch"
+        }
+      },
+      "cosign": "reject"
+    },
+    {
+      "id": "p384-digest-of-payload",
+      "description": "SHA-384 of the payload alone instead of the PAE",
+      "category": "standard-negative",
+      "bundle": "vectors/p384-digest-of-payload/bundle.sigstore.json",
+      "trusted_root": "roots/test.json",
+      "key": "keys/r1.pub",
+      "artifact": "artifacts/r1.bin",
+      "source": {
+        "kind": "derived",
+        "detail": "single documented mutation of the parent, made by generate.py"
+      },
+      "parent": "p384-relogged",
+      "mutation": "set the logged digest to SHA-384(payload); re-log the changed body in test log A",
+      "expected": {
+        "library": {
+          "result": "reject",
+          "error": "ArtifactMismatch",
+          "message": "artifact hash mismatch for hashedrekord entry",
+          "code": "tlog-digest-mismatch"
+        },
+        "library_checkpoint_log_binding": {
+          "result": "reject",
+          "error": "ArtifactMismatch",
+          "message": "artifact hash mismatch for hashedrekord entry",
+          "code": "tlog-digest-mismatch"
+        },
+        "profile": {
+          "result": "reject",
+          "clause": "MK-8",
+          "reason": "library verification fails",
+          "code": "tlog-digest-mismatch"
+        }
+      },
+      "cosign": "reject"
+    },
+    {
+      "id": "p384-logged-key-substituted",
+      "description": "Entry logs a different P-384 key than the one verifying the signature",
+      "category": "standard-negative",
+      "bundle": "vectors/p384-logged-key-substituted/bundle.sigstore.json",
+      "trusted_root": "roots/test.json",
+      "key": "keys/r1.pub",
+      "artifact": "artifacts/r1.bin",
+      "source": {
+        "kind": "derived",
+        "detail": "single documented mutation of the parent, made by generate.py"
+      },
+      "parent": "p384-relogged",
+      "mutation": "set the logged public key to the second key; re-log the changed body in test log A",
+      "expected": {
+        "library": {
+          "result": "reject",
+          "error": "TransparencyLog.EntryMismatch",
+          "message": "public key in Rekor entry does not match managed key",
+          "code": "tlog-key-mismatch"
+        },
+        "library_checkpoint_log_binding": {
+          "result": "reject",
+          "error": "TransparencyLog.EntryMismatch",
+          "message": "public key in Rekor entry does not match managed key",
+          "code": "tlog-key-mismatch"
+        },
+        "profile": {
+          "result": "reject",
+          "clause": "MK-8",
+          "reason": "library verification fails",
+          "code": "tlog-key-mismatch"
+        }
+      },
+      "cosign": "reject"
+    },
+    {
+      "id": "p384-logged-signature-substituted",
+      "description": "Entry logs a different signature than the bundle's",
+      "category": "standard-negative",
+      "bundle": "vectors/p384-logged-signature-substituted/bundle.sigstore.json",
+      "trusted_root": "roots/test.json",
+      "key": "keys/r1.pub",
+      "artifact": "artifacts/r1.bin",
+      "source": {
+        "kind": "derived",
+        "detail": "single documented mutation of the parent, made by generate.py"
+      },
+      "parent": "p384-relogged",
+      "mutation": "set the logged signature to the second bundle's signature; re-log the changed body in test log A",
+      "expected": {
+        "library": {
+          "result": "reject",
+          "error": "TransparencyLog.EntryMismatch",
+          "message": "DSSE signature in bundle does not match signature in Rekor entry",
+          "code": "tlog-signature-mismatch"
+        },
+        "library_checkpoint_log_binding": {
+          "result": "reject",
+          "error": "TransparencyLog.EntryMismatch",
+          "message": "DSSE signature in bundle does not match signature in Rekor entry",
+          "code": "tlog-signature-mismatch"
+        },
+        "profile": {
+          "result": "reject",
+          "clause": "MK-8",
+          "reason": "library verification fails",
+          "code": "tlog-signature-mismatch"
+        }
+      },
+      "cosign": "reject"
+    },
+    {
+      "id": "p384-checkpoint-signed-by-other-trusted-log",
+      "description": "Entry names test log A; its checkpoint (origin A) is signed only by test log B, which is also trusted",
+      "category": "binding-negative",
+      "bundle": "vectors/p384-checkpoint-signed-by-other-trusted-log/bundle.sigstore.json",
+      "trusted_root": "roots/test.json",
+      "key": "keys/r1.pub",
+      "artifact": "artifacts/r1.bin",
+      "source": {
+        "kind": "derived",
+        "detail": "single documented mutation of the parent, made by generate.py"
+      },
+      "parent": "p384-relogged",
+      "mutation": "replace the checkpoint signature with one by test log B's key (B's key hint)",
+      "expected": {
+        "library": {
+          "result": "accept"
+        },
+        "library_checkpoint_log_binding": {
+          "result": "reject",
+          "error": "TransparencyLog.Checkpoint",
+          "message": "checkpoint has no valid signature from the entry's log",
+          "code": "checkpoint-signature-invalid"
+        },
+        "profile": {
+          "result": "reject",
+          "clause": "MK-8",
+          "reason": "checkpoint is not from the entry's log",
+          "code": "checkpoint-signature-invalid"
+        }
+      },
+      "cosign": "reject"
+    },
+    {
+      "id": "p384-checkpoint-origin-other-log",
+      "description": "Checkpoint signed by test log A's key but with test log B's origin",
+      "category": "binding-negative",
+      "bundle": "vectors/p384-checkpoint-origin-other-log/bundle.sigstore.json",
+      "trusted_root": "roots/test.json",
+      "key": "keys/r1.pub",
+      "artifact": "artifacts/r1.bin",
+      "source": {
+        "kind": "derived",
+        "detail": "single documented mutation of the parent, made by generate.py"
+      },
+      "parent": "p384-relogged",
+      "mutation": "write test log B's origin into the checkpoint body (signed by A)",
+      "expected": {
+        "library": {
+          "result": "accept"
+        },
+        "library_checkpoint_log_binding": {
+          "result": "reject",
+          "error": "TransparencyLog.Checkpoint",
+          "message": "checkpoint origin \"test-log-b.rekor.example.com\" does not match the entry's log \"test-log-a.rekor.example.com\"",
+          "code": "checkpoint-origin-mismatch"
+        },
+        "profile": {
+          "result": "reject",
+          "clause": "MK-8",
+          "reason": "checkpoint is not from the entry's log",
+          "code": "checkpoint-origin-mismatch"
+        }
+      },
+      "cosign": "reject"
+    },
+    {
+      "id": "p384-rekor1-dsse-synthetic",
+      "description": "The real P-384 DSSE signature and timestamp with a synthetic Rekor v1 dsse 0.0.1 entry (inclusion proof, checkpoint and SET from test log v1)",
+      "category": "profile-negative",
+      "bundle": "vectors/p384-rekor1-dsse-synthetic/bundle.sigstore.json",
+      "trusted_root": "roots/test.json",
+      "key": "keys/r1.pub",
+      "artifact": "artifacts/r1.bin",
+      "source": {
+        "kind": "synthetic",
+        "detail": "Rekor v1 entry built by generate.py; no public Rekor v1 run was made"
+      },
+      "parent": "p384-rekor2-dsse-tsa",
+      "mutation": "replace the Rekor v2 entry with a synthetic Rekor v1 dsse 0.0.1 entry for the same envelope",
+      "expected": {
+        "library": {
+          "result": "accept"
+        },
+        "library_checkpoint_log_binding": {
+          "result": "accept"
+        },
+        "profile": {
+          "result": "reject",
+          "clause": "MK-5",
+          "reason": "Rekor v1 entries are rejected",
+          "code": "tlog-entry-kind"
+        }
+      },
+      "cosign": "accept"
+    },
+    {
+      "id": "p256-entry-names-another-trusted-log",
+      "description": "P-256 counterpart of p384-entry-names-another-trusted-log (also verifiable by releases without P-384 support)",
+      "category": "binding-negative",
+      "bundle": "vectors/p256-entry-names-another-trusted-log/bundle.sigstore.json",
+      "trusted_root": "roots/production.json",
+      "key": "keys/r3.pub",
+      "artifact": "artifacts/r3.bin",
+      "source": {
+        "kind": "derived",
+        "detail": "single documented mutation of the parent, made by generate.py"
+      },
+      "parent": "p256-rekor2-dsse-tsa",
+      "mutation": "set logId.keyId to the trusted root's rekor.sigstore.dev log ID",
+      "expected": {
+        "library": {
+          "result": "accept"
+        },
+        "library_checkpoint_log_binding": {
+          "result": "reject",
+          "error": "TransparencyLog.Checkpoint",
+          "message": "does not match the entry's log \"rekor.sigstore.dev\"",
+          "code": "checkpoint-origin-mismatch"
+        },
+        "profile": {
+          "result": "reject",
+          "clause": "MK-8",
+          "reason": "checkpoint is not from the entry's log",
+          "code": "checkpoint-origin-mismatch"
+        }
+      },
+      "cosign": "reject"
+    }
+  ]
+}
