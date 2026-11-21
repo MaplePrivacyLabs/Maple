@@ -51,9 +51,10 @@ Add to your `Cargo.toml`:
 maple-proxy = "0.5.1"
 ```
 
-Crates.io publishing remains separate from Maple application releases, so the
-registry can lag this checkout; check
-[crates.io](https://crates.io/crates/maple-proxy) for the versions it holds.
+A Maple release that changes the proxy version queues the crate for crates.io,
+and it is published once that run is approved, so the registry can lag this
+checkout; check [crates.io](https://crates.io/crates/maple-proxy) for the
+versions it holds.
 Proxy versions before `0.4.0` use Transport V1, which the hosted backend no
 longer serves, so they cannot connect.
 

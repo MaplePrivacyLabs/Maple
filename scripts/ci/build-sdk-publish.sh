@@ -1,9 +1,10 @@
 #!/usr/bin/env bash
-# Build and test one SDK artifact. This script never authenticates or publishes.
+# Build and test one SDK or proxy crate artifact. This script never authenticates
+# or publishes.
 set -euo pipefail
 
-if [[ $# != 2 || ( "$1" != npm && "$1" != rust ) ]]; then
-  echo "Usage: $0 npm|rust OUTPUT_DIR" >&2
+if [[ $# != 2 || ( "$1" != npm && "$1" != rust && "$1" != proxy ) ]]; then
+  echo "Usage: $0 npm|rust|proxy OUTPUT_DIR" >&2
   exit 2
 fi
 
@@ -57,7 +58,12 @@ export NPM_CONFIG_USERCONFIG="${build_dir}/npm-userconfig"
 export NPM_CONFIG_GLOBALCONFIG="${build_dir}/npm-globalconfig"
 
 cd "${repo_root}"
-nix develop --no-update-lock-file ./sdk -c bash -euo pipefail -c '
+# Each crate builds in its own pinned shell.
+package_flake=./sdk
+if [[ "${sdk_kind}" == proxy ]]; then
+  package_flake=./proxy
+fi
+nix develop --no-update-lock-file "${package_flake}" -c bash -euo pipefail -c '
   sdk_kind="$1"
   build_dir="$2"
   repo_root="$3"
@@ -87,26 +93,38 @@ nix develop --no-update-lock-file ./sdk -c bash -euo pipefail -c '
         "${build_dir}/sdk" "${build_dir}/package.tgz"
       cp "${build_dir}/package.tgz" "${output_dir}/package.tgz"
       ;;
-    rust)
+    rust|proxy)
       # Preserve Cargo-generated source SHA/path metadata. Cargo refuses dirty
       # crate source; documentation/scripts elsewhere can be edited locally.
-      # Library tests do not load dotenv or hosted integration credentials.
-      cd "${repo_root}/sdk/rust"
+      if [[ "${sdk_kind}" == rust ]]; then
+        crate_dir=sdk/rust
+        crate_name=maple-sdk
+        # Library tests do not load dotenv or hosted integration credentials.
+        test_scope=(--lib)
+      else
+        crate_dir=proxy
+        crate_name=maple-proxy
+        # The proxy lane runs every test; none needs credentials.
+        test_scope=()
+      fi
+      cd "${repo_root}/${crate_dir}"
       # Rustup cargo-subcommand proxies must use the owning Nix toolchain too.
       export RUSTUP_TOOLCHAIN="$(dirname "$(dirname "$(command -v rustc)")")"
-      # This is the SDK cache, never an Agent/shared desktop target directory.
-      export CARGO_TARGET_DIR="${repo_root}/sdk/rust/target"
+      # This is the crate cache, never an Agent/shared desktop target directory.
+      export CARGO_TARGET_DIR="${repo_root}/${crate_dir}/target"
       export RUSTFLAGS="-D warnings"
       cargo fmt --all -- --check
       cargo clippy --locked --all-targets --all-features -- -D warnings
-      cargo test --locked --all-features --lib
+      cargo test --locked --all-features "${test_scope[@]}"
       RUSTDOCFLAGS="-D warnings" cargo doc --locked --no-deps --all-features
       # Cargo also extracts and compiles this exact package before succeeding.
+      # The proxy crate resolves maple-sdk from crates.io here, so a proxy that
+      # needs a newer SDK fails until that SDK version is published.
       cargo package --locked --all-features
       package_version="$(cargo metadata --locked --no-deps --format-version 1 |
-        jq -er '\''.packages | map(select(.name == "maple-sdk")) |
-          if length == 1 then .[0].version else error("Expected one Maple SDK") end'\'')"
-      cp "${CARGO_TARGET_DIR}/package/maple-sdk-${package_version}.crate" \
+        jq -er --arg name "${crate_name}" '\''.packages | map(select(.name == $name)) |
+          if length == 1 then .[0].version else error("Expected one crate") end'\'')"
+      cp "${CARGO_TARGET_DIR}/package/${crate_name}-${package_version}.crate" \
         "${output_dir}/package.crate"
       ;;
   esac

@@ -25,8 +25,11 @@ VERSION = "3.7.0"
 RUN_ID = 12345
 ATTEMPT = 2
 REPOSITORY = "MaplePrivacyLabs/Maple"
-NAMES = {"npm": "@mapleai/sdk", "rust": "maple-sdk"}
-ARCHIVES = {"npm": "package.tgz", "rust": "package.crate"}
+NAMES = {"npm": "@mapleai/sdk", "rust": "maple-sdk", "proxy": "maple-proxy"}
+ARCHIVES = {"npm": "package.tgz", "rust": "package.crate", "proxy": "package.crate"}
+# Where each crate lives in the repository, and the workflow that publishes it.
+CRATE_SOURCES = {"rust": "sdk/rust", "proxy": "proxy"}
+WORKFLOWS = {"npm": "sdk-publish-npm.yml", "rust": "sdk-publish-rust.yml", "proxy": "sdk-publish-rust.yml"}
 
 
 def npm_manifest():
@@ -51,9 +54,9 @@ def npm_manifest():
     }
 
 
-def rust_manifest():
+def rust_manifest(kind="rust"):
     return (
-        '[package]\nname = "maple-sdk"\nversion = "3.7.0"\nedition = "2021"\n'
+        f'[package]\nname = "{NAMES[kind]}"\nversion = "3.7.0"\nedition = "2021"\n'
         'repository = "https://github.com/MaplePrivacyLabs/Maple"\n'
     ).encode()
 
@@ -70,12 +73,13 @@ def package_entries(kind):
             ("package/dist/index.d.ts", b"export declare const fixture: boolean;\n"),
             ("package/dist/index.d.cts", b"export declare const fixture: boolean;\n"),
         ]
-    prefix = f"maple-sdk-{VERSION}"
+    prefix = f"{NAMES[kind]}-{VERSION}"
     return [
         (prefix + "/", None),
-        (prefix + "/Cargo.toml", rust_manifest()),
+        (prefix + "/Cargo.toml", rust_manifest(kind)),
         (prefix + "/src/lib.rs", b"pub fn fixture() {}\n"),
-        (prefix + "/.cargo_vcs_info.json", json.dumps({"git": {"sha1": SHA}, "path_in_vcs": "sdk/rust"}).encode()),
+        (prefix + "/.cargo_vcs_info.json",
+         json.dumps({"git": {"sha1": SHA}, "path_in_vcs": CRATE_SOURCES[kind]}).encode()),
     ]
 
 
@@ -113,9 +117,9 @@ def registry_inventory(kind, versions=("3.6.0",)):
             "dist-tags": {"latest": versions[-1]},
         }
     return {
-        "crate": {"id": "maple-sdk", "name": "maple-sdk", "versions": list(range(1, len(versions) + 1)), "num_versions": len(versions)},
+        "crate": {"id": NAMES[kind], "name": NAMES[kind], "versions": list(range(1, len(versions) + 1)), "num_versions": len(versions)},
         "versions": [
-            {"id": index, "crate": "maple-sdk", "num": version, "yanked": False, "checksum": "b" * 64}
+            {"id": index, "crate": NAMES[kind], "num": version, "yanked": False, "checksum": "b" * 64}
             for index, version in enumerate(versions, start=1)
         ],
     }
@@ -284,7 +288,7 @@ class PackageBoundaryTests(unittest.TestCase):
 
     def test_links_and_special_files_are_rejected(self):
         for kind in NAMES:
-            prefix = "package" if kind == "npm" else f"maple-sdk-{VERSION}"
+            prefix = "package" if kind == "npm" else f"{NAMES[kind]}-{VERSION}"
             for entry_type in (tarfile.SYMTYPE, tarfile.LNKTYPE, tarfile.FIFOTYPE, tarfile.CHRTYPE):
                 member = tarfile.TarInfo(prefix + "/unexpected")
                 member.type = entry_type
@@ -295,7 +299,7 @@ class PackageBoundaryTests(unittest.TestCase):
     def test_duplicate_members_and_missing_entrypoints_are_rejected(self):
         for kind in NAMES:
             entries = package_entries(kind)
-            entrypoint = "package/dist/index.d.cts" if kind == "npm" else f"maple-sdk-{VERSION}/src/lib.rs"
+            entrypoint = "package/dist/index.d.cts" if kind == "npm" else f"{NAMES[kind]}-{VERSION}/src/lib.rs"
             for invalid in (entries + [entries[1]], [(name, data) for name, data in entries if name != entrypoint]):
                 with self.subTest(kind=kind, members=[name for name, _ in invalid]), self.assertRaises(publish.Rejected):
                     self.inspect(kind, invalid)
@@ -364,6 +368,17 @@ class PackageBoundaryTests(unittest.TestCase):
         entries = [(name, data) for name, data in package_entries("rust") if not name.endswith("/.cargo_vcs_info.json")]
         with self.assertRaises(publish.Rejected):
             self.inspect("rust", entries)
+
+    def test_a_crate_cannot_stand_in_for_the_other_crate(self):
+        for kind, other in (("rust", "proxy"), ("proxy", "rust")):
+            with self.subTest(kind=kind, archive=other), self.assertRaises(publish.Rejected):
+                self.inspect(kind, package_entries(other))
+            # The right name packed from the other crate's directory is rejected too.
+            entries = [(name, json.dumps({"git": {"sha1": SHA}, "path_in_vcs": CRATE_SOURCES[other]}).encode()
+                        if name.endswith("/.cargo_vcs_info.json") else data)
+                       for name, data in package_entries(kind)]
+            with self.subTest(kind=kind, path_in_vcs=CRATE_SOURCES[other]), self.assertRaises(publish.Rejected):
+                self.inspect(kind, entries)
 
     def test_malformed_or_uncompressed_archives_are_rejected(self):
         for kind in NAMES:
@@ -508,7 +523,7 @@ class PackageBoundaryTests(unittest.TestCase):
             (self.root / ARCHIVES[kind]).unlink()
 
     def test_confirmation_has_registry_specific_read_only_retry_bounds(self):
-        for kind, attempts, interval in (("npm", 41, 30), ("rust", 25, 5)):
+        for kind, attempts, interval in (("npm", 41, 30), ("rust", 25, 5), ("proxy", 25, 5)):
             self.bundle(kind)
             with (self.subTest(kind=kind),
                   patch.object(publish, "fetch_inventory", return_value=None) as fetch,
@@ -561,8 +576,10 @@ class SourceProvenanceTests(unittest.TestCase):
         self.addCleanup(temporary.cleanup)
         self.root = Path(temporary.name)
         (self.root / "sdk/rust").mkdir(parents=True)
+        (self.root / "proxy").mkdir()
         (self.root / "sdk/package.json").write_text(json.dumps(npm_manifest()))
         (self.root / "sdk/rust/Cargo.toml").write_bytes(rust_manifest())
+        (self.root / "proxy/Cargo.toml").write_bytes(rust_manifest("proxy"))
 
     def environment(self, kind):
         return {
@@ -572,7 +589,7 @@ class SourceProvenanceTests(unittest.TestCase):
             "GITHUB_REPOSITORY_OWNER_ID": "322649754",
             "GITHUB_REF": "refs/heads/master",
             "GITHUB_SHA": SHA,
-            "GITHUB_WORKFLOW_REF": f"{REPOSITORY}/.github/workflows/sdk-publish-{kind}.yml@refs/heads/master",
+            "GITHUB_WORKFLOW_REF": f"{REPOSITORY}/.github/workflows/{WORKFLOWS[kind]}@refs/heads/master",
             "GITHUB_WORKFLOW_SHA": SHA,
             "GITHUB_RUN_ID": str(RUN_ID),
             "GITHUB_RUN_ATTEMPT": str(ATTEMPT),
@@ -637,6 +654,21 @@ class SourceProvenanceTests(unittest.TestCase):
         (self.root / "sdk/rust/Cargo.toml").write_bytes(rust_manifest().replace(b'"3.7.0"', b'"3.6.0"'))
         with self.assertRaises(publish.Rejected):
             self.validate("rust")
+        # Each crate is bound to its own manifest: the SDK's stale version above
+        # does not block the proxy, and the proxy's does not pass on the SDK's.
+        self.validate("proxy")
+        (self.root / "sdk/rust/Cargo.toml").write_bytes(rust_manifest())
+        (self.root / "proxy/Cargo.toml").write_bytes(rust_manifest("proxy").replace(b'"3.7.0"', b'"3.6.0"'))
+        self.validate("rust")
+        with self.assertRaises(publish.Rejected):
+            self.validate("proxy")
+
+    def test_the_proxy_crate_publishes_only_through_the_rust_workflow(self):
+        self.assertEqual(publish.WORKFLOWS["proxy"], publish.WORKFLOWS["rust"])
+        environment = self.environment("proxy")
+        environment["GITHUB_WORKFLOW_REF"] = f"{REPOSITORY}/.github/workflows/proxy-publish.yml@refs/heads/master"
+        with self.assertRaises(publish.Rejected):
+            self.validate("proxy", environment)
 
 
 if __name__ == "__main__":
