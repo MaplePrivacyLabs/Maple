@@ -688,17 +688,20 @@ jobs:
             *) fail "crates.io returned HTTP ${status}" ;;
           esac
 
-          # The crate must be the released proxy. If master's proxy inputs have
-          # moved past the release, someone has to choose what to publish.
+          # The crate must be the released proxy, so the code it is packed from
+          # has to be unchanged on master. The in-tree SDK and the Dockerfile are
+          # not part of the crate, which takes maple-sdk from crates.io; the
+          # README and license are documentation.
           master_sha="$(git rev-parse HEAD)"
           set +e
-          python3 -I scripts/ci/proxy_runtime_diff.py "${RELEASE_SHA}" "${master_sha}"
+          git diff --quiet "${RELEASE_SHA}" "${master_sha}" -- \
+            proxy/Cargo.toml proxy/Cargo.lock proxy/src proxy/examples proxy/tests
           diff_status=$?
           set -e
           case "${diff_status}" in
             0) ;;
-            1) fail "master's proxy inputs changed after ${RELEASE_TAG}, so master no longer builds the released maple-proxy ${PROXY_VERSION}" ;;
-            *) fail "could not compare master's proxy inputs with ${RELEASE_TAG}" ;;
+            1) fail "the proxy crate's source changed on master after ${RELEASE_TAG}, so master no longer builds the released maple-proxy ${PROXY_VERSION}" ;;
+            *) fail "could not compare the proxy crate's source on master with ${RELEASE_TAG}" ;;
           esac
 
           gh workflow run sdk-publish-rust.yml \
@@ -711,6 +714,6 @@ jobs:
           {
             echo "### Proxy crate"
             echo
-            echo "Started the crates.io publisher for maple-proxy ${PROXY_VERSION} from master \`${master_sha}\`, whose proxy inputs match ${RELEASE_TAG}."
-            echo "It builds and checks the crate, then waits for \`sdk-crates\` approval."
+            echo "Started the crates.io publisher for maple-proxy ${PROXY_VERSION}. The proxy crate's source on master \`${master_sha}\` matches ${RELEASE_TAG}."
+            echo "The publisher builds master as it is when that run starts, names its commit, and waits for \`sdk-crates\` approval."
           } >>"${GITHUB_STEP_SUMMARY}"

@@ -162,6 +162,22 @@ class VersionAndRegistryTests(unittest.TestCase):
                 with self.subTest(kind=kind, existing=existing), self.assertRaises(publish.Rejected):
                     publish.validate_registry(kind, VERSION, "trusted", registry_inventory(kind, existing))
 
+    def test_each_crate_reads_and_accepts_only_its_own_registry_inventory(self):
+        self.assertEqual(publish.REGISTRIES["rust"], "https://crates.io/api/v1/crates/maple-sdk")
+        self.assertEqual(publish.REGISTRIES["proxy"], "https://crates.io/api/v1/crates/maple-proxy")
+        self.assertEqual((publish.SOURCES["rust"], publish.SOURCES["proxy"]), ("sdk/rust", "proxy"))
+        for kind, other in (("rust", "proxy"), ("proxy", "rust")):
+            publish.validate_registry(kind, VERSION, "trusted", registry_inventory(kind))
+            foreign = registry_inventory(other)
+            with self.subTest(kind=kind, inventory=other), self.assertRaises(publish.Rejected):
+                publish.validate_registry(kind, VERSION, "trusted", foreign)
+            # Either identity field alone is enough to reject it.
+            for field in ("crate", "versions"):
+                mixed = registry_inventory(kind)
+                mixed[field] = foreign[field]
+                with self.subTest(kind=kind, foreign_field=field), self.assertRaises(publish.Rejected):
+                    publish.validate_registry(kind, VERSION, "trusted", mixed)
+
     def test_yanked_rust_releases_still_prevent_reuse_and_downgrade(self):
         for version in (VERSION, "4.0.0"):
             inventory = registry_inventory("rust", (version,))
@@ -378,6 +394,11 @@ class PackageBoundaryTests(unittest.TestCase):
                         if name.endswith("/.cargo_vcs_info.json") else data)
                        for name, data in package_entries(kind)]
             with self.subTest(kind=kind, path_in_vcs=CRATE_SOURCES[other]), self.assertRaises(publish.Rejected):
+                self.inspect(kind, entries)
+            # So is the other crate's manifest inside an otherwise correct archive.
+            entries = [(name, rust_manifest(other) if name.endswith("/Cargo.toml") else data)
+                       for name, data in package_entries(kind)]
+            with self.subTest(kind=kind, manifest=other), self.assertRaises(publish.Rejected):
                 self.inspect(kind, entries)
 
     def test_malformed_or_uncompressed_archives_are_rejected(self):

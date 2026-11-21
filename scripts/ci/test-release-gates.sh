@@ -626,13 +626,11 @@ check(
     set(needs(proxy_crate)) == {"prepare", "finalize"},
     "Proxy crate handoff must follow the validated plan and the verified container",
 )
-crate_if = str(proxy_crate.get("if", ""))
-for required_gate in (
-    "always()",
-    "needs.prepare.result == 'success'",
-    "needs.finalize.result == 'success'",
-):
-    check(required_gate in crate_if, f"Proxy crate handoff is missing gate: {required_gate}")
+check(
+    " ".join(str(proxy_crate.get("if", "")).split())
+    == "always() && needs.prepare.result == 'success' && needs.finalize.result == 'success'",
+    "Proxy crate handoff must require the validated plan and the verified container, and nothing less",
+)
 check(
     proxy_crate.get("permissions") == {"contents": "read", "actions": "write"},
     "Proxy crate handoff may only read contents and start workflows",
@@ -651,19 +649,22 @@ check(
 crate_runs = "\n".join(str(step.get("run", "")) for step in proxy_crate.get("steps", []))
 for required_control in (
     "https://crates.io/api/v1/crates/maple-proxy/${PROXY_VERSION}",
-    "404) ;;",
-    'python3 -I scripts/ci/proxy_runtime_diff.py "${RELEASE_SHA}" "${master_sha}"',
+    'git diff --quiet "${RELEASE_SHA}" "${master_sha}" --',
+    "proxy/Cargo.toml proxy/Cargo.lock proxy/src proxy/examples proxy/tests",
     "gh workflow run sdk-publish-rust.yml",
     '--repo "${GITHUB_REPOSITORY}" --ref master',
     "--raw-field package=maple-proxy",
     '--raw-field "version=${PROXY_VERSION}"',
     "--raw-field mode=trusted",
+    "--raw-field dry_run=false",
 ):
     check(required_control in crate_runs, f"Proxy crate handoff is missing control: {required_control}")
+check(crate_runs.count("gh workflow run") == 1, "Proxy crate handoff must start the publisher exactly once")
 check(
-    crate_runs.index("proxy_runtime_diff.py") < crate_runs.index("gh workflow run"),
+    crate_runs.index("git diff --quiet") < crate_runs.index("gh workflow run"),
     "Proxy crate handoff must compare master with the release before it starts the publisher",
 )
+# What the script does in each case is exercised in test_proxy_crate_handoff.py.
 for forbidden in ("cargo ", "CARGO_REGISTRY_TOKEN", "id-token", "crates.io/api/v1/crates/new", "bootstrap"):
     check(forbidden not in str(proxy_crate), f"Proxy crate handoff must not contain: {forbidden}")
 

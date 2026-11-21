@@ -74,11 +74,15 @@ class SDKPublishingWorkflowTests(unittest.TestCase):
         self.assertEqual(config["env"]["SDK_KIND"], "${{ inputs.package == 'maple-proxy' && 'proxy' || 'rust' }}")
         self.assertEqual(config["env"]["SDK_PACKAGE"],
                          "${{ inputs.package == 'maple-proxy' && 'maple-proxy' || 'maple-sdk' }}")
-        # The choice is read only by those two expressions and the run title.
+        # Each crate serializes by itself: a proxy run waiting for approval must
+        # not hold back the SDK.
+        self.assertEqual(config["concurrency"]["group"],
+                         "sdk-crates-publish${{ inputs.package == 'maple-proxy' && '-proxy' || '' }}")
+        # The choice is read only by those expressions and the run title.
         uses = [text for text in strings({key: value for key, value in config.items() if key != "on"})
                 if "inputs.package" in text]
         self.assertEqual(sorted(uses), sorted([config["env"]["SDK_KIND"], config["env"]["SDK_PACKAGE"],
-                                               config["run-name"]]))
+                                               config["concurrency"]["group"], config["run-name"]]))
         for job in config["jobs"].values():
             for step in job["steps"]:
                 run = step.get("run", "")

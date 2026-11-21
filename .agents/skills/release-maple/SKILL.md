@@ -48,7 +48,7 @@ commit, external effect, and authority provided by the user.
   `ghcr.io/mapleprivacylabs/maple-proxy`.
 - After that sibling verifies the container, its `crate` job starts the
   `maple-proxy` crates.io publisher for the same proxy version when the registry
-  lacks it and `master`'s proxy inputs still match the release. That run
+  lacks it and the crate's source on `master` still matches the release. That run
   publishes only after `sdk-crates` approval; see
   [Proxy crate](../../../docs/sdk-publishing.md#proxy-crate).
 - GitHub Release creation does not itself submit the release IPA or AAB to

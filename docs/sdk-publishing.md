@@ -186,13 +186,15 @@ release's proxy container and then starts the publisher for the same proxy
 version when both hold:
 
 - crates.io does not have that version yet;
-- the proxy's build inputs on `master` are the ones the release was built from.
+- the code the crate is packed from (`proxy/src`, `examples`, `tests`, the
+  manifest and the lockfile) is the same on `master` as in the release.
 
 The run it starts builds and checks the crate from `master`, then waits for
-`sdk-crates` approval like any other publication. If `master`'s proxy inputs
-have already moved past the release, the handoff fails and names the release;
-decide the next proxy version instead of publishing a crate the release did not
-ship.
+`sdk-crates` approval like any other publication. If that code has already
+changed on `master`, the handoff fails and names the release; decide the next
+proxy version instead of publishing a crate the release did not ship. The two
+crates serialize separately, so a proxy run waiting for approval does not hold
+back an SDK publication.
 
 To start it by hand, for example to retry:
 

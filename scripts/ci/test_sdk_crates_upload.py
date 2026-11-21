@@ -667,10 +667,13 @@ class ProxyCrateTests(unittest.TestCase):
             publisher.prepare_upload(self.directory, "3.6.2", "maple-proxy")
 
     def test_an_archive_named_for_the_proxy_must_hold_the_proxy_manifest(self):
-        sdk_manifest_in_proxy_archive = [
-            (name, NORMALIZED_MANIFEST.encode() if name.endswith("Cargo.toml") else content, kind)
-            for name, content, kind in proxy_entries()]
-        self.path.write_bytes(archive_bytes(sdk_manifest_in_proxy_archive))
+        # Same version, prefix and files: only the package name is the SDK's.
+        renamed = PROXY_MANIFEST.replace('name = "maple-proxy"', 'name = "maple-sdk"', 1)
+        self.assertEqual(tomllib.loads(renamed)["package"]["name"], "maple-sdk")
+        self.assertEqual(tomllib.loads(renamed)["package"]["version"], "0.5.1")
+        self.path.write_bytes(archive_bytes([
+            (name, renamed.encode() if name.endswith("Cargo.toml") else content, kind)
+            for name, content, kind in proxy_entries()]))
         with self.assertRaisesRegex(publisher.Rejected, "Crate identity does not match"):
             publisher.prepare_upload(self.directory, "0.5.1", "maple-proxy")
 

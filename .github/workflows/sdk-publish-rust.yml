@@ -33,8 +33,10 @@ on:
 permissions:
   contents: read
 
+# One group per crate. The release handoff can leave a maple-proxy run waiting
+# for approval, and that must not hold back an SDK publication or dry run.
 concurrency:
-  group: sdk-crates-publish
+  group: sdk-crates-publish${{ inputs.package == 'maple-proxy' && '-proxy' || '' }}
   cancel-in-progress: false
 
 env:
