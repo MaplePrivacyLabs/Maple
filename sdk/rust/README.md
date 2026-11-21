@@ -16,7 +16,7 @@ Maple Rust SDK for the OpenSecret backend: secure AI APIs, encrypted sessions, a
 - ↔️ **Lossless Inference Transport**: Provider-specific request and response fields pass through as raw bytes
 - 🛡️ **Secure by Default**: No plaintext data transmission
 
-## Optional application context (4.2.0)
+## Optional application context (5.0.0)
 
 Configure `ClientApp::Chat`, `ClientApp::Proxy`, or `ClientApp::Work` when an
 application owns the SDK client:
@@ -57,6 +57,17 @@ package rename. Version 4 uses Transport V2, requires a V2-capable backend, and
 does not fall back to V1. Existing V1 users must sign in again to establish a new
 session. Coordinate native and hosted OAuth flows with the consuming app; see
 the [version 4 upgrade notes](../README.md#version-4-upgrade).
+
+Version 5 removes the Transport V1 leftovers from the public API, which is why
+it is a major version. Gone are the V1 helpers in `crypto` (`encrypt_message`,
+`decrypt_message`, `encrypt_data`, `decrypt_data`, `generate_ephemeral_keypair`,
+`generate_static_keypair`, `perform_key_exchange`,
+`perform_static_key_exchange`, `decrypt_session_key`), `SessionManager`'s
+`set_session`, `get_session` and `clear_session`, the types
+`KeyExchangeRequest`, `KeyExchangeResponse`, `EncryptedRequest`,
+`EncryptedResponse` and `SessionState`, and `Error::KeyExchange`. Nothing in
+version 4 used them to reach the backend, so code built on `OpenSecretClient`
+needs no change. The hosted backend no longer serves Transport V1 at all.
 
 ## Quick Start
 
