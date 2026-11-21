@@ -2403,7 +2403,6 @@ impl SettingsScreen {
             .flex_none()
             .items_center()
             .gap_2()
-            .my(px(-8.))
             .when(
                 self.update.state == State::Ready && self.update.show_banner,
                 |row| {
@@ -2464,7 +2463,7 @@ impl SettingsScreen {
             &tr("settings-settings-update"),
             presentation::update_label(&self.update, &self.messages),
         )
-        .when(has_actions, |row| row.child(actions))
+        .when(has_actions, |row| row.gap_6().child(actions))
     }
 }
 
