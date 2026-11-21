@@ -808,6 +808,9 @@ pub struct ChatScreen {
     timeline_index: HashMap<String, (usize, u64)>,
     /// Guards against a slow session load overwriting a newer selection.
     selection_generation: u64,
+    /// Screen-owned glint clock. The element does not keep it, so the title
+    /// leaving the tree does not start it again.
+    empty_title: crate::ui::empty_title::GlintVisit,
     /// Same guard for mid-run history reloads. Separate from the selection
     /// generation so a reload never cancels a task switch in flight.
     reload_generation: u64,
@@ -1665,6 +1668,7 @@ impl ChatScreen {
             branch_watcher: None,
             watched_git_dir: None,
             selection_generation: 0,
+            empty_title: crate::ui::empty_title::GlintVisit::new(),
             reload_generation: 0,
             attachment_images: HashMap::new(),
             attachment_previews: HashMap::new(),
@@ -2616,7 +2620,9 @@ impl ChatScreen {
             .map(|session| session.id.clone());
         match latest {
             Some(id) => self.select_session(&id, cx),
-            None => self.new_session(cx),
+            // The empty title may already be on screen. Do not clear its
+            // clock: this is the launch visit, not a New Task click.
+            None => self.begin_empty(cx, false),
         }
     }
 
@@ -2625,6 +2631,13 @@ impl ChatScreen {
     /// is sent, so a project switched before then moves it, and a click
     /// that sends nothing leaves no empty row behind.
     pub(super) fn new_session(&mut self, cx: &mut Context<Self>) {
+        self.begin_empty(cx, true);
+    }
+
+    /// Show the empty screen. `replay_glint` is for a person asking for a
+    /// new task. The boot list must pass false, or a glint that already
+    /// started is cut off and played again.
+    fn begin_empty(&mut self, cx: &mut Context<Self>, replay_glint: bool) {
         // The first send is creating its task; a click now would
         // supersede it and lose the message.
         if self.session_setup_pending {
@@ -2648,6 +2661,9 @@ impl ChatScreen {
         // The draft starts from this project's defaults.
         self.permission_mode = self.new_task_permission_mode;
         self.refresh_draft_mcp(cx);
+        if replay_glint {
+            self.empty_title.started = None;
+        }
         cx.notify();
     }
 
@@ -7533,6 +7549,7 @@ impl Render for ChatScreen {
             self.row_motion.show_empty_state();
             self.render_empty_state(composer_resize, window, cx)
         } else {
+            self.empty_title = crate::ui::empty_title::end_visit(self.empty_title);
             div()
                 .flex()
                 .flex_col()
@@ -8329,6 +8346,16 @@ impl ChatScreen {
         cx: &mut Context<Self>,
     ) -> Div {
         let expanded = self.composer_expanded;
+        // Not while the title folds with the composer: a glint started
+        // then would play under the fade.
+        if !expanded && composer_resize.is_none() {
+            self.empty_title = crate::ui::empty_title::step_title(
+                self.empty_title,
+                motion::loops_paused(window, cx),
+            );
+        }
+        let entrance = self.empty_title.entrance;
+        let started = self.empty_title.started;
         let fills = self.composer_fills();
         let hero = match composer_resize {
             Some((progress, _)) => 1. - progress,
@@ -8379,7 +8406,11 @@ impl ChatScreen {
                         .text_size(px(36.))
                         .line_height(px(48.))
                         .text_color(gpui::rgb(theme::display_text()))
-                        .child(tr("chat-empty-title")),
+                        .child(crate::ui::empty_title::empty_title(
+                            tr("chat-empty-title"),
+                            entrance,
+                            started,
+                        )),
                 ),
                 measured.title,
                 true,

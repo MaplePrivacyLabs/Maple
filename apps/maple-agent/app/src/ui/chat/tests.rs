@@ -3496,6 +3496,33 @@ mod state_tests {
         });
     }
 
+    /// A launch glint that is already running must survive the boot list.
+    /// New Task is what starts it again.
+    #[gpui::test]
+    fn test_boot_list_keeps_a_running_launch_glint(cx: &mut TestAppContext) {
+        cx.executor().allow_parking();
+        let screen = screen(cx);
+        screen.update(cx, |this, cx| {
+            this.project_root = Some("/work/alpha".to_string());
+            this.selected_session = None;
+            this.draft = false;
+            let started = std::time::Instant::now();
+            this.empty_title = crate::ui::empty_title::GlintVisit {
+                started: Some(started),
+                seen: true,
+                entrance: true,
+            };
+            let generation = this.selection_generation;
+            this.apply_session_list(Vec::new(), generation, cx);
+            assert_eq!(this.empty_title.started, Some(started));
+            assert!(this.empty_title.entrance);
+            assert!(this.empty_title.seen);
+
+            this.new_session(cx);
+            assert!(this.empty_title.started.is_none());
+        });
+    }
+
     /// While a project selection is landing, neither "New Task" nor a
     /// first send may run ahead of it.
     #[gpui::test]

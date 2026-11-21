@@ -70,6 +70,13 @@ thumb overshoot a stop as it lands. Those tunings are constants at the top
 of `app/src/ui/effort_slider.rs` and `app/src/ui/chat/effort.rs`, and they
 stay out of the tokens on purpose: nothing else should move like it.
 
+The empty-state title's glint is the one staged effect: a fade, then a
+light that crosses the letters with a bright edge and a soft tail. Its
+stage lengths are constants at the top of `app/src/ui/empty_title.rs`,
+because no single token describes it. It reads the shared clock
+(`motion::now`), pauses with the loops (`motion::loops_paused`) and eases on
+the shared curve.
+
 Press feedback is immediate (`.active()`), and focus rings appear at once.
 Looping indicators (spinners, the waiting dots, a running task's breathing
 dot and title shine) use the shared 15 fps `ticker` clock and pause in
@@ -86,6 +93,7 @@ plain title.
 | Dialogs, confirmations and the image preview | scrim fades, card fades and rises, `ENTER` | immediate |
 | Screen change (Chat ↔ Settings) and Settings sections | new content fades in, `REVEAL` | immediate |
 | Empty state ↔ conversation (first message, opening a task, New Task) | the composer changes place at once | at once |
+| Empty-state title (launch, New Task) | the ink fades in on launch, then one glint crosses the letters; New Task replays only the glint | none; it plays once |
 | Switching tasks | transcript fades in when its snapshot lands, `REVEAL` | immediate |
 | Live transcript rows at the end of the thread (sent message, reply, thinking, tool card, error, stop notice) | height grows from 0 and the row fades in, `ENTER`, so older rows glide up; scrolled up, a fade and 6 px rise | — |
 | Sent message | the composer empties at once and the bubble's slot opens from the height it gave up, so the thread does not drop; the bubble rises in, the real row takes its exact place, and "Sending…" and the waiting dots share one slot under it | — |
