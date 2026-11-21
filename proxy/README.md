@@ -48,16 +48,18 @@ Add to your `Cargo.toml`:
 
 ```toml
 [dependencies]
-maple-proxy = "0.3.2"
+maple-proxy = "0.5.1"
 ```
 
-Crates.io publishing remains separate from Maple application releases; the
-example above uses the latest published crate version.
+Crates.io publishing remains separate from Maple application releases, so the
+registry can lag this checkout; check
+[crates.io](https://crates.io/crates/maple-proxy) for the versions it holds.
+Proxy versions before `0.4.0` use Transport V1, which the hosted backend no
+longer serves, so they cannot connect.
 
-This checkout prepares proxy `0.5.0`, including `POST /v1/systemone` introduced
+This checkout prepares proxy `0.5.1`, including `POST /v1/systemone` introduced
 in `0.4.2`, with a compatible registry requirement for `maple-sdk`
-starting at `4.2.0`. The published proxy crate in the example above
-predates this Transport V2 update. The standalone binary's lockfile selects its
+starting at `5.0.0`. The standalone binary's lockfile selects its
 SDK version; an embedding application selects its own. Keep the host and proxy
 on one SDK source/version because their public APIs exchange SDK types. Local
 SDK links remain supported during development. See the
