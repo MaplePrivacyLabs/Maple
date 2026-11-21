@@ -52,6 +52,15 @@ pub enum Pcr0Environment {
     Development,
 }
 
+impl Pcr0Environment {
+    pub(crate) const fn release_name(self) -> &'static str {
+        match self {
+            Self::Production => "production",
+            Self::Development => "development",
+        }
+    }
+}
+
 /// PCR0 deployment-identity policy enforced after Nitro document validation.
 ///
 /// The default policy trusts OpenSecret's pinned production PCR0 values and
@@ -63,6 +72,7 @@ pub enum Pcr0Environment {
 pub struct Pcr0TrustPolicy {
     trusted_pcr0s: HashSet<String>,
     remote_history_urls: Vec<Url>,
+    release_environment: Pcr0Environment,
 }
 
 impl Pcr0TrustPolicy {
@@ -93,6 +103,7 @@ impl Pcr0TrustPolicy {
         Self {
             trusted_pcr0s,
             remote_history_urls,
+            release_environment: environment,
         }
     }
 
@@ -105,6 +116,7 @@ impl Pcr0TrustPolicy {
         let mut policy = Self {
             trusted_pcr0s: HashSet::new(),
             remote_history_urls: Vec::new(),
+            release_environment: Pcr0Environment::Production,
         };
         policy.add_pcr0s(pcr0s)?;
         if policy.trusted_pcr0s.is_empty() {
@@ -165,6 +177,10 @@ impl Pcr0TrustPolicy {
             self.trusted_pcr0s.insert(pcr0.to_string());
         }
         Ok(())
+    }
+
+    pub(crate) fn release_environment(&self) -> Pcr0Environment {
+        self.release_environment
     }
 
     pub(crate) async fn verify_pcr0(&self, pcr0: &[u8]) -> Result<()> {

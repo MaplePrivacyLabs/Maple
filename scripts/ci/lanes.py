@@ -197,9 +197,13 @@ WINDOWS_PACKAGE = (
 PROXY_CONTAINER = ("proxy/Dockerfile", ".dockerignore", "proxy/Cargo.lock") + PROXY_RUNTIME + RUST_SDK
 SDK_CRATE = (
     'crate="$(mktemp -d)" && ./scripts/ci/build-sdk-publish.sh rust "$crate"'
-    ' && python3 -I scripts/ci/sdk_crates_upload.py --directory "$crate" --validate-only --version'
+    ' && if [[ -f "$crate/package.crate" ]]; then'
+    ' python3 -I scripts/ci/sdk_crates_upload.py --directory "$crate" --validate-only --version'
     ' "$(python3 -I -c \'import pathlib, tomllib; print(tomllib.loads('
     'pathlib.Path("sdk/rust/Cargo.toml").read_text())["package"]["version"])\')"'
+    ' ; elif [[ -f "$crate/git-only-dependencies" ]]; then'
+    ' printf "%s\\n" "Crate upload validation is skipped while the manifest has Git-only dependencies."'
+    ' ; else printf "%s\\n" "Rust SDK validation produced no crate archive." >&2; exit 1; fi'
 )
 
 
@@ -321,8 +325,11 @@ LANES: Tuple[Lane, ...] = (
                              "sdk/LICENSE.md", "scripts/ci/build-sdk-publish.sh",
                              "scripts/ci/check-sdk-package-consumers.py"),
          runner=GITHUB, run='./scripts/ci/build-sdk-publish.sh npm "$(mktemp -d)"', hook="sdk_ts"),
+    # The SDK tests compare their embedded trust inputs with these reviewed copies.
     Lane("sdk-rust", ("sdk/rust/**", "sdk/rust-toolchain.toml", "sdk/flake.*", "scripts/ci/build-sdk-publish.sh",
-                      "scripts/ci/sdk_crates_upload.py"),
+                      "scripts/ci/sdk_crates_upload.py",
+                      "scripts/ci/opensecret-release/dev-signing-key.pem",
+                      "scripts/ci/opensecret-release/trusted_root.json"),
          runner=GITHUB, flake=".#pages", run=SDK_CRATE, hook="sdk_rust"),  # .#pages: a Python with tomllib
     Lane("proxy", ("proxy/**", "!proxy/Dockerfile"), also=RUST_SDK, runner=GITHUB, flake="./proxy",
          workdir="proxy", run='just check && RUSTDOCFLAGS="-D warnings" cargo doc --locked --no-deps --all-features'
