@@ -44,16 +44,11 @@ export function TopNav() {
         <div className="flex h-16 items-center px-6 relative overflow-visible rounded-xl border border-[#E2E2E2]/10 bg-[#111111]/80 backdrop-blur-md">
           <div className="relative z-10 flex w-full items-center justify-between">
             <div className="flex-shrink-0">
-              <Link to="/" className="flex h-8 items-center gap-2 leading-none">
+              <Link to="/" className="flex h-8 items-center leading-none">
                 <img
-                  src="/maple-icon-nobg.png"
-                  alt=""
-                  className="block h-8 w-8 shrink-0 object-contain"
-                />
-                <img
-                  src="/maple-logo.svg"
+                  src="/maple-wordmark-light.svg"
                   alt="Maple"
-                  className="block h-8 w-auto max-w-[6.25rem] shrink-0 object-left object-contain"
+                  className="block h-8 w-auto shrink-0 object-contain"
                 />
               </Link>
             </div>
