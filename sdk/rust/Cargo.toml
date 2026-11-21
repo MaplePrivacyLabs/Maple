@@ -41,6 +41,12 @@ hex = "0.4"  # For debug output
 subtle = "2.6"
 zeroize = { version = "1.8", features = ["derive"] }
 
+# Enclave release approval and public Sigstore evidence. Every crate from this
+# verifier workspace must stay on the same reviewed revision.
+sigstore-types = { git = "https://github.com/MaplePrivacyLabs/sigstore-rust.git", rev = "47e17243e38f6aaa472008c2187b43e143b14211", default-features = false }
+sigstore-trust-root = { git = "https://github.com/MaplePrivacyLabs/sigstore-rust.git", rev = "47e17243e38f6aaa472008c2187b43e143b14211", default-features = false, features = ["tuf", "rustls", "aws-lc-rs"] }
+sigstore-verify = { git = "https://github.com/MaplePrivacyLabs/sigstore-rust.git", rev = "47e17243e38f6aaa472008c2187b43e143b14211", default-features = false, features = ["rustls", "aws-lc-rs"] }
+
 # X.509 and certificate handling
 x509-parser = "0.16"
 yasna = "0.5"

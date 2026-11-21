@@ -52,6 +52,15 @@ pub enum Pcr0Environment {
     Development,
 }
 
+impl Pcr0Environment {
+    pub(crate) const fn release_name(self) -> &'static str {
+        match self {
+            Self::Production => "production",
+            Self::Development => "development",
+        }
+    }
+}
+
 /// PCR0 deployment-identity policy enforced after Nitro document validation.
 ///
 /// The default policy trusts OpenSecret's pinned production PCR0 values and

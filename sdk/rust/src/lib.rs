@@ -6,6 +6,9 @@ pub mod crypto;
 pub mod error;
 pub mod pcr;
 pub mod push;
+// The pure verifier is exercised directly before any transport observer uses it.
+#[allow(dead_code)]
+mod release_verification;
 pub mod remote;
 pub mod session;
 pub mod system_one;

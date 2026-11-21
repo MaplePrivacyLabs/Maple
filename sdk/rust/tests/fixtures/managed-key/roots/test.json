@@ -1,0 +1,71 @@
+{
+  "mediaType": "application/vnd.dev.sigstore.trustedroot+json;version=0.1",
+  "tlogs": [
+    {
+      "baseUrl": "https://test-log-a.rekor.example.com",
+      "hashAlgorithm": "SHA2_256",
+      "publicKey": {
+        "rawBytes": "MCowBQYDK2VwAyEAo1RgeaqN6cUyR1cU7sTay/tx/Zemc/HTirk97yLSwQI=",
+        "keyDetails": "PKIX_ED25519",
+        "validFor": {
+          "start": "2026-01-01T00:00:00Z"
+        }
+      },
+      "logId": {
+        "keyId": "NPPS23Orcle5riSorgV1IScFXGgBbI4v7O2EgUspwPM="
+      }
+    },
+    {
+      "baseUrl": "https://test-log-b.rekor.example.com",
+      "hashAlgorithm": "SHA2_256",
+      "publicKey": {
+        "rawBytes": "MCowBQYDK2VwAyEARTdaoHqosPPvegzlEgzzMbgzMjJEm9rFHiloT1yD1nM=",
+        "keyDetails": "PKIX_ED25519",
+        "validFor": {
+          "start": "2026-01-01T00:00:00Z"
+        }
+      },
+      "logId": {
+        "keyId": "gs3vw4WIODjbujOANlZvnlA/WH4G/SNxHjS1ui+1zoU="
+      }
+    },
+    {
+      "baseUrl": "https://test-log-v1.rekor.example.com",
+      "hashAlgorithm": "SHA2_256",
+      "publicKey": {
+        "rawBytes": "MFkwEwYHKoZIzj0CAQYIKoZIzj0DAQcDQgAEL4oTllB92hplJiqoHDsdeB5W+yxs11TZJcX8sM8Wn7eztX8aIrxDUX8bwjgoNhPYIDbsO9Zm70h3yz+/iBxwBg==",
+        "keyDetails": "PKIX_ECDSA_P256_SHA_256",
+        "validFor": {
+          "start": "2026-01-01T00:00:00Z"
+        }
+      },
+      "logId": {
+        "keyId": "PoeMkSWYiAcucIYN5oK91CcuykklwYVksPylTDRohJY="
+      }
+    }
+  ],
+  "certificateAuthorities": [],
+  "ctlogs": [],
+  "timestampAuthorities": [
+    {
+      "subject": {
+        "organization": "sigstore.dev",
+        "commonName": "sigstore-tsa-selfsigned"
+      },
+      "uri": "https://timestamp.sigstore.dev/api/v1/timestamp",
+      "certChain": {
+        "certificates": [
+          {
+            "rawBytes": "MIICEDCCAZagAwIBAgIUOhNULwyQYe68wUMvy4qOiyojiwwwCgYIKoZIzj0EAwMwOTEVMBMGA1UEChMMc2lnc3RvcmUuZGV2MSAwHgYDVQQDExdzaWdzdG9yZS10c2Etc2VsZnNpZ25lZDAeFw0yNTA0MDgwNjU5NDNaFw0zNTA0MDYwNjU5NDNaMC4xFTATBgNVBAoTDHNpZ3N0b3JlLmRldjEVMBMGA1UEAxMMc2lnc3RvcmUtdHNhMHYwEAYHKoZIzj0CAQYFK4EEACIDYgAE4ra2Z8hKNig2T9kFjCAToGG30jky+WQv3BzL+mKvh1SKNR/UwuwsfNCg4sryoYAd8E6isovVA3M4aoNdm9QDi50Z8nTEyvqgfDPtTIwXItfiW/AFf1V7uwkbkAoj0xxco2owaDAOBgNVHQ8BAf8EBAMCB4AwHQYDVR0OBBYEFIn9eUOHz9BlRsMCRscsc1t9tOsDMB8GA1UdIwQYMBaAFJjsAe9/u1H/1JUeb4qImFMHic6/MBYGA1UdJQEB/wQMMAoGCCsGAQUFBwMIMAoGCCqGSM49BAMDA2gAMGUCMDtpsV/6KaO0qyF/UMsX2aSUXKQFdoGTptQGc0ftq1csulHPGG6dsmyMNd3JB+G3EQIxAOajvBcjpJmKb4Nv+2Taoj8Uc5+b6ih6FXCCKraSqupe07zqswMcXJTe1cExvHvvlw=="
+          },
+          {
+            "rawBytes": "MIIB9zCCAXygAwIBAgIUV7f0GLDOoEzIh8LXSW80OJiUp14wCgYIKoZIzj0EAwMwOTEVMBMGA1UEChMMc2lnc3RvcmUuZGV2MSAwHgYDVQQDExdzaWdzdG9yZS10c2Etc2VsZnNpZ25lZDAeFw0yNTA0MDgwNjU5NDNaFw0zNTA0MDYwNjU5NDNaMDkxFTATBgNVBAoTDHNpZ3N0b3JlLmRldjEgMB4GA1UEAxMXc2lnc3RvcmUtdHNhLXNlbGZzaWduZWQwdjAQBgcqhkjOPQIBBgUrgQQAIgNiAAQUQNtfRT/ou3YATa6wB/kKTe70cfJwyRIBovMnt8RcJph/COE82uyS6FmppLLL1VBPGcPfpQPYJNXzWwi8icwhKQ6W/Qe2h3oebBb2FHpwNJDqo+TMaC/tdfkv/ElJB72jRTBDMA4GA1UdDwEB/wQEAwIBBjASBgNVHRMBAf8ECDAGAQH/AgEAMB0GA1UdDgQWBBSY7AHvf7tR/9SVHm+KiJhTB4nOvzAKBggqhkjOPQQDAwNpADBmAjEAwGEGrfGZR1cen1R8/DTVMI943LssZmJRtDp/i7SfGHmGRP6gRbuj9vOK3b67Z0QQAjEAuT2H673LQEaHTcyQSZrkp4mX7WwkmF+sVbkYY5mXN+RMH13KUEHHOqASaemYWK/E"
+          }
+        ]
+      },
+      "validFor": {
+        "start": "2025-07-04T00:00:00Z"
+      }
+    }
+  ]
+}
