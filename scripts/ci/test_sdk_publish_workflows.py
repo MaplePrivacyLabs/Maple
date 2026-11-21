@@ -42,7 +42,8 @@ class SDKPublishingWorkflowTests(unittest.TestCase):
                 config = workflow(kind)
                 self.assertEqual(set(config["on"]), {"workflow_dispatch"})
                 inputs = config["on"]["workflow_dispatch"]["inputs"]
-                self.assertEqual(set(inputs), {"version", "mode", "dry_run"})
+                # The Rust workflow also publishes the proxy crate (see below).
+                self.assertEqual(set(inputs), {"version", "mode", "dry_run"} | ({"package"} if kind == "rust" else set()))
                 self.assertTrue(inputs["version"]["required"])
                 self.assertEqual(inputs["mode"]["options"], ["trusted", "bootstrap"])
                 self.assertEqual(inputs["mode"]["default"], "trusted")
@@ -62,6 +63,35 @@ class SDKPublishingWorkflowTests(unittest.TestCase):
                 self.assertIn("!inputs.dry_run", config["jobs"]["publish"]["if"])
                 self.assertEqual(config["jobs"]["publish"]["needs"], "build")
         self.assertEqual(len(groups), 2)
+
+    def test_rust_workflow_selects_one_of_two_crates_by_fixed_values(self):
+        config = workflow("rust")
+        package = config["on"]["workflow_dispatch"]["inputs"]["package"]
+        self.assertEqual(package["type"], "choice")
+        self.assertEqual(package["options"], ["maple-sdk", "maple-proxy"])
+        # Existing SDK dispatches name no crate and must keep publishing the SDK.
+        self.assertEqual(package["default"], "maple-sdk")
+        self.assertEqual(config["env"]["SDK_KIND"], "${{ inputs.package == 'maple-proxy' && 'proxy' || 'rust' }}")
+        self.assertEqual(config["env"]["SDK_PACKAGE"],
+                         "${{ inputs.package == 'maple-proxy' && 'maple-proxy' || 'maple-sdk' }}")
+        # Each crate serializes by itself: a proxy run waiting for approval must
+        # not hold back the SDK.
+        self.assertEqual(config["concurrency"]["group"],
+                         "sdk-crates-publish${{ inputs.package == 'maple-proxy' && '-proxy' || '' }}")
+        # The choice is read only by those expressions and the run title.
+        uses = [text for text in strings({key: value for key, value in config.items() if key != "on"})
+                if "inputs.package" in text]
+        self.assertEqual(sorted(uses), sorted([config["env"]["SDK_KIND"], config["env"]["SDK_PACKAGE"],
+                                               config["concurrency"]["group"], config["run-name"]]))
+        for job in config["jobs"].values():
+            for step in job["steps"]:
+                run = step.get("run", "")
+                for script in ("sdk_publish.py", "build-sdk-publish.sh"):
+                    if script in run:
+                        self.assertIn('"$SDK_KIND"', run)
+                        self.assertNotRegex(run, r"--kind (?:rust|proxy)\b|build-sdk-publish\.sh (?:rust|proxy)\b")
+                if "sdk_crates_upload.py" in run:
+                    self.assertIn('--package "$SDK_PACKAGE"', run)
 
     def test_builders_cannot_receive_registry_or_oidc_credentials(self):
         for kind in ("npm", "rust"):

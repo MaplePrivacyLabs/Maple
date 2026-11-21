@@ -437,8 +437,9 @@ check(
 
 container_jobs = proxy_container_publish.get("jobs", {})
 check(
-    set(container_jobs) == {"diagnose", "prepare", "build", "publish", "finalize"},
-    "Proxy container publisher must separate validation, builds, exact publication, and alias reconciliation",
+    set(container_jobs) == {"diagnose", "prepare", "build", "publish", "finalize", "crate"},
+    "Proxy container publisher must separate validation, builds, exact publication, alias reconciliation, "
+    "and the crate handoff",
 )
 diagnose = container_jobs["diagnose"]
 check(diagnose.get("permissions") == {"contents": "read", "packages": "read"},
@@ -617,6 +618,55 @@ check(
     ),
     "Proxy finalizer must compare a new exact manifest with both build outputs",
 )
+
+# The crate handoff only starts the protected crates.io publisher. It holds no
+# registry credential and can neither build nor upload a crate itself.
+proxy_crate = container_jobs["crate"]
+check(
+    set(needs(proxy_crate)) == {"prepare", "finalize"},
+    "Proxy crate handoff must follow the validated plan and the verified container",
+)
+check(
+    " ".join(str(proxy_crate.get("if", "")).split())
+    == "always() && needs.prepare.result == 'success' && needs.finalize.result == 'success'",
+    "Proxy crate handoff must require the validated plan and the verified container, and nothing less",
+)
+check(
+    proxy_crate.get("permissions") == {"contents": "read", "actions": "write"},
+    "Proxy crate handoff may only read contents and start workflows",
+)
+check("environment" not in proxy_crate, "Proxy crate handoff must not hold a protected environment")
+crate_checkouts = [
+    step for step in proxy_crate.get("steps", []) if str(step.get("uses", "")).startswith("actions/checkout@")
+]
+check(
+    len(crate_checkouts) == 1
+    and crate_checkouts[0].get("with") == {
+        "ref": "refs/heads/master", "fetch-depth": 0, "persist-credentials": False,
+    },
+    "Proxy crate handoff must compare the release with one trusted master checkout",
+)
+crate_runs = "\n".join(str(step.get("run", "")) for step in proxy_crate.get("steps", []))
+for required_control in (
+    "https://crates.io/api/v1/crates/maple-proxy/${PROXY_VERSION}",
+    'git diff --quiet "${RELEASE_SHA}" "${master_sha}" --',
+    "proxy/Cargo.toml proxy/Cargo.lock proxy/src proxy/examples proxy/tests",
+    "gh workflow run sdk-publish-rust.yml",
+    '--repo "${GITHUB_REPOSITORY}" --ref master',
+    "--raw-field package=maple-proxy",
+    '--raw-field "version=${PROXY_VERSION}"',
+    "--raw-field mode=trusted",
+    "--raw-field dry_run=false",
+):
+    check(required_control in crate_runs, f"Proxy crate handoff is missing control: {required_control}")
+check(crate_runs.count("gh workflow run") == 1, "Proxy crate handoff must start the publisher exactly once")
+check(
+    crate_runs.index("git diff --quiet") < crate_runs.index("gh workflow run"),
+    "Proxy crate handoff must compare master with the release before it starts the publisher",
+)
+# What the script does in each case is exercised in test_proxy_crate_handoff.py.
+for forbidden in ("cargo ", "CARGO_REGISTRY_TOKEN", "id-token", "crates.io/api/v1/crates/new", "bootstrap"):
+    check(forbidden not in str(proxy_crate), f"Proxy crate handoff must not contain: {forbidden}")
 
 PY
 pass "workflow release-gate topology is fail closed with isolated downstream publishers"

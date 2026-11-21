@@ -623,3 +623,97 @@ jobs:
             echo "Verified anonymous Linux AMD64/ARM64 images and per-platform SLSA provenance."
             echo "${repair_detail}"
           } >>"${GITHUB_STEP_SUMMARY}"
+
+  # crates.io refuses its trusted-publishing exchange to a workflow_run event,
+  # so this job only starts the protected publisher. That run builds and checks
+  # the crate from master and then waits for sdk-crates approval.
+  crate:
+    name: Queue the proxy crate for crates.io
+    needs:
+      - prepare
+      - finalize
+    if: >-
+      always() &&
+      needs.prepare.result == 'success' &&
+      needs.finalize.result == 'success'
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    permissions:
+      contents: read
+      actions: write
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          # The crate publisher builds master as it is now, not as it was when
+          # the release finished.
+          ref: refs/heads/master
+          fetch-depth: 0
+          persist-credentials: false
+
+      - name: Start the crate publisher when crates.io lacks this proxy version
+        env:
+          GH_TOKEN: ${{ github.token }}
+          PROXY_VERSION: ${{ needs.prepare.outputs.proxy_version }}
+          RELEASE_SHA: ${{ needs.prepare.outputs.release_sha }}
+          RELEASE_TAG: ${{ needs.prepare.outputs.release_tag }}
+        run: |
+          set -euo pipefail
+
+          fail() {
+            echo "Proxy crate publication was not queued: $*" >&2
+            exit 1
+          }
+
+          [[ "${PROXY_VERSION}" =~ ^(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)$ ]] || \
+            fail "proxy version is not a stable X.Y.Z"
+          [[ "${RELEASE_SHA}" =~ ^[0-9a-f]{40}$ ]] || fail "release SHA is invalid"
+
+          # Only an exact 404 for this version means crates.io does not have it.
+          status="$(
+            curl --silent --show-error --output /dev/null --write-out '%{http_code}' \
+              --max-time 20 --header 'Accept: application/json' \
+              --user-agent "Maple-proxy-publisher (https://github.com/${GITHUB_REPOSITORY})" \
+              "https://crates.io/api/v1/crates/maple-proxy/${PROXY_VERSION}"
+          )" || fail "could not read crates.io"
+          case "${status}" in
+            200)
+              {
+                echo "### Proxy crate"
+                echo
+                echo "maple-proxy ${PROXY_VERSION} is already on crates.io."
+              } >>"${GITHUB_STEP_SUMMARY}"
+              exit 0
+              ;;
+            404) ;;
+            *) fail "crates.io returned HTTP ${status}" ;;
+          esac
+
+          # The crate must be the released proxy, so the code it is packed from
+          # has to be unchanged on master. The in-tree SDK and the Dockerfile are
+          # not part of the crate, which takes maple-sdk from crates.io; the
+          # README and license are documentation.
+          master_sha="$(git rev-parse HEAD)"
+          set +e
+          git diff --quiet "${RELEASE_SHA}" "${master_sha}" -- \
+            proxy/Cargo.toml proxy/Cargo.lock proxy/src proxy/examples proxy/tests
+          diff_status=$?
+          set -e
+          case "${diff_status}" in
+            0) ;;
+            1) fail "the proxy crate's source changed on master after ${RELEASE_TAG}, so master no longer builds the released maple-proxy ${PROXY_VERSION}" ;;
+            *) fail "could not compare the proxy crate's source on master with ${RELEASE_TAG}" ;;
+          esac
+
+          gh workflow run sdk-publish-rust.yml \
+            --repo "${GITHUB_REPOSITORY}" --ref master \
+            --raw-field package=maple-proxy \
+            --raw-field "version=${PROXY_VERSION}" \
+            --raw-field mode=trusted \
+            --raw-field dry_run=false
+
+          {
+            echo "### Proxy crate"
+            echo
+            echo "Started the crates.io publisher for maple-proxy ${PROXY_VERSION}. The proxy crate's source on master \`${master_sha}\` matches ${RELEASE_TAG}."
+            echo "The publisher builds master as it is when that run starts, names its commit, and waits for \`sdk-crates\` approval."
+          } >>"${GITHUB_STEP_SUMMARY}"

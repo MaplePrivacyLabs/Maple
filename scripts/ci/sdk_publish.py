@@ -34,12 +34,17 @@ REPOSITORY = "MaplePrivacyLabs/Maple"
 REPOSITORY_ID = "923138240"
 OWNER_ID = "322649754"
 REPOSITORY_URL = f"https://github.com/{REPOSITORY}"
-PACKAGES = {"npm": "@mapleai/sdk", "rust": "maple-sdk"}
-ARCHIVES = {"npm": "package.tgz", "rust": "package.crate"}
-WORKFLOWS = {"npm": "sdk-publish-npm.yml", "rust": "sdk-publish-rust.yml"}
+PACKAGES = {"npm": "@mapleai/sdk", "rust": "maple-sdk", "proxy": "maple-proxy"}
+ARCHIVES = {"npm": "package.tgz", "rust": "package.crate", "proxy": "package.crate"}
+# crates.io trusts a workflow file and environment per crate. The proxy crate
+# publishes through the Rust SDK's workflow so both crates share that identity.
+WORKFLOWS = {"npm": "sdk-publish-npm.yml", "rust": "sdk-publish-rust.yml", "proxy": "sdk-publish-rust.yml"}
+# Each package's directory in the repository; Cargo records it as path_in_vcs.
+SOURCES = {"npm": "sdk", "rust": "sdk/rust", "proxy": "proxy"}
 REGISTRIES = {
     "npm": "https://registry.npmjs.org/%40mapleai%2Fsdk",
     "rust": "https://crates.io/api/v1/crates/maple-sdk",
+    "proxy": "https://crates.io/api/v1/crates/maple-proxy",
 }
 MAX_ARCHIVE = 10 * 1024 * 1024
 MAX_EXPANDED = 50 * 1024 * 1024
@@ -48,7 +53,7 @@ MAX_METADATA = 1024 * 1024
 MAX_REGISTRY = 8 * 1024 * 1024
 # npm can hold newly uploaded versions during publish-time malware scanning.
 # These are read-only confirmation limits, never publication retry policies.
-CONFIRM_POLICY = {"npm": (41, 30), "rust": (25, 5)}
+CONFIRM_POLICY = {"npm": (41, 30), "rust": (25, 5), "proxy": (25, 5)}
 MANIFEST_FIELDS = {
     "schema_version", "kind", "name", "version", "mode", "source_sha",
     "run_id", "run_attempt", "archive_sha256", "archive_size",
@@ -182,7 +187,7 @@ def validate_source(kind, version, mode, root=ROOT, environ=None):
     except (OSError, subprocess.SubprocessError):
         raise Rejected("Cannot verify publication checkout") from None
     require(head == sha and not dirty, "Publication checkout must match clean trusted source")
-    path = Path(root) / ("sdk/package.json" if kind == "npm" else "sdk/rust/Cargo.toml")
+    path = Path(root) / SOURCES[kind] / ("package.json" if kind == "npm" else "Cargo.toml")
     data = _regular_bytes(path, MAX_METADATA)
     try:
         metadata = _json(data) if kind == "npm" else tomllib.loads(data.decode("utf-8"))
@@ -212,7 +217,7 @@ def inspect_archive(path, kind, version, source_sha=None, source_metadata=None):
     require(kind in PACKAGES, "Invalid package kind")
     stable_version(version)
     compressed = _regular_bytes(path, MAX_ARCHIVE)
-    prefix = "package" if kind == "npm" else f"maple-sdk-{version}"
+    prefix = "package" if kind == "npm" else f"{PACKAGES[kind]}-{version}"
     wanted = {f"{prefix}/package.json"} if kind == "npm" else {
         f"{prefix}/Cargo.toml", f"{prefix}/.cargo_vcs_info.json",
     }
@@ -280,7 +285,7 @@ def inspect_archive(path, kind, version, source_sha=None, source_metadata=None):
             metadata = tomllib.loads(metadata_bytes[f"{prefix}/Cargo.toml"].decode("utf-8"))
             vcs = _json(metadata_bytes[f"{prefix}/.cargo_vcs_info.json"])
             require(isinstance(vcs, dict) and isinstance(vcs.get("git"), dict)
-                    and vcs.get("path_in_vcs") == "sdk/rust"
+                    and vcs.get("path_in_vcs") == SOURCES[kind]
                     and vcs["git"].get("dirty", False) is False
                     and isinstance(vcs["git"].get("sha1"), str)
                     and re.fullmatch(r"[0-9a-f]{40}", vcs["git"]["sha1"]), "Invalid Rust source metadata")
@@ -477,7 +482,7 @@ def confirm_publication(directory, kind, version, mode, context, source_metadata
             require(remaining > 0, pending)
             time.sleep(min(interval, remaining))
     url = (f"https://www.npmjs.com/package/@mapleai/sdk/v/{version}" if kind == "npm"
-           else f"https://crates.io/crates/maple-sdk/{version}")
+           else f"https://crates.io/crates/{PACKAGES[kind]}/{version}")
     message = (f"Published [{PACKAGES[kind]} {version}]({url}) from "
                f"[`{context['source_sha']}`]({REPOSITORY_URL}/commit/{context['source_sha']}).\n\n"
                f"Verified archive SHA-256: `{manifest['archive_sha256']}`.\n")

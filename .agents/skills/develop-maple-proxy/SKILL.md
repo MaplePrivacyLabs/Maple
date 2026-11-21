@@ -110,8 +110,13 @@ publication path for macOS arm64, Linux arm64, Linux x86_64, and Windows
 x86_64. Never create a proxy GitHub tag or Release; a proxy-only binary fix
 ships through a normal Maple patch release.
 
-Crates.io publishing remains separately versioned and manual. On an authorized
-publish, inspect the exact package first:
+The crate reaches crates.io through `sdk-publish-rust.yml` with
+`package=maple-proxy` and the protected `sdk-crates` environment, never from a
+local `cargo publish`. After a stable Maple Release, `proxy-publish.yml` starts
+that publisher for the release's proxy version when crates.io lacks it; the run
+still waits for approval. Follow
+[Proxy crate](../../../docs/sdk-publishing.md#proxy-crate). To inspect the exact
+package locally:
 
 ```sh
 cargo package --locked --manifest-path proxy/Cargo.toml

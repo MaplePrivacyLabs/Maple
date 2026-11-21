@@ -38,14 +38,19 @@ commit, external effect, and authority provided by the user.
 - The same Maple GitHub Release receives four native `maple-proxy` archives and
   their checksum manifest. Never create a separate proxy Release or proxy tag;
   `/releases/latest` must continue to identify the Maple application release.
-- Maple GitHub Releases do not publish `maple-sdk` or `maple-proxy` to
-  crates.io. A successful stable release starts a non-gating GHCR sibling that
+- Maple GitHub Releases do not publish `maple-sdk` to crates.io. A successful
+  stable release starts a non-gating GHCR sibling that
   builds only for a new or missing non-baseline proxy version. It treats exact
   version tags as immutable, checks release proofs and container inputs,
   and repairs minor, major, and `latest` aliases without rebuilding an existing
   exact image. Version `0.3.3` is the explicit unbackfilled migration baseline.
   The container remains separately versioned at
   `ghcr.io/mapleprivacylabs/maple-proxy`.
+- After that sibling verifies the container, its `crate` job starts the
+  `maple-proxy` crates.io publisher for the same proxy version when the registry
+  lacks it and the crate's source on `master` still matches the release. That run
+  publishes only after `sdk-crates` approval; see
+  [Proxy crate](../../../docs/sdk-publishing.md#proxy-crate).
 - GitHub Release creation does not itself submit the release IPA or AAB to
   Apple App Store review or Google Play.
 
@@ -274,6 +279,8 @@ Also inspect the independent proxy-container publisher. It should either prove
 the expected immutable proxy version, public AMD64/ARM64 manifest, image labels,
 build digests, linked provenance descriptors, and aliases; publish a missing
 eligible version; or explicitly skip the unbackfilled `0.3.3` baseline.
+Its `crate` job reports whether it started the crates.io publisher; that
+separate `Publish Rust SDK` run waits for `sdk-crates` approval.
 Retry it with manual dispatch; never create a
 proxy tag or Release and never rerun the core Release to repair it:
 
@@ -352,8 +359,8 @@ Confirm the release contains all four stable proxy archives and
 `maple-proxy-release-final.sha256`, and that their attestations and the
 published-asset verification job succeeded. Report the embedded proxy version
 separately from the Maple application version. Do not report crates.io as
-updated unless its independent manual publisher was explicitly authorized and
-verified. Report GHCR as published only after its sibling workflow and anonymous
+updated unless its protected publisher run was approved and its registry
+confirmation succeeded. Report GHCR as published only after its sibling workflow and anonymous
 manifest verification succeed; otherwise report the unchanged-version skip or
 failure separately.
 

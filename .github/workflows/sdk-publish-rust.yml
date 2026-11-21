@@ -1,12 +1,21 @@
 name: Publish Rust SDK
 
-run-name: Rust SDK ${{ inputs.version }} (${{ inputs.dry_run && 'dry run' || inputs.mode }})
+# Publishes maple-sdk and, through the same crates.io trusted publisher,
+# maple-proxy. crates.io ties a crate to this file name and the sdk-crates
+# environment, so the proxy crate stays here instead of in a workflow of its own.
+run-name: ${{ inputs.package }} ${{ inputs.version }} (${{ inputs.dry_run && 'dry run' || inputs.mode }})
 
 on:
   workflow_dispatch:
     inputs:
+      package:
+        description: Crate to publish
+        type: choice
+        options: [maple-sdk, maple-proxy]
+        default: maple-sdk
+        required: true
       version:
-        description: Stable X.Y.Z already committed in sdk/rust/Cargo.toml on master
+        description: Stable X.Y.Z already committed in that crate's Cargo.toml on master
         type: string
         required: true
       mode:
@@ -24,11 +33,16 @@ on:
 permissions:
   contents: read
 
+# One group per crate. The release handoff can leave a maple-proxy run waiting
+# for approval, and that must not hold back an SDK publication or dry run.
 concurrency:
-  group: sdk-crates-publish
+  group: sdk-crates-publish${{ inputs.package == 'maple-proxy' && '-proxy' || '' }}
   cancel-in-progress: false
 
 env:
+  # Fixed literals only: the choice never reaches a shell or a script as text.
+  SDK_KIND: ${{ inputs.package == 'maple-proxy' && 'proxy' || 'rust' }}
+  SDK_PACKAGE: ${{ inputs.package == 'maple-proxy' && 'maple-proxy' || 'maple-sdk' }}
   SDK_VERSION: ${{ inputs.version }}
   SDK_MODE: ${{ inputs.mode }}
   SDK_PUBLISH_WORKFLOW_SHA: ${{ github.workflow_sha }}
@@ -52,7 +66,7 @@ jobs:
           persist-credentials: false
 
       - name: Verify source, version, and registry state
-        run: python3 -I scripts/ci/sdk_publish.py source --kind rust --version "$SDK_VERSION" --mode "$SDK_MODE"
+        run: python3 -I scripts/ci/sdk_publish.py source --kind "$SDK_KIND" --version "$SDK_VERSION" --mode "$SDK_MODE"
 
       - name: Install Nix
         uses: DeterminateSystems/determinate-nix-action@16f94ba7aae399b9f9077c254b6719ec6de7e3e3 # v3.24.2
@@ -64,17 +78,17 @@ jobs:
         run: bash scripts/ci/verify-nix-runtime.sh
 
       - name: Build and test the exact crate without publishing credentials
-        run: bash scripts/ci/build-sdk-publish.sh rust "$RUNNER_TEMP/sdk-package"
+        run: bash scripts/ci/build-sdk-publish.sh "$SDK_KIND" "$RUNNER_TEMP/sdk-package"
 
       - name: Bind the tested crate to this source and run
         run: >-
-          python3 -I scripts/ci/sdk_publish.py bundle --kind rust --version "$SDK_VERSION" --mode "$SDK_MODE"
+          python3 -I scripts/ci/sdk_publish.py bundle --kind "$SDK_KIND" --version "$SDK_VERSION" --mode "$SDK_MODE"
           --archive "$RUNNER_TEMP/sdk-package/package.crate" --output "$RUNNER_TEMP/sdk-bundle"
 
       - name: Validate crates.io upload metadata without credentials
         run: >-
-          python3 -I scripts/ci/sdk_crates_upload.py --directory "$RUNNER_TEMP/sdk-bundle"
-          --version "$SDK_VERSION" --validate-only
+          python3 -I scripts/ci/sdk_crates_upload.py --package "$SDK_PACKAGE"
+          --directory "$RUNNER_TEMP/sdk-bundle" --version "$SDK_VERSION" --validate-only
 
       - name: Upload the tested crate and manifest
         id: bundle
@@ -115,7 +129,7 @@ jobs:
 
       - name: Verify the reviewed artifact and repeat registry checks
         run: >-
-          python3 -I scripts/ci/sdk_publish.py verify --kind rust --version "$SDK_VERSION" --mode "$SDK_MODE"
+          python3 -I scripts/ci/sdk_publish.py verify --kind "$SDK_KIND" --version "$SDK_VERSION" --mode "$SDK_MODE"
           --directory "$RUNNER_TEMP/sdk-bundle"
 
       - name: Obtain a short-lived crates.io credential
@@ -129,12 +143,12 @@ jobs:
         env:
           CARGO_REGISTRY_TOKEN: ${{ inputs.mode == 'bootstrap' && secrets.CRATES_BOOTSTRAP_TOKEN || steps.auth.outputs.token }}
         run: >-
-          python3 -I scripts/ci/sdk_crates_upload.py --directory "$RUNNER_TEMP/sdk-bundle"
-          --version "$SDK_VERSION"
+          python3 -I scripts/ci/sdk_crates_upload.py --package "$SDK_PACKAGE"
+          --directory "$RUNNER_TEMP/sdk-bundle" --version "$SDK_VERSION"
 
       # Confirm even after an ambiguous upload error; never blindly retry PUT.
       - name: Confirm the immutable registry result
         if: ${{ always() && steps.publish.outcome != 'skipped' }}
         run: >-
-          python3 -I scripts/ci/sdk_publish.py confirm --kind rust --version "$SDK_VERSION" --mode "$SDK_MODE"
+          python3 -I scripts/ci/sdk_publish.py confirm --kind "$SDK_KIND" --version "$SDK_VERSION" --mode "$SDK_MODE"
           --directory "$RUNNER_TEMP/sdk-bundle"

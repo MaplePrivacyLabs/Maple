@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Upload the validated Maple Rust SDK archive without running package code.
+"""Upload a validated Maple crate archive without running package code.
 
 The protected workflow must verify its source, bundle and registry precondition
 before invoking this transport. This module only reads data from package.crate;
@@ -30,7 +30,10 @@ import tomllib
 from urllib.error import HTTPError
 from urllib.request import HTTPRedirectHandler, HTTPSHandler, ProxyHandler, Request, build_opener
 
-PACKAGE = "maple-sdk"
+# The crates this transport may upload. The Rust SDK is the default; the proxy
+# crate shares its workflow, protected environment and trusted publisher.
+PACKAGES = ("maple-sdk", "maple-proxy")
+PACKAGE = PACKAGES[0]
 REPOSITORY = "https://github.com/MaplePrivacyLabs/Maple"
 ENDPOINT = "https://crates.io/api/v1/crates/new"
 MAX_ARCHIVE = 10 * 1024 * 1024
@@ -83,7 +86,8 @@ def relative_path(value):
     return value
 
 
-def read_archive(directory, version):
+def read_archive(directory, version, crate_name=PACKAGE):
+    require(crate_name in PACKAGES, "Unsupported crate")
     require(isinstance(version, str) and len(version) <= 64 and VERSION.fullmatch(version),
             "Only stable numeric SDK versions are supported")
     path = Path(directory) / "package.crate"
@@ -100,7 +104,7 @@ def read_archive(directory, version):
             unpacked = compressed.read(MAX_UNPACKED + 1)
         require(len(unpacked) <= MAX_UNPACKED, "Crate archive exceeds expanded limit")
         files = {}
-        prefix = f"{PACKAGE}-{version}/"
+        prefix = f"{crate_name}-{version}/"
         with tarfile.open(fileobj=io.BytesIO(unpacked), mode="r:") as tar:
             for member in tar:
                 require(len(files) < MAX_MEMBERS, "Crate archive has too many files")
@@ -173,18 +177,19 @@ def dependencies(manifest):
     return result
 
 
-def metadata_from_manifest(manifest, files, version):
+def metadata_from_manifest(manifest, files, version, crate_name=PACKAGE):
+    require(crate_name in PACKAGES, "Unsupported crate")
     require(isinstance(manifest, dict) and isinstance(manifest.get("package"), dict),
             "Invalid crate manifest")
     require(not ({"workspace", "patch", "replace", "cargo-features"} & set(manifest)),
             "Unsupported crate manifest form")
     package = manifest["package"]
-    require(package.get("name") == PACKAGE and package.get("version") == version,
+    require(package.get("name") == crate_name and package.get("version") == version,
             "Crate identity does not match requested release")
     require(package.get("repository") == REPOSITORY, "Crate repository does not match")
     require("publish" not in package or package["publish"] == ["crates-io"],
             "Crate manifest does not allow crates.io publication")
-    require(package.get("build") is False, "Expected packaged SDK without a build script")
+    require(package.get("build") is False, "Expected a packaged crate without a build script")
     require(isinstance(package.get("description"), str) and package["description"].strip(),
             "Crate description is missing")
 
@@ -221,7 +226,7 @@ def metadata_from_manifest(manifest, files, version):
             text(value)
 
     result = {
-        "name": PACKAGE, "vers": version, "deps": dependencies(manifest),
+        "name": crate_name, "vers": version, "deps": dependencies(manifest),
         "features": features, "authors": strings(package.get("authors", [])),
         "keywords": strings(package.get("keywords", [])),
         "categories": strings(package.get("categories", [])),
@@ -234,9 +239,9 @@ def metadata_from_manifest(manifest, files, version):
     return result
 
 
-def prepare_upload(directory, version):
-    archive, files, manifest = read_archive(directory, version)
-    metadata = metadata_from_manifest(manifest, files, version)
+def prepare_upload(directory, version, crate_name=PACKAGE):
+    archive, files, manifest = read_archive(directory, version, crate_name)
+    metadata = metadata_from_manifest(manifest, files, version, crate_name)
     encoded = json.dumps(metadata, ensure_ascii=False, sort_keys=True, separators=(",", ":")).encode("utf-8")
     require(len(encoded) <= MAX_METADATA, "Crate upload metadata exceeds limit")
     payload = struct.pack("<I", len(encoded)) + encoded + struct.pack("<I", len(archive)) + archive
@@ -284,12 +289,13 @@ def upload(payload, token):
 def main(argv=None):
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--directory", type=Path, required=True)
+    parser.add_argument("--package", choices=PACKAGES, default=PACKAGE)
     parser.add_argument("--version", required=True)
     parser.add_argument("--validate-only", action="store_true")
     args = parser.parse_args(argv)
     try:
-        metadata, payload, digest = prepare_upload(args.directory, args.version)
-        result = {"name": PACKAGE, "version": metadata["vers"], "archive_sha256": digest,
+        metadata, payload, digest = prepare_upload(args.directory, args.version, args.package)
+        result = {"name": args.package, "version": metadata["vers"], "archive_sha256": digest,
                   "upload_bytes": len(payload)}
         if args.validate_only:
             result["status"] = "validated"

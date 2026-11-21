@@ -6,6 +6,10 @@ Publish each SDK independently through a manual GitHub Actions workflow:
 | --- | --- | --- | --- |
 | `@mapleai/sdk` | `sdk/package.json` | [`sdk-publish-npm.yml`](../.github/workflows/sdk-publish-npm.yml) | `sdk-npm` |
 | `maple-sdk` | `sdk/rust/Cargo.toml` | [`sdk-publish-rust.yml`](../.github/workflows/sdk-publish-rust.yml) | `sdk-crates` |
+| `maple-proxy` | `proxy/Cargo.toml` | [`sdk-publish-rust.yml`](../.github/workflows/sdk-publish-rust.yml) with `package=maple-proxy` | `sdk-crates` |
+
+The `maple-proxy` crate is not an SDK, but it publishes through the Rust SDK's
+workflow and follows the same rules; see [Proxy crate](#proxy-crate).
 
 One run handles one SDK. Publishing both means starting both workflows. These
 workflows never create GitHub Releases or tags, so they do not affect the
@@ -165,6 +169,44 @@ gh workflow run sdk-publish-rust.yml --repo MaplePrivacyLabs/Maple --ref master 
 
 GitHub also exposes the same workflow inputs through its workflow-dispatch API.
 See [manually running a workflow](https://docs.github.com/en/actions/how-tos/manage-workflow-runs/manually-run-a-workflow).
+
+## Proxy crate
+
+`maple-proxy` reaches crates.io through `sdk-publish-rust.yml` with
+`package=maple-proxy`. crates.io trusts a workflow file and environment per
+crate, so the proxy crate uses the SDK's workflow and `sdk-crates` environment
+instead of a workflow of its own. Its Trusted Publishing settings on crates.io
+must list the same publisher as `maple-sdk`: repository `MaplePrivacyLabs/Maple`,
+workflow `sdk-publish-rust.yml`, environment `sdk-crates`. Without that entry
+the upload is refused and nothing is published.
+
+The crate follows Maple releases. After a stable Maple Release,
+[`proxy-publish.yml`](../.github/workflows/proxy-publish.yml) verifies that
+release's proxy container and then starts the publisher for the same proxy
+version when both hold:
+
+- crates.io does not have that version yet;
+- the code the crate is packed from (`proxy/src`, `examples`, `tests`, the
+  manifest and the lockfile) is the same on `master` as in the release.
+
+The run it starts builds and checks the crate from `master`, then waits for
+`sdk-crates` approval like any other publication. If that code has already
+changed on `master`, the handoff fails and names the release; decide the next
+proxy version instead of publishing a crate the release did not ship. The two
+crates serialize separately, so a proxy run waiting for approval does not hold
+back an SDK publication.
+
+To start it by hand, for example to retry:
+
+```sh
+gh workflow run sdk-publish-rust.yml --repo MaplePrivacyLabs/Maple --ref master \
+  --raw-field package=maple-proxy --raw-field version=0.5.1 \
+  --raw-field mode=trusted --raw-field dry_run=true
+```
+
+The build verifies the packed crate against `maple-sdk` from crates.io, not the
+in-tree SDK. A proxy that needs SDK source newer than the registry's fails
+there until that SDK version is published, so publish `maple-sdk` first.
 
 ## Publishing modes
 
