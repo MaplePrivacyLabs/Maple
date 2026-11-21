@@ -28,7 +28,11 @@ const SIGNATURES_MEMBER: &str = "signatures";
 pub(super) const DSSE_PAYLOAD_TYPE_MEMBER: &str = "payloadType";
 pub(super) const VERIFICATION_MATERIAL_MEMBER: &str = "verificationMaterial";
 const PUBLIC_KEY_MEMBER: &str = "publicKey";
+#[cfg(test)]
+pub(super) const RAW_BYTES_MEMBER: &str = "rawBytes";
 pub(super) const CERTIFICATE_MEMBER: &str = "certificate";
+#[cfg(test)]
+pub(super) const SIGNATURE_MEMBER: &str = "signature";
 const X509_CERTIFICATE_CHAIN_MEMBER: &str = "x509CertificateChain";
 const TLOG_ENTRIES_MEMBER: &str = "tlogEntries";
 const KIND_VERSION_MEMBER: &str = "kindVersion";
@@ -49,6 +53,20 @@ pub(super) const SUBJECT_MEMBER: &str = "subject";
 pub(super) const DIGEST_MEMBER: &str = "digest";
 #[cfg(test)]
 pub(super) const SHA256_MEMBER: &str = "sha256";
+#[cfg(test)]
+pub(super) const PREDICATE_MEMBER: &str = "predicate";
+#[cfg(test)]
+pub(super) const ENVIRONMENT_MEMBER: &str = "environment";
+#[cfg(test)]
+pub(super) const SOURCE_MEMBER: &str = "source";
+#[cfg(test)]
+pub(super) const REPOSITORY_MEMBER: &str = "repository";
+#[cfg(test)]
+pub(super) const WORKFLOW_MEMBER: &str = "workflow";
+#[cfg(test)]
+pub(super) const BUILD_MEMBER: &str = "build";
+#[cfg(test)]
+pub(super) const BUILDER_MEMBER: &str = "builder";
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(super) struct VerificationFailure {
     code: &'static str,
@@ -58,6 +76,10 @@ pub(super) struct VerificationFailure {
 impl VerificationFailure {
     pub(super) fn code(self) -> &'static str {
         self.code
+    }
+
+    pub(super) fn refreshable(self) -> bool {
+        self.refreshable
     }
 
     pub(super) fn policy(code: &'static str) -> Self {
@@ -80,6 +102,12 @@ pub(super) struct MeasurementTuple {
     pub(super) pcr0: [u8; 48],
     pub(super) pcr1: [u8; 48],
     pub(super) pcr2: [u8; 48],
+}
+
+impl MeasurementTuple {
+    pub(super) fn pcr0_hex(&self) -> String {
+        hex::encode(self.pcr0)
+    }
 }
 
 #[derive(Debug)]
@@ -142,6 +170,8 @@ pub(super) fn verify_release_bundle(
 
 #[derive(Clone, Copy)]
 enum VerificationMode {
+    // The corpus selects this mode; production release sessions do not.
+    #[cfg_attr(not(test), allow(dead_code))]
     ManagedKeyCorpus,
     EnclaveRelease,
 }

@@ -6,8 +6,6 @@ pub mod crypto;
 pub mod error;
 pub mod pcr;
 pub mod push;
-// The pure verifier is exercised directly before any transport observer uses it.
-#[allow(dead_code)]
 mod release_verification;
 pub mod remote;
 pub mod session;
@@ -25,5 +23,8 @@ pub use client_app::ClientApp;
 pub use error::{Error, Result};
 pub use pcr::{Pcr0Environment, Pcr0TrustPolicy};
 pub use push::*;
+pub use release_verification::{
+    ReleaseBundleSource, ReleaseVerificationOutcome, ReleaseVerificationResult,
+};
 pub use system_one::*;
 pub use types::*;

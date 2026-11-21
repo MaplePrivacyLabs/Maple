@@ -880,6 +880,17 @@ impl OpenSecretClient {
         self.client_app
     }
 
+    /// Return the most recent completed release-verification observation.
+    ///
+    /// This audit report does not affect session acceptance or requests. It is
+    /// `None` before the first observation completes; a slow observation never
+    /// blocks this read. Mock attestation produces no observation. The returned
+    /// snapshot is independent of the client's stored result.
+    #[must_use]
+    pub fn last_release_verification(&self) -> Option<crate::ReleaseVerificationResult> {
+        self.transport_v2.last_release_verification()
+    }
+
     pub fn set_api_key(&self, api_key: String) -> Result<()> {
         self.session_manager.set_api_key(api_key)
     }
@@ -3581,6 +3592,12 @@ mod tests {
         let body: serde_json::Value = serde_json::from_slice(encoded.body()).unwrap();
         assert_eq!(body["stream"], true);
         assert_eq!(body["stream_options"]["include_usage"], true);
+    }
+
+    #[test]
+    fn release_verification_reader_starts_empty() {
+        let client = OpenSecretClient::new("http://127.0.0.1:1").unwrap();
+        assert!(client.last_release_verification().is_none());
     }
 
     #[tokio::test]
