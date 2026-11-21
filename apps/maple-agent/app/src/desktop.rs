@@ -822,7 +822,17 @@ impl MapleApp {
             self.password_settings_refresh_pending = true;
             return;
         }
+        let palette = ui::theme::preference();
         self.clear_store_ui(cx);
+        if state == maple_agent::store::StoreState::Maintenance {
+            // Presentation only: Maintenance is transient (the host opening
+            // or converting the store), not a lock. Everything above is still
+            // cleared, but the chosen palette stays on screen until the store
+            // reopens or reaches a locked or damaged state, which draw in
+            // Standard Maple. Without this, a Maintenance event replayed at
+            // startup would flash Standard Maple over a returning user's theme.
+            ui::theme::apply_preference(palette, cx);
+        }
         self.set_store_resident(state == maple_agent::store::StoreState::Maintenance, cx);
         let gate = cx.new(|cx| ui::store_gate::StoreGate::new(self.backend.clone(), state, cx));
         cx.subscribe(
@@ -2371,10 +2381,9 @@ impl Render for MapleApp {
             self.recheck_plan_on_activation(cx);
         }
         remember_window_state(window, cx);
-        if ui::theme::resolve(window.appearance()) {
-            // Every view reads the palette in render; make them all redo it.
-            cx.refresh_windows();
-        }
+        // Every view reads the palette in render; a palette change makes
+        // them all redo it.
+        ui::theme::sync_window(window, cx);
         let titlebar = self.titlebar.clone();
         // The screen fades in when it changes kind; the first screen and a
         // screen that only re-renders draw at once.
@@ -2993,6 +3002,9 @@ fn show_quit_prompt(kind: QuitPromptKind, cx: &mut App) {
                 messages: Default::default(),
             });
             let closing = prompt.downgrade();
+            window
+                .observe_window_appearance(|window, cx| ui::theme::sync_window(window, cx))
+                .detach();
             window.on_window_should_close(cx, move |_, cx| {
                 cancel_quit(cx);
                 closing
@@ -3215,6 +3227,8 @@ impl NativeDialog {
 
 impl Render for NativeDialog {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        // A native dialog can be the only window left open.
+        ui::theme::sync_window(window, cx);
         if self.closing {
             window.on_next_frame(|window, _| window.remove_window());
             return div()
@@ -3333,6 +3347,9 @@ fn show_native_dialog(
         },
         |window, cx| {
             let dialog = NativeDialog::view(headline, body, buttons, Some(sender), window, cx);
+            window
+                .observe_window_appearance(|window, cx| ui::theme::sync_window(window, cx))
+                .detach();
             let closing = dialog.downgrade();
             window.on_window_should_close(cx, move |_, cx| {
                 // Closing answers nothing, as dismissing the OS alert did.
@@ -3492,6 +3509,9 @@ impl QuitPrompt {
 }
 impl Render for QuitPrompt {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        // The prompt can outlive the main window (Quit from the tray), so it
+        // resolves the palette itself.
+        ui::theme::sync_window(window, cx);
         if self.closing {
             window.on_next_frame(|window, _| window.remove_window());
             return div()
@@ -4121,7 +4141,7 @@ impl Render for StartupError {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         // This window never renders MapleApp, which is where the palette
         // otherwise resolves; follow the OS appearance here, every frame.
-        ui::theme::resolve(window.appearance());
+        ui::theme::sync_window(window, cx);
         // A status that replaces the failure adds its own sentence and a
         // details pane; the failure-only window is sized for neither.
         // Grow once, when the status first appears, and never again: the
@@ -4689,257 +4709,437 @@ pub fn run() {
                     (None, None)
                 }
             };
-            let root_enabled = remote_enabled.clone();
-            let root_resident = store_resident.clone();
-            let root_backend = backend.clone();
-            let root_settings = startup_settings.clone();
-            let root_updater = updater.clone();
-            let window = cx
-                .open_window(main_window_options(window_placement), move |window, cx| {
-                    show_frame_stats(window);
-                    cx.new(move |cx| MapleApp {
-                        backend: root_backend,
-                        screen: Screen::Restoring,
-                        user_id: None,
-                        parked_chat: None,
-                        local_chat: None,
-                        selected_host: None,
-                        remote_computers: Default::default(),
-                        remote_inventory_loaded: false,
-                        next_connection_attempt: 0,
-                        requested_navigation: None,
-                        computers_sync_pending: false,
-                        remote_enabled: root_enabled,
-                        store_resident: root_resident,
-                        store_load_epoch: 0,
-                        store_state_event: 0,
-                        store_ready: false,
-                        store_id: None,
-                        store_notice: None,
-                        store_notice_is_error: false,
-                        seen_store_notice_operation: None,
-                        inline_password_completion: None,
-                        mode_change_notice: None,
-                        inline_mode_notice: None,
-                        password_settings_refresh_pending: false,
-                        password_settings_refreshing: false,
-                        persistence_status: maple_agent::store::PersistenceStatus::default(),
-                        persistence_retrying: false,
-                        #[cfg(feature = "proxy")]
-                        local_api_revision: 0,
-                        #[cfg(feature = "proxy")]
-                        local_api_host_epoch: 0,
-                        #[cfg(feature = "proxy")]
-                        local_api_refreshing: false,
-                        #[cfg(feature = "proxy")]
-                        local_api_refresh_again: false,
-                        pending_store_attention: Default::default(),
-                        store_attention_open: false,
-                        restore_window_geometry: true,
-                        #[cfg(any(target_os = "linux", target_os = "windows"))]
-                        tray,
-                        remote_bridges: std::cell::RefCell::new(Vec::new()),
-                        settings: root_settings,
-                        updater: root_updater,
-                        restart_prompt_pending: false,
-                        shortcuts: shortcut_runtime,
-                        titlebar: cx.new(|_| TitleBar::new(ui::titlebar::WINDOW_TITLE)),
-                        plan_check: PlanCheck::default(),
-                        native_locale: None,
-                        native_messages: Default::default(),
+            // Present the main window once the saved theme is known, so a
+            // returning user's first frame uses it. The wait is bounded and
+            // skipped for a locked or recovering store; see `startup_theme`.
+            let preflight = startup_theme(backend.clone());
+            let present = move |cx: &mut App| {
+                let root_enabled = remote_enabled.clone();
+                let root_resident = store_resident.clone();
+                let root_backend = backend.clone();
+                let root_settings = startup_settings.clone();
+                let root_updater = updater.clone();
+                let window = cx
+                    .open_window(main_window_options(window_placement), move |window, cx| {
+                        show_frame_stats(window);
+                        cx.new(move |cx| MapleApp {
+                            backend: root_backend,
+                            screen: Screen::Restoring,
+                            user_id: None,
+                            parked_chat: None,
+                            local_chat: None,
+                            selected_host: None,
+                            remote_computers: Default::default(),
+                            remote_inventory_loaded: false,
+                            next_connection_attempt: 0,
+                            requested_navigation: None,
+                            computers_sync_pending: false,
+                            remote_enabled: root_enabled,
+                            store_resident: root_resident,
+                            store_load_epoch: 0,
+                            store_state_event: 0,
+                            store_ready: false,
+                            store_id: None,
+                            store_notice: None,
+                            store_notice_is_error: false,
+                            seen_store_notice_operation: None,
+                            inline_password_completion: None,
+                            mode_change_notice: None,
+                            inline_mode_notice: None,
+                            password_settings_refresh_pending: false,
+                            password_settings_refreshing: false,
+                            persistence_status: maple_agent::store::PersistenceStatus::default(),
+                            persistence_retrying: false,
+                            #[cfg(feature = "proxy")]
+                            local_api_revision: 0,
+                            #[cfg(feature = "proxy")]
+                            local_api_host_epoch: 0,
+                            #[cfg(feature = "proxy")]
+                            local_api_refreshing: false,
+                            #[cfg(feature = "proxy")]
+                            local_api_refresh_again: false,
+                            pending_store_attention: Default::default(),
+                            store_attention_open: false,
+                            restore_window_geometry: true,
+                            #[cfg(any(target_os = "linux", target_os = "windows"))]
+                            tray,
+                            remote_bridges: std::cell::RefCell::new(Vec::new()),
+                            settings: root_settings,
+                            updater: root_updater,
+                            restart_prompt_pending: false,
+                            shortcuts: shortcut_runtime,
+                            titlebar: cx.new(|_| TitleBar::new(ui::titlebar::WINDOW_TITLE)),
+                            plan_check: PlanCheck::default(),
+                            native_locale: None,
+                            native_messages: Default::default(),
+                        })
                     })
-                })
-                .unwrap_or_else(|error| panic!("{}", main_window_failure(&error)));
-            log::debug!("startup: window open at {} ms", crate::startup_elapsed());
-            window
-                .update(cx, |app: &mut MapleApp, _window, cx| {
-                    app.show_store_state(backend.store_state(), cx);
-                })
-                .ok();
-            // Poll/checkpoint only after current-store settings bootstrap.
-            let root_window = window;
-            cx.spawn(async move |cx| {
-                while update_events.changed().await.is_ok() {
-                    let snapshot = update_events.borrow_and_update().clone();
-                    if root_window
-                        .update(cx, |app: &mut MapleApp, _, cx| app.set_update(snapshot, cx))
-                        .is_err()
-                    {
-                        break;
-                    }
-                }
-            })
-            .detach();
-            let root = window
-                .update(cx, |app, window, cx| {
-                    // The only window: closing it from the window manager
-                    // ends the app the same way the title bar button does.
-                    #[cfg(target_os = "macos")]
-                    let can_background = {
-                        let _ = app;
-                        true
-                    };
-                    #[cfg(any(target_os = "linux", target_os = "windows"))]
-                    let can_background = app.tray.is_some();
-                    install_close_behavior(window, cx, remote_enabled.clone(), can_background);
-                    // A system theme change must reach every view.
-                    window
-                        .observe_window_appearance(|_window, cx| cx.refresh_windows())
-                        .detach();
-                    cx.entity()
-                })
-                .expect("root entity");
-
-            if let Some(kind) = native_dialog_fixture() {
+                    .unwrap_or_else(|error| panic!("{}", main_window_failure(&error)));
+                log::debug!("startup: window open at {} ms", crate::startup_elapsed());
+                window
+                    .update(cx, |app: &mut MapleApp, _window, cx| {
+                        app.show_store_state(backend.store_state(), cx);
+                    })
+                    .ok();
+                // Poll/checkpoint only after current-store settings bootstrap.
+                let root_window = window;
                 cx.spawn(async move |cx| {
-                    cx.background_executor()
-                        .timer(std::time::Duration::from_millis(600))
-                        .await;
-                    cx.update(|cx| show_native_dialog_fixture(&kind, cx));
-                })
-                .detach();
-            }
-
-            // Local status is cheap and does not contact the enrollment
-            // service. This also notices changes made through the CLI.
-            let status_backend = backend.clone();
-            let status_root = root.clone();
-            let remote_updater = updater.clone();
-            let update_bridge = remote_updates::Bridge::default();
-            cx.spawn(async move |cx| {
-                loop {
-                    let (account, epoch, owner) = status_root.update(cx, |app, _| {
-                        (
-                            app.user_id.clone(),
-                            app.store_load_epoch,
-                            app.local_chat.as_ref().map(Entity::entity_id),
-                        )
-                    });
-                    let backend = status_backend.clone();
-                    let expected_account = account.clone();
-                    let bridge = update_bridge.clone();
-                    let check_updater = remote_updater.clone();
-                    let task = status_backend.spawn(async move {
-                        tokio::join!(
-                            backend.remote_setting::<crate::remote::manager::Status>(
-                                "remote_status",
-                                ()
-                            ),
-                            backend.local_control::<DesktopStoreStatus>("store_status", ()),
-                            bridge.poll(backend.clone(), expected_account, check_updater),
-                        )
-                    });
-                    if let Ok((remote, store, update_command)) = task.await {
-                        status_root.update(cx, |app, cx| {
-                            if let Ok(store) = store {
-                                app.apply_store_completion_notice(&store, cx);
-                                app.set_store_resident(store.keeps_resident(), cx);
-                                if store.state == maple_agent::store::StoreState::Open
-                                    && app.password_settings_refresh_pending
-                                    && !app.password_settings_refreshing
-                                {
-                                    app.refresh_password_settings(cx);
-                                }
-                            }
-                            if let Some(command) = update_command {
-                                app.begin_remote_install(command, cx);
-                            }
-                            let Ok(status) = remote else { return };
-                            if app.user_id == account
-                                && account.is_some()
-                                && app.store_load_epoch == epoch
-                                && app.local_chat.as_ref().map(Entity::entity_id) == owner
-                                && app.store_ready
-                                && app.backend.store_state() == maple_agent::store::StoreState::Open
-                            {
-                                if let Screen::Settings(settings) = &app.screen {
-                                    settings.update(cx, |settings, cx| {
-                                        settings.update_remote_status(status.clone(), cx)
-                                    });
-                                }
-                                app.update_computers(status, cx);
-                            }
-                        });
-                    }
-                    cx.background_executor()
-                        .timer(std::time::Duration::from_secs(5))
-                        .await;
-                }
-            })
-            .detach();
-            #[cfg(any(target_os = "linux", target_os = "windows"))]
-            if let Some(mut events) = tray_events {
-                let tray_root = root.clone();
-                let enabled = remote_enabled.clone();
-                cx.spawn(async move |cx| {
-                    while let Some(action) = events.recv().await {
-                        match action {
-                            crate::tray::Action::Quit => {
-                                cx.update(quit_app);
-                            }
-                            crate::tray::Action::CheckForUpdates => {
-                                cx.update(|cx| {
-                                    dispatch_update_action(crate::update::UpdateAction::Check, cx)
-                                });
-                            }
-                            crate::tray::Action::Open => {
-                                cx.update(|cx| {
-                                    if cx.windows().is_empty() {
-                                        let root = tray_root.clone();
-                                        let enabled = enabled.clone();
-                                        let placement = main_window_placement(
-                                            crate::settings::load_settings().window,
-                                            cx,
-                                        );
-                                        let _ = cx.open_window(
-                                            main_window_options(placement),
-                                            move |window, cx| {
-                                                install_close_behavior(window, cx, enabled, true);
-                                                root
-                                            },
-                                        );
-                                    } else {
-                                        for window in cx.windows() {
-                                            let _ = window.update(cx, |_, window, _| {
-                                                window.activate_window()
-                                            });
-                                        }
-                                    }
-                                });
-                            }
-                        }
-                    }
-                })
-                .detach();
-            }
-
-            // The event pump runs once for the whole process and routes events to
-            // whichever screen is active. It exits when the root entity is gone.
-            let (spawn_backend, take_backend) = (backend.clone(), backend.clone());
-            let rx = spawn_backend.spawn(async move { take_backend.take_events().await });
-            cx.spawn(async move |cx| {
-                let Some(mut rx) = rx.await.ok().flatten() else {
-                    return;
-                };
-                while let Some(event) = rx.recv().await {
-                    // Drain whatever else is queued so a burst of streaming
-                    // chunks costs one update and one render, not one each.
-                    let mut batch = vec![event];
-                    while let Ok(next) = rx.try_recv() {
-                        batch.push(next);
-                        if batch.len() >= 256 {
+                    while update_events.changed().await.is_ok() {
+                        let snapshot = update_events.borrow_and_update().clone();
+                        if root_window
+                            .update(cx, |app: &mut MapleApp, _, cx| app.set_update(snapshot, cx))
+                            .is_err()
+                        {
                             break;
                         }
                     }
-                    // This gpui's entity update is infallible; the pump ends
-                    // with the channel instead.
-                    root.update(cx, |app, cx| app.handle_service_events(batch, cx));
+                })
+                .detach();
+                let root = window
+                    .update(cx, |app, window, cx| {
+                        // The only window: closing it from the window manager
+                        // ends the app the same way the title bar button does.
+                        #[cfg(target_os = "macos")]
+                        let can_background = {
+                            let _ = app;
+                            true
+                        };
+                        #[cfg(any(target_os = "linux", target_os = "windows"))]
+                        let can_background = app.tray.is_some();
+                        install_close_behavior(window, cx, remote_enabled.clone(), can_background);
+                        // A system theme change must reach every view.
+                        window
+                            .observe_window_appearance(|_window, cx| cx.refresh_windows())
+                            .detach();
+                        cx.entity()
+                    })
+                    .expect("root entity");
+
+                if let Some(kind) = native_dialog_fixture() {
+                    cx.spawn(async move |cx| {
+                        cx.background_executor()
+                            .timer(std::time::Duration::from_millis(600))
+                            .await;
+                        cx.update(|cx| show_native_dialog_fixture(&kind, cx));
+                    })
+                    .detach();
                 }
+
+                // Local status is cheap and does not contact the enrollment
+                // service. This also notices changes made through the CLI.
+                let status_backend = backend.clone();
+                let status_root = root.clone();
+                let remote_updater = updater.clone();
+                let update_bridge = remote_updates::Bridge::default();
+                cx.spawn(async move |cx| {
+                    loop {
+                        let (account, epoch, owner) = status_root.update(cx, |app, _| {
+                            (
+                                app.user_id.clone(),
+                                app.store_load_epoch,
+                                app.local_chat.as_ref().map(Entity::entity_id),
+                            )
+                        });
+                        let backend = status_backend.clone();
+                        let expected_account = account.clone();
+                        let bridge = update_bridge.clone();
+                        let check_updater = remote_updater.clone();
+                        let task = status_backend.spawn(async move {
+                            tokio::join!(
+                                backend.remote_setting::<crate::remote::manager::Status>(
+                                    "remote_status",
+                                    ()
+                                ),
+                                backend.local_control::<DesktopStoreStatus>("store_status", ()),
+                                bridge.poll(backend.clone(), expected_account, check_updater),
+                            )
+                        });
+                        if let Ok((remote, store, update_command)) = task.await {
+                            status_root.update(cx, |app, cx| {
+                                if let Ok(store) = store {
+                                    app.apply_store_completion_notice(&store, cx);
+                                    app.set_store_resident(store.keeps_resident(), cx);
+                                    if store.state == maple_agent::store::StoreState::Open
+                                        && app.password_settings_refresh_pending
+                                        && !app.password_settings_refreshing
+                                    {
+                                        app.refresh_password_settings(cx);
+                                    }
+                                }
+                                if let Some(command) = update_command {
+                                    app.begin_remote_install(command, cx);
+                                }
+                                let Ok(status) = remote else { return };
+                                if app.user_id == account
+                                    && account.is_some()
+                                    && app.store_load_epoch == epoch
+                                    && app.local_chat.as_ref().map(Entity::entity_id) == owner
+                                    && app.store_ready
+                                    && app.backend.store_state()
+                                        == maple_agent::store::StoreState::Open
+                                {
+                                    if let Screen::Settings(settings) = &app.screen {
+                                        settings.update(cx, |settings, cx| {
+                                            settings.update_remote_status(status.clone(), cx)
+                                        });
+                                    }
+                                    app.update_computers(status, cx);
+                                }
+                            });
+                        }
+                        cx.background_executor()
+                            .timer(std::time::Duration::from_secs(5))
+                            .await;
+                    }
+                })
+                .detach();
+                #[cfg(any(target_os = "linux", target_os = "windows"))]
+                if let Some(mut events) = tray_events {
+                    let tray_root = root.clone();
+                    let enabled = remote_enabled.clone();
+                    cx.spawn(async move |cx| {
+                        while let Some(action) = events.recv().await {
+                            match action {
+                                crate::tray::Action::Quit => {
+                                    cx.update(quit_app);
+                                }
+                                crate::tray::Action::CheckForUpdates => {
+                                    cx.update(|cx| {
+                                        dispatch_update_action(
+                                            crate::update::UpdateAction::Check,
+                                            cx,
+                                        )
+                                    });
+                                }
+                                crate::tray::Action::Open => {
+                                    cx.update(|cx| {
+                                        if cx.windows().is_empty() {
+                                            let root = tray_root.clone();
+                                            let enabled = enabled.clone();
+                                            let placement = main_window_placement(
+                                                crate::settings::load_settings().window,
+                                                cx,
+                                            );
+                                            let _ = cx.open_window(
+                                                main_window_options(placement),
+                                                move |window, cx| {
+                                                    install_close_behavior(
+                                                        window, cx, enabled, true,
+                                                    );
+                                                    root
+                                                },
+                                            );
+                                        } else {
+                                            for window in cx.windows() {
+                                                let _ = window.update(cx, |_, window, _| {
+                                                    window.activate_window()
+                                                });
+                                            }
+                                        }
+                                    });
+                                }
+                            }
+                        }
+                    })
+                    .detach();
+                }
+
+                // The event pump runs once for the whole process and routes events to
+                // whichever screen is active. It exits when the root entity is gone.
+                let (spawn_backend, take_backend) = (backend.clone(), backend.clone());
+                let rx = spawn_backend.spawn(async move { take_backend.take_events().await });
+                cx.spawn(async move |cx| {
+                    let Some(mut rx) = rx.await.ok().flatten() else {
+                        return;
+                    };
+                    while let Some(event) = rx.recv().await {
+                        // Drain whatever else is queued so a burst of streaming
+                        // chunks costs one update and one render, not one each.
+                        let mut batch = vec![event];
+                        while let Ok(next) = rx.try_recv() {
+                            batch.push(next);
+                            if batch.len() >= 256 {
+                                break;
+                            }
+                        }
+                        // This gpui's entity update is infallible; the pump ends
+                        // with the channel instead.
+                        root.update(cx, |app, cx| app.handle_service_events(batch, cx));
+                    }
+                })
+                .detach();
+
+                cx.activate(true);
+            };
+            cx.spawn(async move |cx| {
+                let theme = preflight.await.ok().flatten();
+                cx.update(|cx| {
+                    log::debug!(
+                        "startup: saved theme {} at {} ms",
+                        if theme.is_some() {
+                            "applied"
+                        } else {
+                            "not available"
+                        },
+                        crate::startup_elapsed()
+                    );
+                    if let Some(theme) = theme {
+                        ui::theme::apply_preference(ui::theme::Preference::parse(&theme), cx);
+                    }
+                    present(cx);
+                });
             })
             .detach();
-
-            cx.activate(true);
         });
+}
+
+/// How long the main window waits for the saved theme before it opens
+/// with Standard Maple anyway. A warm or cold plain store answers well
+/// inside it; a slow host shows its usual restoring screen afterwards.
+const STARTUP_THEME_DEADLINE: std::time::Duration = std::time::Duration::from_millis(400);
+
+/// The saved theme ID for the first frame, read through the same bounded
+/// host requests as the settings bootstrap: the store's status and, only
+/// when the store is Open, its UI settings snapshot. A locked or recovering
+/// store returns `None` without reading settings, so its gate shows at once
+/// in Standard Maple; an error or the deadline also returns `None`. Nothing
+/// is written or cached outside the store.
+fn startup_theme(backend: Arc<AgentBackend>) -> tokio::task::JoinHandle<Option<String>> {
+    let status_backend = backend.clone();
+    let settings_backend = backend.clone();
+    backend.spawn(async move {
+        saved_theme_within(
+            STARTUP_THEME_DEADLINE,
+            async move {
+                status_backend
+                    .local_control::<DesktopStoreStatus>("store_status", ())
+                    .await
+            },
+            || async move {
+                settings_backend
+                    .get_ui_settings()
+                    .await
+                    .map(|settings| settings.theme)
+            },
+        )
+        .await
+    })
+}
+
+async fn saved_theme_within<S, F, T>(
+    deadline: std::time::Duration,
+    status: S,
+    settings: F,
+) -> Option<String>
+where
+    S: std::future::Future<Output = Result<DesktopStoreStatus, String>>,
+    F: FnOnce() -> T,
+    T: std::future::Future<Output = Result<String, String>>,
+{
+    tokio::time::timeout(deadline, async {
+        let status = status.await.ok()?;
+        if status.state != maple_agent::store::StoreState::Open {
+            return None;
+        }
+        settings().await.ok()
+    })
+    .await
+    .ok()
+    .flatten()
+}
+
+#[cfg(test)]
+mod startup_theme_tests {
+    use super::*;
+    use maple_agent::store::StoreState;
+    use std::time::Duration;
+
+    fn status(state: StoreState) -> Result<DesktopStoreStatus, String> {
+        let mut status: DesktopStoreStatus = serde_json::from_value(serde_json::json!({
+            "state": {"state": "open"},
+            "mode": "plain",
+            "setup_operation_id": null,
+            "store_id": "store",
+        }))
+        .expect("status fixture");
+        status.state = state;
+        Ok(status)
+    }
+
+    #[tokio::test]
+    async fn an_open_store_supplies_its_saved_theme() {
+        let theme = saved_theme_within(
+            STARTUP_THEME_DEADLINE,
+            async { status(StoreState::Open) },
+            || async { Ok("dracula".to_string()) },
+        )
+        .await;
+        assert_eq!(theme.as_deref(), Some("dracula"));
+    }
+
+    #[tokio::test]
+    async fn a_store_that_is_not_open_is_never_read() {
+        for state in [
+            StoreState::Locked,
+            StoreState::NeedsSetup,
+            StoreState::Maintenance,
+        ] {
+            let theme = saved_theme_within(
+                STARTUP_THEME_DEADLINE,
+                async { status(state.clone()) },
+                || async { panic!("settings read before unlock") },
+            )
+            .await;
+            assert_eq!(theme, None, "{state:?}");
+        }
+    }
+
+    #[tokio::test]
+    async fn host_errors_fall_back_to_standard_maple() {
+        let theme = saved_theme_within(
+            STARTUP_THEME_DEADLINE,
+            async { Err("host unavailable".to_string()) },
+            || async { Ok("dracula".to_string()) },
+        )
+        .await;
+        assert_eq!(theme, None);
+        let theme = saved_theme_within(
+            STARTUP_THEME_DEADLINE,
+            async { status(StoreState::Open) },
+            || async { Err("Could not read UI settings".to_string()) },
+        )
+        .await;
+        assert_eq!(theme, None);
+    }
+
+    /// A slow host never holds the window: the deadline opens it with
+    /// Standard Maple, whichever request is slow.
+    #[tokio::test(start_paused = true)]
+    async fn a_slow_host_is_bounded_by_the_deadline() {
+        let slow_status = saved_theme_within(
+            STARTUP_THEME_DEADLINE,
+            async {
+                tokio::time::sleep(Duration::from_secs(30)).await;
+                status(StoreState::Open)
+            },
+            || async { Ok("dracula".to_string()) },
+        );
+        let started = tokio::time::Instant::now();
+        assert_eq!(slow_status.await, None);
+        assert_eq!(started.elapsed(), STARTUP_THEME_DEADLINE);
+
+        let slow_settings = saved_theme_within(
+            STARTUP_THEME_DEADLINE,
+            async { status(StoreState::Open) },
+            || async {
+                tokio::time::sleep(Duration::from_secs(30)).await;
+                Ok("dracula".to_string())
+            },
+        );
+        let started = tokio::time::Instant::now();
+        assert_eq!(slow_settings.await, None);
+        assert_eq!(started.elapsed(), STARTUP_THEME_DEADLINE);
+    }
 }
 
 #[cfg(test)]
@@ -6633,6 +6833,26 @@ mod tests {
             assert_eq!(app.store_load_epoch, epoch);
             app.show_store_state(maple_agent::store::StoreState::Open, cx);
             assert!(matches!(app.screen, Screen::Settings(_)));
+        });
+        cx.run_until_parked();
+    }
+
+    #[gpui::test]
+    fn maintenance_keeps_the_chosen_palette_and_a_lock_resets_it(cx: &mut gpui::TestAppContext) {
+        let settings = crate::settings::SETTINGS_IO_LOCK.lock();
+        let _theme = ui::theme::TestThemeGuard::acquire();
+        let app = project_shell_locked(cx, &settings);
+        cx.update(|cx| ui::theme::apply_preference(ui::theme::Preference::Dracula, cx));
+        app.update(cx, |app, cx| {
+            let epoch = app.store_load_epoch;
+            app.show_store_state(maple_agent::store::StoreState::Maintenance, cx);
+            // Store handling is unchanged: the open store's UI is cleared.
+            assert!(app.store_load_epoch > epoch);
+            assert!(matches!(app.screen, Screen::StoreGate(_)));
+            assert!(app.user_id.is_none());
+            assert_eq!(ui::theme::preference(), ui::theme::Preference::Dracula);
+            app.show_store_state(maple_agent::store::StoreState::Locked, cx);
+            assert_eq!(ui::theme::preference(), ui::theme::Preference::System);
         });
         cx.run_until_parked();
     }

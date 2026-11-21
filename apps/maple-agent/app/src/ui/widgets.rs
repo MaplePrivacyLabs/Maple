@@ -118,11 +118,11 @@ pub fn default_button(id: impl Into<ElementId>) -> HoverBackground {
 /// [`default_button`] for WCAG contrast until legacy callers migrate globally.
 pub fn primary_button(id: impl Into<ElementId>) -> HoverBackground {
     pill(id)
-        .bg(gpui::rgb(theme::accent()))
+        .bg(gpui::rgb(theme::accent_fill()))
         .text_color(gpui::rgb(theme::on_accent()))
         .hover(|style| style.cursor_pointer())
-        .active(|style| press_depth(style.bg(gpui::rgb(theme::send_bottom()))))
-        .hover_bg(gpui::rgb(theme::accent_hover()))
+        .active(|style| press_depth(style.bg(gpui::rgb(theme::accent_fill_active()))))
+        .hover_bg(gpui::rgb(theme::accent_fill_hover()))
 }
 /// Neutral pill for the second action beside a [`primary_button`]
 /// (Cancel, Back, alternate sign-in): a pebble fill that darkens on hover.
@@ -177,7 +177,7 @@ pub fn danger_button(id: impl Into<ElementId>) -> HoverBackground {
     let error: Hsla = gpui::rgb(theme::status_error()).into();
     pill(id)
         .bg(error)
-        .text_color(gpui::rgb(theme::on_accent()))
+        .text_color(gpui::rgb(theme::on_error()))
         .hover(|style| style.cursor_pointer())
         .active(|style| press_depth(style.opacity(0.85)))
         .hover_bg(gpui::hsla(error.h, error.s, error.l, 0.9))
@@ -342,7 +342,10 @@ const KNOB_TRAVEL: Pixels = px(34. - 2. * 3. - 14.);
 pub fn switch_track(on: bool) -> Div {
     let off_track: Hsla = gpui::rgb(theme::bg_sidebar_row_selected()).into();
     let on_track = accent();
-    let knob: Hsla = gpui::rgb(theme::on_accent()).into();
+    // The knob has its own off color on the off track and takes the
+    // accent foreground on the accent track.
+    let knob_off: Hsla = gpui::rgb(theme::switch_knob_off()).into();
+    let knob_on: Hsla = gpui::rgb(theme::on_accent()).into();
     div()
         .flex_none()
         .w(px(34.))
@@ -366,7 +369,7 @@ pub fn switch_track(on: bool) -> Div {
                                 .debug_selector(|| "switch-knob".into())
                                 .size(px(14.))
                                 .rounded_full()
-                                .bg(knob)
+                                .bg(motion::mix(knob_off, knob_on, on))
                                 .shadow_2xs(),
                         )
                         .offset(gpui::point(KNOB_TRAVEL * on, px(0.))),

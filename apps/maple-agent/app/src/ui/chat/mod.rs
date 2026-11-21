@@ -7784,7 +7784,7 @@ impl Render for ChatScreen {
                                     "x",
                                     tr("chat-close"),
                                     px(16.),
-                                    theme::on_accent(),
+                                    theme::on_scrim(),
                                 )
                                 .debug_selector(|| "lightbox-close".to_string())
                                 .size_8()

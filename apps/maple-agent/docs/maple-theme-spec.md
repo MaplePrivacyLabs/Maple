@@ -219,3 +219,41 @@ SF Mono, Menlo, Consolas.
   (`#2F2F37` to `#FF9771`). Buttons show focus with a 2 px `#FF9771` ring.
 - The coral `#FF9771` is the same in both themes. Only the "on primary" text
   changes (`#0A0A0A` dark, `#FFFFFF` light).
+
+## 12. Named themes
+
+Settings → Appearance offers Standard Maple (System), Maple Light, Maple Dark,
+Dracula, Americana, Neon Dusk and Cherry Blossom. The saved `theme` setting is
+the choice's stable ID (`system`, `light`, `dark`, `dracula`, `americana`,
+`neon-dusk`, `cherry-blossom`). The first three IDs are the values earlier
+versions saved, so upgrades keep their choice. An unknown ID draws as Standard
+Maple and stays saved until the user picks another theme.
+
+`app/src/ui/theme.rs` resolves the choice to one complete palette by identity.
+Every top-level window (main window, quit prompt, native dialogs, startup
+error) calls `theme::sync_window` first in render and on OS appearance changes,
+and the Linux portal update calls `theme::sync`, so a switch between two dark
+themes, or an OS change while only a dialog is open, repaints every window.
+Each named palette lists every role. `text_roles_read_on_every_surface` and
+`rendered_pairs_meet_their_floors` pin the pairs the app actually draws: 4.5:1
+for labels, 3:1 for marks, knobs and focus rings. Error and success fills take
+`on_error`/`on_success`, the switch's off knob and the slider thumb have their
+own roles, and the legacy accent button fills with `accent_fill`
+(`accent_fill_active` while pressed). `accent` is for marks, borders and
+focus rings; text in the accent hue (slash commands, the Manage integrations
+menu row, the Updating badge) uses `accent_text`. The stock
+palettes predate these checks; their known shortfalls are listed in the test
+rather than changed. Fixed themes set the native window appearance to their
+lightness. Translucent overlays, shadows and monochrome marks still choose
+black or white from `theme::is_light()`; the usage chart's series colors keep
+their validated light and dark sets, while its gridlines follow the palette.
+
+Like the language preference, the theme lives in the local store's settings
+and has no plaintext copy. At launch the main window waits, for at most
+`STARTUP_THEME_DEADLINE` (400 ms), while the desktop asks the host for the
+store status and, only when the store is Open, its settings snapshot; the
+saved theme is applied before the first frame. A locked, damaged or
+otherwise unopened store, a host error or the deadline opens the window at
+once in Standard Maple, which stays until the store opens. Store lifecycle
+events are handled unchanged; while the store is in transient Maintenance the
+chosen palette stays on screen, and a lock resets it to Standard Maple.

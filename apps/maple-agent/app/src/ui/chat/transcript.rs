@@ -1648,7 +1648,7 @@ pub(super) fn render_plan_row(entry: &PlanEntry) -> Div {
             PlanStatus::Completed => checkbox
                 .border_color(gpui::rgb(theme::status_success()))
                 .bg(gpui::rgb(theme::status_success()))
-                .child(icon("check", px(11.), theme::on_accent())),
+                .child(icon("check", px(11.), theme::on_success())),
             PlanStatus::InProgress => checkbox
                 .border_color(gpui::rgb(theme::status_running()))
                 .child(

@@ -540,7 +540,7 @@ impl ChatScreen {
                         .child(if transcribing {
                             spinner("transcribing", px(16.), theme::text_secondary())
                         } else if recording {
-                            icon("square", px(14.), theme::on_accent()).into_any_element()
+                            icon("square", px(14.), theme::on_error()).into_any_element()
                         } else {
                             icon("mic", px(16.), theme::text_secondary()).into_any_element()
                         }),
@@ -840,7 +840,7 @@ impl ChatScreen {
                     cx.emit(OpenSettingsSection(Section::Integrations));
                 },
             )
-            .style(|row| row.text_color(gpui::rgb(theme::accent()))),
+            .style(|row| row.text_color(gpui::rgb(theme::accent_text()))),
         )
     }
 
@@ -889,7 +889,7 @@ impl ChatScreen {
                     .child(
                         div()
                             .font_family(crate::assets::FONT_MONO)
-                            .text_color(gpui::rgb(theme::accent()))
+                            .text_color(gpui::rgb(theme::accent_text()))
                             .child(format!("/{}", entry.name)),
                     )
                     .child(
