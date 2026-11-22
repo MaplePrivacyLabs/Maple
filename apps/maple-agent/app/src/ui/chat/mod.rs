@@ -42,6 +42,7 @@ mod attachments;
 mod dialogs;
 mod effort;
 mod feedback;
+mod jump;
 mod navigation;
 mod paging;
 mod project_folder;
@@ -67,8 +68,7 @@ use self::navigation::ApplicationVimState;
 use self::sidebar::SessionActivity;
 use self::sidebar::{Sidebar, SidebarEvent, TaskActivity, session_summary_eq};
 use self::transcript::{
-    ActiveSubagent, PlanEntry, PlanStatus, plan_entries, plan_finished, render_question_card,
-    render_waiting_indicator,
+    ActiveSubagent, PlanEntry, PlanStatus, plan_entries, plan_finished, render_waiting_indicator,
 };
 
 gpui::actions!(
@@ -839,6 +839,9 @@ pub struct ChatScreen {
     /// Live row entrances and reveals in the transcript, kept here so a
     /// row scrolled away and back never replays them.
     row_motion: transcript::RowMotion,
+    /// The date chip, the jump button and the question card's row at the
+    /// transcript's tail.
+    floating: jump::Floating,
     /// When the task in `loading_session` started opening, for the header
     /// spinner's delay.
     loading_since: Option<std::time::Instant>,
@@ -1678,6 +1681,7 @@ impl ChatScreen {
             transcript_focus: None,
             awaiting_first_token: false,
             row_motion: transcript::RowMotion::default(),
+            floating: jump::Floating::default(),
             loading_since: None,
             toggled_tools: HashSet::new(),
             question_selected: HashMap::new(),
@@ -3391,6 +3395,7 @@ impl ChatScreen {
                         this.set_active_session(detail.session, detail.timeline, summaries, cx);
                         if switching {
                             this.row_motion.switch_task(motion::now());
+                            this.floating.reset();
                         }
                         // A different existing root is persisted by set_active_session;
                         // explicit opens in the same root also count as recent use.
@@ -3479,7 +3484,7 @@ impl ChatScreen {
         self.derived.clear();
         self.messages = Default::default();
         self.list_state
-            .reset_with_uniform_height(self.timeline.len(), TRANSCRIPT_ROW_ESTIMATE);
+            .reset_with_uniform_height(self.list_rows(), TRANSCRIPT_ROW_ESTIMATE);
         if let Some(old_navigation_order) = old_navigation_order {
             self.reconcile_timeline_application_selection(&old_navigation_order);
         }
@@ -3744,6 +3749,7 @@ impl ChatScreen {
             self.withdraw_first_send(cx);
         }
         let left = self.selected_session.clone();
+        self.floating.reset();
         if self.btw.is_some() {
             self.close_side_thread(cx);
         }
@@ -4681,6 +4687,9 @@ impl ChatScreen {
 
     /// Ctrl-1 to Ctrl-9 submits a single choice or toggles a multi-select option.
     fn pick_and_submit_question_option(&mut self, index: usize, cx: &mut Context<Self>) {
+        if self.question_out_of_view(cx) {
+            return;
+        }
         let Some(question) = self.current_question() else {
             return;
         };
@@ -6366,11 +6375,13 @@ impl ChatScreen {
             None => {
                 let index = self.timeline.len();
                 self.timeline_index.insert(item.id.clone(), (index, 0));
-                self.row_motion.arrive(
-                    &item.id,
-                    motion::now(),
-                    self.list_state.is_following_tail(),
-                );
+                let following = self.list_state.is_following_tail();
+                self.row_motion.arrive(&item.id, motion::now(), following);
+                // Read from up the thread, it counts on the jump button.
+                if !following {
+                    self.floating
+                        .note_arrival(&item.item_type, item.role.as_deref());
+                }
                 self.timeline.push(item);
                 self.list_state.splice(index..index, 1);
                 index
@@ -7241,6 +7252,12 @@ impl ChatScreen {
                     .is_none_or(|active| active == run_id);
                 if owns_session {
                     self.active_runs.remove(session_id);
+                    if self.is_selected(session_id) {
+                        self.floating.run_finished(
+                            matches!(terminal, maple_agent::agent::AgentRunTerminal::Failed),
+                            self.list_state.is_following_tail(),
+                        );
+                    }
                     // The markers follow the latest terminal: a completion
                     // or a failure off screen sets one; a stop sets none.
                     // Opening the task (`set_active_session`) is the only
@@ -7484,9 +7501,12 @@ impl Render for ChatScreen {
                 window.focus(&handle, cx);
             }
         }
+        // A question is the thread's last row: its answer takes focus once
+        // the reader is at the end, not while they read further up.
         if self.question_focus_pending
             && self.project_folder_dialog.is_none()
             && self.lightbox.is_none()
+            && (self.list_state.is_following_tail() || self.current_question().is_none())
         {
             self.question_focus_pending = false;
             if self.application_vim_enabled {
@@ -7544,45 +7564,6 @@ impl Render for ChatScreen {
                 .on_scroll(cx.listener(Self::scroll_transcript_from_pane))
                 .child(self.render_transcript(window, cx))
                 .children(self.render_under_transcript(window, cx))
-                .when_some(self.current_question(), |container, question| {
-                    let input = self.pending_question_input.clone();
-                    let step = self.question_step;
-                    let enter = gpui::ElementId::Name(
-                        format!("question-card-enter-{}", question.request_id).into(),
-                    );
-                    // Each option shows the key bound to it right now. One
-                    // keymap lookup per option on show; a card has a handful.
-                    let key_labels = question
-                        .questions
-                        .get(step.min(question.questions.len().saturating_sub(1)))
-                        .filter(|entry| entry.permission.is_none())
-                        .map(|entry| {
-                            (0..entry.options.len().min(9))
-                                .map(|index| question_key_label(index, window))
-                                .collect::<Vec<_>>()
-                        })
-                        .unwrap_or_default();
-                    // Same column and gutter as the composer under it. Like
-                    // the cards above the composer, a new question rises in
-                    // and leaves at once.
-                    container.child(motion::slide_in(
-                        div().w_full().max_w(CONTENT_WIDTH).mx_auto().px_6().child(
-                            render_question_card(
-                                question,
-                                step,
-                                self.question_collapsed,
-                                input,
-                                &self.question_selected,
-                                &key_labels,
-                                &self.messages,
-                                cx,
-                            ),
-                        ),
-                        enter,
-                        motion::ENTER,
-                        rise,
-                    ))
-                })
                 .child(
                     div()
                         .relative()

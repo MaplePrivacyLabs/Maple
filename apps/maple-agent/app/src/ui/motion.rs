@@ -92,6 +92,23 @@ pub const PANEL: Token = Token {
     settle: Duration::from_millis(320),
 };
 
+/// Controls that float over content and come and go with what it shows:
+/// the transcript's date chip, its jump button and the button's count.
+/// Softer than [`REVEAL`]: a longer settle from [`RISE`] off the control's
+/// own edge, so it eases into place rather than popping.
+pub const FLOAT: Token = Token {
+    duration: Duration::from_millis(280),
+    easing: ease_out_expo,
+    settle: Duration::from_millis(420),
+};
+/// The way out of [`FLOAT`]: quicker and half as far, so a control that
+/// leaves never draws more attention than it did arriving.
+pub const FLOAT_OUT: Token = Token {
+    duration: Duration::from_millis(180),
+    easing: ease_out_expo,
+    settle: Duration::from_millis(270),
+};
+
 /// How every spring is damped. At 1 a spring is the fastest that does not
 /// overshoot from rest; below 1 it overshoots and comes back, above 1 it
 /// settles more slowly.
@@ -145,6 +162,16 @@ pub fn resize(distance: Pixels) -> Token {
 /// Entrances and fades: a fast start and a long settle.
 pub fn ease_out_quint(t: f32) -> f32 {
     1. - (1. - t).powi(5)
+}
+
+/// Floating controls: the longest, softest settle of the curves, with no
+/// overshoot; the same curve morphing text follows.
+pub fn ease_out_expo(t: f32) -> f32 {
+    if t >= 1. {
+        1.
+    } else {
+        1. - 2f32.powf(-10. * t)
+    }
 }
 
 /// Movement and size: gentler than [`ease_out_quint`], so a moving edge
@@ -580,6 +607,21 @@ where
     shifted(element)
         .opacity(eased)
         .offset(gpui::point(px(0.), RISE * (1. - eased)))
+}
+
+/// Draw a floating control `shown` of the way in (a [`Tween`] stepped on
+/// [`FLOAT`] in and [`FLOAT_OUT`] out): faded, and off its own edge by
+/// [`RISE`] while arriving or half that while leaving. `from` is the side
+/// it comes from: `-1.` above, `1.` below.
+pub fn floating<E>(element: E, shown: f32, leaving: bool, from: f32) -> Shifted<E>
+where
+    E: IntoElement + Styled + 'static,
+{
+    let shown = shown.clamp(0., 1.);
+    let travel = if leaving { RISE * 0.5 } else { RISE };
+    shifted(element)
+        .opacity(shown)
+        .offset(gpui::point(px(0.), travel * from * (1. - shown)))
 }
 
 /// Paint an element away from where layout put it, hitbox included,

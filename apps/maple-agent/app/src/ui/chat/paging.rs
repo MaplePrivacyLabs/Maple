@@ -146,6 +146,7 @@ pub(super) fn item_bytes(item: &AgentTimelineItem) -> usize {
 
 impl ChatScreen {
     pub(super) fn transcript_scrolled(&mut self, start: usize, end: usize, cx: &mut Context<Self>) {
+        self.note_transcript_scroll(cx);
         self.request_visible_attachment_images(start, end, cx);
         if start < 5 && self.pages.before {
             self.load_history_page(true, cx);
@@ -253,6 +254,7 @@ impl ChatScreen {
     }
 
     pub(super) fn rebuild_window(&mut self, anchor: Option<(String, ListOffset)>) {
+        self.floating.forget_scroll();
         self.timeline_index = self
             .timeline
             .iter()
@@ -274,10 +276,20 @@ impl ChatScreen {
             .weights
             .retain(|id| self.timeline_index.contains_key(id));
         self.list_state
-            .reset_with_uniform_height(self.timeline.len(), super::TRANSCRIPT_ROW_ESTIMATE);
+            .reset_with_uniform_height(self.list_rows(), super::TRANSCRIPT_ROW_ESTIMATE);
         if let Some((id, mut offset)) = anchor
             && let Some((index, _)) = self.timeline_index.get(&id)
         {
+            // The first row carries the space above the thread; a row that
+            // gains or loses that place keeps its content where it was.
+            let start = super::transcript::THREAD_START;
+            match (offset.item_ix == 0, *index == 0) {
+                (true, false) => {
+                    offset.offset_in_item = (offset.offset_in_item - start).max(gpui::px(0.))
+                }
+                (false, true) => offset.offset_in_item += start,
+                _ => {}
+            }
             offset.item_ix = *index;
             self.list_state.scroll_to(offset);
         }

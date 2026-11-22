@@ -337,6 +337,9 @@ impl ChatScreen {
         count: usize,
         cx: &mut Context<Self>,
     ) {
+        if self.question_out_of_view(cx) {
+            return;
+        }
         if let Some(question) = self.current_question() {
             let step = self
                 .question_step
@@ -362,6 +365,9 @@ impl ChatScreen {
     }
 
     fn select_application_edge(&mut self, first: bool, cx: &mut Context<Self>) {
+        if self.question_out_of_view(cx) {
+            return;
+        }
         if let Some(question) = self.current_question() {
             let step = self
                 .question_step
@@ -530,6 +536,9 @@ impl ChatScreen {
     }
 
     fn activate_application_selection(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        if self.question_out_of_view(cx) {
+            return;
+        }
         if self.current_question().is_some() && self.question_collapsed {
             self.toggle_question_collapsed(cx);
             return;

@@ -35,24 +35,50 @@ impl ChatScreen {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) -> gpui::Stateful<Div> {
-        // The list follows its own tail: it snaps to the end on each
-        // layout until the user scrolls up, and re-engages when the view
-        // returns to the bottom. Every mutation goes through splice or
-        // remeasure, so the count only drifts if a code path forgot to.
-        let count = self.timeline.len();
-        if self.list_state.item_count() != count {
-            self.list_state
-                .reset_with_uniform_height(count, super::TRANSCRIPT_ROW_ESTIMATE);
-        }
         // Entrances read one clock for the whole frame and ask for the next
         // frame only while one is still running.
         let now = motion::now();
         let reduced = cx.reduce_motion();
+        // A jump gliding to the end moves the list before it lays out.
+        self.step_glide(window, cx);
+        // A question waiting on the reader is the thread's last row.
+        let following = self.list_state.is_following_tail();
+        self.sync_tail_card(following, now, reduced);
+        // The list follows its own tail: it snaps to the end on each
+        // layout until the user scrolls up, and re-engages when the view
+        // returns to the bottom. Every mutation goes through splice or
+        // remeasure, so the count only drifts if a code path forgot to.
+        let count = self.list_rows();
+        if self.list_state.item_count() != count {
+            self.list_state
+                .reset_with_uniform_height(count, super::TRANSCRIPT_ROW_ESTIMATE);
+        }
+        // Older history loads as the reader nears the top, however they
+        // got there (wheel, scrollbar, keys), or when the window shows all
+        // it holds and cannot scroll to ask. Once per visit to the top, so
+        // a failed load is not retried every frame.
+        let laid_out = self.list_state.viewport_bounds().size.height > px(0.);
+        let near_top = laid_out
+            && (self.list_state.max_offset_for_scrollbar().y <= px(0.)
+                || (!following && self.list_state.logical_scroll_top().item_ix < 5));
+        if !near_top {
+            self.floating.top_load = None;
+        } else if self.pages.before
+            && !self.pages.loading
+            && count > 0
+            && self.floating.top_load != Some(count)
+        {
+            self.floating.top_load = Some(count);
+            self.load_history_page(true, cx);
+        }
         if self.row_motion.settle(now, reduced) {
             window.request_animation_frame();
         }
         let switch_reveal = self.row_motion.switch_progress(now, reduced);
-        let show_jump = count > 0 && !self.list_state.is_following_tail();
+        let show_jump = count > 0 && !following && self.floating.glide.is_none();
+        self.read_scroll(cx);
+        let date_chip = self.render_date_chip(following, window, cx);
+        let jump = self.render_jump(show_jump, window, cx);
         let tool_details = self.tool_details;
         let entity = cx.entity().downgrade();
         let selection = self.selection.clone();
@@ -68,6 +94,12 @@ impl ChatScreen {
             let Some(chat_entity) = entity.upgrade() else {
                 return div().into_any_element();
             };
+            // One past the timeline: the question card at the tail.
+            if ix >= chat_entity.read(cx).timeline.len() {
+                return chat_entity.update(cx, |chat, cx| {
+                    chat.render_tail_card(now, reduced, window, cx)
+                });
+            }
             let chat = chat_entity.read(cx);
             // A row that arrived live enters, timed from view state so
             // scrolling it away and back never replays the entrance.
@@ -160,6 +192,20 @@ impl ChatScreen {
                 }
                 None => div().into_any_element(),
             };
+            // The thread's top edge: room for the date chip above the first
+            // row, and where the task began once nothing older is left.
+            let row = if ix == 0 {
+                let start = (!chat.pages.before)
+                    .then(|| chat.timeline.first())
+                    .flatten()
+                    .map(|first| chat.start_label(first.created_ms));
+                div()
+                    .child(render_thread_start(start))
+                    .child(row)
+                    .into_any_element()
+            } else {
+                row
+            };
             // Only rows the list places in view are prepainted here; rows
             // measured for overdraw are not, and a focused row kept alive
             // off screen lands outside the mask.
@@ -235,20 +281,11 @@ impl ChatScreen {
                 }),
             )
             .children(self.render_transcript_menu(window, cx))
-            .when(self.pages.before, |container| {
-                container.child(
-                    widgets::secondary_button("history-older")
-                        .mx_6()
-                        .my_1()
-                        .text_xs()
-                        .child(gpui::text!(if self.pages.loading {
-                            tr("chat-history-loading")
-                        } else {
-                            tr("chat-history-older")
-                        }))
-                        .on_click(cx.listener(|chat, _, _, cx| chat.load_history_page(true, cx))),
-                )
-            })
+            // A press on the transcript takes over from a glide.
+            .on_mouse_down(
+                gpui::MouseButton::Left,
+                cx.listener(|this, _, _, _| this.cancel_glide()),
+            )
             .child(
                 // The list element does not apply padding itself, so the
                 // gutter lives here. Same column width as the composer. On a
@@ -269,10 +306,14 @@ impl ChatScreen {
                     })
                     .child(
                         // The list's own wheel scrolls it; the pane's must
-                        // not scroll it a second time.
+                        // not scroll it a second time. A wheel takes over
+                        // from a glide.
                         div()
                             .size_full()
-                            .on_scroll(|_, _, cx| cx.stop_propagation())
+                            .on_scroll(cx.listener(|this, _, _, cx| {
+                                this.cancel_glide();
+                                cx.stop_propagation();
+                            }))
                             .child(list),
                     ),
             )
@@ -290,9 +331,8 @@ impl ChatScreen {
                         .on_click(cx.listener(|chat, _, _, cx| chat.load_history_page(false, cx))),
                 )
             })
-            .when(show_jump, |container| {
-                container.child(self.render_jump_to_latest(cx))
-            })
+            .children(date_chip)
+            .children(jump)
             .when(self.pages.live_has_more, |container| {
                 container.child(
                     div()
@@ -336,6 +376,7 @@ impl ChatScreen {
         if delta == px(0.) {
             return;
         }
+        self.cancel_glide();
         // Distances from the top. A list sent to its end holds a scroll
         // top past the last row until its next layout; that reads as more
         // than the range, so clamp to it.
@@ -356,39 +397,6 @@ impl ChatScreen {
         if let Some((start, end)) = self.painted_rows.get() {
             self.transcript_scrolled(start, end, cx);
         }
-    }
-
-    /// Pill over the bottom edge while the view is scrolled up, so a
-    /// reader can return to the newest message with one click.
-    fn render_jump_to_latest(&self, cx: &mut Context<Self>) -> Div {
-        div()
-            .absolute()
-            .bottom_3()
-            .left_0()
-            .right_0()
-            .flex()
-            .justify_center()
-            .child(motion::rise_in(
-                widgets::secondary_button("jump-to-latest")
-                    .py_1p5()
-                    .gap_1()
-                    .shadow_md()
-                    .bg(gpui::rgb(theme::bg_elevated()))
-                    .border_1()
-                    .border_color(gpui::rgb(theme::border()))
-                    .text_xs()
-                    .on_click(cx.listener(|this, _event, _window, cx| {
-                        if this.pages.after {
-                            this.reload_paged_latest(cx);
-                        } else {
-                            this.list_state.scroll_to_end();
-                        }
-                        cx.notify();
-                    }))
-                    .child(icon("chevron-down", px(12.), theme::text_secondary()))
-                    .child(gpui::text!(tr("chat-jump-latest"))),
-                "jump-to-latest-reveal",
-            ))
     }
 
     /// The slot under the transcript: the message being sent with its
@@ -762,7 +770,7 @@ impl RowMotion {
 /// natural height, clipped, so the rows above glide up rather than jump.
 /// Its natural height is measured from the unclipped content each frame,
 /// so a reply streaming in meanwhile still ends at its true height.
-fn grow_in(
+pub(super) fn grow_in(
     row: Div,
     progress: f32,
     grow: Grow,
@@ -937,48 +945,75 @@ fn copy_message_button(
 /// When a message was sent, revealed beside its actions on hover: the
 /// clock for today, otherwise the date too.
 fn timestamp_label(item: &AgentTimelineItem, group: &SharedString, messages: &MessageCache) -> Div {
-    let sent = chrono::DateTime::<chrono::Local>::from(
-        std::time::UNIX_EPOCH + std::time::Duration::from_millis(item.created_ms as u64),
-    );
-    let today = chrono::Local::now().date_naive();
-    let text = messages.computed(
-        "chat-timestamp",
-        &format!("{}:{today}", item.created_ms),
-        || {
-            if sent.date_naive() == today {
-                return sent.format("%H:%M").to_string().into();
-            }
-            let month = tr(match chrono::Datelike::month(&sent) {
-                1 => "chat-month-1",
-                2 => "chat-month-2",
-                3 => "chat-month-3",
-                4 => "chat-month-4",
-                5 => "chat-month-5",
-                6 => "chat-month-6",
-                7 => "chat-month-7",
-                8 => "chat-month-8",
-                9 => "chat-month-9",
-                10 => "chat-month-10",
-                11 => "chat-month-11",
-                12 => "chat-month-12",
-                _ => unreachable!("chrono month"),
-            });
-            messages.get(
-                "chat-message-date",
-                [
-                    ("month", month.to_string().into()),
-                    ("day", chrono::Datelike::day(&sent).into()),
-                    ("time", sent.format("%H:%M").to_string().into()),
-                ],
-            )
-        },
-    );
     div()
         .text_xs()
         .text_color(gpui::rgb(theme::text_faint()))
         .opacity(0.)
         .group_hover(group.clone(), |style| style.opacity(1.))
-        .child(text)
+        .child(when_label(item.created_ms, messages))
+}
+
+/// Height of the space above the thread's first row.
+pub(super) const THREAD_START: Pixels = px(44.);
+
+/// The space above the first row, which the date chip floats over; once
+/// the task's first message is loaded it says when the task began.
+fn render_thread_start(start: Option<SharedString>) -> Div {
+    let rule = || {
+        div()
+            .flex_1()
+            .h(px(1.))
+            .bg(gpui::rgb(theme::border_subtle()))
+    };
+    div()
+        .h(THREAD_START)
+        .flex()
+        .items_center()
+        .gap_3()
+        .text_xs()
+        .text_color(gpui::rgb(theme::text_muted()))
+        .when_some(start, |edge, start| {
+            edge.child(rule())
+                .child(gpui::text!(id = "thread-start", start))
+                .child(rule())
+        })
+}
+
+/// When a row was sent: the time today, the date and time before. The
+/// hover timestamp and the transcript's date chip say it the same way.
+pub(super) fn when_label(created_ms: u128, messages: &MessageCache) -> SharedString {
+    let sent = chrono::DateTime::<chrono::Local>::from(
+        std::time::UNIX_EPOCH + std::time::Duration::from_millis(created_ms as u64),
+    );
+    let today = chrono::Local::now().date_naive();
+    messages.computed("chat-timestamp", &format!("{created_ms}:{today}"), || {
+        if sent.date_naive() == today {
+            return sent.format("%H:%M").to_string().into();
+        }
+        let month = tr(match chrono::Datelike::month(&sent) {
+            1 => "chat-month-1",
+            2 => "chat-month-2",
+            3 => "chat-month-3",
+            4 => "chat-month-4",
+            5 => "chat-month-5",
+            6 => "chat-month-6",
+            7 => "chat-month-7",
+            8 => "chat-month-8",
+            9 => "chat-month-9",
+            10 => "chat-month-10",
+            11 => "chat-month-11",
+            12 => "chat-month-12",
+            _ => unreachable!("chrono month"),
+        });
+        messages.get(
+            "chat-message-date",
+            [
+                ("month", month.to_string().into()),
+                ("day", chrono::Datelike::day(&sent).into()),
+                ("time", sent.format("%H:%M").to_string().into()),
+            ],
+        )
+    })
 }
 
 // Fix both the layout box and the painted image size: max constraints alone
@@ -2337,11 +2372,10 @@ pub(super) fn render_question_card(
     // A row's leading slot: a circle on a single choice, a box on a
     // multi-select. The chevron and the free-form row's pencil share it.
     let lead = || div().flex_none().h(LINE).flex().items_center();
+    // The thread's last row: a wheel over it scrolls the thread like any
+    // other row.
     let mut card = div()
         .debug_selector(|| "question-card".to_string())
-        // Like the composer, the card keeps its own wheel; the space
-        // beside it scrolls the transcript.
-        .on_scroll(|_, _, cx| cx.stop_propagation())
         .my_3()
         .w_full()
         .rounded(theme::RADIUS_MD)

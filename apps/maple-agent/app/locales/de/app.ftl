@@ -1570,11 +1570,20 @@ chat-folder-shown = Angezeigte Ordner: { $path }
 chat-full-output = Vollständige Ausgabe anzeigen
 chat-conversation = Gespräch
 chat-history-loading = Verlauf wird geladen…
-chat-history-older = Ältere Nachrichten laden
 chat-history-newer = Neuere Nachrichten laden
 chat-activity-outside = Weitere laufende Aktivitäten liegen außerhalb dieser Ansicht
 chat-reload-latest = Neuesten Stand laden
 chat-jump-latest = Zum neuesten Eintrag springen
+chat-jump-working = Maple arbeitet
+chat-jump-new = { $count ->
+    [one] neue Nachricht
+   *[other] neue Nachrichten
+}
+chat-jump-new-label = { $count ->
+    [one] { $count } neue Nachricht
+   *[other] { $count } neue Nachrichten
+}
+chat-history-start = Beginn der Aufgabe · { $date }
 chat-image-unavailable = Bild nicht verfügbar
 chat-background = im Hintergrund
 chat-stop = Stoppen
