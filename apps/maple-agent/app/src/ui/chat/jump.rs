@@ -139,21 +139,31 @@ impl Jump {
 
 /// When the chip opens on its own. New replies announce once: after the
 /// chip has said "new messages" and settled, more replies only tick its
-/// count, until the reader has read to the end. Anything else that changes
-/// what Maple is doing or needs announces every time.
+/// count, until the reader has read to the end. "Maple is working" is said
+/// once per run, however often the reader scrolls up during it. What waits
+/// on the reader or went wrong announces every time it turns up.
 #[derive(Debug, Default)]
 pub(super) struct Announcer {
     announced: bool,
     last: Option<Jump>,
+    /// The run "Maple is working" was said for.
+    working_run: Option<String>,
 }
 
 impl Announcer {
-    /// Whether `jump` opens the chip.
-    pub(super) fn update(&mut self, jump: Jump) -> bool {
+    /// Whether `jump` opens the chip; `run` is the run in progress.
+    pub(super) fn update(&mut self, jump: Jump, run: Option<&str>) -> bool {
         let previous = self.last.replace(jump);
         let announce = match jump {
             Jump::Latest => false,
             Jump::New { .. } => !std::mem::replace(&mut self.announced, true),
+            // Latched on the first sight, even when the chip is already
+            // open under the pointer.
+            Jump::Working => {
+                let said = run.is_some() && self.working_run.as_deref() == run;
+                self.working_run = run.map(str::to_owned);
+                !said
+            }
             _ => previous.is_none_or(|previous| !previous.same_news(jump)),
         };
         // Nothing unread is left to have announced.
@@ -163,8 +173,13 @@ impl Announcer {
         announce
     }
 
+    /// The reader caught up, or the button left: what is unread starts
+    /// over, but the run in progress has still been announced.
     pub(super) fn reset(&mut self) {
-        *self = Self::default();
+        *self = Self {
+            working_run: self.working_run.take(),
+            ..Self::default()
+        };
     }
 }
 
@@ -199,6 +214,16 @@ pub(super) struct TailCard {
     heights: std::rc::Rc<std::cell::RefCell<std::collections::HashMap<String, Pixels>>>,
 }
 
+/// What the jump button says, kept while its news and the language stay.
+#[derive(Clone)]
+struct JumpText {
+    jump: Jump,
+    locale: fluent_templates::LanguageIdentifier,
+    words: SharedString,
+    label: SharedString,
+    count: SharedString,
+}
+
 /// Everything the floating controls remember between frames.
 pub(super) struct Floating {
     /// Replies that arrived while the reader was scrolled up.
@@ -219,6 +244,7 @@ pub(super) struct Floating {
     /// The open chip's measured words and badge, kept while they read the
     /// same: (words, count, rem size) and their widths.
     widths: Option<(SharedString, SharedString, Pixels, Pixels, Pixels)>,
+    text: Option<JumpText>,
     close_task: Option<gpui::Task<()>>,
     hover_task: Option<gpui::Task<()>>,
     shown: Tween,
@@ -258,6 +284,7 @@ impl Default for Floating {
             focused: false,
             focus: None,
             widths: None,
+            text: None,
             close_task: None,
             hover_task: None,
             shown: Tween::new(0.),
@@ -368,8 +395,26 @@ enum Mark {
     Fail,
 }
 
-fn mark(id: &'static str, state: Mark, size: Pixels) -> Div {
-    let layer = |name: &'static str, this: Mark| {
+/// The element ids of one mark's layers: arrow, running, you, fail, and
+/// the running dot's loop.
+type MarkIds = [&'static str; 5];
+const COMPACT_IDS: MarkIds = [
+    "jump-compact-arrow",
+    "jump-compact-running",
+    "jump-compact-you",
+    "jump-compact-fail",
+    "jump-compact-breath",
+];
+const LEAD_IDS: MarkIds = [
+    "jump-lead-arrow",
+    "jump-lead-running",
+    "jump-lead-you",
+    "jump-lead-fail",
+    "jump-lead-breath",
+];
+
+fn mark(ids: MarkIds, state: Mark, size: Pixels) -> Div {
+    let layer = |id: &'static str, this: Mark| {
         let glyph = move || -> AnyElement {
             match this {
                 Mark::Arrow => icon("arrow-down", size, theme::text_secondary()).into_any_element(),
@@ -378,7 +423,7 @@ fn mark(id: &'static str, state: Mark, size: Pixels) -> Div {
                 }
                 Mark::Fail => icon("circle-alert", size, theme::status_error()).into_any_element(),
                 Mark::Running => motion::ticker(
-                    SharedString::from(format!("{id}-breath")),
+                    SharedString::new_static(ids[4]),
                     motion::RUNNING_BREATH,
                     |phase| {
                         let grey = gpui::rgb(theme::sidebar_running());
@@ -403,7 +448,7 @@ fn mark(id: &'static str, state: Mark, size: Pixels) -> Div {
             }
         };
         motion::animated(
-            SharedString::from(format!("{id}-{name}")),
+            SharedString::new_static(id),
             if state == this { 1. } else { 0. },
             motion::TOGGLE,
             move |shown| {
@@ -426,10 +471,10 @@ fn mark(id: &'static str, state: Mark, size: Pixels) -> Div {
         .relative()
         .flex_none()
         .size(size)
-        .child(layer("arrow", Mark::Arrow))
-        .child(layer("running", Mark::Running))
-        .child(layer("you", Mark::You))
-        .child(layer("fail", Mark::Fail))
+        .child(layer(ids[0], Mark::Arrow))
+        .child(layer(ids[1], Mark::Running))
+        .child(layer(ids[2], Mark::You))
+        .child(layer(ids[3], Mark::Fail))
 }
 
 impl ChatScreen {
@@ -1006,28 +1051,12 @@ impl ChatScreen {
             self.floating.focused = focused;
             self.peek_changed(cx);
         }
-        // Words: the open chip's lead says the count, so they drop it.
-        let words: SharedString = match jump {
-            Jump::Latest => tr("chat-jump-latest"),
-            Jump::Working => tr("chat-jump-working"),
-            Jump::New { count, .. } => self
-                .messages
-                .get("chat-jump-new", [("count", (count as i64).into())]),
-            Jump::Question => tr("chat-notification-question"),
-            Jump::Permission => tr("chat-notification-permission"),
-            Jump::Failed => tr("chat-task-failed"),
-        };
-        let label: SharedString = match jump {
-            Jump::New { count, .. } => self
-                .messages
-                .get("chat-jump-new-label", [("count", (count as i64).into())]),
-            _ => words.clone(),
-        };
-        let count: SharedString = match jump.count() {
-            Some(count) if count > 99 => "99+".into(),
-            Some(count) => count.to_string().into(),
-            None => "".into(),
-        };
+        let JumpText {
+            words,
+            label,
+            count,
+            ..
+        } = self.jump_text(jump);
         let rem = window.rem_size();
         let (word_width, badge_width) = match &self.floating.widths {
             Some((cached_words, cached_count, cached_rem, word_width, badge_width))
@@ -1209,7 +1238,7 @@ impl ChatScreen {
                     .items_center()
                     .justify_center()
                     .opacity(mark_shown)
-                    .child(mark("jump-compact", compact, px(16.))),
+                    .child(mark(COMPACT_IDS, compact, px(16.))),
             )
             .child(
                 div()
@@ -1231,7 +1260,7 @@ impl ChatScreen {
                         // The badge rides over this space.
                         div().flex_none().w(badge_width).h(BADGE)
                     } else {
-                        mark("jump-lead", lead_mark, MARK)
+                        mark(LEAD_IDS, lead_mark, MARK)
                     })
                     .child(word_text),
             )
@@ -1295,10 +1324,59 @@ impl ChatScreen {
         )
     }
 
+    /// What the button says for `jump`, built when it changes rather than
+    /// every frame.
+    fn jump_text(&mut self, jump: Jump) -> JumpText {
+        let locale = crate::ui::i18n::current_locale();
+        if let Some(text) = &self.floating.text
+            && text.jump == jump
+            && text.locale == locale
+        {
+            return text.clone();
+        }
+        let n = jump.count().unwrap_or(0);
+        // Words: the open chip's lead says the count, so they drop it.
+        let words: SharedString = match jump {
+            Jump::Latest => tr("chat-jump-latest"),
+            Jump::Working => tr("chat-jump-working"),
+            Jump::New { .. } => {
+                crate::ui::i18n::tr_args("chat-jump-new", [("count", (n as i64).into())])
+            }
+            Jump::Question => tr("chat-notification-question"),
+            Jump::Permission => tr("chat-notification-permission"),
+            Jump::Failed => tr("chat-task-failed"),
+        };
+        let label: SharedString = match jump {
+            Jump::New { .. } => {
+                crate::ui::i18n::tr_args("chat-jump-new-label", [("count", (n as i64).into())])
+            }
+            _ => words.clone(),
+        };
+        let count: SharedString = match jump.count() {
+            Some(count) if count > 99 => "99+".into(),
+            Some(count) => count.to_string().into(),
+            None => "".into(),
+        };
+        let text = JumpText {
+            jump,
+            locale,
+            words,
+            label,
+            count,
+        };
+        self.floating.text = Some(text.clone());
+        text
+    }
+
     /// The button's news changed: open it to say so, or tick its count.
     fn jump_changed(&mut self, previous: Option<Jump>, jump: Jump, cx: &mut Context<Self>) {
         let now = motion::now();
-        let announce = self.floating.announcer.update(jump);
+        let run = self
+            .selected_session
+            .as_ref()
+            .and_then(|session| self.active_runs.get(session))
+            .map(String::as_str);
+        let announce = self.floating.announcer.update(jump, run);
         if let (Some(before), Some(after)) = (previous.and_then(Jump::count), jump.count())
             && before != after
         {
@@ -1330,25 +1408,28 @@ mod tests {
             count,
             running: false,
         };
-        assert!(!announcer.update(Jump::Latest));
-        assert!(announcer.update(new(1)), "the first reply announces");
+        assert!(!announcer.update(Jump::Latest, None));
+        assert!(announcer.update(new(1), None), "the first reply announces");
         assert!(
-            !announcer.update(new(2)),
+            !announcer.update(new(2), None),
             "a second reply only ticks the count"
         );
-        assert!(!announcer.update(new(12)));
+        assert!(!announcer.update(new(12), None));
         // The run ending with replies still unread is not news either.
-        assert!(!announcer.update(Jump::New {
-            count: 12,
-            running: true
-        }));
+        assert!(!announcer.update(
+            Jump::New {
+                count: 12,
+                running: true
+            },
+            Some("r1")
+        ));
         // A question is different news, and so is a failure.
-        assert!(announcer.update(Jump::Question));
+        assert!(announcer.update(Jump::Question, Some("r1")));
         assert!(
-            !announcer.update(new(13)),
+            !announcer.update(new(13), None),
             "back to replies, already announced"
         );
-        assert!(announcer.update(Jump::Failed));
+        assert!(announcer.update(Jump::Failed, None));
     }
 
     #[test]
@@ -1358,14 +1439,29 @@ mod tests {
             count: 1,
             running: true,
         };
-        assert!(announcer.update(Jump::Working));
-        assert!(announcer.update(new));
+        assert!(announcer.update(Jump::Working, Some("r1")));
+        assert!(announcer.update(new, Some("r1")));
         // Read to the end: the next reply announces again.
         announcer.reset();
-        assert!(announcer.update(new));
-        // A run starting with nothing unread re-arms it too.
-        assert!(announcer.update(Jump::Working));
-        assert!(announcer.update(new));
+        assert!(announcer.update(new, Some("r1")));
+        // The next run starting with nothing unread re-arms it too.
+        assert!(announcer.update(Jump::Working, Some("r2")));
+        assert!(announcer.update(new, Some("r2")));
+    }
+
+    #[test]
+    fn maple_working_is_said_once_per_run() {
+        let mut announcer = Announcer::default();
+        assert!(announcer.update(Jump::Working, Some("r1")));
+        // A question in the same run, answered: back to working, unsaid.
+        assert!(announcer.update(Jump::Question, Some("r1")));
+        assert!(!announcer.update(Jump::Working, Some("r1")));
+        // Scrolling to the end and back up during the run says nothing new.
+        announcer.reset();
+        assert!(!announcer.update(Jump::Working, Some("r1")));
+        // The run ends; the next one is news.
+        assert!(!announcer.update(Jump::Latest, None));
+        assert!(announcer.update(Jump::Working, Some("r2")));
     }
 
     #[test]

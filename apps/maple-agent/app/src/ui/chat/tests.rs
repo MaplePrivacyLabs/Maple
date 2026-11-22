@@ -12651,6 +12651,40 @@ mod state_tests {
         chat.update(cx, |chat, _| assert_eq!(chat.floating.unseen, 0));
     }
 
+    /// "Maple is working" is said once per run: reading to the end and
+    /// scrolling back up during the same run leaves the button closed.
+    #[gpui::test]
+    fn test_maple_working_is_said_once_per_run(cx: &mut TestAppContext) {
+        let (chat, cx) = chat_window(cx, |chat, _cx| {
+            chat.sidebar_collapsed = true;
+            chat.replace_timeline(long_timeline());
+            chat.selected_session = Some("s1".to_string());
+            chat.active_runs
+                .insert("s1".to_string(), "run-1".to_string());
+        });
+        cx.update(|_, app| app.set_reduce_motion(true));
+        wheel_at(cx, 600., 200., wheel_pixels(3000.));
+        redraw_chat(&chat, cx);
+        chat.update(cx, |chat, _| {
+            assert_eq!(chat.jump_state(), crate::ui::chat::jump::Jump::Working);
+            assert!(chat.floating.is_open(), "the run is announced");
+        });
+        cx.executor()
+            .advance_clock(std::time::Duration::from_millis(3000));
+        redraw_chat(&chat, cx);
+        chat.update(cx, |chat, _| assert!(!chat.floating.is_open()));
+        chat.update(cx, |chat, _| chat.list_state.scroll_to_end());
+        redraw_chat(&chat, cx);
+        redraw_chat(&chat, cx);
+        assert!(cx.debug_bounds("jump-to-latest").is_none());
+        wheel_at(cx, 600., 200., wheel_pixels(3000.));
+        redraw_chat(&chat, cx);
+        chat.update(cx, |chat, _| {
+            assert_eq!(chat.jump_state(), crate::ui::chat::jump::Jump::Working);
+            assert!(!chat.floating.is_open(), "the same run is not news again");
+        });
+    }
+
     /// Clicking the button sends it away from under the pointer, which
     /// gets no hover-out for it: the next announcement still settles.
     #[gpui::test]
