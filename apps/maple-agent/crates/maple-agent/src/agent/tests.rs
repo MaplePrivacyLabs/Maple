@@ -460,6 +460,83 @@ async fn a_task_runs_saves_and_comes_back_after_a_restart() {
     );
 }
 
+#[tokio::test]
+async fn a_loaded_task_breaks_down_its_context_and_where_it_compacts() {
+    let mut harness = Harness::new().await;
+    std::fs::write(harness.project.path().join("notes.txt"), "Buy milk.\n").unwrap();
+    harness.faux.push_message(vec![
+        AssistantContent::text("Reading them."),
+        faux_tool_call("read", json!({"path": "notes.txt"})),
+    ]);
+    harness.faux.push_text("They say to buy milk.");
+    let task = harness.create_task().await;
+    assert_eq!(
+        harness
+            .handle
+            .session_context_breakdown(&task)
+            .await
+            .unwrap(),
+        None,
+        "a new task holds nothing yet"
+    );
+    let mut run = harness.send(&task, "What do my notes say?").await;
+    assert_eq!(finished(&mut run).await, AgentRunTerminal::Completed);
+
+    let breakdown = harness
+        .handle
+        .session_context_breakdown(&task)
+        .await
+        .unwrap()
+        .expect("the loaded task holds its turn");
+    // The prompt and the tools as the last request declared them, once.
+    let sent = harness.faux.requests().pop().unwrap();
+    let declared = pi_ai::transcript::current_system_message(&sent.context.messages).unwrap();
+    assert!(!declared.tools_added.is_empty());
+    assert_eq!(
+        breakdown.instructions,
+        pi_ai::estimate_message_tokens(&pi_ai::Message::System(declared))
+    );
+    assert!(breakdown.messages > 0 && breakdown.tool_results > 0);
+    assert_eq!((breakdown.summary, breakdown.images), (0, 0));
+    // Where the session's own compaction check starts.
+    let session = harness.runtime().await.loaded_session(&task).await.unwrap();
+    let model = session.model().unwrap();
+    let reserve = session
+        .settings()
+        .compaction
+        .for_model(Some(&model))
+        .reserve_tokens;
+    assert!(model.context_window > reserve);
+    assert_eq!(breakdown.compact_at, Some(model.context_window - reserve));
+    session.set_auto_compaction_enabled(false);
+    let off = harness
+        .handle
+        .session_context_breakdown(&task)
+        .await
+        .unwrap();
+    assert_eq!(off.map(|off| off.compact_at), Some(None));
+
+    // A task the runtime has not loaded has none: an unknown one, or any
+    // after a restart.
+    assert_eq!(
+        harness
+            .handle
+            .session_context_breakdown("0195f3a0-0000-7000-8000-000000000001")
+            .await
+            .unwrap(),
+        None
+    );
+    harness.restart().await;
+    assert_eq!(
+        harness
+            .handle
+            .session_context_breakdown(&task)
+            .await
+            .unwrap(),
+        None
+    );
+}
+
 #[cfg(unix)]
 #[tokio::test]
 async fn bash_runs_commands_in_the_task_folder() {

@@ -301,6 +301,12 @@ both itself and the page asks for the remote computer to be updated; its tasks
 keep the tools they have. The host needs the same account and pairing
 authority for these calls as for listing and switching integrations, and the
 controller rechecks it after this discovery.
+Reading what fills a task's context window, for the composer's context card,
+requires `context_breakdown_v1`. Agent 0.0.25 and earlier cannot decode the
+call, so a controller refuses it itself with a coded refusal, which the viewer
+reads as no breakdown; the context meter's own call needs no capability. The
+host answers only for a task it has loaded, with the meter's account authority,
+and the controller rechecks account and grant after this discovery.
 
 Four pre-admission handshakes and eight paired control connections have capacity
 separate from local IPC. Each control connection bounds ordinary calls and keeps

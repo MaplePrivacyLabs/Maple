@@ -3537,6 +3537,25 @@ impl LocalBackend {
         Ok(tokens.map(|tokens| (i64::try_from(tokens).unwrap_or(i64::MAX), limit)))
     }
 
+    /// What fills a task's context window, by category, and where it
+    /// compacts itself, for the composer's context card. The card scales
+    /// the estimates to `context_usage`'s count. `None` while the task is
+    /// not loaded or holds nothing yet.
+    pub async fn context_breakdown(
+        &self,
+        user_id: &str,
+        session_id: &str,
+    ) -> Result<Option<maple_agent::agent::AgentContextBreakdown>, String> {
+        if self.account_scope(user_id).is_none() {
+            return Ok(None);
+        }
+        self.service
+            .handle_for_user(user_id)
+            .await?
+            .session_context_breakdown(session_id)
+            .await
+    }
+
     /// Deliver the user's answer to an ask_user question. Returns false
     /// when no question was pending.
     pub async fn answer_question(
@@ -4170,6 +4189,79 @@ mod tests {
         assert_eq!(list().await.unwrap(), changed);
         backend.persisted_auth.forget_owner();
         refused_alike(&backend, "fixture-user").await;
+    }
+
+    /// A paired viewer's context breakdown request reaches the host's tasks
+    /// with the context meter's authority, and reads none, not an error,
+    /// for a task the host has not loaded.
+    #[tokio::test]
+    async fn a_remote_context_breakdown_is_read_with_the_meters_authority() {
+        use serde_json::{Value, json};
+        /// Dispatch a command as it travels on the wire.
+        async fn dispatch(
+            backend: &LocalBackend,
+            method: &str,
+            params: Value,
+        ) -> Result<Value, HostFailure> {
+            let command: crate::remote::wire::Command = serde_json::from_value(json!({
+                "id": 1,
+                "method": method,
+                "send_id": null,
+                "params": params
+            }))
+            .unwrap();
+            super::super::dispatch_remote_inner_presented(
+                backend,
+                crate::host::protocol::Request {
+                    id: command.id,
+                    method: command.method.name(),
+                    params: command.params,
+                    send_id: None,
+                },
+            )
+            .await
+        }
+        const TASK: &str = "0195f3a0-0000-7000-8000-000000000001";
+        let root = tempfile::tempdir().unwrap();
+        let backend = LocalBackend::isolated_for_test(root.path());
+        assert!(backend.persisted_auth.claim_and_persist(&auth_snapshot(
+            "fixture-user",
+            "fixture-session",
+            1,
+            "fixture-token"
+        )));
+        let breakdown = |user: &str| json!([user, TASK]);
+        assert_eq!(
+            dispatch(&backend, "context_breakdown", breakdown("fixture-user"))
+                .await
+                .unwrap(),
+            Value::Null
+        );
+        // It takes exactly an account and a task.
+        for params in [json!(["fixture-user"]), json!(["fixture-user", TASK, null])] {
+            let failure = dispatch(&backend, "context_breakdown", params)
+                .await
+                .unwrap_err();
+            assert_eq!(failure.code, "request-parameters");
+        }
+        // Another account is refused as the meter refuses it, and so is
+        // the host's own account once it has signed out.
+        for (user, signed_out) in [("other-user", false), ("fixture-user", true)] {
+            if signed_out {
+                backend.persisted_auth.forget_owner();
+            }
+            let refused = dispatch(&backend, "context_breakdown", breakdown(user))
+                .await
+                .unwrap_err();
+            assert_eq!(refused.code, "deletion-account-changed", "{user}");
+            assert_eq!(
+                dispatch(&backend, "context_usage", json!([user, TASK, null]))
+                    .await
+                    .unwrap_err(),
+                refused,
+                "{user}"
+            );
+        }
     }
 
     #[tokio::test]

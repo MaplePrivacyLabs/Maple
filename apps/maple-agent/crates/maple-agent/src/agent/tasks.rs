@@ -21,9 +21,10 @@ use super::runtime::AgentRuntime;
 use super::store::{TaskKind, TaskRow};
 use super::timeline::{MAX_AGENT_SESSION_TITLE_CHARS, merge_into};
 use super::{
-    AgentCreateSessionRequest, AgentRenameSessionRequest, AgentRuntimeHandle, AgentServiceEvent,
-    AgentSessionDetail, AgentSessionSummary, AgentSetSessionPermissionModeRequest,
-    AgentSetSessionWebRequest, AgentTaskState, emit_agent_event,
+    AgentContextBreakdown, AgentCreateSessionRequest, AgentRenameSessionRequest,
+    AgentRuntimeHandle, AgentServiceEvent, AgentSessionDetail, AgentSessionSummary,
+    AgentSetSessionPermissionModeRequest, AgentSetSessionWebRequest, AgentTaskState,
+    emit_agent_event,
 };
 use crate::maple_api::MapleApiSession;
 
@@ -591,6 +592,28 @@ impl AgentRuntimeHandle {
         tokio::task::spawn_blocking(move || store.context_tokens(&id))
             .await
             .map_err(|error| format!("Failed to read the Agent task: {error}"))?
+    }
+
+    /// What fills a loaded task's model context, by category, and where
+    /// the task compacts itself. `None` while the task is not loaded or
+    /// holds nothing yet; this reads only the loaded session, never the
+    /// store. The parts are estimates, so they need not add up to
+    /// [`Self::session_context_tokens`].
+    pub async fn session_context_breakdown(
+        &self,
+        session_id: &str,
+    ) -> Result<Option<AgentContextBreakdown>, String> {
+        let Some(runtime) = self.current_runtime().await? else {
+            return Ok(None);
+        };
+        let Some(session) = runtime.loaded_session(session_id).await else {
+            return Ok(None);
+        };
+        Ok(AgentContextBreakdown::of_session(
+            &session.messages(),
+            session.model().as_ref(),
+            &session.settings().compaction,
+        ))
     }
 
     /// The task's current title, or `None` when it does not exist.
