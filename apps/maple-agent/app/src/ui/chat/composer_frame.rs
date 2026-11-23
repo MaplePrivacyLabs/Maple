@@ -622,7 +622,7 @@ impl ChatScreen {
         self.context_limit > 0 && self.ledger_context_tokens > 0 && !self.compacting()
     }
 
-    fn context_used(&self) -> f32 {
+    pub(super) fn context_used(&self) -> f32 {
         if self.context_limit <= 0 {
             return 0.;
         }

@@ -3518,17 +3518,25 @@ impl ChatScreen {
         let backend = self.backend.clone();
         let user_id = self.user_id.clone();
         let model = self.selected_model.clone();
+        let requested = session_id.clone();
         self.call(
             async move {
                 backend
-                    .context_usage(&user_id, &session_id, model.as_deref())
+                    .context_usage(&user_id, &requested, model.as_deref())
                     .await
             },
             cx,
-            |this, result, cx| match result {
-                Ok(Some((tokens, limit))) => this.apply_context_usage(tokens, limit, cx),
-                Ok(None) => this.apply_context_usage(0, 0, cx),
-                Err(_) => {}
+            move |this, result, cx| {
+                // The answer is for the task that asked; another one on
+                // screen by now reads its own.
+                if !this.is_selected(&session_id) {
+                    return;
+                }
+                match result {
+                    Ok(Some((tokens, limit))) => this.apply_context_usage(tokens, limit, cx),
+                    Ok(None) => this.apply_context_usage(0, 0, cx),
+                    Err(_) => {}
+                }
             },
         );
         // The open card's parts follow the total as it moves.
@@ -3681,8 +3689,14 @@ impl ChatScreen {
 
     fn apply_context_usage(&mut self, tokens: i64, limit: i64, cx: &mut Context<Self>) {
         if (self.ledger_context_tokens, self.context_limit) != (tokens, limit) {
+            let hidden = self.ledger_context_tokens <= 0 || self.context_limit <= 0;
             self.ledger_context_tokens = tokens;
             self.context_limit = limit;
+            if hidden {
+                // A bar that was not showing, as on opening a task, arrives
+                // at its share; only a share that changes on screen moves.
+                self.context_fill = motion::Tween::new(self.context_used());
+            }
             cx.notify();
         }
     }
@@ -3819,6 +3833,8 @@ impl ChatScreen {
         // Another task's context is its own. Compactions are kept by task,
         // so one under way still shows on coming back.
         self.frame_on_landing = false;
+        self.ledger_context_tokens = 0;
+        self.context_limit = 0;
         self.context_breakdown = None;
         self.context_breakdown_later = false;
         self.context_hover = None;
@@ -3923,7 +3939,12 @@ impl ChatScreen {
         }
         self.set_queue(Vec::new());
         self.permission_mode = session.permission_mode;
+        let model = self.selected_model.clone();
         self.apply_session_model(&session, cx);
+        if changed && self.selected_model == model {
+            // Another task's context; a model change has already asked.
+            self.refresh_context_usage(cx);
+        }
         self.replace_timeline(timeline);
         self.load_attachment_images(cx);
         self.refresh_subagents(cx);

@@ -8468,9 +8468,6 @@ mod state_tests {
         assert!(cx.debug_bounds("mcp-Mcp-server-00").is_some());
     }
 
-    /// The context bar shows once the task has used some of its window:
-    /// quiet below 75%, then Compact beside it while no turn runs. It
-    /// steps aside while the task compacts.
     /// The strip's controls are tab stops: Space or Enter on one opens its
     /// menu, as a press does, without typing into the draft.
     #[gpui::test]
@@ -8521,6 +8518,30 @@ mod state_tests {
         }
     }
 
+    /// Opening a task shows its own share of the window, never the last
+    /// task's, also when both use the model already in the composer. The
+    /// bar arrives at that share instead of sweeping from the last task's.
+    #[gpui::test]
+    fn opening_a_task_reads_its_own_context(cx: &mut TestAppContext) {
+        let screen = screen(cx);
+        screen.update(cx, |this, cx| {
+            this.set_active_session(summary("a", "A"), Vec::new(), HashMap::new(), cx);
+            this.apply_context_usage(40_000, 100_000, cx);
+            assert!(this.context_shown());
+            this.set_active_session(summary("b", "B"), Vec::new(), HashMap::new(), cx);
+            assert!(!this.context_shown(), "A's share is not B's");
+            // B's bar arrives at B's share rather than sweeping from A's.
+            this.apply_context_usage(30_000, 100_000, cx);
+            let (fill, moving) = this
+                .context_fill
+                .step(0.3, motion::PANEL, motion::now(), false);
+            assert!(!moving && (fill - 0.3).abs() < 1e-6, "{fill}");
+        });
+    }
+
+    /// The context bar shows once the task has used some of its window:
+    /// quiet below 75%, then Compact beside it while no turn runs. It
+    /// steps aside while the task compacts.
     #[gpui::test]
     fn the_context_bar_offers_compact_near_the_limit(cx: &mut TestAppContext) {
         cx.update(|cx| cx.set_reduce_motion(true));
