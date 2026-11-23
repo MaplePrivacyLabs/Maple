@@ -239,8 +239,33 @@ tokens! {
     permission_border: 0x784a38, 0xffbaa2;
 
     /// Panel docked inside the composer (the out-of-usage notice): half a
-    /// step above the composer's well.
+    /// step above the composer's well. In a conversation it also fills the
+    /// frame around the composer.
     bg_composer_tray: 0x222228, 0xf7f7f9;
+    /// The hairline around a conversation's composer frame: quieter than
+    /// `border` on dark, where the tray already sets the frame apart.
+    composer_frame_border: 0x2c2c34, 0xe8e8ed;
+    /// The composer's border while it holds focus: Maple coral, a step
+    /// deeper on white so the line still reads.
+    composer_focus: 0xff9771, 0xf67d57;
+    /// The context bar: its track, and its fill while the window has room.
+    /// Grey until the window nears its limit, when status colors take over.
+    meter_track: 0x3a3a44, 0xe3e3e9;
+    meter_quiet: 0x8b8c99, 0xa1a1aa;
+    /// What fills the context window, one tone per part, in the context
+    /// card's bar and legend. The conversation reads strongest; the fixed
+    /// instructions and the summary sit back; images take the Bark tone.
+    context_messages: 0xd1d2dc, 0x3f3f46;
+    context_tool_results: 0x9c9dab, 0x7c7c85;
+    context_instructions: 0x686977, 0xb4b4bd;
+    context_summary: 0x7d7e8c, 0xa6a6ae;
+    context_images: 0xc29a8d, 0x9e7469;
+    /// The free part of the context card's bar, and the mark where the
+    /// task compacts on its own.
+    context_free: 0x32323a, 0xececf1;
+    context_tick: 0x9c9dab, 0x71717a;
+    /// A firmer hairline for a hovered well, such as the attach drop zone.
+    border_strong: 0x4a4a56, 0xd1d2dc;
 
     user_bubble_border: 0x3a3a44, 0xe8e8ed;
 

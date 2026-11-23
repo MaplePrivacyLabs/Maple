@@ -1400,6 +1400,50 @@ chat-scratch-switched-computers = Mensaje no enviado: cambiaste de computadora. 
 chat-no-integrations = No hay integraciones disponibles para esta tarea.
 chat-setup-integrations = Configura en Configuración → Integraciones
 chat-manage-integrations = Administrar integraciones…
+# $count is the number of integrations turned on for the task. Shown beside a
+# puzzle icon in the composer; as it changes only the number should change.
+chat-integrations-on = { $count ->
+    [0] Sin integraciones
+    [one] { $count } integración
+   *[other] { $count } integraciones
+}
+# $names is the comma-separated list of integrations turned on for the task.
+chat-integrations-on-tooltip = Activas en esta tarea: { $names }
+chat-integrations-turn-on = Activa integraciones para esta tarea
+chat-integrations-for-task = Integraciones para esta tarea
+chat-integrations-summary-none = Ninguna
+# $count is the number of integrations turned on, beside "Integrations" in the + menu.
+chat-integrations-summary-on = { $count ->
+    [one] { $count } activa
+   *[other] { $count } activas
+}
+chat-add = Permisos, integraciones y archivos
+chat-attach-drop-hint = O suéltalos en cualquier parte del cuadro
+chat-attach-choose = Elige archivos o imágenes
+chat-attach-drop = Suelta para adjuntar
+chat-attach-or-drop = o suéltalos aquí
+chat-attach-paste = Pega una imagen con
+chat-queue = En cola
+chat-listening = Escuchando
+chat-transcribing = Transcribiendo…
+chat-context-title = Contexto usado
+# $percent is how much of the model's context window the task uses, such as 48%.
+chat-context-used = Contexto usado: { $percent }. Mostrar detalles
+# $percent is how much of the model's context window the task uses, such as 92%.
+chat-context-near-limit = { $percent } del contexto usado, cerca del límite. Mostrar detalles
+# $used and $limit are token counts written short, such as 48.6k and 131k.
+chat-context-of = { $used } de { $limit } tokens
+# $percent is the share of the context window at which the task compacts itself, such as 88%.
+chat-context-compacts-at = Se compacta automáticamente al { $percent }
+chat-context-compacts-next = Se compactará después de este paso
+chat-context-compacts-off = La compactación automática está desactivada
+chat-context-instructions = Instrucciones y herramientas
+chat-context-summary = Resumen
+chat-context-messages = Mensajes
+chat-context-tool-results = Resultados de herramientas
+chat-context-images = Imágenes
+chat-compact = Compactar
+chat-compact-after-turn = Disponible cuando termine este turno
 chat-side-thread-hint = Hilo secundario; los mensajes permanecen aquí hasta que presiones Esc
 chat-thinking = Pensando…
 chat-external-agents = Agentes externos
@@ -1424,10 +1468,6 @@ chat-model-new = Nuevo
 chat-model-new-row = { $model }, nuevo
 chat-model-popular = Popular
 chat-model-popular-row = { $model }, Popular
-chat-integration-count = { $count ->
-    [one] 1 integración
-   *[other] { $count } integraciones
-}
 chat-agents-running = { $count } en ejecución
 chat-folder-choose = Elige una carpeta de proyecto
 chat-folder-parent = Volver a la carpeta superior
@@ -1593,6 +1633,8 @@ chat-runtime-start-failed = No se pudo iniciar el agente: { $message }
 chat-host-reload-failed = No se pudo recargar el estado del host: { $error }. Vuelve a abrir Maple antes de enviar.
 chat-thinking-save-failed = No se pudo guardar el nivel de razonamiento: { $error }
 chat-composer-placeholder = Pídele a Maple que trabaje en esta carpeta…
+chat-composer-placeholder-reply = Responde a Maple…
+chat-composer-placeholder-queue = Pon en cola otro mensaje…
 chat-side-thread-placeholder = Haz una pregunta aparte (Esc para salir del hilo)…
 chat-queue-edit-placeholder = Edita el mensaje en cola y envíalo para conservar su lugar. Esc descarta los cambios.
 chat-status-completed = completado

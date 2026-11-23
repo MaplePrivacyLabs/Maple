@@ -2011,7 +2011,7 @@ mod state_tests {
         assert_eq!(cx.debug_bounds("host-reconnecting"), None);
         // A saved task's top bar names neither the task nor its folder: the
         // sidebar lists it under its project.
-        for absent in ["header-title", "root-picker", "project-branch"] {
+        for absent in ["header-title", "root-picker"] {
             assert_eq!(cx.debug_bounds(absent), None, "{absent}");
         }
         let slot = cx.debug_bounds("navigation-loading-slot").unwrap();
@@ -5121,11 +5121,11 @@ mod state_tests {
         assert_eq!(rows[0].name, "docs");
     }
 
-    /// The integrations chip on the draft goes through the same handler
+    /// The integrations token on the draft goes through the same handler
     /// as on a task. It shows the rows a new task would get, read from the
-    /// configuration; a switch flipped there survives the chip being
+    /// configuration; a switch flipped there survives the menu being
     /// opened again and decides the create request; and the Send button
-    /// starts the create with that request. Before, opening the chip
+    /// starts the create with that request. Before, opening the menu
     /// emptied the rows ("No integrations available for this task").
     #[gpui::test]
     fn test_integrations_chip_lists_and_toggles_the_drafts_rows(cx: &mut TestAppContext) {
@@ -5178,12 +5178,20 @@ mod state_tests {
             );
         });
 
-        // Opening the chip again reloads the rows; the switch stays off.
+        // With none on, the token leaves once its menu closes, and the `+`
+        // menu's Integrations page takes over. Opening it reloads the rows;
+        // the switch stays off.
         chat.update(cx, |this, cx| {
             this.popup.close(cx);
             this.draft_mcp_defaults = None;
         });
-        press(cx, "mcp-menu");
+        cx.run_until_parked();
+        assert!(
+            cx.debug_bounds("mcp-menu").is_none(),
+            "no token with none on"
+        );
+        press(cx, "composer-add");
+        press(cx, "add-integrations");
         wait_until(&chat, cx, "the rows reloading", |this| {
             this.draft_mcp_defaults.is_some()
         });
@@ -5915,102 +5923,6 @@ mod state_tests {
         });
         cx.run_until_parked();
         assert!(screen.update(cx, |this, _| this.project_folder_dialog.is_none()));
-    }
-
-    #[test]
-    fn test_git_branch_reads_head_and_worktree_pointer() {
-        struct TempDir(std::path::PathBuf);
-        impl Drop for TempDir {
-            fn drop(&mut self) {
-                let _ = std::fs::remove_dir_all(&self.0);
-            }
-        }
-        let branch = |root: &std::path::Path| git_dir(root).as_deref().and_then(git_branch);
-        let guard =
-            TempDir(std::env::temp_dir().join(format!("maple-branch-{}", std::process::id())));
-        let dir = &guard.0;
-        let repo = dir.join("repo");
-        std::fs::create_dir_all(repo.join(".git")).unwrap();
-        std::fs::write(repo.join(".git/HEAD"), "ref: refs/heads/feature/x\n").unwrap();
-        assert_eq!(branch(&repo).as_deref(), Some("feature/x"));
-
-        std::fs::write(repo.join(".git/HEAD"), "0123456789abcdef\n").unwrap();
-        assert_eq!(branch(&repo).as_deref(), Some("0123456"));
-
-        std::fs::write(repo.join(".git/HEAD"), "garbage-héad\n").unwrap();
-        assert_eq!(branch(&repo), None);
-        std::fs::write(repo.join(".git/HEAD"), "0123456789abcdef\n").unwrap();
-
-        let worktree = dir.join("wt");
-        std::fs::create_dir_all(&worktree).unwrap();
-        std::fs::write(
-            worktree.join(".git"),
-            format!("gitdir: {}\n", repo.join(".git").display()),
-        )
-        .unwrap();
-        assert_eq!(branch(&worktree).as_deref(), Some("0123456"));
-
-        let plain = dir.join("plain");
-        std::fs::create_dir_all(&plain).unwrap();
-        assert_eq!(branch(&plain), None);
-    }
-
-    /// Issue #945: the branch watcher must ignore access-only HEAD events
-    /// (open, read, close). The branch read they trigger emits those same
-    /// events again under Linux inotify, looping at ~200% CPU while idle.
-    #[test]
-    fn test_head_watch_ignores_read_access_events() {
-        use notify::EventKind;
-        use notify::event::{
-            AccessKind, AccessMode, CreateKind, DataChange, Flag, MetadataKind, ModifyKind,
-            RemoveKind, RenameMode,
-        };
-
-        let head = std::path::PathBuf::from("/repo/.git/HEAD");
-        let event = |kind: EventKind| notify::Event::new(kind).add_path(head.clone());
-
-        // The read side of the loop, as emitted by Linux inotify.
-        for kind in [
-            EventKind::Access(AccessKind::Open(AccessMode::Read)),
-            EventKind::Access(AccessKind::Read),
-            EventKind::Access(AccessKind::Close(AccessMode::Read)),
-            EventKind::Access(AccessKind::Close(AccessMode::Write)),
-            EventKind::Access(AccessKind::Any),
-            EventKind::Access(AccessKind::Other),
-        ] {
-            assert!(!head_change_event(&event(kind)), "access {kind:?}");
-        }
-
-        // Real changes still refresh the label: in-place write, create,
-        // remove, and the rename pair of an atomic replacement, plus the
-        // unclassified kinds imprecise backends emit for real changes.
-        for kind in [
-            EventKind::Modify(ModifyKind::Data(DataChange::Content)),
-            EventKind::Modify(ModifyKind::Any),
-            EventKind::Modify(ModifyKind::Metadata(MetadataKind::Any)),
-            EventKind::Modify(ModifyKind::Name(RenameMode::From)),
-            EventKind::Modify(ModifyKind::Name(RenameMode::To)),
-            EventKind::Modify(ModifyKind::Name(RenameMode::Both)),
-            EventKind::Modify(ModifyKind::Name(RenameMode::Any)),
-            EventKind::Create(CreateKind::File),
-            EventKind::Create(CreateKind::Any),
-            EventKind::Remove(RemoveKind::File),
-            EventKind::Remove(RemoveKind::Any),
-            EventKind::Any,
-            EventKind::Other,
-        ] {
-            assert!(head_change_event(&event(kind)), "change {kind:?}");
-        }
-
-        // Unrelated paths never refresh, even with a change kind.
-        let unrelated =
-            notify::Event::new(EventKind::Modify(ModifyKind::Data(DataChange::Content)))
-                .add_path(std::path::PathBuf::from("/repo/.git/index"));
-        assert!(!head_change_event(&unrelated));
-
-        // A required rescan refreshes even without a HEAD path.
-        let event = notify::Event::new(EventKind::Other).set_flag(Flag::Rescan);
-        assert!(head_change_event(&event));
     }
 
     #[gpui::test]
@@ -8052,6 +7964,654 @@ mod state_tests {
         assert!(cx.debug_bounds("retry-local-store-persistence").is_none());
     }
 
+    /// A new task's row is `+` and the model, and grows a token only for a
+    /// choice that differs from the default: integrations once any is on,
+    /// and the permission mode once it is not Auto. A conversation keeps
+    /// both in its frame's strip, whatever they are, and its `+` attaches.
+    #[gpui::test]
+    fn new_task_tokens_show_only_what_differs_from_the_default(cx: &mut TestAppContext) {
+        cx.update(|cx| cx.set_reduce_motion(true));
+        let (chat, cx) = chat_window(cx, |this, _| {
+            this.selected_session = None;
+            this.models = vec!["voxtral-small-24b".to_string()];
+            this.permission_mode = AgentPermissionMode::Auto;
+            this.mcp_enabled_count = 0;
+        });
+        let shown = |cx: &mut gpui::VisualTestContext, id: &'static str| {
+            cx.update(|window, _| window.refresh());
+            cx.run_until_parked();
+            cx.debug_bounds(id).is_some()
+        };
+        assert!(shown(cx, "composer-add"));
+        assert!(shown(cx, "model-picker"));
+        assert!(
+            !shown(cx, "mcp-menu"),
+            "no integrations token at the default"
+        );
+        assert!(!shown(cx, "permission-mode-menu"), "no mode token at Auto");
+        assert!(!shown(cx, "composer-strip"), "a new task has no frame");
+
+        chat.update(cx, |this, cx| {
+            this.mcp_enabled_count = 2;
+            this.permission_mode = AgentPermissionMode::ReadOnly;
+            cx.notify();
+        });
+        assert!(shown(cx, "mcp-menu"));
+        assert!(shown(cx, "permission-mode-menu"));
+        let model = cx.debug_bounds("model-picker").unwrap();
+        let mode = cx.debug_bounds("permission-mode-menu").unwrap();
+        assert!(mode.left() > model.right(), "the tokens follow the model");
+
+        chat.update(cx, |this, cx| {
+            this.selected_session = Some("s1".into());
+            this.replace_timeline(vec![user_item("u1", "hi")]);
+            this.mcp_enabled_count = 0;
+            this.permission_mode = AgentPermissionMode::Auto;
+            cx.notify();
+        });
+        assert!(shown(cx, "composer-strip"));
+        let strip = cx.debug_bounds("composer-strip").unwrap();
+        let composer = cx.debug_bounds("composer-box").unwrap();
+        for id in ["mcp-menu", "permission-mode-menu"] {
+            let control = cx
+                .debug_bounds(id)
+                .unwrap_or_else(|| panic!("{id} in the strip"));
+            assert!(strip.contains(&control.center()), "{id} sits in the strip");
+        }
+        assert!(
+            strip.bottom() <= composer.top(),
+            "the strip is above the box"
+        );
+        press(cx, "composer-add");
+        assert_eq!(open_menu(&chat, cx), "Attach");
+        assert!(cx.debug_bounds("attach-well").is_some());
+    }
+
+    /// The placeholder follows the task: a new task asks for work, a task
+    /// between turns takes a reply, and a running one queues a follow-up.
+    /// A side question keeps its own.
+    #[gpui::test]
+    fn the_placeholder_follows_the_task(cx: &mut TestAppContext) {
+        cx.update(|cx| cx.set_reduce_motion(true));
+        let (chat, cx) = chat_window(cx, |this, _| {
+            this.selected_session = None;
+        });
+        let placeholder = |chat: &Entity<ChatScreen>, cx: &mut gpui::VisualTestContext| {
+            cx.update(|window, _| window.refresh());
+            cx.run_until_parked();
+            chat.read_with(cx, |this, _| this.composer_placeholder)
+        };
+        assert_eq!(placeholder(&chat, cx), COMPOSER_PLACEHOLDER);
+        chat.update(cx, |this, cx| {
+            this.selected_session = Some("s1".into());
+            this.replace_timeline(vec![user_item("u1", "hi")]);
+            cx.notify();
+        });
+        assert_eq!(placeholder(&chat, cx), REPLY_PLACEHOLDER);
+        chat.update(cx, |this, cx| {
+            this.active_runs.insert("s1".into(), "r1".into());
+            cx.notify();
+        });
+        assert_eq!(placeholder(&chat, cx), QUEUE_PLACEHOLDER);
+        chat.update(cx, |this, cx| {
+            this.active_runs.clear();
+            cx.notify();
+        });
+        assert_eq!(placeholder(&chat, cx), REPLY_PLACEHOLDER);
+        let key = chat.read_with(cx, |this, cx| {
+            this.composer.clone().unwrap().read(cx).placeholder_key()
+        });
+        assert_eq!(key, Some(REPLY_PLACEHOLDER), "the field shows it");
+    }
+
+    /// The round button does one job at a time: dictate an empty draft,
+    /// send a written one (with the mic beside it), stop a run, and queue
+    /// a draft written during one.
+    #[gpui::test]
+    fn the_round_button_follows_the_draft_and_the_run(cx: &mut TestAppContext) {
+        cx.update(|cx| cx.set_reduce_motion(true));
+        let (chat, cx) = chat_window(cx, |this, _| {
+            this.replace_timeline(vec![user_item("u1", "hi")]);
+            this.audio_caps.transcription = true;
+        });
+        let looks = |cx: &mut gpui::VisualTestContext| {
+            cx.update(|window, _| window.refresh());
+            cx.run_until_parked();
+            ["record-voice", "send-message", "stop-run"]
+                .into_iter()
+                .filter(|id| cx.debug_bounds(id).is_some())
+                .collect::<Vec<_>>()
+        };
+        let write = |chat: &Entity<ChatScreen>, cx: &mut gpui::VisualTestContext, text: &str| {
+            chat.update(cx, |this, cx| {
+                this.composer
+                    .clone()
+                    .unwrap()
+                    .update(cx, |input, cx| input.set_text(text, cx));
+            });
+        };
+        assert_eq!(looks(cx), ["record-voice"], "an empty draft dictates");
+        assert!(cx.debug_bounds("record-voice-aside").is_some());
+        write(&chat, cx, "hello");
+        assert_eq!(looks(cx), ["send-message"], "a draft sends");
+        let aside = cx
+            .debug_bounds("record-voice-aside")
+            .expect("the mic aside");
+        assert!(
+            aside.size.width > px(20.),
+            "the mic waits beside Send: {aside:?}"
+        );
+        write(&chat, cx, "");
+        chat.update(cx, |this, cx| {
+            this.active_runs.insert("s1".into(), "r1".into());
+            cx.notify();
+        });
+        assert_eq!(looks(cx), ["stop-run"], "a run stops");
+        write(&chat, cx, "next");
+        assert_eq!(looks(cx), ["send-message"], "a draft during a run queues");
+        let queue = cx.debug_bounds("send-message").unwrap();
+        assert!(
+            queue.size.width > px(48.),
+            "it widens to say Queue: {queue:?}"
+        );
+    }
+
+    /// Steps an open permissions menu from Full access, whose short note
+    /// is one line, down to Read only: every mode's note must be as tall as
+    /// that one line, and the menu must keep one width throughout.
+    fn assert_mode_notes_fit(
+        chat: &gpui::Entity<ChatScreen>,
+        cx: &mut gpui::VisualTestContext,
+        menu: &'static str,
+    ) {
+        chat.update(cx, |this, cx| {
+            this.permission_mode = AgentPermissionMode::FullAccess;
+            cx.notify();
+        });
+        cx.run_until_parked();
+        let mut seen = Vec::new();
+        for (step, mode) in [
+            AgentPermissionMode::FullAccess,
+            AgentPermissionMode::Auto,
+            AgentPermissionMode::ReadOnly,
+        ]
+        .into_iter()
+        .enumerate()
+        {
+            if step > 0 {
+                cx.simulate_keystrokes("left");
+            }
+            cx.update(|window, _| window.refresh());
+            cx.run_until_parked();
+            assert_eq!(chat.read_with(cx, |this, _| this.permission_mode), mode);
+            let note = cx.debug_bounds("mode-note").expect("the mode's note");
+            let panel = cx
+                .debug_bounds(menu)
+                .unwrap_or_else(|| panic!("{menu} open"));
+            seen.push((mode, note.size.height, panel.size.width));
+        }
+        let (_, line, width) = seen[0];
+        for (mode, height, panel_width) in &seen {
+            assert_eq!(
+                *height, line,
+                "{mode:?}'s note on one line in {menu}: {seen:?}"
+            );
+            assert_eq!(
+                *panel_width, width,
+                "{mode:?} keeps {menu}'s width: {seen:?}"
+            );
+        }
+    }
+
+    /// Each permission mode's note sits on one line in a new task's `+`
+    /// menu, and picking a mode never resizes the menu. At the old fixed
+    /// width, longer notes, such as German's and Spanish's, wrapped and
+    /// could leave a word alone on the second line.
+    #[gpui::test]
+    fn each_permission_note_sits_on_one_line(cx: &mut TestAppContext) {
+        cx.update(|cx| cx.set_reduce_motion(true));
+        let backend = backend_with_mcp_servers(cx, "mode-notes", vec![mcp_server("docs", false)]);
+        let (chat, cx) = chat_window_in(cx, backend, |this, cx| {
+            this.project_root = Some(mcp_project("mode-notes"));
+            this.selected_session = None;
+            this.new_session(cx);
+        });
+        wait_until(&chat, cx, "the draft's rows loading", |this| {
+            this.draft_mcp_defaults.is_some()
+        });
+        press(cx, "composer-add");
+        assert_eq!(open_menu(&chat, cx), "Add");
+        assert_mode_notes_fit(&chat, cx, "add-menu");
+    }
+
+    /// The strip's Permissions popover holds the same switch, and its
+    /// notes sit on one line too.
+    #[gpui::test]
+    fn the_strip_permission_notes_sit_on_one_line(cx: &mut TestAppContext) {
+        cx.update(|cx| cx.set_reduce_motion(true));
+        let (chat, cx) = chat_window(cx, |this, _| {
+            this.replace_timeline(vec![user_item("u1", "hi")]);
+        });
+        cx.run_until_parked();
+        press(cx, "permission-mode-menu");
+        assert_mode_notes_fit(&chat, cx, "mode-menu");
+    }
+
+    /// A note too long for a narrow window wraps without leaving its last
+    /// word alone on a line: its last two words wrap together.
+    #[gpui::test]
+    fn a_wrapping_note_keeps_its_last_two_words_together(cx: &mut TestAppContext) {
+        let cx = cx.add_empty_window();
+        cx.update(|window, _| {
+            let font_size = gpui::px(12.);
+            let shape = |text: &gpui::SharedString, wrap: Option<gpui::Pixels>| {
+                let run = gpui::TextRun {
+                    len: text.len(),
+                    font: gpui::font(crate::assets::FONT_BODY),
+                    color: gpui::black(),
+                    background_color: None,
+                    underline: None,
+                    strikethrough: None,
+                };
+                window
+                    .text_system()
+                    .shape_text(text.clone(), font_size, &[run], wrap, None)
+                    .expect("shaped")
+            };
+            // The text of the last line, wrapped at `wrap`.
+            let last_line = |text: &gpui::SharedString, wrap: gpui::Pixels| {
+                let lines = shape(text, Some(wrap));
+                let line = &lines[0];
+                let start = line.wrap_boundaries.last().map_or(0, |boundary| {
+                    line.unwrapped_layout.runs[boundary.run_ix].glyphs[boundary.glyph_ix].index
+                });
+                line.text[start..].trim().to_string()
+            };
+            let plain =
+                gpui::SharedString::from("Reads and builds run. Maple asks before anything else.");
+            let held = crate::ui::typography::keep_last_words_together(&plain);
+            // A pixel too narrow for the whole note, as the wrapper measures it.
+            let narrow = crate::ui::typography::single_line_width(
+                window,
+                &plain,
+                crate::assets::FONT_BODY,
+                font_size,
+            ) - gpui::px(1.);
+            assert_eq!(
+                last_line(&plain, narrow),
+                "else.",
+                "the orphan this prevents"
+            );
+            assert_eq!(last_line(&held, narrow), "anything\u{a0}else.");
+        });
+    }
+
+    /// A new task's `+` turns to a page of integrations and back, and the
+    /// permission mode it holds steps with the arrow keys; the mode token
+    /// beside the model follows.
+    #[gpui::test]
+    fn the_add_menu_holds_permissions_integrations_and_attach(cx: &mut TestAppContext) {
+        cx.update(|cx| cx.set_reduce_motion(true));
+        let backend = backend_with_mcp_servers(cx, "add-menu", vec![mcp_server("docs", false)]);
+        let (chat, cx) = chat_window_in(cx, backend, |this, cx| {
+            this.project_root = Some(mcp_project("add-menu"));
+            this.selected_session = None;
+            this.new_session(cx);
+        });
+        wait_until(&chat, cx, "the draft's rows loading", |this| {
+            this.draft_mcp_defaults.is_some()
+        });
+        chat.update(cx, |this, cx| {
+            this.permission_mode = AgentPermissionMode::Auto;
+            cx.notify();
+        });
+        press(cx, "composer-add");
+        assert_eq!(open_menu(&chat, cx), "Add");
+        for id in [
+            "mode-readOnly",
+            "mode-auto",
+            "mode-fullAccess",
+            "add-integrations",
+            "add-attach",
+        ] {
+            assert!(cx.debug_bounds(id).is_some(), "{id} in the + menu");
+        }
+        cx.simulate_keystrokes("right");
+        assert_eq!(
+            chat.read_with(cx, |this, _| this.permission_mode),
+            AgentPermissionMode::FullAccess
+        );
+        cx.simulate_keystrokes("left left");
+        assert_eq!(
+            chat.read_with(cx, |this, _| this.permission_mode),
+            AgentPermissionMode::ReadOnly
+        );
+        press(cx, "add-integrations");
+        wait_until(&chat, cx, "the rows reloading", |this| {
+            this.draft_mcp_defaults.is_some()
+        });
+        cx.update(|window, _| window.refresh());
+        cx.run_until_parked();
+        assert!(
+            cx.debug_bounds("add-back").is_some(),
+            "the Integrations page"
+        );
+        assert!(cx.debug_bounds("mcp-Mcp-docs").is_some(), "its rows");
+        assert!(
+            cx.debug_bounds("mcp-manage").is_some(),
+            "Manage stays under the list"
+        );
+        assert!(cx.debug_bounds("add-attach").is_none());
+        press(cx, "mcp-Mcp-docs");
+        assert_eq!(chat.read_with(cx, |this, _| this.mcp_enabled_count), 1);
+        press(cx, "add-back");
+        assert!(
+            cx.debug_bounds("add-attach").is_some(),
+            "back on the first page"
+        );
+        cx.simulate_keystrokes("escape");
+        cx.run_until_parked();
+        for id in ["mcp-menu", "permission-mode-menu"] {
+            assert!(cx.debug_bounds(id).is_some(), "{id} shows beside the model");
+        }
+        chat.update(cx, |this, cx| {
+            this.set_permission_mode(AgentPermissionMode::Auto, cx)
+        });
+    }
+
+    /// A long Integrations page in the `+` menu scrolls its rows and keeps
+    /// Manage in view under them, inside the menu.
+    #[gpui::test]
+    fn a_long_integrations_page_keeps_manage_in_view(cx: &mut TestAppContext) {
+        cx.update(|cx| cx.set_reduce_motion(true));
+        let servers = (0..24)
+            .map(|index| mcp_server(&format!("server-{index:02}"), false))
+            .collect();
+        let backend = backend_with_mcp_servers(cx, "long-add-menu", servers);
+        let (chat, cx) = chat_window_in(cx, backend, |this, cx| {
+            this.project_root = Some(mcp_project("long-add-menu"));
+            this.selected_session = None;
+            this.new_session(cx);
+        });
+        wait_until(&chat, cx, "the draft's rows loading", |this| {
+            this.draft_mcp_defaults.is_some()
+        });
+        press(cx, "composer-add");
+        press(cx, "add-integrations");
+        wait_until(&chat, cx, "the rows reloading", |this| {
+            this.draft_mcp_defaults.is_some()
+        });
+        cx.update(|window, _| window.refresh());
+        cx.run_until_parked();
+        let menu = cx.debug_bounds("add-menu").expect("the + menu");
+        let manage = cx.debug_bounds("mcp-manage").expect("Manage");
+        assert!(
+            menu.top() <= manage.top() && manage.bottom() <= menu.bottom(),
+            "Manage stays inside the menu: {menu:?} {manage:?}"
+        );
+        assert!(
+            menu.size.height <= px(460.),
+            "the menu keeps its cap: {menu:?}"
+        );
+        assert!(cx.debug_bounds("mcp-Mcp-server-00").is_some());
+    }
+
+    /// The context bar shows once the task has used some of its window:
+    /// quiet below 75%, then Compact beside it while no turn runs. It
+    /// steps aside while the task compacts.
+    #[gpui::test]
+    fn the_context_bar_offers_compact_near_the_limit(cx: &mut TestAppContext) {
+        cx.update(|cx| cx.set_reduce_motion(true));
+        let (chat, cx) = chat_window(cx, |this, _| {
+            this.replace_timeline(vec![user_item("u1", "hi")]);
+            this.context_limit = 100_000;
+            this.ledger_context_tokens = 40_000;
+        });
+        let shown = |cx: &mut gpui::VisualTestContext, id: &'static str| {
+            cx.update(|window, _| window.refresh());
+            cx.run_until_parked();
+            cx.debug_bounds(id).is_some()
+        };
+        assert!(shown(cx, "context-bar"));
+        assert!(!shown(cx, "compact-now"), "no Compact with room to spare");
+        chat.update(cx, |this, cx| {
+            this.ledger_context_tokens = 80_000;
+            cx.notify();
+        });
+        assert!(shown(cx, "compact-now"), "Compact from 75%");
+        chat.update(cx, |this, cx| {
+            this.active_runs.insert("s1".into(), "r1".into());
+            cx.notify();
+        });
+        assert!(!shown(cx, "compact-now"), "not while a turn runs");
+        chat.update(cx, |this, cx| {
+            this.active_runs.clear();
+            this.compacting = true;
+            cx.notify();
+        });
+        assert!(!shown(cx, "context-bar"));
+        assert!(shown(cx, "composer-compacting"));
+        chat.update(cx, |this, cx| {
+            this.compacting = false;
+            cx.notify();
+        });
+        press(cx, "context-bar");
+        assert_eq!(open_menu(&chat, cx), "Context");
+        assert!(cx.debug_bounds("context-card").is_some());
+        let card = cx.debug_bounds("context-card").unwrap();
+        let bar = cx.debug_bounds("context-bar").unwrap();
+        assert!(card.bottom() <= bar.top(), "the card opens above its bar");
+        assert!(
+            (card.right() - bar.right()).abs() < px(24.),
+            "and ends near its right edge: {card:?} {bar:?}"
+        );
+    }
+
+    /// The context card lists what fills the window, in the window's
+    /// order, once the host says; until then, or from a host too old to
+    /// say, it shows the total alone and claims nothing about compaction.
+    #[gpui::test]
+    fn the_context_card_lists_what_the_host_reports(cx: &mut TestAppContext) {
+        cx.update(|cx| cx.set_reduce_motion(true));
+        let (chat, cx) = chat_window(cx, |this, _| {
+            this.replace_timeline(vec![user_item("u1", "hi")]);
+            this.context_limit = 100_000;
+            this.ledger_context_tokens = 40_000;
+        });
+        // The fixture's host has not loaded the task, so it has no
+        // breakdown to give.
+        press(cx, "context-bar");
+        cx.update(|window, _| window.refresh());
+        cx.run_until_parked();
+        assert!(cx.debug_bounds("context-card").is_some(), "the card opens");
+        assert!(cx.debug_bounds("context-legend-Messages").is_none());
+        assert!(
+            cx.debug_bounds("context-compact-note").is_none(),
+            "no claim about compaction without the host's answer"
+        );
+
+        chat.update(cx, |this, cx| {
+            this.context_breakdown = Some(maple_agent::agent::AgentContextBreakdown {
+                instructions: 8_000,
+                summary: 0,
+                messages: 20_000,
+                tool_results: 12_000,
+                images: 0,
+                compact_at: Some(83_616),
+            });
+            cx.notify();
+        });
+        cx.update(|window, _| window.refresh());
+        cx.run_until_parked();
+        let rows: Vec<_> = [
+            "context-legend-Instructions",
+            "context-legend-Messages",
+            "context-legend-ToolResults",
+        ]
+        .into_iter()
+        .map(|id| {
+            cx.debug_bounds(id)
+                .unwrap_or_else(|| panic!("{id} in the legend"))
+        })
+        .collect();
+        assert!(rows[0].top() < rows[1].top() && rows[1].top() < rows[2].top());
+        for empty in ["context-legend-Summary", "context-legend-Images"] {
+            assert!(cx.debug_bounds(empty).is_none(), "no row for {empty}");
+        }
+        assert!(cx.debug_bounds("context-compact-note").is_some());
+    }
+
+    /// In a narrow window the strip's controls keep to their own room: the
+    /// integrations and the mode never run under the context bar or
+    /// Compact, and nothing leaves the strip. The words come back with the
+    /// room, and new words are measured again.
+    #[gpui::test]
+    fn the_strip_fits_a_narrow_window(cx: &mut TestAppContext) {
+        cx.update(|cx| cx.set_reduce_motion(true));
+        let (chat, cx) = chat_window(cx, |this, _| {
+            this.replace_timeline(vec![user_item("u1", "hi")]);
+            this.context_limit = 100_000;
+            this.ledger_context_tokens = 80_000;
+            this.permission_mode = AgentPermissionMode::FullAccess;
+            this.set_session_mcp(vec![
+                draft_mcp_row(mcp_server("docs", true)),
+                draft_mcp_row(mcp_server("search", true)),
+            ]);
+        });
+        // The integrations' and the mode's widths, once the strip settles on
+        // the frames it asks for itself.
+        let settle = |cx: &mut gpui::VisualTestContext, at: &str| {
+            cx.run_until_parked();
+            for _ in 0..4 {
+                cx.update(|window, cx| window.simulate_next_frame(cx));
+                cx.run_until_parked();
+            }
+            let strip = cx.debug_bounds("composer-strip").expect("the strip");
+            let bounds: Vec<_> = [
+                "mcp-menu",
+                "permission-mode-menu",
+                "context-bar",
+                "compact-now",
+            ]
+            .into_iter()
+            .map(|id| {
+                let bounds = cx.debug_bounds(id).unwrap_or_else(|| panic!("{id} {at}"));
+                (id, bounds)
+            })
+            .collect();
+            for (index, (id, control)) in bounds.iter().enumerate() {
+                assert!(
+                    control.left() >= strip.left() && control.right() <= strip.right(),
+                    "{id} leaves the strip {at}: {control:?} {strip:?}"
+                );
+                for (other_id, other) in &bounds[index + 1..] {
+                    assert!(
+                        !control.intersects(other),
+                        "{id} overlaps {other_id} {at}: {control:?} {other:?}"
+                    );
+                }
+            }
+            (bounds[0].1.size.width, bounds[1].1.size.width)
+        };
+        let mut widths = Vec::new();
+        for width in [1280., 760., 600., 1280.] {
+            cx.simulate_resize(gpui::size(px(width), px(800.)));
+            widths.push(settle(cx, &format!("at {width}px")));
+        }
+        let [wide, narrower, narrowest, wide_again] = widths[..] else {
+            unreachable!()
+        };
+        assert!(
+            narrower.0 < wide.0,
+            "the integrations drop their word first: {widths:?}"
+        );
+        assert_eq!(
+            narrower.1, wide.1,
+            "while the mode keeps its name: {widths:?}"
+        );
+        assert!(
+            narrowest.1 < wide.1,
+            "until it has no room for it: {widths:?}"
+        );
+        assert_eq!(wide_again, wide, "the words come back with the room");
+
+        // New words in a narrow strip are measured afresh.
+        cx.simulate_resize(gpui::size(px(600.), px(800.)));
+        settle(cx, "at 600px");
+        for mode in [
+            AgentPermissionMode::ReadOnly,
+            AgentPermissionMode::FullAccess,
+        ] {
+            chat.update(cx, |this, cx| {
+                this.permission_mode = mode;
+                cx.notify();
+            });
+            settle(cx, &format!("in {mode:?} at 600px"));
+        }
+    }
+
+    /// Compact that fails puts the strip back and says why, rather than
+    /// leaving the spinner turning.
+    #[gpui::test]
+    fn a_failed_compaction_puts_the_strip_back(cx: &mut TestAppContext) {
+        cx.update(|cx| cx.set_reduce_motion(true));
+        let (chat, cx) = chat_window(cx, |this, _| {
+            this.selected_session = Some("missing".into());
+            this.replace_timeline(vec![user_item("u1", "hi")]);
+            this.context_limit = 100_000;
+            this.ledger_context_tokens = 80_000;
+        });
+        // The fixture's host has no such task and refuses at once.
+        press(cx, "compact-now");
+        wait_until(&chat, cx, "the host's refusal", |this| !this.compacting);
+        cx.update(|window, _| window.refresh());
+        cx.run_until_parked();
+        assert!(cx.debug_bounds("composer-compacting").is_none());
+        assert!(cx.debug_bounds("context-bar").is_some(), "the bar is back");
+        let notice = chat.read_with(cx, |this, _| this.notice.clone());
+        assert!(
+            matches!(
+                notice,
+                Some(crate::ui::i18n::UiText::Context {
+                    key: "chat-compaction-failed",
+                    ..
+                })
+            ),
+            "and says it failed: {notice:?}"
+        );
+    }
+
+    /// With nothing drafted, the round button dictates when it can, and is a
+    /// muted Send that does nothing when it can't.
+    #[gpui::test]
+    fn the_round_button_waits_when_it_cannot_dictate(cx: &mut TestAppContext) {
+        cx.update(|cx| cx.set_reduce_motion(true));
+        let (chat, cx) = chat_window(cx, |this, _| {
+            this.selected_session = None;
+            this.audio_caps.transcription = true;
+        });
+        use crate::ui::chat::composer::PrimaryAction;
+        let action = |chat: &Entity<ChatScreen>, cx: &mut gpui::VisualTestContext| {
+            chat.read_with(cx, |this, _| {
+                this.primary_action(false, false, false, false, false)
+            })
+        };
+        assert_eq!(action(&chat, cx), PrimaryAction::Dictate);
+        chat.update(cx, |this, cx| {
+            this.audio_caps.transcription = false;
+            cx.notify();
+        });
+        assert_eq!(action(&chat, cx), PrimaryAction::Idle);
+        cx.update(|window, _| window.refresh());
+        cx.run_until_parked();
+        press(cx, "send-message");
+        assert!(
+            chat.read_with(cx, |this, _| this.timeline.is_empty()
+                && !this.session_setup_pending),
+            "a muted Send sends nothing"
+        );
+    }
+
     /// The composer offers the model and integration chips; there is no
     /// approval-mode chip because every tool call runs without asking.
     #[gpui::test]
@@ -8139,7 +8699,6 @@ mod state_tests {
             this.selected_session = None;
             this.project_label =
                 "A very long project name that should stay inside the composer context row".into();
-            this.branch_label = Some("(feature/draft-context)".into());
         });
         for has_history in [false, true] {
             for collapsed in [false, true] {
@@ -8158,7 +8717,6 @@ mod state_tests {
                         });
                         cx.run_until_parked();
                         let project = cx.debug_bounds("root-picker").expect("draft project");
-                        let branch = cx.debug_bounds("project-branch").expect("draft branch");
                         let composer = cx.debug_bounds("composer-box").expect("composer");
                         let header = cx.debug_bounds("chat-header").expect("header");
                         assert!(cx.debug_bounds("header-title").is_none());
@@ -8170,8 +8728,6 @@ mod state_tests {
                         assert!(project.bottom() <= composer.top());
                         assert!(composer.top() - project.bottom() <= px(12.));
                         assert!(project.right() <= composer.right());
-                        assert!(branch.right() <= composer.right());
-                        assert!((branch.center().y - project.center().y).abs() <= px(0.5));
                         assert!(composer.size.height > px(0.));
                         if expanded {
                             assert!(
@@ -8203,7 +8759,7 @@ mod state_tests {
         });
         cx.run_until_parked();
         assert!(cx.debug_bounds("composer-box").is_some());
-        for absent in ["root-picker", "project-branch", "header-title"] {
+        for absent in ["root-picker", "header-title"] {
             assert!(cx.debug_bounds(absent).is_none(), "{absent}");
         }
     }
@@ -8300,8 +8856,8 @@ mod state_tests {
             let mut chat = ChatScreen::new_without_start(backend, "user".into(), cx);
             chat.booting = false;
             chat.trust_prompts = false;
-            chat.project_label = "A long project name that must fit beside its branch".into();
-            chat.branch_label = Some("(feature/a-long-branch-name-that-must-also-fit)".into());
+            chat.project_label =
+                "A long project name that must fit in the row above a narrow composer".into();
             chat.sidebar
                 .update(cx, |sidebar, _| sidebar.reset_persisted_for_test());
             chat
@@ -8324,12 +8880,11 @@ mod state_tests {
                     });
                     cx.run_until_parked();
                     let project = cx.debug_bounds("root-picker").expect("project");
-                    let branch = cx.debug_bounds("project-branch").expect("branch");
                     let composer = cx.debug_bounds("composer-box").expect("composer");
                     assert_eq!(project.left(), composer.left());
                     assert!(
-                        project.right() <= composer.right() && branch.right() <= composer.right(),
-                        "history={has_history}, collapsed={collapsed}, expanded={expanded}: project={project:?}, branch={branch:?}, composer={composer:?}"
+                        project.right() <= composer.right(),
+                        "history={has_history}, collapsed={collapsed}, expanded={expanded}: project={project:?}, composer={composer:?}"
                     );
                     assert!(project.bottom() <= composer.top());
                     assert!(composer.top() - project.bottom() <= px(12.));
@@ -8356,7 +8911,6 @@ mod state_tests {
     fn collapsed_sidebar_header_toolbar(cx: &mut TestAppContext) {
         cx.update(|cx| cx.set_reduce_motion(true));
         let (chat, cx) = chat_window(cx, |this, cx| {
-            this.branch_label = Some("(main)".into());
             this.selected_session = Some("s1".into());
             this.sessions = vec![summary("s1", "One")];
             this.sync_sidebar(cx);
@@ -8376,7 +8930,7 @@ mod state_tests {
             let slot = cx
                 .debug_bounds("navigation-loading-slot")
                 .expect("loading slot");
-            for absent in ["header-title", "root-picker", "project-branch"] {
+            for absent in ["header-title", "root-picker"] {
                 assert!(cx.debug_bounds(absent).is_none(), "{absent}");
             }
             assert_eq!(
@@ -8410,7 +8964,7 @@ mod state_tests {
                 assert!(wordmark.right() < expanded.left());
             }
             assert!(cx.debug_bounds("header-new-task").is_none());
-            for absent in ["header-title", "root-picker", "project-branch"] {
+            for absent in ["header-title", "root-picker"] {
                 assert!(cx.debug_bounds(absent).is_none(), "{absent}");
             }
             assert_eq!(
@@ -9079,6 +9633,8 @@ mod state_tests {
             ("menu-session-s1", "Task(s1)"),
             ("model-picker", "Model"),
             ("mcp-menu", "Integrations"),
+            ("permission-mode-menu", "Mode"),
+            ("composer-add", "Attach"),
             ("root-picker", "Project"),
         ] {
             if trigger == "root-picker" {
@@ -12921,6 +13477,8 @@ mod state_tests {
             }
             chat.models = vec!["model-a".to_string(), "model-b".to_string()];
             chat.selected_model = Some("model-b".to_string());
+            // A mode other than Auto puts its token in the row.
+            chat.permission_mode = AgentPermissionMode::ReadOnly;
             chat.set_application_vim_enabled(true, cx);
         });
         let (composer_focus, application_focus) = cx.update(|_window, app| {
@@ -12942,27 +13500,27 @@ mod state_tests {
         };
 
         // Ctrl-W j leaves the composer for its button row, on the first
-        // control, with the keyboard on application Vim's focus proxy.
+        // control, `+`, with the keyboard on application Vim's focus proxy.
         cx.update(|window, app| window.focus(&composer_focus, app));
         cx.simulate_keystrokes("ctrl-w j");
         assert_eq!(
             row(cx),
             (
                 ChatRegion::Controls,
-                Some(ComposerControl::Model),
+                Some(ComposerControl::Add),
                 Some(application_focus.clone())
             )
         );
 
         // A counted `l` walks right, and `h` back.
-        cx.simulate_keystrokes("3 l");
-        assert_eq!(row(cx).1, Some(ComposerControl::Attachments));
-        cx.simulate_keystrokes("h");
+        cx.simulate_keystrokes("2 l");
         assert_eq!(row(cx).1, Some(ComposerControl::Mode));
+        cx.simulate_keystrokes("h");
+        assert_eq!(row(cx).1, Some(ComposerControl::Model));
 
         // Enter opens the model chip's panel; closing it returns to the row
-        // on the same control.
-        cx.simulate_keystrokes("g g enter");
+        // on the same control. `+` opens its menu the same way.
+        cx.simulate_keystrokes("enter");
         cx.update(|_window, app| {
             assert_eq!(chat.read(app).popup.open_key(), Some(&ChatPopup::Model));
         });
@@ -12975,13 +13533,19 @@ mod state_tests {
                 Some(application_focus.clone())
             )
         );
+        cx.simulate_keystrokes("g g enter");
+        cx.update(|_window, app| {
+            assert_eq!(chat.read(app).popup.open_key(), Some(&ChatPopup::Add));
+        });
+        cx.simulate_keystrokes("escape");
+        assert_eq!(row(cx).1, Some(ComposerControl::Add));
 
         // The row remembers its control across a trip to the composer, and
         // the sidebar sends `Ctrl-W l` back to it.
         cx.simulate_keystrokes("G ctrl-w k");
         assert_eq!(row(cx).2, Some(composer_focus.clone()));
         cx.simulate_keystrokes("ctrl-w j");
-        assert_eq!(row(cx).1, Some(ComposerControl::Attachments));
+        assert_eq!(row(cx).1, Some(ComposerControl::Mode));
         cx.simulate_keystrokes("ctrl-w h");
         assert_eq!(row(cx).0, ChatRegion::Sidebar);
         cx.simulate_keystrokes("ctrl-w l");
@@ -12989,7 +13553,7 @@ mod state_tests {
             row(cx),
             (
                 ChatRegion::Controls,
-                Some(ComposerControl::Attachments),
+                Some(ComposerControl::Mode),
                 Some(application_focus)
             )
         );
@@ -13001,6 +13565,9 @@ mod state_tests {
         });
         cx.simulate_keystrokes("G");
         assert_eq!(row(cx).1, Some(ComposerControl::Dictate));
+        chat.update(cx, |this, cx| {
+            this.set_permission_mode(AgentPermissionMode::Auto, cx)
+        });
     }
 
     #[gpui::test]

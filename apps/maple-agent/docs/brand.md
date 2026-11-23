@@ -185,7 +185,13 @@ the dark background.
 | `on_accent` | `#f7f7f9` | same | on primary (stays bright so coral stays readable) |
 | `accent_container`, `permission_fill` | `#ffe8e0` Maple 100 | `#3a2118` / `#2a1a14` | primary container |
 | `accent_ink` | `#d04926` Maple 800 | `#ff9771` Maple 500 | coral icon on a primary container, 3:1 or better |
-| `bg_composer_tray` | `#f7f7f9` Pebble 50 | `#222228` | panel docked inside the composer |
+| `bg_composer_tray` | `#f7f7f9` Pebble 50 | `#222228` | panel docked inside the composer; in a task, the frame around it |
+| `composer_frame_border` | `#e8e8ed` | `#2c2c34` | the hairline around a task's composer frame |
+| `composer_focus` | `#f67d57` Maple 600 | `#ff9771` Maple 500 | the composer's 1 px border while it has focus; the deeper coral keeps the line readable on white |
+| `meter_track`, `meter_quiet` | `#e3e3e9` / `#a1a1aa` | `#3a3a44` / `#8b8c99` | the context bar's track, and its fill while the window has room; `status_warning` from 75%, `status_error` from 90% |
+| `context_messages`, `context_tool_results`, `context_instructions`, `context_summary`, `context_images` | `#3f3f46` / `#7c7c85` / `#b4b4bd` / `#a6a6ae` / `#9e7469` Bark 500 | `#d1d2dc` / `#9c9dab` / `#686977` / `#7d7e8c` / `#c29a8d` Bark 300 | what fills the context window, in the context card: the conversation strongest, fixed instructions and the summary set back |
+| `context_free`, `context_tick` | `#ececf1` / `#71717a` | `#32323a` / `#9c9dab` | the card bar's free part, and the mark where the task compacts by itself |
+| `border_strong` | `#d1d2dc` | `#4a4a56` | a hovered well's hairline, such as the attach drop zone |
 | `bg_default_button`, `text_on_default_button` | `#171717` / `#f7f7f9` | `#e8e8ed` / `#18181c` | `default_button`: the inverted pill, held to 7:1 at rest, hover and press |
 | `link` | `#9e7469` Bark 500 | `#c29a8d` Bark 300 | tertiary |
 | `status_success` | `#7b8f4a` | `#8fa35a` | success |
@@ -288,5 +294,18 @@ it is used up; just short of that it reads 99%.
 ### Spacing
 
 gpui's 4 px helpers cover the kit's 8 and 12 px steps. `theme::SPACE_MD`
-(20 px) is the pill padding. The composer toolbar icons take
-`accent_container` on hover, the kit's primary container.
+(20 px) is the pill padding.
+
+### Composer
+
+A new task's box floats on the page with `+`, the model and one round
+button; a token joins the row only for a choice that differs from the
+default (integrations that are on, a mode other than Auto). In a task the
+box sits in a frame (`bg_composer_tray`, a `composer_frame_border` hairline,
+4 px around the box, radius concentric with it) whose 38 px strip carries
+the integrations, the permission mode, the context bar and Compact, in
+12 px text that only fills under the pointer. Every control's menu opens
+from the control itself. Full access stays `accent_ink` wherever it shows,
+since it runs everything without asking. The context bar stays grey until
+the window nears its limit; the round button's coral gradient is kept for
+Send.

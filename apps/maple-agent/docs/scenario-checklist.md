@@ -32,13 +32,14 @@ stdio MCP server configured in Settings > Integrations.
 | C5 | Voice input | Dictate a message | The transcript of the dictation lands in the composer |
 | C6 | Per-task pickers | Switch the model and an integration on the draft, then send | The created task carries both choices |
 | C7 | Switch models mid-task | In a task with history, pick another model and send; reopen the task after a restart | The reply comes from the new model with the earlier context, the transcript shows "Switched to …", and the task reopens on the new model (**automated**: `a_run_wakes_a_settled_task_and_a_started_task_switches_models`) |
+| C8 | Narrow window | In a task near its context limit with integrations on and Full access, narrow the window with the sidebar open, then widen it | The strip drops the integrations' word, then the percentage, then the mode's name, never overlapping, and they come back as it widens (**automated**: `the_strip_fits_a_narrow_window`) |
 
 ## Slash commands and skills
 
 | # | Scenario | How | Pass when |
 |---|---|---|---|
 | S1 | `/new`, `/pin`, `/model`, `/help` | Run each | Each does what `/help` says |
-| S2 | `/compact` | After a few turns | "Compaction completed." and the context ring drops |
+| S2 | `/compact` | After a few turns | "Compaction completed." and the context bar drops |
 | S3 | Skill command | Run a bundled skill such as `/handoff` | The skill's instructions load and the task follows them |
 | S4 | Project skill behind trust | Open an untrusted project with `.agents/skills` | The trust prompt appears; after trusting, the skill is offered |
 | S5 | Instruction files and system prompt | A project with `AGENTS.md`; a custom system prompt in Settings | Both reach the model (ask it to quote them) |
@@ -105,7 +106,7 @@ stdio MCP server configured in Settings > Integrations.
 |---|---|---|---|
 | D1 | Tool and thinking summaries | Setting on; run a tool | One-line summaries appear and turn off with the setting |
 | D2 | Image descriptions for text models | Attach an image on a text-only model | The description reaches the model |
-| D3 | Context ring and compaction | A long task | The ring fills toward the model's catalog window and the task compacts by itself before it is full; `/compact` empties it |
+| D3 | Context bar and compaction | A long task | The bar fills toward the model's catalog window, turns amber from 75% with Compact beside it and red from 90%; its card shows what fills the window and where the task compacts by itself, and it compacts before it is full; `/compact` empties it |
 | D4 | Plan meter | Settings > Usage on an account without the `usage_page` flag | The plan, percent used and reset date show, nothing else |
 | D9 | Usage history | Settings > Usage on a Pro, Max or Team account with the `usage_page` flag (or `MAPLE_FORCE_FEATURE_FLAGS=usage_page` locally) | The plan card leads, as in D4, with credits used of the allowance and the pace; below it, the range's totals, daily chart, models, apps, months, requests and prices match the web Usage page for the same range; Load more adds requests; switching the range, Show and Split by redraws without a reload |
 | D5 | Notifications | Finish a task and ask a question with the window in the background | Two notifications, none for permissions |

@@ -1,7 +1,7 @@
 # Permission modes
 
-Each task has a mode, set on the composer's chip. It says what the task may do
-without asking.
+Each task has a mode, set from the composer: a new task's `+` menu, or the
+frame around a task's composer. It says what the task may do without asking.
 
 | Mode | Runs without asking | Asks about |
 | --- | --- | --- |
@@ -16,7 +16,7 @@ over ACP, which has no session modes.
 
 Modes work the same on a [paired computer](remote-access.md). The computer that
 runs the task judges its calls with its own account, and the computer you are
-using shows the chip and the requests. Changing a remote task's mode needs that
+using shows the mode and the requests. Changing a remote task's mode needs that
 computer to run a version that offers it; an older one keeps the task's mode
 and asks to be updated. A new task started there opens in the mode that
 computer gave it, with your message kept in the composer, so nothing runs in a

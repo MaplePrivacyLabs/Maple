@@ -52,6 +52,7 @@ assets!(
     "icons/brain.svg",
     "icons/check.svg",
     "icons/chevron-down.svg",
+    "icons/chevron-left.svg",
     "icons/chevron-right.svg",
     "icons/circle-alert.svg",
     // Claude mark (simple-icons, CC0) for the Claude Code integration card.

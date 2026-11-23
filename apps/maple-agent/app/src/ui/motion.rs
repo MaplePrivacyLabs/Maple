@@ -1045,6 +1045,176 @@ impl Element for Unfold {
     }
 }
 
+/// A box that eases to its content's height whenever that height changes,
+/// at [`resize`]'s pace for the distance, such as a menu turning to another
+/// page: whatever sits against its free edge glides instead of jumping. The
+/// content keeps its own size and is clipped while the box catches up.
+/// Nothing animates on mount, and reduced motion follows the content at
+/// once. `id` must be stable across frames.
+pub fn fit_height(id: impl Into<ElementId>, content: impl IntoElement) -> FitHeight {
+    FitHeight {
+        id: id.into(),
+        content: Some(content.into_any_element()),
+    }
+}
+
+pub struct FitHeight {
+    id: ElementId,
+    content: Option<AnyElement>,
+}
+
+// The box's height, and its content's height when last laid out.
+struct Fitted {
+    height: Option<Tween>,
+    natural: std::rc::Rc<std::cell::Cell<Option<Pixels>>>,
+}
+
+impl IntoElement for FitHeight {
+    type Element = Self;
+
+    fn into_element(self) -> Self {
+        self
+    }
+}
+
+impl Element for FitHeight {
+    type RequestLayoutState = AnyElement;
+    type PrepaintState = ();
+
+    fn id(&self) -> Option<ElementId> {
+        Some(self.id.clone())
+    }
+
+    fn source_location(&self) -> Option<&'static core::panic::Location<'static>> {
+        None
+    }
+
+    fn request_layout(
+        &mut self,
+        id: Option<&GlobalElementId>,
+        _inspector_id: Option<&InspectorElementId>,
+        window: &mut Window,
+        cx: &mut App,
+    ) -> (LayoutId, AnyElement) {
+        let now = now();
+        let reduced = cx.reduce_motion();
+        let (height, moving, natural) = window.with_element_state(
+            id.expect("height-fitting content has an id"),
+            |state: Option<Fitted>, _| {
+                let mut state = state.unwrap_or_else(|| Fitted {
+                    height: None,
+                    natural: Default::default(),
+                });
+                let frame = match (state.height.as_mut(), state.natural.get()) {
+                    (Some(height), Some(natural)) => {
+                        let token = resize(natural - px(height.value(now)));
+                        let (value, moving) = height.step(natural.as_f32(), token, now, reduced);
+                        (Some(px(value)), moving)
+                    }
+                    (None, Some(natural)) => {
+                        state.height = Some(Tween::pixels(natural.as_f32()));
+                        (Some(natural), false)
+                    }
+                    (_, None) => (None, false),
+                };
+                ((frame.0, frame.1, state.natural.clone()), state)
+            },
+        );
+        if moving {
+            window.request_animation_frame();
+        }
+        let content = self
+            .content
+            .take()
+            .expect("height-fitting content is laid out once");
+        let measured = natural.clone();
+        let frame = gpui::div()
+            .relative()
+            .on_children_prepainted(move |bounds, _, _| {
+                if let Some(body) = bounds.first() {
+                    measured.set(Some(body.size.height));
+                }
+            });
+        let body = gpui::div().child(content);
+        let mut element = match height {
+            // Laid out at its own height over a box that clips it, so a new
+            // height is known the frame it appears and the box eases there.
+            Some(height) => frame
+                .h(height)
+                .overflow_hidden()
+                .child(body.absolute().top_0().left_0().right_0())
+                .into_any_element(),
+            // The first frame: in the flow, to measure.
+            None => frame.child(body).into_any_element(),
+        };
+        (element.request_layout(window, cx), element)
+    }
+
+    fn prepaint(
+        &mut self,
+        _id: Option<&GlobalElementId>,
+        _inspector_id: Option<&InspectorElementId>,
+        _bounds: Bounds<Pixels>,
+        element: &mut AnyElement,
+        window: &mut Window,
+        cx: &mut App,
+    ) {
+        element.prepaint(window, cx);
+    }
+
+    fn paint(
+        &mut self,
+        _id: Option<&GlobalElementId>,
+        _inspector_id: Option<&InspectorElementId>,
+        _bounds: Bounds<Pixels>,
+        element: &mut AnyElement,
+        _: &mut (),
+        window: &mut Window,
+        cx: &mut App,
+    ) {
+        element.paint(window, cx);
+    }
+}
+
+/// Several icons sharing one `size` slot, the one at `shown` drawn: it
+/// scales up and fades in while the one before it scales down and out,
+/// over [`TOGGLE`], as [`icon_swap`] does for two. For a control whose icon
+/// names one of several states, such as a permission mode.
+pub fn icon_cycle(
+    id: impl Into<ElementId>,
+    shown: usize,
+    icons: &[&'static str],
+    size: Pixels,
+    color: u32,
+) -> gpui::Div {
+    let id = std::sync::Arc::new(id.into());
+    gpui::div()
+        .relative()
+        .flex_none()
+        .size(size)
+        .children(icons.iter().enumerate().map(|(index, &name)| {
+            animated(
+                ElementId::NamedChild(id.clone(), format!("icon-{index}").into()),
+                if index == shown { 1. } else { 0. },
+                TOGGLE,
+                move |on| {
+                    let scale = 0.6 + 0.4 * on;
+                    gpui::div()
+                        .absolute()
+                        .inset_0()
+                        .flex()
+                        .items_center()
+                        .justify_center()
+                        .opacity(on)
+                        .child(super::icons::icon(name, size, color).with_transformation(
+                            gpui::Transformation::scale(gpui::size(scale, scale)),
+                        ))
+                        .into_any_element()
+                },
+            )
+        }))
+}
+
 /// A sine pulse in `[low, high]` offset by `shift` cycles, for dots that
 /// breathe out of step with each other.
 pub fn pulse(phase: f32, shift: f32, low: f32, high: f32) -> f32 {

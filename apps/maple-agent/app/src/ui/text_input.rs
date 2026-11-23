@@ -103,6 +103,9 @@ pub struct TextInput {
     content: SharedString,
     placeholder: SharedString,
     placeholder_key: Option<&'static str>,
+    /// When a translated placeholder last changed to another, so the new
+    /// one fades in rather than swapping at once.
+    placeholder_changed: Option<std::time::Instant>,
     selected_range: Range<usize>,
     selection_reversed: bool,
     /// A soft wrap has two visual caret positions at the same byte offset.
@@ -275,6 +278,7 @@ impl TextInput {
             content: "".into(),
             placeholder_key: None,
             placeholder: SharedString::from(placeholder.to_string()),
+            placeholder_changed: None,
             selected_range: 0..0,
             selection_reversed: false,
             cursor_affinity: CursorAffinity::Upstream,
@@ -548,9 +552,35 @@ impl TextInput {
     }
 
     /// Change a translated placeholder without replacing the draft or selection.
+    /// An empty field shows the new one fading in (TOGGLE), so a task starting
+    /// or ending a turn never makes the field blink.
     pub fn set_placeholder_key(&mut self, key: &'static str, cx: &mut Context<Self>) {
+        if self.placeholder_key == Some(key) {
+            return;
+        }
+        if self.placeholder_key.is_some() && self.content.is_empty() {
+            self.placeholder_changed = Some(super::motion::now());
+        }
         self.placeholder_key = Some(key);
         cx.notify();
+    }
+
+    /// The translated placeholder the field shows when empty.
+    #[cfg(test)]
+    pub fn placeholder_key(&self) -> Option<&'static str> {
+        self.placeholder_key
+    }
+
+    /// How far a changed placeholder has faded in, in `[0, 1]`.
+    fn placeholder_shown(&self, reduced: bool) -> f32 {
+        self.placeholder_changed.map_or(1., |changed| {
+            super::motion::ease_out_cubic(super::motion::progress(
+                changed,
+                super::motion::TOGGLE,
+                super::motion::now(),
+                reduced,
+            ))
+        })
     }
 
     pub fn set_placeholder(&mut self, text: &str, cx: &mut Context<Self>) {
@@ -2962,7 +2992,18 @@ impl Element for TextElement {
         // surrounding element happens to set: an input inside a caption
         // row or an unstyled container still reads in both themes.
         let (display_text, text_color) = if content.is_empty() {
-            (input.placeholder(), theme::placeholder())
+            let shown = input.placeholder_shown(cx.reduce_motion());
+            if shown < 1. {
+                window.request_animation_frame();
+            }
+            let color = theme::placeholder();
+            (
+                input.placeholder(),
+                gpui::Hsla {
+                    a: color.a * shown,
+                    ..color
+                },
+            )
         } else {
             (input.display_text(), rgb(theme::text_primary()).into())
         };

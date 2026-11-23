@@ -40,7 +40,10 @@ impl ChatScreen {
             this.update(cx, |this, cx| {
                 this.recording_starting = false;
                 match result {
-                    Ok(()) => this.recording = true,
+                    Ok(()) => {
+                        this.recording = true;
+                        this.recording_since = Some(crate::ui::motion::now());
+                    }
                     Err(message) => this.notice = Some(message.into()),
                 }
                 cx.notify();
@@ -52,6 +55,7 @@ impl ChatScreen {
 
     fn finish_recording(&mut self, cx: &mut Context<Self>) {
         self.recording = false;
+        self.recording_since = None;
         self.transcribing = true;
         cx.notify();
         let audio = Arc::clone(&self.audio);

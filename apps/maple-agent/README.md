@@ -68,9 +68,12 @@ agent runtime; its desktop Agent page points users to Maple Work.
   for the next launch; only a refusal from the server signs the user out.
 - Agent chat with streaming Markdown, tool calls, agent questions, image
   attachments (picker, paste, or drag and drop), a per-message Copy button,
-  and a context-window indicator.
-- Each task has a permission mode, on the composer's chip: Read only, Auto or
-  Full access. A System One classifier judges each tool call, and what it does
+  and a context-window bar whose card shows what fills the window and where
+  the task compacts itself.
+- Each task has a permission mode: Read only, Auto or Full access. A new
+  task sets it from the composer's `+` menu and shows it beside the model
+  once it is not Auto; a task's composer frame shows it with the
+  integrations that are on and the context bar. A System One classifier judges each tool call, and what it does
   not clear asks the user. See [permission modes](docs/permissions.md).
 - A task can switch models between messages: its model menu offers every
   model, a pick applies from the next message, and the transcript notes the
@@ -136,9 +139,10 @@ agent runtime; its desktop Agent page points users to Maple Work.
   suggestions or to add it to your dictionary.
 - Message queue: Enter during a run queues the message for the next turn,
   Ctrl+Enter (Cmd+Enter) steers it into the current turn. The composer has
-  one button. It is Send, and it becomes Stop while a run is active and the
-  field is empty. Typing or attaching an image turns it back into Send, and
-  that click queues. Queued messages can be sent now, edited in the composer
+  one round button. With an empty field it dictates (or waits, without
+  speech), and it becomes Stop while a run is active. Typing or attaching an
+  image turns it into Send, with the microphone beside it; during a run it
+  becomes Queue. Queued messages can be sent now, edited in the composer
   (the message keeps its place in the queue), or removed.
 - Sidebar search filters tasks and projects by name; Escape clears it.
 - Up and Down in an empty composer recall prompts sent in this window.
@@ -354,9 +358,9 @@ the same selection state.
 
 The preview includes `j/k`, `gg/G`, counts, `Enter`, `h/l`, `y`, `/`, `ga`,
 `[a`/`]a`, `gi`, and `Ctrl-W h/j/k/l`. `Ctrl-W j` from the composer reaches its
-button row, where `h/l` (or `j/k`) and `gg/G` move between the model, thinking,
-integrations, permission mode, attachment, and dictation controls and `Enter`
-presses one; a menu opens on its current choice. `Space s n` starts a task and `Space ,`
+button row, where `h/l` (or `j/k`) and `gg/G` move between `+`, the model,
+integrations, permission mode, context, Compact and dictation controls and
+`Enter` presses one; a menu opens on its current choice. `Space s n` starts a task and `Space ,`
 opens Settings. The Settings page itself is navigable, including its shortcut
 search and editable binding rows. Annotation motions are registered and report
 that no annotation source is available in the current app. A root action
@@ -671,7 +675,7 @@ ignored. See [build profiles](docs/release-profiles.md).
 | `MAPLE_FORCE_FEATURE_FLAGS` | Comma-separated flag keys to turn on without the flag service, such as `usage_page`. | unset |
 | `MAPLE_CLIENT_ID` | OpenSecret client id (UUID). | Maple's id |
 | `MAPLE_MODEL` | Model to select at start. | Runtime default |
-| `MAPLE_CONTEXT_LIMIT` | Context window in tokens, used instead of the model catalog's for compaction and the context ring. | Catalog value |
+| `MAPLE_CONTEXT_LIMIT` | Context window in tokens, used instead of the model catalog's for compaction and the context bar. | Catalog value |
 | `MAPLE_SHELL` | The bash the agent's `bash` tool runs. | `/bin/bash`, else `bash` on PATH (Windows: Git Bash; without it, the `powershell` tool) |
 | `MAPLE_DISABLE_UPDATE_CHECK` | `1` turns Agent update checks off. | unset |
 | `RUST_LOG` | Log filter. | `info` |
