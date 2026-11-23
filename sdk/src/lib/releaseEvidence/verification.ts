@@ -223,7 +223,9 @@ function subjectEntryIsWellFormed(entry: unknown): boolean {
 function parseStatement(payload: Uint8Array): Parsed<Json> {
   let text: string;
   try {
-    text = new TextDecoder("utf-8", { fatal: true }).decode(payload);
+    // A leading byte order mark is kept, so JSON parsing rejects it as the
+    // Rust SDK does, instead of being silently dropped.
+    text = new TextDecoder("utf-8", { fatal: true, ignoreBOM: true }).decode(payload);
   } catch {
     return fail("statement-malformed");
   }

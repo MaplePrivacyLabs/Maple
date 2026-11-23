@@ -150,6 +150,20 @@ RAW = [
     ("json-null", "JSON null", b"null", "statement-malformed"),
 ]
 
+BYTE_ORDER_MARK = b"\xef\xbb\xbf"
+
+
+def framed(statement):
+    """Payloads built from the whole statement instead of one edit inside it."""
+    repeated_member = edited(
+        statement, (ENVIRONMENT_MEMBER, '"environment": "production", "environment": "development"'))
+    return [
+        ("byte-order-mark", "the statement after a UTF-8 byte order mark, which is not JSON",
+         BYTE_ORDER_MARK + statement, "json-syntax-error"),
+        ("repeated-member-then-syntax", "the environment named twice in text that is cut short",
+         repeated_member.rstrip()[:-1], "json-syntax-error"),
+    ]
+
 
 def vector(vector_id, shows, payload, expected):
     entry = {"id": vector_id, "shows": shows, "payload": base64.b64encode(payload).decode("ascii")}
@@ -167,7 +181,7 @@ def main():
     vectors = []
     for vector_id, shows, edits, expected in ONE_FAULT + SEVERAL_FAULTS:
         vectors.append(vector(vector_id, shows, edited(statement, *edits), expected))
-    for vector_id, shows, payload, expected in RAW:
+    for vector_id, shows, payload, expected in RAW + framed(statement):
         vectors.append(vector(vector_id, shows, payload, expected))
     ids = [entry["id"] for entry in vectors]
     if len(ids) != len(set(ids)):

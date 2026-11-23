@@ -15,7 +15,7 @@ const VECTORS_PATH = resolve(
 );
 
 // The Rust SDK's tests pin the same value for its copy.
-const VECTORS_SHA256 = "d1af0b289ccc98365f233387c2cb67fbe2eaa590d469d7c94b4b47ba5bd2b22f";
+const VECTORS_SHA256 = "cc1e934761241660e9eb3675f8fd43ef786cdcee7c8d9e20e8b17abc55dbce68";
 
 interface StatementVector {
   id: string;
@@ -44,7 +44,7 @@ describe("release statement vectors", () => {
   test("are the copy the Rust SDK also runs", () => {
     const digest = createHash("sha256").update(vectorBytes).digest("hex");
     expect(digest).toBe(VECTORS_SHA256);
-    expect(vectorFile.vectors.length).toBe(48);
+    expect(vectorFile.vectors.length).toBe(50);
   });
 
   for (const vector of vectorFile.vectors) {
