@@ -64,3 +64,10 @@ the TypeScript SDK reads it:
   (as `build.runAttempt` the TypeScript SDK answers `statement-malformed`);
 - a lone surrogate escape, such as `"\ud800"`, in a member the checks ignore;
 - objects or arrays nested more than 128 deep.
+
+One more concerns a bundle, not a signed statement. When a bundle's payload
+is not JSON and its signature does not verify either, the TypeScript SDK
+answers `dsse-signature-invalid` and the Rust SDK answers
+`json-syntax-error`. The Rust verifier needs the subject digest from the
+payload before it can check the signature, so it cannot reach the signature
+of a payload it cannot read. Both reject the bundle.
