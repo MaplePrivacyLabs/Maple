@@ -528,23 +528,35 @@ impl ChatScreen {
     }
 
     /// "Start of task" with the day the task's first message was sent.
+    /// Built once per row and day, like the hover timestamp.
     pub(super) fn start_label(&self, created_ms: u128) -> SharedString {
-        let day = self.day_label(created_ms);
-        self.messages
-            .get("chat-history-start", [("date", day.to_string().into())])
+        let today = chrono::Local::now().date_naive();
+        self.messages.computed(
+            "chat-history-start",
+            &format!("{created_ms}:{today}"),
+            || {
+                let day = self.day_label(created_ms);
+                self.messages
+                    .get("chat-history-start", [("date", day.to_string().into())])
+            },
+        )
     }
 
     /// The date chip's words for a row: its day and time, as in
-    /// `Today · 14:05` or `Nov 21 · 09:30`.
+    /// `Today · 14:05` or `Nov 21 · 09:30`. Built once per row and day.
     pub(super) fn date_label(&self, created_ms: u128) -> SharedString {
-        let sent = local_time(created_ms);
-        self.messages.get(
-            "chat-date",
-            [
-                ("day", self.day_label(created_ms).to_string().into()),
-                ("time", sent.format("%H:%M").to_string().into()),
-            ],
-        )
+        let today = chrono::Local::now().date_naive();
+        self.messages
+            .computed("chat-date", &format!("{created_ms}:{today}"), || {
+                let sent = local_time(created_ms);
+                self.messages.get(
+                    "chat-date",
+                    [
+                        ("day", self.day_label(created_ms).to_string().into()),
+                        ("time", sent.format("%H:%M").to_string().into()),
+                    ],
+                )
+            })
     }
 
     /// The day a row was sent: Today, Yesterday or the month and day.

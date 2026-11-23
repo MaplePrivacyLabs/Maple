@@ -979,8 +979,6 @@ fn render_thread_start(start: Option<SharedString>) -> Div {
         })
 }
 
-/// When a row was sent: the time today, the date and time before. The
-/// hover timestamp and the transcript's date chip say it the same way.
 /// The catalog key of a month's short name (`month` is 1 to 12).
 pub(super) fn month_key(month: u32) -> &'static str {
     match month {
@@ -1000,6 +998,8 @@ pub(super) fn month_key(month: u32) -> &'static str {
     }
 }
 
+/// When a row was sent, for its hover timestamp: the time today, the date
+/// and time before.
 pub(super) fn when_label(created_ms: u128, messages: &MessageCache) -> SharedString {
     let sent = chrono::DateTime::<chrono::Local>::from(
         std::time::UNIX_EPOCH + std::time::Duration::from_millis(created_ms as u64),

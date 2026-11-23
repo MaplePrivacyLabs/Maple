@@ -3885,8 +3885,6 @@ impl ChatScreen {
             .find(|question| question.session_id == selected)
     }
 
-    /// Start the displayed card over: drop the step state and the answer
-    /// input, then recreate the input when a question is showing.
     /// The card the keyboard was on closed with nothing after it: the
     /// keys go back to the composer rather than to a button now gone.
     fn release_answered_card(&mut self) {
@@ -3895,6 +3893,8 @@ impl ChatScreen {
         }
     }
 
+    /// Start the displayed card over: drop the step state and the answer
+    /// input, then recreate the input when a question is showing.
     fn reset_question_card(&mut self, cx: &mut Context<Self>) {
         self.question_selected.clear();
         self.question_step = 0;
@@ -6997,7 +6997,10 @@ impl ChatScreen {
                 self.pending_questions
                     .retain(|question| question.request_id != request_id);
                 if showing {
-                    self.question_selected.clear();
+                    // Answered elsewhere (a paired computer): the card goes
+                    // as if answered here, keys and all.
+                    self.reset_question_card(cx);
+                    self.release_answered_card();
                 }
                 self.sync_sidebar_activity(cx);
             }
@@ -7101,7 +7104,8 @@ impl ChatScreen {
                     // Only at the end: arriving further up, it waits for
                     // the jump, so scrolling down later does not move the
                     // keys out of the composer mid-word.
-                    self.question_focus_pending = self.list_state.is_following_tail();
+                    self.question_focus_pending =
+                        self.list_state.is_following_tail() || self.floating.glide.is_some();
                 }
             }
             AgentServiceEvent::Run {
@@ -7159,6 +7163,7 @@ impl ChatScreen {
         if self.pending_questions.len() != before {
             if self.is_selected(session_id) {
                 self.reset_question_card(cx);
+                self.release_answered_card();
             }
             self.sync_sidebar_activity(cx);
         }

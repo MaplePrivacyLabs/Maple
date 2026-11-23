@@ -12383,6 +12383,51 @@ mod state_tests {
         );
     }
 
+    /// A card answered on a paired computer goes as if answered here: the
+    /// answer box it held the keys in is gone, so the composer takes them.
+    #[gpui::test]
+    fn test_a_question_answered_elsewhere_hands_the_keys_back(cx: &mut TestAppContext) {
+        let (chat, cx) = chat_window(cx, |chat, cx| {
+            chat.sidebar_collapsed = true;
+            chat.selected_session = Some("s1".to_string());
+            chat.replace_timeline(long_timeline());
+            chat.pending_questions = vec![pending_question("q1", false)];
+            chat.ensure_question_input(cx);
+            chat.question_focus_pending = true;
+        });
+        cx.update(|_, app| app.set_reduce_motion(true));
+        redraw_chat(&chat, cx);
+        redraw_chat(&chat, cx);
+        let answer = cx.update(|_, app| {
+            let input = chat.read(app).pending_question_input.clone().unwrap();
+            input.read(app).focus_handle(app)
+        });
+        assert!(
+            cx.update(|window, _| answer.is_focused(window)),
+            "the answer has the keys"
+        );
+        chat.update(cx, |chat, cx| {
+            chat.handle_service_event(
+                AgentServiceEvent::QuestionResolved {
+                    request_id: "q1".into(),
+                },
+                cx,
+            );
+        });
+        redraw_chat(&chat, cx);
+        redraw_chat(&chat, cx);
+        chat.update(cx, |chat, _| {
+            assert!(chat.pending_questions.is_empty());
+            assert!(chat.pending_question_input.is_none(), "the answer box went");
+        });
+        let composer = cx.update(|_, app| chat.read(app).composer.clone().unwrap());
+        let focus = cx.update(|_, app| composer.read(app).focus_handle(app));
+        assert!(
+            cx.update(|window, _| focus.is_focused(window)),
+            "the composer has the keys again"
+        );
+    }
+
     /// A question is the thread's last row: in view only at the bottom,
     /// scrolled with the rows, and a wheel over it scrolls the thread.
     #[gpui::test]
