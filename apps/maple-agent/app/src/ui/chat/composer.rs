@@ -2529,7 +2529,7 @@ fn token_frame(id: &'static str, warm: bool, open: bool) -> crate::ui::motion::H
         .role(gpui::Role::Button)
         // A tab stop, so the keyboard reaches it without application Vim.
         .tab_index(0)
-        .focus_visible(widgets::focus_ring)
+        .focus_visible(widgets::focus_ring_on(hover))
         .on_key_down(ChatScreen::sidebar_button_key_down)
         .flex_none()
         .h_7()
