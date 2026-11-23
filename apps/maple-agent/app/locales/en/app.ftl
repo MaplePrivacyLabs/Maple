@@ -1736,6 +1736,7 @@ chat-send-failed-retained = The failed draft is retained. You can continue; open
 chat-send-unknown = Send outcome is still unknown. Your message and files are retained; Maple will check again after reconnecting.
 # $message is the underlying error, which may be untranslated.
 chat-compaction-failed = Compaction failed: { $message }
+chat-nothing-to-compact = Nothing to compact yet
 # $query is the text the user typed.
 chat-no-model-match = No model matches “{ $query }”
 # $message is the underlying error, which may be untranslated.

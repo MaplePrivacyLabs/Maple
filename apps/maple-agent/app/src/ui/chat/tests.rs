@@ -8550,6 +8550,31 @@ mod state_tests {
         }
     }
 
+    /// Compact on a task too short to summarize says so plainly; any other
+    /// refusal still reads as a failed compaction.
+    #[test]
+    fn nothing_to_compact_is_not_a_failed_compaction() {
+        let nothing = compaction_refused_notice(UiFailure::from(crate::backend::HostFailure::new(
+            "nothing-to-compact",
+            maple_agent::agent::NOTHING_TO_COMPACT_ERROR,
+        )));
+        assert_eq!(
+            nothing,
+            crate::ui::i18n::UiText::key("chat-nothing-to-compact")
+        );
+        let failed = compaction_refused_notice(UiFailure::from("the model refused"));
+        assert!(
+            matches!(
+                failed,
+                crate::ui::i18n::UiText::Context {
+                    key: "chat-compaction-failed",
+                    ..
+                }
+            ),
+            "{failed:?}"
+        );
+    }
+
     /// Compact that fails puts the strip back and says why, rather than
     /// leaving the spinner turning.
     #[gpui::test]

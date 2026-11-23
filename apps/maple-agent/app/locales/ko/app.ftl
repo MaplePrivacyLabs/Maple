@@ -1675,6 +1675,7 @@ chat-send-failed-retained = 실패한 초안은 보존했어요. 계속 진행�
 chat-send-unknown = 전송 결과를 아직 알 수 없어요. 메시지와 파일은 보존했으며, 다시 연결되면 Maple이 다시 확인해요.
 # $message is the underlying error, which may be untranslated.
 chat-compaction-failed = 압축하지 못했어요: { $message }
+chat-nothing-to-compact = 아직 압축할 내용이 없어요
 # $query is the text the user typed.
 chat-no-model-match = “{ $query }”과(와) 일치하는 모델이 없어요
 # $message is the underlying error, which may be untranslated.

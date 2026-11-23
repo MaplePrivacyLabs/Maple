@@ -3372,12 +3372,17 @@ impl LocalBackend {
     }
 
     /// Compact a session's history now; reload the session afterwards.
-    pub async fn compact_session(&self, user_id: &str, session_id: &str) -> Result<(), String> {
+    pub async fn compact_session(
+        &self,
+        user_id: &str,
+        session_id: &str,
+    ) -> Result<(), HostFailure> {
         self.service
             .handle_for_user(user_id)
             .await?
             .compact_session(session_id.to_string())
             .await
+            .map_err(compaction_failure)
     }
 
     /// The subagents still working for a task. A task whose run ended can
@@ -3848,6 +3853,16 @@ fn credit_amount_failure(error: crate::billing::CreditAmountError) -> HostFailur
     failure
 }
 
+/// A refused compaction, coded so the app can tell a task with nothing old
+/// enough to summarize yet from a compaction that failed.
+fn compaction_failure(error: String) -> HostFailure {
+    if error == maple_agent::agent::NOTHING_TO_COMPACT_ERROR {
+        HostFailure::new("nothing-to-compact", error)
+    } else {
+        HostFailure::from(error)
+    }
+}
+
 #[cfg(test)]
 #[path = "project_names_tests.rs"]
 mod project_names_tests;
@@ -3855,6 +3870,18 @@ mod project_names_tests;
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn nothing_to_compact_keeps_its_own_code() {
+        let nothing = compaction_failure(maple_agent::agent::NOTHING_TO_COMPACT_ERROR.into());
+        assert_eq!(nothing.code, "nothing-to-compact");
+        assert_eq!(
+            nothing.message,
+            maple_agent::agent::NOTHING_TO_COMPACT_ERROR
+        );
+        let failed = compaction_failure("Compaction failed: the model refused".into());
+        assert_eq!(failed.code, "unknown", "any other refusal stays a failure");
+    }
 
     #[test]
     fn a_start_that_names_no_folder_is_a_gui_start_with_or_without_a_request() {

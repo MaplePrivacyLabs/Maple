@@ -115,17 +115,27 @@ fn scaled_parts(breakdown: &AgentContextBreakdown, total: u64) -> Vec<(ContextPa
         .collect()
 }
 
-/// A token count as the card writes it: `812`, `48.6k`, `131k`.
+/// A token count as the card writes it: `812`, `48.6k`, `131k`, `1M`.
 pub(super) fn format_tokens(tokens: u64) -> String {
     if tokens < 1_000 {
         return tokens.to_string();
     }
     let thousands = tokens as f64 / 1_000.;
-    if thousands >= 100. {
+    if thousands.round() >= 1_000. {
+        format!("{}M", one_decimal(thousands / 1_000.))
+    } else if thousands >= 100. {
         format!("{}k", thousands.round() as u64)
     } else {
-        let text = format!("{thousands:.1}");
-        format!("{}k", text.strip_suffix(".0").unwrap_or(&text))
+        format!("{}k", one_decimal(thousands))
+    }
+}
+
+/// `48.6`, or `48` rather than `48.0`.
+fn one_decimal(value: f64) -> String {
+    let text = format!("{value:.1}");
+    match text.strip_suffix(".0") {
+        Some(whole) => whole.to_string(),
+        None => text,
     }
 }
 
@@ -1547,6 +1557,10 @@ mod tests {
         assert_eq!(format_tokens(48_640), "48.6k");
         assert_eq!(format_tokens(99_960), "100k");
         assert_eq!(format_tokens(131_072), "131k");
+        // A million-token window reads in millions, not as `1049k`.
+        assert_eq!(format_tokens(999_960), "1M");
+        assert_eq!(format_tokens(1_048_576), "1M");
+        assert_eq!(format_tokens(2_500_000), "2.5M");
     }
 
     #[test]

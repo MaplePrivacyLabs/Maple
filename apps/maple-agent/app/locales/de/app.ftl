@@ -1727,6 +1727,7 @@ chat-send-failed-retained = Der fehlgeschlagene Entwurf wird aufbewahrt. Du kann
 chat-send-unknown = Das Sendeergebnis ist noch unbekannt. Deine Nachricht und Dateien werden aufbewahrt; Maple prüft nach dem Wiederverbinden erneut.
 # $message is the underlying error, which may be untranslated.
 chat-compaction-failed = Komprimierung fehlgeschlagen: { $message }
+chat-nothing-to-compact = Noch nichts zu komprimieren
 # $query is the text the user typed.
 chat-no-model-match = Kein Modell entspricht „{ $query }“
 # $message is the underlying error, which may be untranslated.

@@ -242,6 +242,18 @@ pub(crate) struct SpeechState {
     pub playing: bool,
 }
 
+/// What the notice says when the host turns a compaction down. A task with
+/// nothing old enough to summarize yet is not a failure: Compact is one
+/// click away in the context card, on a task of any length.
+fn compaction_refused_notice(failure: UiFailure) -> UiText {
+    match failure {
+        UiFailure::Host(host) if host.code == "nothing-to-compact" => {
+            UiText::key("chat-nothing-to-compact")
+        }
+        failure => UiText::context("chat-compaction-failed", "message", failure.into()),
+    }
+}
+
 /// The key that picks option `index` of a question as the keymap has it
 /// now, or nothing when the user unbound it.
 fn question_key_label(index: usize, window: &Window) -> SharedString {
@@ -3740,15 +3752,11 @@ impl ChatScreen {
                     }
                     cx.notify();
                 }
-                Err(message) => {
+                Err(failure) => {
                     if this.is_selected(&compacted) {
                         this.compacting = false;
                     }
-                    this.notice = Some(UiText::context(
-                        "chat-compaction-failed",
-                        "message",
-                        message.into(),
-                    ));
+                    this.notice = Some(compaction_refused_notice(failure));
                     cx.notify();
                 }
             },

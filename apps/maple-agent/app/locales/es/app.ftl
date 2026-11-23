@@ -1614,6 +1614,7 @@ chat-send-interrupted-retained = El host se reinició antes de registrar el resu
 chat-send-failed-retained = El borrador que no se envió se conservó. Puedes continuar; abre su tarea con el cuadro de mensaje vacío para recuperarlo.
 chat-send-unknown = Aún se desconoce el resultado del envío. Tu mensaje y tus archivos se conservaron; Maple volverá a verificarlo al reconectarse.
 chat-compaction-failed = Falló la compactación: { $message }
+chat-nothing-to-compact = Todavía no hay nada que compactar
 chat-no-model-match = Ningún modelo coincide con “{ $query }”
 chat-answer-failed = No se pudo entregar la respuesta: { $message }
 chat-mode-failed = No se pudo cambiar el modo: { $message }

@@ -73,8 +73,9 @@ agent runtime; its desktop Agent page points users to Maple Work.
 - Each task has a permission mode: Read only, Auto or Full access. A new
   task sets it from the composer's `+` menu and shows it beside the model
   once it is not Auto; a task's composer frame shows it with the
-  integrations that are on and the context bar. A System One classifier judges each tool call, and what it does
-  not clear asks the user. See [permission modes](docs/permissions.md).
+  integrations that are on and the context bar. A System One classifier
+  judges each tool call, and what it does not clear asks the user. See
+  [permission modes](docs/permissions.md).
 - A task can switch models between messages: its model menu offers every
   model, a pick applies from the next message, and the transcript notes the
   switch. When the new model's context window is smaller, the model that
