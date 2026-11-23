@@ -6927,6 +6927,8 @@ impl ChatScreen {
         if self.selection_generation == selection {
             if let Some(detail) = snapshot.selected {
                 self.snapshot_revision = detail.timeline_revision;
+                // The sidebar keeps this row across the drop; a refused mode step returns to it.
+                self.upsert_session(detail.session.clone(), cx);
                 self.set_active_session(detail.session, detail.timeline, HashMap::new(), cx);
                 self.set_queue(detail.queue.items);
             } else if self.selected_session.is_some() {

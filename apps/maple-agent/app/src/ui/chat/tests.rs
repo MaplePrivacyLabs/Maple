@@ -4286,6 +4286,74 @@ mod state_tests {
         });
     }
 
+    /// A reconnect reopens the task from the host's answer, which carries no
+    /// task list. The task's row takes that answer too: a refused mode step
+    /// goes back to the row's mode, and the mode may have changed elsewhere
+    /// while this window was away.
+    #[gpui::test]
+    fn a_reconnect_brings_the_open_tasks_row_up_to_date(cx: &mut TestAppContext) {
+        use maple_agent::agent::AgentPermissionMode;
+        let root = absolute_fixture_root("work");
+        let (chat, cx) = chat_window(cx, |this, _| {
+            this.project_root = Some(root.clone());
+        });
+        chat.update(cx, |this, cx| {
+            let mut task = summary_at("s1", "Task", &root);
+            task.permission_mode = AgentPermissionMode::Auto;
+            this.sessions = vec![task.clone()];
+            this.selected_session = Some("s1".into());
+            this.permission_mode = AgentPermissionMode::Auto;
+            // Set to Full access on the computer while this window was away.
+            task.permission_mode = AgentPermissionMode::FullAccess;
+            this.apply_recovery_snapshot(
+                crate::backend::RecoverySnapshot {
+                    bootstrap: crate::backend::LocalBootstrap {
+                        project_root: None,
+                        recent_roots: Vec::new(),
+                        latest: None,
+                        sessions: Vec::new(),
+                        questions: Vec::new(),
+                    },
+                    status: maple_agent::agent::AgentRuntimeStatus {
+                        running: true,
+                        project_root: None,
+                        model: None,
+                        active_runs: std::collections::HashMap::new(),
+                    },
+                    selected: Some(maple_agent::agent::AgentSessionDetail {
+                        timeline_revision: 1,
+                        session: task,
+                        timeline: Vec::new(),
+                        mcp_errors: Vec::new(),
+                        queue: maple_agent::agent::AgentDesktopQueueSnapshot {
+                            revision: 1,
+                            items: Vec::new(),
+                        },
+                    }),
+                },
+                this.selection_generation,
+                cx,
+            );
+            assert_eq!(this.permission_mode, AgentPermissionMode::FullAccess);
+            let mode_in = |sessions: &[AgentSessionSummary]| {
+                sessions
+                    .iter()
+                    .find(|task| task.id == "s1")
+                    .map(|task| task.permission_mode)
+            };
+            assert_eq!(
+                mode_in(&this.sessions),
+                Some(AgentPermissionMode::FullAccess),
+                "the task's row takes the host's answer"
+            );
+            assert_eq!(
+                mode_in(&this.sidebar.read(cx).navigation_sessions()),
+                Some(AgentPermissionMode::FullAccess),
+                "and so does the sidebar's, which a page refresh keeps"
+            );
+        });
+    }
+
     /// The text typed into the draft stays in the composer until the send
     /// goes out. While the create is in flight the composer shows it as
     /// waiting, the Send button and Enter keep the text; a failed create
@@ -8307,21 +8375,27 @@ mod state_tests {
         cx.run_until_parked();
         press(cx, "permission-mode-menu");
         let window = cx.update(|window, _| window.window_handle());
-        cx.dispatch_keystroke(window, gpui::Keystroke::parse("right").unwrap());
-        chat.read_with(cx, |this, _| {
-            assert_eq!(this.permission_mode, AgentPermissionMode::FullAccess);
-            assert_eq!(
-                this.popup.highlighted().cloned(),
-                Some("mode-control".into()),
-                "the keyboard is on the control"
-            );
-        });
+        for (key, mode) in [
+            ("right", AgentPermissionMode::FullAccess),
+            ("left", AgentPermissionMode::Auto),
+            ("left", AgentPermissionMode::ReadOnly),
+        ] {
+            cx.dispatch_keystroke(window, gpui::Keystroke::parse(key).unwrap());
+            chat.read_with(cx, |this, _| {
+                assert_eq!(this.permission_mode, mode, "{key} steps to {mode:?}");
+                assert_eq!(
+                    this.popup.highlighted().cloned(),
+                    Some("mode-control".into()),
+                    "the keyboard is on the control"
+                );
+            });
+        }
         cx.dispatch_keystroke(window, gpui::Keystroke::parse("enter").unwrap());
         chat.read_with(cx, |this, _| {
             assert!(this.popup.open_key().is_none(), "Enter closes it");
             assert_eq!(
                 this.permission_mode,
-                AgentPermissionMode::FullAccess,
+                AgentPermissionMode::ReadOnly,
                 "with the mode as it is"
             );
         });
