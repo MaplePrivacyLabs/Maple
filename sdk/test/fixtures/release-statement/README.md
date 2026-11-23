@@ -56,18 +56,30 @@ Members the list does not name are ignored.
 
 ## Known differences
 
-These need a statement that Maple's own key signed in a form the release
-pipeline never writes. The Rust SDK rejects each one as `json-syntax-error`;
-the TypeScript SDK reads it:
+The two SDKs must agree on what they accept. They need not give the same
+failure category for input that both reject.
+
+### Rejected by both, with different categories
+
+The two verifier libraries read a bundle in a different order. The Rust
+verifier parses the payload as a statement with a subject digest before it
+checks the signature; the TypeScript verifier checks the signature first. So
+when a bundle's signature does not verify, or the bundle is corrupt, the
+TypeScript SDK answers `dsse-signature-invalid` where the Rust SDK may name
+whatever is wrong with the payload instead: `json-syntax-error`,
+`statement-malformed`, `statement-unsupported` or `bundle-malformed`.
+
+For a statement whose signature verifies, the categories are the same and
+the vectors pin them.
+
+### Accepted by one SDK only
+
+Three forms are read by the TypeScript SDK and rejected by the Rust SDK as
+`json-syntax-error`. Each needs a statement that Maple's own key signed in a
+form the release pipeline never writes:
 
 - a number too large for a double, such as `1e400`, anywhere in the text
-  (as `build.runAttempt` the TypeScript SDK answers `statement-malformed`);
+  (as `build.runAttempt` the TypeScript SDK also rejects it, as
+  `statement-malformed`);
 - a lone surrogate escape, such as `"\ud800"`, in a member the checks ignore;
 - objects or arrays nested more than 128 deep.
-
-One more concerns a bundle, not a signed statement. When a bundle's payload
-is not JSON and its signature does not verify either, the TypeScript SDK
-answers `dsse-signature-invalid` and the Rust SDK answers
-`json-syntax-error`. The Rust verifier needs the subject digest from the
-payload before it can check the signature, so it cannot reach the signature
-of a payload it cannot read. Both reject the bundle.
