@@ -1380,7 +1380,8 @@ impl ChatScreen {
     /// The card's Compact, pinned under it as Manage is under the
     /// integrations, so the keyboard reaches it after the card. While a
     /// turn runs or the task already compacts it is disabled, and its note
-    /// says why.
+    /// says why. It stays quiet while the window has room and takes the
+    /// bar's amber or red near the limit, as the strip's Compact does.
     fn card_compact_item(&self) -> MenuItem<Self> {
         let compacting = self.compacting();
         let item = MenuItem::new(
@@ -1389,13 +1390,18 @@ impl ChatScreen {
             |this: &mut Self, _: &mut Window, cx: &mut Context<Self>| this.compact_now(cx),
         );
         if compacting || self.is_run_active() {
-            item.enabled(false).note(if compacting {
+            return item.enabled(false).note(if compacting {
                 tr("chat-compacting")
             } else {
                 tr("chat-compact-after-turn")
-            })
-        } else {
-            item.style(|row| row.text_color(gpui::rgb(theme::accent_ink())))
+            });
+        }
+        match ContextLevel::of(self.context_used()) {
+            ContextLevel::Room => item,
+            level => {
+                let color = level.color();
+                item.style(move |row| row.text_color(gpui::rgb(color)))
+            }
         }
     }
 
