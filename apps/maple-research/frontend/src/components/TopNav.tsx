@@ -32,9 +32,11 @@ function NavLink({
   );
 }
 
-export function TopNav({ logo }: { logo?: ReactNode }) {
+export function TopNav() {
   const os = useOpenSecret();
   const navigate = useNavigate();
+  const matchRoute = useMatchRoute();
+  const isRedeem = matchRoute({ to: "/redeem" });
   const [mobileMenuOpen, setMobileMenuOpen] = useState(false);
   const androidConsumptionOnly = isAndroid();
 
@@ -45,7 +47,15 @@ export function TopNav({ logo }: { logo?: ReactNode }) {
           <div className="relative z-10 flex w-full items-center justify-between">
             <div className="flex-shrink-0">
               <Link to="/" className="flex h-8 items-center gap-2 leading-none">
-                {logo ?? (
+                {isRedeem ? (
+                  <img
+                    src="/maple-wordmark-light.svg"
+                    alt="Maple"
+                    width={247.082}
+                    height={48}
+                    className="block h-6 w-auto shrink-0 object-contain sm:h-8"
+                  />
+                ) : (
                   <>
                     <img
                       src="/maple-icon-nobg.png"
