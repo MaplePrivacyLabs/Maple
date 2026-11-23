@@ -32,7 +32,7 @@ function NavLink({
   );
 }
 
-export function TopNav() {
+export function TopNav({ logo }: { logo?: ReactNode }) {
   const os = useOpenSecret();
   const navigate = useNavigate();
   const [mobileMenuOpen, setMobileMenuOpen] = useState(false);
@@ -45,16 +45,20 @@ export function TopNav() {
           <div className="relative z-10 flex w-full items-center justify-between">
             <div className="flex-shrink-0">
               <Link to="/" className="flex h-8 items-center gap-2 leading-none">
-                <img
-                  src="/maple-icon-nobg.png"
-                  alt=""
-                  className="block h-8 w-8 shrink-0 object-contain"
-                />
-                <img
-                  src="/maple-logo.svg"
-                  alt="Maple"
-                  className="block h-8 w-auto max-w-[6.25rem] shrink-0 object-left object-contain"
-                />
+                {logo ?? (
+                  <>
+                    <img
+                      src="/maple-icon-nobg.png"
+                      alt=""
+                      className="block h-8 w-8 shrink-0 object-contain"
+                    />
+                    <img
+                      src="/maple-logo.svg"
+                      alt="Maple"
+                      className="block h-8 w-auto max-w-[6.25rem] shrink-0 object-left object-contain"
+                    />
+                  </>
+                )}
               </Link>
             </div>
 

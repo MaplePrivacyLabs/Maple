@@ -245,7 +245,17 @@ function RedeemPage() {
 
   return (
     <>
-      <TopNav />
+      <TopNav
+        logo={
+          <img
+            src="/maple-wordmark-light.svg"
+            alt="Maple"
+            width={247.082}
+            height={48}
+            className="block h-6 w-auto shrink-0 object-contain sm:h-8"
+          />
+        }
+      />
       <FullPageMain>
         <MarketingHeader
           title={
