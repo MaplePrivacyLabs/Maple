@@ -2031,6 +2031,8 @@ impl ChatScreen {
                 // and unregistered themselves; ask again for what is still
                 // missing.
                 this.summarize_loaded_tools(cx);
+                // So did the opened task's context, which needs the catalog.
+                this.refresh_context_usage(cx);
             },
         );
     }
