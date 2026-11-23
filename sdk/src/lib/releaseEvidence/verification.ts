@@ -296,10 +296,11 @@ function readReleaseSource(source: unknown, build: unknown): Parsed<ReleaseSourc
   const repositoryPresent = isNonEmptyString(repository);
   const commitIsHash = typeof commit === "string" && COMMIT_HEX.test(commit);
   const runIdIsNumber = typeof buildRunId === "string" && RUN_ID_DIGITS.test(buildRunId);
-  const attemptIsCount =
-    typeof buildRunAttempt === "number" &&
-    Number.isInteger(buildRunAttempt) &&
-    buildRunAttempt >= 1;
+  // A whole number that every JSON reader holds exactly, so that 1, 1.0 and
+  // 1e0 are judged alike here and in the Rust SDK.
+  const attemptIsWholeNumber =
+    typeof buildRunAttempt === "number" && Number.isSafeInteger(buildRunAttempt);
+  const attemptIsCount = attemptIsWholeNumber && buildRunAttempt >= 1;
   const wellFormed = repositoryPresent && commitIsHash && runIdIsNumber && attemptIsCount;
   if (!wellFormed) {
     return fail("statement-malformed");
