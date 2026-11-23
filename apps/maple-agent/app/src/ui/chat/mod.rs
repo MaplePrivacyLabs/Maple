@@ -4395,7 +4395,7 @@ impl ChatScreen {
     }
 
     /// A refused change, such as one an older paired computer cannot make,
-    /// puts the chip back and says why.
+    /// puts the chip back to the mode the task has and says why.
     fn finish_permission_mode_change(
         &mut self,
         session_id: &str,
@@ -4409,7 +4409,15 @@ impl ChatScreen {
             }
             Err(message) => {
                 if self.selected_session.as_deref() == Some(session_id) {
-                    self.permission_mode = previous;
+                    // The task's row holds the mode its computer last
+                    // reported. The chip's mode before this change can be
+                    // an earlier step still on its way, since Left and
+                    // Right send the next step without waiting.
+                    self.permission_mode = self
+                        .sessions
+                        .iter()
+                        .find(|task| task.id == session_id)
+                        .map_or(previous, |task| task.permission_mode);
                 }
                 self.notice = Some(UiText::context(
                     "chat-mode-failed",

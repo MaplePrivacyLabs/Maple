@@ -4249,6 +4249,43 @@ mod state_tests {
         });
     }
 
+    /// Left and Right send each step without waiting for the last one's
+    /// answer. When the computer refuses two in a row, the chip goes back
+    /// to the mode the task has, not to the step between, so it never
+    /// shows a mode the task is not in.
+    #[gpui::test]
+    fn refused_steps_leave_the_chip_on_the_tasks_own_mode(cx: &mut TestAppContext) {
+        use maple_agent::agent::AgentPermissionMode;
+        let root = absolute_fixture_root("work");
+        let (chat, cx) = chat_window(cx, |this, _| {
+            this.project_root = Some(root.clone());
+        });
+        let refusal = || {
+            crate::ui::task::Failure::Host(crate::backend::HostFailure::new(
+                "remote-permissions-unsupported",
+                "Update Maple on the remote computer to change permissions from here.",
+            ))
+        };
+        chat.update(cx, |this, cx| {
+            let mut task = summary_at("s1", "Task", &root);
+            task.permission_mode = AgentPermissionMode::FullAccess;
+            this.sessions = vec![task];
+            this.selected_session = Some("s1".into());
+            // Stepped from Full access to Auto, then to Read only, before
+            // either answer came back.
+            this.permission_mode = AgentPermissionMode::ReadOnly;
+            for previous in [AgentPermissionMode::FullAccess, AgentPermissionMode::Auto] {
+                this.finish_permission_mode_change("s1", previous, Err(refusal()), cx);
+            }
+            assert_eq!(
+                this.permission_mode,
+                AgentPermissionMode::FullAccess,
+                "the chip shows the task's mode, not the step between"
+            );
+            assert!(this.notice.is_some(), "and says why");
+        });
+    }
+
     /// The text typed into the draft stays in the composer until the send
     /// goes out. While the create is in flight the composer shows it as
     /// waiting, the Send button and Enter keep the text; a failed create
@@ -8178,34 +8215,29 @@ mod state_tests {
         assert_eq!(primary(&chat, cx), PrimaryAction::Queue);
     }
 
-    /// Steps an open permissions menu from Full access, whose short note
-    /// is one line, down to Read only: every mode's note must be as tall as
-    /// that one line, and the menu must keep one width throughout.
+    /// Shows each mode in an open permissions menu, from Full access, whose
+    /// short note is one line, to Read only: every mode's note must be as
+    /// tall as that one line, and the menu must keep one width throughout.
+    /// It sets the mode itself, as the keys that step it have their own
+    /// tests. On a task a step also goes to the backend, which refuses the
+    /// fixture's task on its own thread at a time that varies by machine.
     fn assert_mode_notes_fit(
         chat: &gpui::Entity<ChatScreen>,
         cx: &mut gpui::VisualTestContext,
         menu: &'static str,
     ) {
-        chat.update(cx, |this, cx| {
-            this.permission_mode = AgentPermissionMode::FullAccess;
-            cx.notify();
-        });
-        cx.run_until_parked();
         let mut seen = Vec::new();
-        for (step, mode) in [
+        for mode in [
             AgentPermissionMode::FullAccess,
             AgentPermissionMode::Auto,
             AgentPermissionMode::ReadOnly,
-        ]
-        .into_iter()
-        .enumerate()
-        {
-            if step > 0 {
-                cx.simulate_keystrokes("left");
-            }
+        ] {
+            chat.update(cx, |this, cx| {
+                this.permission_mode = mode;
+                cx.notify();
+            });
             cx.update(|window, _| window.refresh());
             cx.run_until_parked();
-            assert_eq!(chat.read_with(cx, |this, _| this.permission_mode), mode);
             let note = cx.debug_bounds("mode-note").expect("the mode's note");
             let panel = cx
                 .debug_bounds(menu)
@@ -8243,8 +8275,6 @@ mod state_tests {
         });
         press(cx, "composer-add");
         assert_eq!(open_menu(&chat, cx), "Add");
-        // The arrows step the mode once the keyboard is on its control.
-        cx.simulate_keystrokes("down");
         assert_mode_notes_fit(&chat, cx, "add-menu");
     }
 
@@ -8263,7 +8293,10 @@ mod state_tests {
 
     /// The control is the strip popover's one row: Left and Right step the
     /// mode from anywhere in it and land the keyboard there, and Enter
-    /// closes it with the mode as it is.
+    /// closes it with the mode as it is. Each key is checked as it lands,
+    /// before the executor runs: the fixture's task is only on screen, so
+    /// the backend refuses the step on its own thread, at a time that
+    /// varies by machine, and the refusal puts the chip back.
     #[gpui::test]
     fn the_strip_permissions_step_on_their_row(cx: &mut TestAppContext) {
         cx.update(|cx| cx.set_reduce_motion(true));
@@ -8273,7 +8306,8 @@ mod state_tests {
         });
         cx.run_until_parked();
         press(cx, "permission-mode-menu");
-        cx.simulate_keystrokes("right");
+        let window = cx.update(|window, _| window.window_handle());
+        cx.dispatch_keystroke(window, gpui::Keystroke::parse("right").unwrap());
         chat.read_with(cx, |this, _| {
             assert_eq!(this.permission_mode, AgentPermissionMode::FullAccess);
             assert_eq!(
@@ -8282,17 +8316,17 @@ mod state_tests {
                 "the keyboard is on the control"
             );
         });
-        cx.simulate_keystrokes("enter");
-        cx.run_until_parked();
-        assert!(cx.debug_bounds("mode-menu").is_none(), "Enter closes it");
-        assert_eq!(
-            chat.read_with(cx, |this, _| this.permission_mode),
-            AgentPermissionMode::FullAccess,
-            "with the mode as it is"
-        );
-        chat.update(cx, |this, cx| {
-            this.set_permission_mode(AgentPermissionMode::Auto, cx)
+        cx.dispatch_keystroke(window, gpui::Keystroke::parse("enter").unwrap());
+        chat.read_with(cx, |this, _| {
+            assert!(this.popup.open_key().is_none(), "Enter closes it");
+            assert_eq!(
+                this.permission_mode,
+                AgentPermissionMode::FullAccess,
+                "with the mode as it is"
+            );
         });
+        cx.run_until_parked();
+        assert!(cx.debug_bounds("mode-menu").is_none(), "and its panel goes");
     }
 
     /// A note too long for a narrow window wraps without leaving its last
