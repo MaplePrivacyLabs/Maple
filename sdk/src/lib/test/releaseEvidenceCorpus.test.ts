@@ -5,7 +5,14 @@ import { describe, expect, test } from "bun:test";
 import { readFileSync } from "node:fs";
 import { join, resolve } from "node:path";
 
-import { verifyArtifactBundle, verifyDsseBundle } from "../releaseEvidence/verification";
+import {
+  ManagedKeyVerifier,
+  STRICT_MANAGED_KEY_PROFILE,
+  VerificationError,
+  type TrustedRoot
+} from "@freedomofpress/sigstore-browser";
+
+import { verifyDsseBundle } from "../releaseEvidence/verification";
 
 const FIXTURES = resolve(import.meta.dir, "../../../test/fixtures/managed-key");
 
@@ -31,13 +38,38 @@ function signsArtifact(bundleText: string): boolean {
   return /"messageSignature"\s*:/.test(bundleText);
 }
 
-async function runVector(vector: CorpusVector) {
+type VectorResult = { ok: true } | { ok: false; category: string };
+
+// Release approvals are always DSSE, so the SDK has no artifact-signing path.
+// These vectors go straight to the pinned verifier with the same strict
+// profile, to hold the dependency to the corpus's outcomes.
+async function verifyArtifactVector(
+  bundleText: string,
+  publicKeyPem: string,
+  trustedRoot: TrustedRoot,
+  artifact: Uint8Array
+): Promise<VectorResult> {
+  const verifier = new ManagedKeyVerifier(STRICT_MANAGED_KEY_PROFILE);
+  await verifier.loadTrustedRoot(trustedRoot);
+  try {
+    await verifier.verifyArtifact(bundleText, publicKeyPem, artifact);
+    return { ok: true };
+  } catch (error) {
+    const hasReasonCode = error instanceof VerificationError && typeof error.code === "string";
+    if (!hasReasonCode) {
+      throw error;
+    }
+    return { ok: false, category: error.code };
+  }
+}
+
+async function runVector(vector: CorpusVector): Promise<VectorResult> {
   const bundleText = readFileSync(join(FIXTURES, vector.bundle), "utf8");
   const key = readFileSync(join(FIXTURES, vector.key), "utf8");
-  const root = JSON.parse(readFileSync(join(FIXTURES, vector.trusted_root), "utf8"));
+  const root = JSON.parse(readFileSync(join(FIXTURES, vector.trusted_root), "utf8")) as TrustedRoot;
   if (signsArtifact(bundleText)) {
     const artifact = new Uint8Array(readFileSync(join(FIXTURES, vector.artifact)));
-    return verifyArtifactBundle(bundleText, key, root, artifact);
+    return verifyArtifactVector(bundleText, key, root, artifact);
   }
   return verifyDsseBundle(bundleText, key, root);
 }

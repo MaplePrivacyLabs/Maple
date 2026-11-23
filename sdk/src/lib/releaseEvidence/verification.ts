@@ -14,10 +14,7 @@ import {
   VerificationError,
   type TrustedRoot
 } from "@freedomofpress/sigstore-browser";
-import {
-  verifySignatureOverDigest,
-  installEd25519Fallback
-} from "@freedomofpress/crypto-browser/noble";
+import { installEd25519Fallback } from "@freedomofpress/crypto-browser/noble";
 
 import type { PcrEnvironment } from "../pcr";
 import { hasDuplicateJsonMember } from "./duplicateJsonKey";
@@ -151,37 +148,9 @@ function verificationFailure(error: unknown): Failure {
 
 async function strictVerifier(trustedRoot: TrustedRoot): Promise<ManagedKeyVerifier> {
   await ensureEd25519Fallback();
-  const verifier = new ManagedKeyVerifier({
-    ...STRICT_MANAGED_KEY_PROFILE,
-    verifyDigest: verifySignatureOverDigest
-  });
+  const verifier = new ManagedKeyVerifier(STRICT_MANAGED_KEY_PROFILE);
   await verifier.loadTrustedRoot(trustedRoot);
   return verifier;
-}
-
-/**
- * Verifies a bundle that signs an artifact directly instead of carrying a DSSE
- * envelope, with the same strict profile. Release approvals are always DSSE;
- * this exists so the shared corpus's artifact-signing vectors run through the
- * same verifier configuration.
- */
-export async function verifyArtifactBundle(
-  bundleText: string,
-  publicKeyPem: string,
-  trustedRoot: TrustedRoot,
-  artifact: Uint8Array
-): Promise<{ ok: true } | Failure> {
-  const parsed = parseBundleText(bundleText);
-  if (!parsed.ok) {
-    return parsed;
-  }
-  try {
-    const verifier = await strictVerifier(trustedRoot);
-    await verifier.verifyArtifact(bundleText, publicKeyPem, artifact);
-    return { ok: true };
-  } catch (error) {
-    return verificationFailure(error);
-  }
 }
 
 /** The DSSE envelope must carry an in-toto statement. */
