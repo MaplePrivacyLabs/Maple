@@ -1,6 +1,6 @@
 // The report-only observation: bundle lookup, cache and embedded bundles, and
 // how the Transport V2 session starts it.
-import { afterEach, beforeEach, describe, expect, test } from "bun:test";
+import { afterEach, beforeEach, describe, expect, spyOn, test } from "bun:test";
 import { createHash } from "node:crypto";
 import { readFileSync } from "node:fs";
 import { resolve } from "node:path";
@@ -119,8 +119,22 @@ describe("observeReleaseEvidence", () => {
     expect(result).toMatchObject({
       outcome: "pass",
       source: "embedded",
-      identity: { logIndex: "207746380" }
+      identity: { buildRunId: "44636648269", buildRunAttempt: 1, logIndex: "207746380" }
     });
+  });
+
+  test("logs the signed audit data of a release that passes", async () => {
+    const info = spyOn(console, "info").mockImplementation(() => {});
+    try {
+      await observeReleaseEvidence(DEV_RELEASE, { fetchImpl: networkForbidden });
+      const line = String(info.mock.calls[0]?.[0]);
+      expect(line).toContain("repository=https://github.com/MaplePrivacyLabs/Maple");
+      expect(line).toContain("commit=bcf6e84476be2cf08b575c5303f5a83d98adbf40");
+      expect(line).toContain("buildRun=44636648269/1");
+      expect(line).toContain("logIndex=207746380");
+    } finally {
+      info.mockRestore();
+    }
   });
 
   test("reports approval-key-not-configured for production and does not fetch", async () => {

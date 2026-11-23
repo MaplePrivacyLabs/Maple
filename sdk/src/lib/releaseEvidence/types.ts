@@ -38,6 +38,9 @@ export interface ReleaseEvidenceIdentity {
   /** Signed audit claims. Logged, never used as policy inputs. */
   repository: string;
   commit: string;
+  /** The workflow run that built the release, and which attempt of it. */
+  buildRunId: string;
+  buildRunAttempt: number;
   /** Rekor v2 log index from the inclusion proof the verifier checked. */
   logIndex: string;
 }

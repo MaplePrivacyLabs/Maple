@@ -42,6 +42,8 @@ const SHA256_HEX = /^[0-9a-f]{64}$/;
 // The release statement names its source commit as a full Git commit hash.
 const COMMIT_HEX = /^[0-9a-f]{40}$/;
 const LOG_INDEX_DIGITS = /^[0-9]+$/;
+// The build run is a GitHub Actions run ID, written as a decimal string.
+const RUN_ID_DIGITS = /^[0-9]+$/;
 
 export interface ExpectedMeasurements {
   environment: PcrEnvironment;
@@ -54,6 +56,9 @@ export interface ExpectedMeasurements {
 export interface ReleaseSource {
   repository: string;
   commit: string;
+  /** The workflow run that built the release, and which attempt of it. */
+  buildRunId: string;
+  buildRunAttempt: number;
 }
 
 export type Failure = { ok: false; category: string };
@@ -252,21 +257,31 @@ function checkMeasurements(
   return { ok: true };
 }
 
-// Repository and commit are logged as audit data and never compared with
-// pinned values; only their shape is required.
-function readReleaseSource(source: unknown): Parsed<ReleaseSource> {
+// Repository, commit and build run are logged as audit data and never
+// compared with pinned values; only their shape is required.
+function readReleaseSource(source: unknown, build: unknown): Parsed<ReleaseSource> {
   if (!isRecord(source)) {
+    return fail("statement-malformed");
+  }
+  if (!isRecord(build)) {
     return fail("statement-malformed");
   }
   const repository = source.repository;
   const commit = source.commit;
+  const buildRunId = build.runId;
+  const buildRunAttempt = build.runAttempt;
   const repositoryPresent = isNonEmptyString(repository);
   const commitIsHash = typeof commit === "string" && COMMIT_HEX.test(commit);
-  const wellFormed = repositoryPresent && commitIsHash;
+  const runIdIsNumber = typeof buildRunId === "string" && RUN_ID_DIGITS.test(buildRunId);
+  const attemptIsCount =
+    typeof buildRunAttempt === "number" &&
+    Number.isInteger(buildRunAttempt) &&
+    buildRunAttempt >= 1;
+  const wellFormed = repositoryPresent && commitIsHash && runIdIsNumber && attemptIsCount;
   if (!wellFormed) {
     return fail("statement-malformed");
   }
-  return { ok: true, value: { repository, commit } };
+  return { ok: true, value: { repository, commit, buildRunId, buildRunAttempt } };
 }
 
 /**
@@ -298,7 +313,7 @@ export function checkReleaseStatement(
   if (!measurements.ok) {
     return measurements;
   }
-  return readReleaseSource(predicate.source);
+  return readReleaseSource(predicate.source, predicate.build);
 }
 
 export type VerifiedEnvelope = {

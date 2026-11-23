@@ -71,7 +71,9 @@ function logResult(result: ReleaseEvidenceResult): void {
     console.info(
       `release evidence: pass environment=${result.environment} pcr0=${result.pcr0} ` +
         `source=${result.source} repository=${identity.repository} ` +
-        `commit=${identity.commit} logIndex=${identity.logIndex}`
+        `commit=${identity.commit} ` +
+        `buildRun=${identity.buildRunId}/${identity.buildRunAttempt} ` +
+        `logIndex=${identity.logIndex}`
     );
     return;
   }
@@ -134,6 +136,8 @@ async function verifyAndRemember(
       pcr0: input.pcr0,
       repository: result.source.repository,
       commit: result.source.commit,
+      buildRunId: result.source.buildRunId,
+      buildRunAttempt: result.source.buildRunAttempt,
       logIndex: result.logIndex
     }
   };

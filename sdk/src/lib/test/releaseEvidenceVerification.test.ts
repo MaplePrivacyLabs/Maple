@@ -72,13 +72,15 @@ describe("published Dev release bundle", () => {
     expect(createHash("sha256").update(bytes).digest("hex")).toBe(pinned);
   });
 
-  test("passes as published, with its repository, commit and verified log index", async () => {
+  test("passes as published, with its repository, commit, build run and verified log index", async () => {
     const result = await verifyPublished(PUBLISHED_BUNDLE);
     expect(result).toEqual({
       ok: true,
       source: {
         repository: "https://github.com/MaplePrivacyLabs/Maple",
-        commit: "bcf6e84476be2cf08b575c5303f5a83d98adbf40"
+        commit: "bcf6e84476be2cf08b575c5303f5a83d98adbf40",
+        buildRunId: "44636648269",
+        buildRunAttempt: 1
       },
       logIndex: DEV_LOG_INDEX
     });
@@ -187,7 +189,9 @@ describe("statement policy on the real Dev statement", () => {
       ok: true,
       value: {
         repository: "https://github.com/MaplePrivacyLabs/Maple",
-        commit: "bcf6e84476be2cf08b575c5303f5a83d98adbf40"
+        commit: "bcf6e84476be2cf08b575c5303f5a83d98adbf40",
+        buildRunId: "44636648269",
+        buildRunAttempt: 1
       }
     });
   });
@@ -238,7 +242,18 @@ describe("statement policy on the real Dev statement", () => {
       "statement-measurement-mismatch"
     ],
     ["a short commit", (s) => (s.predicate.source.commit = "bcf6e844"), "statement-malformed"],
-    ["a missing repository", (s) => delete s.predicate.source.repository, "statement-malformed"]
+    ["a missing repository", (s) => delete s.predicate.source.repository, "statement-malformed"],
+    ["a missing build", (s) => delete s.predicate.build, "statement-malformed"],
+    [
+      "a build run ID that is not a number",
+      (s) => (s.predicate.build.runId = "abc"),
+      "statement-malformed"
+    ],
+    [
+      "a build run attempt of zero",
+      (s) => (s.predicate.build.runAttempt = 0),
+      "statement-malformed"
+    ]
   ];
   for (const [name, mutate, category] of failures) {
     test(`rejects ${name}`, () => {
