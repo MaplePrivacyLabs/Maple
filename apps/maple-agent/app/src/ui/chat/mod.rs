@@ -572,8 +572,6 @@ pub struct ChatScreen {
     pending_questions: Vec<PendingQuestion>,
     /// Lazily created answer input for the question card.
     pending_question_input: Option<Entity<TextInput>>,
-    /// Fraction of the context window in use for the selected session.
-    context_fraction: Option<f32>,
     /// Session the usage poller follows, if one is running. A run on a
     /// newly selected session replaces the poller of the previous one.
     usage_poller_session: Option<String>,
@@ -599,6 +597,11 @@ pub struct ChatScreen {
     screen_focus_pending: bool,
     /// Composer holds non-blank text; refreshed when the composer changes.
     composer_has_text: bool,
+    /// The draft is a slash command, which runs at once rather than
+    /// queueing behind a run. Refreshed when the composer changes.
+    composer_is_command: bool,
+    /// The permissions menus' width, measured once per locale and size.
+    permissions_width: composer_frame::PermissionsWidth,
     /// Palette rows for the composer's current "/" token; rebuilt when the
     /// composer changes, not per frame.
     slash_entries: Vec<SlashEntry>,
@@ -781,6 +784,10 @@ pub struct ChatScreen {
     primary_width: motion::Tween,
     /// The mic beside Send while a draft waits: folded (0) to shown (1).
     mic_aside: motion::Tween,
+    /// The composer drew a dictation control last frame: the round button
+    /// as Dictate or Recording, or the mic beside Send. Application Vim
+    /// stops only on a control it can see.
+    dictation_drawn: bool,
     /// When the last message went out, which lifts Send's arrow away.
     send_launched: Option<std::time::Instant>,
     /// The context bar's fill, as a share of the window.
@@ -788,12 +795,19 @@ pub struct ChatScreen {
     /// What fills the selected task's context window, when the host can
     /// say; `None` before it answers, or for an older host.
     context_breakdown: Option<maple_agent::agent::AgentContextBreakdown>,
-    /// When the context card opened, which its bar grows in from.
+    /// The host can break the selected task's context down, but has nothing
+    /// to say until the task loads, on its next turn.
+    context_breakdown_later: bool,
+    /// When the context card opened, which its bar grows in from; `None`
+    /// when the keyboard opened it, which shows it at once.
     context_card_opened: Option<std::time::Instant>,
     /// The context card's part under the pointer; the others dim.
     context_hover: Option<composer::ContextPart>,
-    /// The selected task is compacting, by request or on its own.
-    compacting: bool,
+    /// Tasks whose run is summarizing their history on its own, until the
+    /// summary lands or the compaction fails or stops.
+    compacting_runs: HashSet<String>,
+    /// The task the user asked to compact, until the host answers.
+    compaction_requested: Option<String>,
     /// The page a new task's `+` menu is on beyond its first.
     add_page: Option<composer_frame::AddPage>,
     /// When the `+` menu last turned a page, which its rows arrive from.
@@ -1534,6 +1548,7 @@ impl ChatScreen {
         let input = composer.read(cx);
         let text = input.text_ref();
         let has_text = !text.trim().is_empty();
+        let command = text.trim().starts_with('/');
         let entries = match text.strip_prefix('/') {
             Some(token) if !token.contains(char::is_whitespace) && !token.contains('/') => {
                 slash_entries_for(token, &self.slash_commands)
@@ -1548,8 +1563,12 @@ impl ChatScreen {
         // The palette just opened: re-read the skills, so one installed
         // since the last scan (a toggle in Settings) is in the list.
         let palette_opened = self.slash_entries.is_empty() && !entries.is_empty();
-        if has_text != self.composer_has_text || entries_changed {
+        if has_text != self.composer_has_text
+            || command != self.composer_is_command
+            || entries_changed
+        {
             self.composer_has_text = has_text;
+            self.composer_is_command = command;
             self.slash_entries = entries;
             cx.notify();
         }
@@ -1609,7 +1628,6 @@ impl ChatScreen {
             project_mcp_save_pending: false,
             pending_questions: Vec::new(),
             pending_question_input: None,
-            context_fraction: None,
             usage_poller_session: None,
             usage_poller_generation: 0,
             ledger_context_tokens: 0,
@@ -1621,6 +1639,8 @@ impl ChatScreen {
             application_focus: None,
             screen_focus_pending: true,
             composer_has_text: false,
+            composer_is_command: false,
+            permissions_width: Default::default(),
             slash_entries: Vec::new(),
             models: Vec::new(),
             selected_model: None,
@@ -1706,12 +1726,15 @@ impl ChatScreen {
             expand_reveal: motion::Tween::new(0.),
             primary_width: motion::Tween::new(0.),
             mic_aside: motion::Tween::new(0.),
+            dictation_drawn: false,
             send_launched: None,
             context_fill: motion::Tween::new(0.),
             context_breakdown: None,
+            context_breakdown_later: false,
             context_card_opened: None,
             context_hover: None,
-            compacting: false,
+            compacting_runs: HashSet::new(),
+            compaction_requested: None,
             add_page: None,
             add_page_turned: None,
             frame_arrived: None,
@@ -3657,15 +3680,9 @@ impl ChatScreen {
     }
 
     fn apply_context_usage(&mut self, tokens: i64, limit: i64, cx: &mut Context<Self>) {
-        self.ledger_context_tokens = tokens;
-        self.context_limit = limit;
-        let fraction = if limit > 0 {
-            tokens as f32 / limit as f32
-        } else {
-            0.0
-        };
-        if self.context_fraction != Some(fraction) {
-            self.context_fraction = Some(fraction);
+        if (self.ledger_context_tokens, self.context_limit) != (tokens, limit) {
+            self.ledger_context_tokens = tokens;
+            self.context_limit = limit;
             cx.notify();
         }
     }
@@ -3719,6 +3736,14 @@ impl ChatScreen {
         .detach();
     }
 
+    /// The selected task is compacting, by request or on its own.
+    pub(super) fn compacting(&self) -> bool {
+        self.selected_session.as_deref().is_some_and(|session_id| {
+            self.compaction_requested.as_deref() == Some(session_id)
+                || self.compacting_runs.contains(session_id)
+        })
+    }
+
     fn compact_now(&mut self, cx: &mut Context<Self>) {
         let Some(session_id) = self.selected_session.clone() else {
             return;
@@ -3726,8 +3751,9 @@ impl ChatScreen {
         let backend = self.backend.clone();
         let user_id = self.user_id.clone();
         let compacted = session_id.clone();
-        self.notice = Some(UiText::key("chat-compacting"));
-        self.compacting = true;
+        // The strip says it is compacting; an older notice no longer applies.
+        self.notice = None;
+        self.compaction_requested = Some(session_id.clone());
         self.popup.close(cx);
         cx.notify();
         self.call_semantic(
@@ -3740,9 +3766,7 @@ impl ChatScreen {
             cx,
             move |this, result, cx| match result {
                 Ok(()) => {
-                    if this.is_selected(&compacted) {
-                        this.compacting = false;
-                    }
+                    this.end_compaction_request(&compacted);
                     this.notice = Some(UiText::key("chat-compacted"));
                     // Reload the task that was compacted, not whatever is
                     // selected by the time the call returns.
@@ -3753,14 +3777,27 @@ impl ChatScreen {
                     cx.notify();
                 }
                 Err(failure) => {
-                    if this.is_selected(&compacted) {
-                        this.compacting = false;
-                    }
+                    this.end_compaction_request(&compacted);
                     this.notice = Some(compaction_refused_notice(failure));
                     cx.notify();
                 }
             },
         );
+    }
+
+    /// The host answered the compaction asked for `session_id`.
+    fn end_compaction_request(&mut self, session_id: &str) {
+        if self.compaction_requested.as_deref() == Some(session_id) {
+            self.compaction_requested = None;
+        }
+    }
+
+    /// Forget the compactions of runs the host no longer has, for when its
+    /// snapshot replaces the runs without a `Finished` for each.
+    fn retain_running_compactions(&mut self) {
+        let active = &self.active_runs;
+        self.compacting_runs
+            .retain(|session_id| active.contains_key(session_id));
     }
 
     /// Leave the selected task's presentation without discarding anything
@@ -3779,10 +3816,11 @@ impl ChatScreen {
         if self.btw.is_some() {
             self.close_side_thread(cx);
         }
-        // Another task's context and compaction are its own.
+        // Another task's context is its own. Compactions are kept by task,
+        // so one under way still shows on coming back.
         self.frame_on_landing = false;
-        self.compacting = false;
         self.context_breakdown = None;
+        self.context_breakdown_later = false;
         self.context_hover = None;
         self.subagent_epoch += 1;
         self.subagents.clear();
@@ -6834,6 +6872,7 @@ impl ChatScreen {
         self.loading_timeline.clear();
         self.finished_runs.clear();
         self.active_runs = snapshot.status.active_runs;
+        self.retain_running_compactions();
         self.pending_questions.clear();
         self.question_selected.clear();
         self.sessions = snapshot.bootstrap.sessions;
@@ -7037,6 +7076,7 @@ impl ChatScreen {
                     return false;
                 }
                 self.active_runs = status.active_runs;
+                self.retain_running_compactions();
                 // Run membership decides the inbox sections: a task woken
                 // from elsewhere moves the moment the snapshot lands.
                 self.sync_sidebar(cx);
@@ -7248,19 +7288,26 @@ impl ChatScreen {
                 }
             }
             // The reload that follows shows the compaction's notice; the
-            // frame says it is under way meanwhile.
+            // frame says it is under way meanwhile. Each task keeps its own,
+            // so leaving and coming back mid-compaction still shows it.
             AgentRunEvent::Compacting => {
-                if !self.is_selected(session_id) || self.compacting {
+                if !self.compacting_runs.insert(session_id.to_string())
+                    || !self.is_selected(session_id)
+                {
                     return false;
                 }
-                self.compacting = true;
             }
             AgentRunEvent::Compacted => {
-                if !self.is_selected(session_id) || !self.compacting {
+                self.compacting_runs.remove(session_id);
+                if !self.is_selected(session_id) {
                     return false;
                 }
-                self.compacting = false;
                 self.refresh_context_usage(cx);
+            }
+            AgentRunEvent::CompactionStopped => {
+                if !self.compacting_runs.remove(session_id) || !self.is_selected(session_id) {
+                    return false;
+                }
             }
             AgentRunEvent::HistoryReplaced => {
                 if self.is_selected(session_id) {
@@ -7293,6 +7340,9 @@ impl ChatScreen {
                     .is_none_or(|active| active == run_id);
                 if owns_session {
                     self.active_runs.remove(session_id);
+                    // A compaction cannot outlive its run, whatever its
+                    // own end said or failed to say.
+                    self.compacting_runs.remove(session_id);
                     // The markers follow the latest terminal: a completion
                     // or a failure off screen sets one; a stop sets none.
                     // Opening the task (`set_active_session`) is the only

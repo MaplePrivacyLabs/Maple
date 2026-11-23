@@ -548,6 +548,7 @@ impl<V: 'static, K: Clone + PartialEq + 'static> Popup<V, K> {
             footer,
             pinned,
             ease_height,
+            height_at_once,
         } = menu;
 
         // What the keyboard needs about each item: its id, its action,
@@ -785,24 +786,27 @@ impl<V: 'static, K: Clone + PartialEq + 'static> Popup<V, K> {
             // Capped at the panel's room inside its padding and border, so
             // a page taller than that scrolls its rows under a footer that
             // stays put, as below.
-            _ if ease_height => panel.child(crate::ui::motion::fit_height(
-                ElementId::NamedChild(std::sync::Arc::new(id.clone()), "ease-height".into()),
-                div()
-                    .flex()
-                    .flex_col()
-                    .max_h((max_height - px(10.)).max(px(0.)))
-                    .child(
-                        div()
-                            .id("menu-rows")
-                            .flex()
-                            .flex_col()
-                            .min_h_0()
-                            .overflow_y_scroll()
-                            .track_scroll(&self.scroll)
-                            .children(children),
-                    )
-                    .children(footer),
-            )),
+            _ if ease_height => panel.child(
+                crate::ui::motion::fit_height(
+                    ElementId::NamedChild(std::sync::Arc::new(id.clone()), "ease-height".into()),
+                    div()
+                        .flex()
+                        .flex_col()
+                        .max_h((max_height - px(10.)).max(px(0.)))
+                        .child(
+                            div()
+                                .id("menu-rows")
+                                .flex()
+                                .flex_col()
+                                .min_h_0()
+                                .overflow_y_scroll()
+                                .track_scroll(&self.scroll)
+                                .children(children),
+                        )
+                        .children(footer),
+                )
+                .instant(height_at_once),
+            ),
             None => panel.children(children),
             Some(footer) => panel
                 .child(
@@ -1144,6 +1148,8 @@ pub(crate) struct Menu<V: 'static> {
     pinned: Vec<MenuItem<V>>,
     /// Ease to a new height when the rows change, rather than jump.
     ease_height: bool,
+    /// Take the new height at once: the keyboard made the change.
+    height_at_once: bool,
 }
 
 enum Entry<V: 'static> {
@@ -1167,6 +1173,7 @@ impl<V: 'static> Menu<V> {
             footer: None,
             pinned: Vec::new(),
             ease_height: false,
+            height_at_once: false,
         }
     }
 
@@ -1175,6 +1182,13 @@ impl<V: 'static> Menu<V> {
     /// taller than the room still scrolls its rows, under any pinned ones.
     pub(crate) fn ease_height(mut self) -> Self {
         self.ease_height = true;
+        self
+    }
+
+    /// With [`Self::ease_height`], take a new height at once instead, for
+    /// a change the keyboard made: keyboard moves in a menu never animate.
+    pub(crate) fn height_at_once(mut self, at_once: bool) -> Self {
+        self.height_at_once = at_once;
         self
     }
 
@@ -1279,6 +1293,9 @@ pub(crate) struct MenuItem<V: 'static> {
     style: Option<RowStyle>,
     on_select: OnSelect<V>,
     submenu: Option<Box<Submenu<V>>>,
+    /// Draws no plate under the pointer or the keyboard: its content
+    /// shows its own highlight, such as a segmented control.
+    plain: bool,
 }
 
 #[derive(Clone, Copy)]
@@ -1307,7 +1324,16 @@ impl<V: 'static> MenuItem<V> {
             style: None,
             on_select: Rc::new(on_select),
             submenu: None,
+            plain: false,
         }
+    }
+
+    /// A row that is a control of its own, such as a segmented control:
+    /// the keyboard stops on it, but it draws no plate or press, and its
+    /// content shows the highlight.
+    pub(crate) fn plain(mut self) -> Self {
+        self.plain = true;
+        self
     }
 
     pub(crate) fn icon(mut self, name: &'static str) -> Self {
@@ -1420,6 +1446,7 @@ fn item_row<V: 'static, K: Clone + PartialEq + 'static>(
         style,
         on_select,
         submenu,
+        plain,
     } = item;
     let role = match state {
         None => Role::MenuItem,
@@ -1439,10 +1466,16 @@ fn item_row<V: 'static, K: Clone + PartialEq + 'static>(
         .id(id)
         .role(role)
         .aria_label(label.clone())
-        .when(opens_submenu, |row| {
-            row.aria_expanded(expanded).a11y_synthetic_children(|tree| {
-                tree.parent_node()
-                    .set_has_popup(gpui::accesskit::HasPopup::Menu);
+        .when(opens_submenu, |row| row.aria_expanded(expanded))
+        .when(opens_submenu || !enabled, |row| {
+            row.a11y_synthetic_children(move |tree| {
+                if opens_submenu {
+                    tree.parent_node()
+                        .set_has_popup(gpui::accesskit::HasPopup::Menu);
+                }
+                if !enabled {
+                    tree.parent_node().set_disabled();
+                }
             })
         })
         .when_some(state, |row, state| {
@@ -1514,8 +1547,10 @@ fn item_row<V: 'static, K: Clone + PartialEq + 'static>(
         }))
         .when(enabled, |row_element| {
             row_element
-                .cursor_pointer()
-                .active(|style| style.bg(gpui::rgb(theme::bg_sidebar_row_selected())))
+                .when(!plain, |row| {
+                    row.cursor_pointer()
+                        .active(|style| style.bg(gpui::rgb(theme::bg_sidebar_row_selected())))
+                })
                 .on_click(cx.listener(move |view, _: &ClickEvent, window, cx| {
                     cx.stop_propagation();
                     if get(view).closes_on_select(opens_submenu, keep_open) {
@@ -1596,6 +1631,12 @@ fn item_row<V: 'static, K: Clone + PartialEq + 'static>(
         Some(style) => style(row_element),
         None => row_element,
     };
+    if plain {
+        return row_element
+            .hover_bg(gpui::transparent_black())
+            .highlighted(false)
+            .into_any_element();
+    }
     row_element
         .hover_bg(gpui::rgb(theme::bg_sidebar_row_hover()))
         .highlighted(highlighted)

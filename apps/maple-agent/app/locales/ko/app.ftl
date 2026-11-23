@@ -1487,6 +1487,7 @@ chat-context-of = { $limit } 토큰 중 { $used }
 chat-context-compacts-at = { $percent }에서 자동 압축
 chat-context-compacts-next = 이 단계가 끝나면 압축해요
 chat-context-compacts-off = 자동 압축이 꺼져 있어요
+chat-context-details-later = 이 작업의 다음 턴이 끝나면 세부 정보가 보여요
 chat-context-instructions = 지침 및 도구
 chat-context-summary = 요약
 chat-context-messages = 메시지

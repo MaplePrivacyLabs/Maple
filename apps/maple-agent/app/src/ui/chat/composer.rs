@@ -20,7 +20,7 @@ use super::{
     ChatPopup, ChatScreen, DraftAttachment, OpenSettingsSection, ProjectComputer, Section,
 };
 use crate::ui::i18n::{UiText, tr};
-use crate::ui::icons::{icon, spinner};
+use crate::ui::icons::{icon, spinner, spinner_with_id};
 use crate::ui::markdown;
 use crate::ui::motion;
 use crate::ui::popup::{Menu, MenuItem, Placement};
@@ -141,14 +141,21 @@ pub(super) enum ContextLevel {
     Full,
 }
 
+/// A share of the window in whole percent, rounded down as the plan bar's
+/// is, so it reads 100% only once full. The nudge keeps a share such as
+/// 29 of 100, which `f32` holds as 0.2899…, at 29.
+pub(super) fn whole_percent(fraction: f32) -> u32 {
+    (fraction * 100. + 1e-3).floor().clamp(0., 100.) as u32
+}
+
 impl ContextLevel {
+    /// The level of the percentage the bar writes, so "75%" is never quiet
+    /// and "90%" never amber.
     pub(super) fn of(fraction: f32) -> Self {
-        if fraction >= 0.9 {
-            Self::Full
-        } else if fraction >= 0.75 {
-            Self::Near
-        } else {
-            Self::Room
+        match whole_percent(fraction) {
+            90.. => Self::Full,
+            75.. => Self::Near,
+            _ => Self::Room,
         }
     }
 
@@ -162,11 +169,14 @@ impl ContextLevel {
     }
 }
 
+/// Each mode's icon. None of them means anything else in Maple: `lock` is
+/// the encryption mark and an untrusted folder, `shield-check` a trusted
+/// folder, and `zap` a warning.
 pub(super) fn mode_icon(mode: AgentPermissionMode) -> &'static str {
     match mode {
-        AgentPermissionMode::ReadOnly => "lock",
-        AgentPermissionMode::Auto => "shield-check",
-        AgentPermissionMode::FullAccess => "zap",
+        AgentPermissionMode::ReadOnly => "eye",
+        AgentPermissionMode::Auto => "wand-sparkles",
+        AgentPermissionMode::FullAccess => "key-round",
     }
 }
 
@@ -452,6 +462,10 @@ impl ChatScreen {
     fn press_chip(&mut self, popup: ChatPopup, window: &mut Window, cx: &mut Context<Self>) {
         match popup {
             ChatPopup::Project => self.execute_command(ChatCommand::ChooseProject, window, cx),
+            // From the keyboard, the permissions open on their control.
+            ChatPopup::Mode if !self.popup.is_open(&popup) && window.last_input_was_keyboard() => {
+                self.open_permissions(true, cx)
+            }
             popup => self.toggle_popup(popup, cx),
         }
     }
@@ -471,7 +485,8 @@ impl ChatScreen {
             // While dictation listens, its row takes the place of `+`
             // and the model.
             ComposerControl::Add | ComposerControl::Model => !listening,
-            ComposerControl::Dictate => self.audio_caps.transcription,
+            // Only while it is drawn: during a run the round button is Stop.
+            ComposerControl::Dictate => self.audio_caps.transcription && self.dictation_drawn,
             ComposerControl::Integrations => {
                 conversation || (!listening && self.integrations_token_shown())
             }
@@ -509,8 +524,8 @@ impl ChatScreen {
                 self.popup.open(ChatPopup::Integrations, cx);
                 self.refresh_session_mcp(cx);
             }
-            ComposerControl::Mode => self.popup.open(ChatPopup::Mode, cx),
-            ComposerControl::Context => self.open_context_card(cx),
+            ComposerControl::Mode => self.open_permissions(true, cx),
+            ComposerControl::Context => self.open_context_card(true, cx),
             ComposerControl::Compact => self.compact_now(cx),
         }
     }
@@ -551,6 +566,9 @@ impl ChatScreen {
             .debug_selector(|| "composer-add".to_string())
             .role(gpui::Role::Button)
             .aria_label(label.clone())
+            .tab_index(0)
+            .focus_visible(widgets::focus_ring)
+            .on_key_down(ChatScreen::sidebar_button_key_down)
             .size_8()
             .flex()
             .items_center()
@@ -565,7 +583,7 @@ impl ChatScreen {
             .child(icon("plus", px(18.), chip_color(open)));
         let menu = self.popup.is_open(&popup).then(|| {
             let menu = if conversation {
-                self.attach_menu(cx)
+                self.attach_menu(window, cx)
             } else {
                 self.add_menu(window, cx)
             };
@@ -730,6 +748,9 @@ impl ChatScreen {
         drafting: bool,
         can_send: bool,
     ) -> PrimaryAction {
+        // Only a message waits for a run. A command runs at once, and while
+        // the side thread is open a plain message is asked there at once.
+        let asks_now = self.composer_is_command || self.btw.is_some();
         if self.recording {
             PrimaryAction::Recording
         } else if self.transcribing || self.recording_starting {
@@ -737,7 +758,7 @@ impl ChatScreen {
         } else if running && !self.booting && !pending_create && !drafting {
             PrimaryAction::Stop
         } else if can_send {
-            if running {
+            if running && !asks_now {
                 PrimaryAction::Queue
             } else {
                 PrimaryAction::Send
@@ -783,8 +804,9 @@ impl ChatScreen {
             PrimaryAction::Send => ("send-message", Some(tr("chat-send"))),
             PrimaryAction::Queue => ("send-message", Some(tr("chat-queue-next-turn"))),
             PrimaryAction::Stop => ("stop-run", Some(tr("chat-stop-run"))),
-            PrimaryAction::Busy => ("send-message", Some(status_label)),
-            PrimaryAction::Idle => ("send-message", None),
+            PrimaryAction::Busy => ("send-message", Some(self.busy_label(status_label))),
+            // A Send with nothing to send: named, and disabled.
+            PrimaryAction::Idle => ("send-message", Some(tr("chat-send"))),
         };
         // One layer per look; each eases to on or off by itself, so a
         // change of job never shows two glyphs at full strength.
@@ -831,7 +853,7 @@ impl ChatScreen {
                     // Listening breathes, so the button says it is live.
                     motion::ticker(
                         "composer-primary-breath",
-                        std::time::Duration::from_millis(1400),
+                        motion::LISTENING_BREATH,
                         move |phase| {
                             fill(
                                 on * motion::pulse(phase, 0., 0.78, 1.),
@@ -894,7 +916,11 @@ impl ChatScreen {
         let busy = (action == PrimaryAction::Busy).then(|| {
             glyph(
                 1.,
-                spinner("composer-primary-busy", px(16.), theme::text_secondary()),
+                spinner_with_id(
+                    SharedString::new_static("spinner-composer-primary-busy"),
+                    px(16.),
+                    theme::text_secondary(),
+                ),
             )
         });
         let shortcut = matches!(action, PrimaryAction::Send | PrimaryAction::Queue).then_some("↵");
@@ -904,6 +930,9 @@ impl ChatScreen {
             .debug_selector(move || selector.to_string())
             .when_some(label.clone(), |el, label| {
                 el.role(gpui::Role::Button).aria_label(label)
+            })
+            .when(!pressable, |el| {
+                el.a11y_synthetic_children(|tree| tree.parent_node().set_disabled())
             })
             .relative()
             .flex_none()
@@ -931,6 +960,21 @@ impl ChatScreen {
             div().child(button),
             selected && matches!(action, PrimaryAction::Dictate | PrimaryAction::Recording),
         )
+    }
+
+    /// What the round button waits on while it shows Busy: the words it
+    /// is transcribing, the microphone starting, files still being
+    /// prepared, or else the composer's own wait (`status_label`).
+    fn busy_label(&self, status_label: SharedString) -> SharedString {
+        if self.transcribing {
+            tr("chat-transcribing")
+        } else if self.recording_starting {
+            tr("chat-dictate")
+        } else if !self.draft_attachments.iter().all(DraftAttachment::ready) {
+            tr("chat-files-preparing")
+        } else {
+            status_label
+        }
     }
 
     /// The mic beside Send while a draft waits: it slides in from under
@@ -1027,7 +1071,7 @@ impl ChatScreen {
             .when(recording, |row| {
                 row.child(motion::ticker(
                     "composer-listening-wave",
-                    std::time::Duration::from_millis(1130),
+                    motion::LISTENING_WAVE,
                     |phase| {
                         div()
                             .flex()
@@ -1051,8 +1095,8 @@ impl ChatScreen {
                 ))
             })
             .when(!recording, |row| {
-                row.child(spinner(
-                    "composer-transcribing",
+                row.child(spinner_with_id(
+                    SharedString::new_static("spinner-composer-transcribing"),
                     px(12.),
                     theme::text_muted(),
                 ))
@@ -1915,8 +1959,12 @@ impl ChatScreen {
             }
             self.reveal_composer_controls(controls)
         };
+        let aside_shown = drafting && !listening && !self.recording_starting;
+        self.dictation_drawn = self.audio_caps.transcription
+            && (aside_shown
+                || matches!(primary, PrimaryAction::Dictate | PrimaryAction::Recording));
         let aside = self.audio_caps.transcription.then(|| {
-            let shown = drafting && !listening && !self.recording_starting;
+            let shown = aside_shown;
             self.render_mic_aside(
                 shown,
                 selected_control == Some(ComposerControl::Dictate),
@@ -2479,6 +2527,10 @@ fn token_frame(id: &'static str, warm: bool, open: bool) -> crate::ui::motion::H
         .id(id)
         .debug_selector(|| id.to_string())
         .role(gpui::Role::Button)
+        // A tab stop, so the keyboard reaches it without application Vim.
+        .tab_index(0)
+        .focus_visible(widgets::focus_ring)
+        .on_key_down(ChatScreen::sidebar_button_key_down)
         .flex_none()
         .h_7()
         .pl_2()

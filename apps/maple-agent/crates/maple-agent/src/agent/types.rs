@@ -782,6 +782,9 @@ pub enum AgentRunEvent {
     /// The summary replaced the history it covers; `HistoryReplaced`
     /// follows.
     Compacted,
+    /// The compaction ended without a summary: it failed, or it was
+    /// stopped. The history is unchanged.
+    CompactionStopped,
     /// The task's stored history changed under the rows shown so far: a
     /// compaction, or failed attempts that Pi retried. Reload it.
     HistoryReplaced,
@@ -932,6 +935,9 @@ pub struct AgentContextBreakdown {
     /// automatic compaction is off or the window is unknown.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub compact_at: Option<u64>,
+    /// The window `compact_at` belongs to: the task's model's, which a
+    /// model pick changes only from the next message. Zero when unknown.
+    pub window: u64,
 }
 
 /// Where a tool result carries an external agent's activity.

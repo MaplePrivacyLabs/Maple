@@ -34,6 +34,7 @@ impl AgentContextBreakdown {
         let mut breakdown = Self {
             instructions,
             compact_at: compact_at(model, compaction),
+            window: model.map_or(0, |model| model.context_window),
             ..Self::default()
         };
         for message in messages {
@@ -261,6 +262,7 @@ mod tests {
                     + estimate(&shell(false)),
                 images: 2 * IMAGE,
                 compact_at: Some(200_000 - CompactionSettings::default().reserve_tokens),
+                window: 200_000,
             }
         );
         assert!(breakdown.summary > estimate_text_tokens("Read main.rs and found the bug."));
@@ -325,6 +327,7 @@ mod tests {
             breakdown.compact_at, None,
             "without a model there is no window"
         );
+        assert_eq!(breakdown.window, 0);
     }
 
     #[test]
@@ -392,13 +395,14 @@ mod tests {
             tool_results: 4,
             images: 5,
             compact_at: Some(6),
+            window: 7,
         };
         let value = serde_json::to_value(breakdown).unwrap();
         assert_eq!(
             value,
             json!({
                 "instructions": 1, "summary": 2, "messages": 3,
-                "toolResults": 4, "images": 5, "compactAt": 6,
+                "toolResults": 4, "images": 5, "compactAt": 6, "window": 7,
             })
         );
         assert_eq!(

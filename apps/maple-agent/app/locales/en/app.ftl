@@ -1572,6 +1572,8 @@ chat-context-of = { $used } of { $limit } tokens
 chat-context-compacts-at = Auto-compacts at { $percent }
 chat-context-compacts-next = Compacts after this step
 chat-context-compacts-off = Automatic compaction is off
+# The context card, for a task not loaded since the app started: what fills its window shows once it runs.
+chat-context-details-later = Details show after this task's next turn
 # What fills the context window, in the context card's legend.
 chat-context-instructions = Instructions & tools
 chat-context-summary = Summary

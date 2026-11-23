@@ -4,18 +4,16 @@
 //! the integrations list, the context card, and `+`'s menu and attach
 //! popover.
 
-use std::time::Duration;
-
 use gpui::{Context, Div, IntoElement, SharedString, Window, div, prelude::*, px, relative};
 use maple_agent::agent::{AgentContextBreakdown, AgentPermissionMode};
 
 use super::composer::{
     ComposerControl, ContextLevel, ContextPart, composer_shadow, mode_chip_label, mode_icon,
-    mode_label, mode_note, vim_mark,
+    mode_label, mode_note, vim_mark, whole_percent,
 };
 use super::{ChatPopup, ChatScreen, OpenSettingsSection, Section};
-use crate::ui::i18n::tr;
-use crate::ui::icons::{icon, spinner};
+use crate::ui::i18n::{MessageCache, tr};
+use crate::ui::icons::{icon, spinner_with_id};
 use crate::ui::morph_text::morph_text;
 use crate::ui::motion::{self, HoverBg as _};
 use crate::ui::popup::{Menu, MenuItem, Placement};
@@ -47,15 +45,56 @@ const PERMISSIONS_MENU_WIDTH: gpui::Pixels = px(340.);
 
 /// What a mode's note says, its last two words held together, so a note
 /// that has to wrap never leaves a word alone on its last line.
-fn mode_note_text(mode: AgentPermissionMode) -> SharedString {
-    typography::keep_last_words_together(&tr(mode_note(mode)))
+fn mode_note_text(messages: &MessageCache, mode: AgentPermissionMode) -> SharedString {
+    messages.computed("chat-mode-note", mode.as_str(), || {
+        typography::keep_last_words_together(&tr(mode_note(mode)))
+    })
+}
+
+/// The id of the permission modes' row in a menu.
+const MODE_ROW: &str = "mode-control";
+
+/// A segment of the permission modes' control.
+fn mode_segment_id(mode: AgentPermissionMode) -> &'static str {
+    match mode {
+        AgentPermissionMode::ReadOnly => "mode-readOnly",
+        AgentPermissionMode::Auto => "mode-auto",
+        AgentPermissionMode::FullAccess => "mode-fullAccess",
+    }
 }
 
 /// Wide enough that every mode's note sits on one line, in whatever
 /// language, so picking a mode never re-wraps its note or resizes the
 /// menu. The menu still never outgrows the window; only there does a note
 /// wrap.
-fn permissions_menu_width(window: &Window) -> gpui::Pixels {
+fn permissions_menu_width(
+    window: &Window,
+    messages: &MessageCache,
+    cache: &PermissionsWidth,
+) -> gpui::Pixels {
+    // Measured once per locale and text size, not on every render.
+    let key = (crate::ui::i18n::current_locale(), window.rem_size());
+    if let Some((measured, width)) = &*cache.borrow()
+        && *measured == key
+    {
+        return *width;
+    }
+    let width = measure_permissions_menu(window, messages);
+    *cache.borrow_mut() = Some((key, width));
+    width
+}
+
+/// The permissions menus' width with the locale and rem size it was
+/// measured at.
+pub(super) type PermissionsWidth = std::cell::RefCell<
+    Option<(
+        (fluent_templates::LanguageIdentifier, gpui::Pixels),
+        gpui::Pixels,
+    )>,
+>;
+
+/// The permissions menus' width: the widest mode note on one line.
+fn measure_permissions_menu(window: &Window, messages: &MessageCache) -> gpui::Pixels {
     // The note's `text_xs`, in the app's body face.
     let font_size = gpui::rems(0.75).to_pixels(window.rem_size());
     let widest = MODES
@@ -63,7 +102,7 @@ fn permissions_menu_width(window: &Window) -> gpui::Pixels {
         .map(|mode| {
             typography::single_line_width(
                 window,
-                &mode_note_text(*mode),
+                &mode_note_text(messages, *mode),
                 crate::assets::FONT_BODY,
                 font_size,
             )
@@ -139,13 +178,12 @@ fn one_decimal(value: f64) -> String {
     }
 }
 
-/// A share of the window as the bar writes it: whole percent, and `<1%`
-/// for a sliver rather than a misleading zero.
+/// A share of the window as the bar writes it: whole percent rounded
+/// down, and `<1%` for a sliver rather than a misleading zero.
 pub(super) fn format_percent(fraction: f32) -> String {
-    if fraction > 0. && fraction < 0.01 {
-        "<1%".to_string()
-    } else {
-        format!("{}%", (fraction * 100.).round() as u32)
+    match whole_percent(fraction) {
+        0 if fraction > 0. => "<1%".to_string(),
+        percent => format!("{percent}%"),
     }
 }
 
@@ -245,12 +283,16 @@ fn measure_strip(
 }
 
 /// A strip button: a 26 px capsule of 12 px text that only fills under
-/// the pointer or while its menu is open.
+/// the pointer or while its menu is open. It is a tab stop, so the
+/// keyboard reaches it without application Vim.
 fn strip_button(id: &'static str, open: bool) -> motion::HoverBackground {
     div()
         .id(id)
         .debug_selector(|| id.to_string())
         .role(gpui::Role::Button)
+        .tab_index(0)
+        .focus_visible(widgets::focus_ring)
+        .on_key_down(ChatScreen::sidebar_button_key_down)
         .flex_none()
         .h(px(26.))
         .px_2()
@@ -307,23 +349,18 @@ impl ChatScreen {
     }
 
     /// For a box that just left a new task: how far the frame's tray and
-    /// strip have faded in around it, the tray first, then the strip.
+    /// strip have faded in around it. They arrive together.
     fn frame_arrival(&mut self, window: &mut Window, cx: &mut Context<Self>) -> (f32, f32) {
         let Some(landed) = self.frame_arrived else {
             return (1., 1.);
         };
-        let reduced = cx.reduce_motion();
-        let now = motion::now();
-        let after = |delay: u64, token: motion::Token| {
-            let started = landed + Duration::from_millis(delay);
-            if now < started {
-                0.
-            } else {
-                motion::ease_out_cubic(motion::progress(started, token, now, reduced))
-            }
-        };
-        let tray = after(80, motion::PANEL);
-        let strip = after(140, motion::ENTER);
+        let shown = motion::ease_out_cubic(motion::progress(
+            landed,
+            motion::PANEL,
+            motion::now(),
+            cx.reduce_motion(),
+        ));
+        let (tray, strip) = (shown, shown);
         if strip < 1. {
             window.request_animation_frame();
         } else {
@@ -348,7 +385,7 @@ impl ChatScreen {
             (
                 self.context_shown(),
                 self.compact_offered(),
-                self.compacting,
+                self.compacting(),
             )
                 .hash(&mut hasher);
             format_percent(self.context_used()).len().hash(&mut hasher);
@@ -366,9 +403,13 @@ impl ChatScreen {
             measured.strip_left,
             measured.strip_right,
         );
-        let compacting = self.compacting.then(|| {
+        let compacting = self.compacting().then(|| {
+            let status = tr("chat-compacting");
             div()
+                .id("composer-compacting")
                 .debug_selector(|| "composer-compacting".to_string())
+                .role(gpui::Role::Status)
+                .aria_label(status.clone())
                 .flex()
                 .items_center()
                 .gap_1p5()
@@ -376,8 +417,12 @@ impl ChatScreen {
                 .px_2()
                 .text_xs()
                 .text_color(gpui::rgb(theme::text_muted()))
-                .child(spinner("composer-compacting", px(12.), theme::text_muted()))
-                .child(tr("chat-compacting"))
+                .child(spinner_with_id(
+                    SharedString::new_static("spinner-composer-compacting"),
+                    px(12.),
+                    theme::text_muted(),
+                ))
+                .child(status)
         });
         let meter =
             self.render_context_bar(selected == Some(ComposerControl::Context), fit, window, cx);
@@ -495,8 +540,11 @@ impl ChatScreen {
             .child(icon("puzzle", px(14.), ink))
             .child(match fit {
                 StripFit::Full => self.integrations_count_text().color(gpui::rgb(ink)),
+                // The narrow fits' own id: changing fit shows the new label
+                // at its width at once, so it is measured true, rather
+                // than morphing from the full one's width.
                 StripFit::Count | StripFit::Bare | StripFit::Icons => morph_text(
-                    ("composer-integrations-count", 0usize),
+                    ("composer-integrations-count", 1usize),
                     SharedString::from(self.mcp_enabled_count.to_string()),
                 )
                 .color(gpui::rgb(ink)),
@@ -571,7 +619,7 @@ impl ChatScreen {
     /// The context bar shows once the task has used some of its window
     /// and is not compacting.
     pub(super) fn context_shown(&self) -> bool {
-        self.context_limit > 0 && self.ledger_context_tokens > 0 && !self.compacting
+        self.context_limit > 0 && self.ledger_context_tokens > 0 && !self.compacting()
     }
 
     fn context_used(&self) -> f32 {
@@ -667,11 +715,11 @@ impl ChatScreen {
         Some(vim_mark(
             div()
                 .relative()
-                .child(self.popup.trigger(popup, button, cx, |this, _, cx| {
+                .child(self.popup.trigger(popup, button, cx, |this, window, cx| {
                     if this.popup.is_open(&ChatPopup::Context) {
                         this.popup.close(cx);
                     } else {
-                        this.open_context_card(cx);
+                        this.open_context_card(window.last_input_was_keyboard(), cx);
                     }
                 }))
                 .children(menu),
@@ -689,6 +737,9 @@ impl ChatScreen {
             .debug_selector(|| "compact-now".to_string())
             .role(gpui::Role::Button)
             .aria_label(tr("chat-compact"))
+            .tab_index(0)
+            .focus_visible(widgets::focus_ring)
+            .on_key_down(ChatScreen::sidebar_button_key_down)
             .h(px(26.))
             .px_2()
             .flex()
@@ -708,8 +759,9 @@ impl ChatScreen {
         Some(vim_mark(div().child(button), selected))
     }
 
-    pub(super) fn open_context_card(&mut self, cx: &mut Context<Self>) {
-        self.context_card_opened = Some(motion::now());
+    /// Open the context card; from the keyboard, with its bar already in.
+    pub(super) fn open_context_card(&mut self, keyboard: bool, cx: &mut Context<Self>) {
+        self.context_card_opened = (!keyboard).then(motion::now);
         self.context_hover = None;
         self.popup.open(ChatPopup::Context, cx);
         self.refresh_context_usage(cx);
@@ -733,9 +785,23 @@ impl ChatScreen {
                 if this.selected_session.as_deref() != Some(session_id.as_str()) {
                     return;
                 }
-                let breakdown = result.ok().flatten();
-                if this.context_breakdown != breakdown {
+                // A failed refresh keeps what the card last showed. A host
+                // too old to say refuses as expected.
+                let breakdown = match result {
+                    Ok(breakdown) => breakdown,
+                    Err(error) if error.starts_with("remote-context-breakdown-") => {
+                        log::debug!("No context breakdown from the host: {error}");
+                        return;
+                    }
+                    Err(error) => {
+                        log::warn!("Cannot read the context breakdown: {error}");
+                        return;
+                    }
+                };
+                let later = breakdown.is_none();
+                if this.context_breakdown != breakdown || this.context_breakdown_later != later {
                     this.context_breakdown = breakdown;
+                    this.context_breakdown_later = later;
                     cx.notify();
                 }
             },
@@ -754,11 +820,26 @@ impl ChatScreen {
         }
     }
 
-    /// The permission modes as one segmented control, a knob sliding
-    /// behind the current one, and a line under it saying what it means.
-    fn render_permissions_section(&self, cx: &mut Context<Self>) -> Div {
+    /// The permission modes on top of `menu`: a caption, the modes as one
+    /// segmented control with a knob sliding behind the current one, and a
+    /// line under it saying what that mode means. The control is one of the
+    /// menu's rows: the keyboard stops on it, where Left and Right step the
+    /// mode and a ring shows it, and the pointer picks a segment.
+    fn with_permissions(
+        &self,
+        menu: Menu<Self>,
+        window: &Window,
+        cx: &mut Context<Self>,
+    ) -> Menu<Self> {
         let mode = self.permission_mode;
         let index = MODES.iter().position(|each| *each == mode).unwrap_or(1);
+        // A plate behind a segmented control would read as a pick, so the
+        // keyboard's place shows as the app's focus ring instead.
+        let ringed = window.last_input_was_keyboard()
+            && self
+                .popup
+                .highlighted()
+                .is_some_and(|id| *id == gpui::ElementId::from(MODE_ROW));
         let knob = motion::animated("composer-mode-knob", index as f32, motion::TOGGLE, |at| {
             div()
                 .absolute()
@@ -783,8 +864,8 @@ impl ChatScreen {
                 (false, _) => theme::text_muted(),
             };
             div()
-                .id(SharedString::from(format!("mode-{}", each.as_str())))
-                .debug_selector(move || format!("mode-{}", each.as_str()))
+                .id(mode_segment_id(each))
+                .debug_selector(move || mode_segment_id(each).to_string())
                 .role(gpui::Role::RadioButton)
                 .aria_label(tr(mode_label(each)))
                 .aria_toggled(if current {
@@ -809,6 +890,8 @@ impl ChatScreen {
                 })
                 .cursor_pointer()
                 .on_click(cx.listener(move |this, _event, _window, cx| {
+                    // The segment's alone: the row's own pick closes the menu.
+                    cx.stop_propagation();
                     if this.permission_mode != each {
                         this.set_permission_mode(each, cx);
                     }
@@ -816,68 +899,83 @@ impl ChatScreen {
                 .child(icon(mode_icon(each), px(13.), ink))
                 .child(div().truncate().child(tr(mode_label(each))))
         });
-        div()
-            .flex()
-            .flex_col()
-            .child(
-                div()
-                    .px_2p5()
-                    .pt_2()
-                    .pb_1()
-                    .text_xs()
-                    .font_weight(gpui::FontWeight::SEMIBOLD)
-                    .text_color(gpui::rgb(theme::text_muted()))
-                    .child(tr("chat-mode")),
-            )
-            .child(
-                div()
-                    .mx_1p5()
-                    .p(px(2.))
-                    .rounded(theme::RADIUS_MD)
-                    .bg(gpui::rgb(theme::bg_app()))
-                    .border_1()
-                    .border_color(gpui::rgb(theme::border_subtle()))
-                    .child(
-                        div()
-                            .id("mode-segments")
-                            .relative()
-                            .flex()
-                            .role(gpui::Role::RadioGroup)
-                            .aria_label(tr("chat-mode"))
-                            .child(knob)
-                            .children(segments),
-                    ),
-            )
-            .child(
-                div()
-                    .px_2p5()
-                    .pt_1p5()
-                    .pb_1()
-                    .min_h(px(26.))
-                    // The face and size `permissions_menu_width` measures.
-                    .font_family(crate::assets::FONT_BODY)
-                    .text_xs()
-                    .text_color(gpui::rgb(theme::text_muted()))
-                    .child(
-                        div()
-                            .debug_selector(|| "mode-note".to_string())
-                            .child(gpui::text!(mode_note_text(mode))),
-                    ),
-            )
+        let mut track = div()
+            .id("mode-track")
+            // Its own padding is not the row: a press there keeps the menu.
+            .on_click(|_, _, cx| cx.stop_propagation())
+            .p(px(2.))
+            .rounded(theme::RADIUS_MD)
+            .bg(gpui::rgb(theme::bg_app()))
+            .border_1()
+            .border_color(gpui::rgb(theme::border_subtle()));
+        if ringed {
+            let style = track.style();
+            *style = widgets::focus_ring(std::mem::take(style));
+        }
+        let control = track.child(
+            div()
+                .id("mode-segments")
+                .relative()
+                .flex()
+                .role(gpui::Role::RadioGroup)
+                .aria_label(tr("chat-mode"))
+                .child(knob)
+                .children(segments),
+        );
+        // Enter leaves the mode as it is and closes the menu, as a native
+        // popup button's does.
+        let row = MenuItem::new(
+            MODE_ROW,
+            tr(mode_chip_label(mode)),
+            |_: &mut Self, _: &mut Window, _: &mut Context<Self>| {},
+        )
+        .plain()
+        .content(control)
+        .style(|row| row.px(px(6.)).py(px(2.)));
+        menu.header(tr("chat-mode")).item(row).child(
+            div()
+                .px_2p5()
+                .pt_1p5()
+                .pb_1()
+                .min_h(px(26.))
+                // The face and size `permissions_menu_width` measures.
+                .font_family(crate::assets::FONT_BODY)
+                .text_xs()
+                .text_color(gpui::rgb(theme::text_muted()))
+                .child(
+                    div()
+                        .debug_selector(|| "mode-note".to_string())
+                        .child(gpui::text!(mode_note_text(&self.messages, mode))),
+                ),
+        )
     }
 
     /// The permissions popover from a conversation's strip, or from a new
-    /// task's mode token. Left and Right step the mode.
+    /// task's mode token. The modes' control is its only row, so Left and
+    /// Right reach it from anywhere and show where they landed.
     pub(super) fn permissions_menu(&self, window: &Window, cx: &mut Context<Self>) -> Menu<Self> {
-        Menu::new("mode-menu", permissions_menu_width(window))
-            .label(tr("chat-mode"))
-            .application_vim(self.application_vim_enabled)
-            .on_adjust(
-                |this: &mut Self, delta: i32, _: &mut Window, cx: &mut Context<Self>| {
-                    this.step_permission_mode(delta, cx)
-                },
-            )
-            .child(self.render_permissions_section(cx))
+        let menu = Menu::new(
+            "mode-menu",
+            permissions_menu_width(window, &self.messages, &self.permissions_width),
+        )
+        .label(tr("chat-mode"))
+        .application_vim(self.application_vim_enabled)
+        .on_adjust(
+            |this: &mut Self, delta: i32, _: &mut Window, cx: &mut Context<Self>| {
+                this.popup.highlight(Some(MODE_ROW.into()), cx);
+                this.step_permission_mode(delta, cx)
+            },
+        );
+        self.with_permissions(menu, window, cx)
+    }
+
+    /// Open the permissions popover; from the keyboard, on its control.
+    pub(super) fn open_permissions(&mut self, keyboard: bool, cx: &mut Context<Self>) {
+        if keyboard {
+            self.popup.open_highlighted(ChatPopup::Mode, MODE_ROW, cx);
+        } else {
+            self.popup.open(ChatPopup::Mode, cx);
+        }
     }
 
     /// One integration's row: its name and a switch. The description is
@@ -955,42 +1053,37 @@ impl ChatScreen {
     /// A new task's `+`: permissions on top, then integrations and attach.
     /// It opens upward, so Attach, the most common pick, sits nearest the
     /// button. Integrations turns the menu to a page of their switches;
-    /// the menu eases to the page's height and the page's rows come in top
-    /// to bottom.
+    /// turned by the pointer, the menu eases to the page's height and the
+    /// page's rows fade in together; by the keyboard, it all shows at once.
     pub(super) fn add_menu(&self, window: &mut Window, cx: &mut Context<Self>) -> Menu<Self> {
         let turned = self.add_page_turned;
-        // Rows keep arriving for a moment after the page turns.
-        if turned.is_some_and(|turned| {
-            motion::now().saturating_duration_since(turned)
-                < Duration::from_millis(40 + 30 * 16) + motion::ENTER.duration
-        }) {
+        let now = motion::now();
+        let shown = turned.map(|turned| {
+            motion::ease_out_quint(motion::progress(turned, motion::REVEAL, now, false))
+        });
+        if shown.is_some_and(|shown| shown < 1.) {
             window.request_animation_frame();
         }
-        let arrive = move |row: gpui::Stateful<Div>, order: usize| {
-            let Some(turned) = turned else {
-                return row;
-            };
-            let started = turned + Duration::from_millis(40 + 30 * order as u64);
-            let now = motion::now();
-            let shown = if now < started {
-                0.
-            } else {
-                motion::ease_out_quint(motion::progress(started, motion::ENTER, now, false))
-            };
-            row.opacity(shown)
+        let arrive = move |row: gpui::Stateful<Div>, _order: usize| match shown {
+            Some(shown) => row.opacity(shown),
+            None => row,
         };
-        let menu = Menu::new("add-menu", permissions_menu_width(window))
-            .label(tr("chat-add"))
-            .max_height(px(460.))
-            .ease_height()
-            .application_vim(self.application_vim_enabled);
+        let menu = Menu::new(
+            "add-menu",
+            permissions_menu_width(window, &self.messages, &self.permissions_width),
+        )
+        .label(tr("chat-add"))
+        .max_height(px(460.))
+        .ease_height()
+        .height_at_once(turned.is_none())
+        .application_vim(self.application_vim_enabled);
         match self.add_page {
             Some(AddPage::Integrations) => {
                 let mut menu = menu
                     .on_adjust(
                         |this: &mut Self, delta: i32, _: &mut Window, cx: &mut Context<Self>| {
                             if delta < 0 {
-                                this.turn_add_page(None, cx);
+                                this.turn_add_page(None, true, cx);
                             }
                         },
                     )
@@ -998,8 +1091,8 @@ impl ChatScreen {
                         MenuItem::new(
                             "add-back",
                             tr("chat-integrations"),
-                            |this: &mut Self, _: &mut Window, cx: &mut Context<Self>| {
-                                this.turn_add_page(None, cx);
+                            |this: &mut Self, window: &mut Window, cx: &mut Context<Self>| {
+                                this.turn_add_page(None, window.last_input_was_keyboard(), cx);
                             },
                         )
                         .icon("chevron-left")
@@ -1039,8 +1132,9 @@ impl ChatScreen {
                     MenuItem::new(
                         "add-integrations",
                         tr("chat-integrations"),
-                        |this: &mut Self, _: &mut Window, cx: &mut Context<Self>| {
-                            this.turn_add_page(Some(AddPage::Integrations), cx);
+                        |this: &mut Self, window: &mut Window, cx: &mut Context<Self>| {
+                            let keyboard = window.last_input_was_keyboard();
+                            this.turn_add_page(Some(AddPage::Integrations), keyboard, cx);
                             this.refresh_session_mcp(cx);
                         },
                     )
@@ -1073,47 +1167,52 @@ impl ChatScreen {
                     .trailing(widgets::navigate_mark(theme::text_muted()))
                     .style(|row| row.tooltip(widgets::tooltip(tr("chat-setup-integrations"), None)))
                 };
-                menu.on_adjust(
+                // Left and Right work the row they are on: they step the mode
+                // on its control, Right turns to the Integrations page from
+                // its row, and elsewhere they do nothing. A stray press must
+                // never change the permissions every new task starts with.
+                let menu = menu.on_adjust(
                     |this: &mut Self, delta: i32, _: &mut Window, cx: &mut Context<Self>| {
-                        let on_integrations = this
-                            .popup
-                            .highlighted()
-                            .is_some_and(|id| *id == gpui::ElementId::from("add-integrations"));
-                        if on_integrations && delta > 0 {
-                            this.turn_add_page(Some(AddPage::Integrations), cx);
-                            this.refresh_session_mcp(cx);
-                        } else {
+                        let highlighted = this.popup.highlighted().cloned();
+                        if highlighted == Some(gpui::ElementId::from(MODE_ROW)) {
                             this.step_permission_mode(delta, cx);
+                        } else if delta > 0
+                            && highlighted == Some(gpui::ElementId::from("add-integrations"))
+                        {
+                            this.turn_add_page(Some(AddPage::Integrations), true, cx);
+                            this.refresh_session_mcp(cx);
                         }
                     },
-                )
-                .child(self.render_permissions_section(cx))
-                .separator()
-                .item(integrations.style(move |row| arrive(row, 1)))
-                .item(
-                    MenuItem::new(
-                        "add-attach",
-                        tr("chat-attach"),
-                        |this: &mut Self, _: &mut Window, cx: &mut Context<Self>| {
-                            this.pick_attachments(cx);
-                        },
+                );
+                self.with_permissions(menu, window, cx)
+                    .separator()
+                    .item(integrations.style(move |row| arrive(row, 1)))
+                    .item(
+                        MenuItem::new(
+                            "add-attach",
+                            tr("chat-attach"),
+                            |this: &mut Self, _: &mut Window, cx: &mut Context<Self>| {
+                                this.pick_attachments(cx);
+                            },
+                        )
+                        .icon("paperclip")
+                        .style(move |row| {
+                            arrive(row, 2)
+                                .tooltip(widgets::tooltip(tr("chat-attach-drop-hint"), None))
+                        }),
                     )
-                    .icon("paperclip")
-                    .style(move |row| {
-                        arrive(row, 2).tooltip(widgets::tooltip(tr("chat-attach-drop-hint"), None))
-                    }),
-                )
             }
         }
     }
 
-    /// Turn the `+` menu to `page`, from where it is.
-    fn turn_add_page(&mut self, page: Option<AddPage>, cx: &mut Context<Self>) {
+    /// Turn the `+` menu to `page`, from where it is. A turn the keyboard
+    /// made shows at once.
+    fn turn_add_page(&mut self, page: Option<AddPage>, keyboard: bool, cx: &mut Context<Self>) {
         if self.add_page == page {
             return;
         }
         self.add_page = page;
-        self.add_page_turned = (!cx.reduce_motion()).then(motion::now);
+        self.add_page_turned = (!keyboard && !cx.reduce_motion()).then(motion::now);
         // Back on the first page the Integrations row stays highlighted,
         // so Right goes straight back in.
         let highlight = match page {
@@ -1126,7 +1225,7 @@ impl ChatScreen {
 
     /// A conversation's `+`: one well to click or drop files on, and how
     /// to paste an image.
-    pub(super) fn attach_menu(&self, cx: &mut Context<Self>) -> Menu<Self> {
+    pub(super) fn attach_menu(&self, window: &Window, cx: &mut Context<Self>) -> Menu<Self> {
         let hovered = self
             .popup
             .highlighted()
@@ -1234,11 +1333,20 @@ impl ChatScreen {
                 })
                 .on_drop(dropped)
         });
-        Menu::new("attach-menu", px(300.))
+        // The key that pastes into the box, as bound now and written the
+        // way the app writes keys; nothing, if paste is unbound.
+        let paste = window
+            .highest_precedence_binding_for_action_in_context(
+                &crate::ui::text_input::Paste,
+                gpui::KeyContext::parse("TextInput").unwrap_or_default(),
+            )
+            .map(|binding| widgets::format_keystrokes(binding.keystrokes()));
+        let menu = Menu::new("attach-menu", px(300.))
             .label(tr("chat-attach"))
             .application_vim(self.application_vim_enabled)
-            .item(well)
-            .child(
+            .item(well);
+        match paste {
+            Some(paste) => menu.child(
                 div()
                     .flex()
                     .items_center()
@@ -1249,12 +1357,10 @@ impl ChatScreen {
                     .text_xs()
                     .text_color(gpui::rgb(theme::text_muted()))
                     .child(tr("chat-attach-paste"))
-                    .child(widgets::keycap(if cfg!(target_os = "macos") {
-                        "⌘V"
-                    } else {
-                        "Ctrl+V"
-                    })),
-            )
+                    .child(widgets::keycap(paste)),
+            ),
+            None => menu,
+        }
     }
 
     /// The context card: how full the window is, what fills it, in the
@@ -1268,6 +1374,29 @@ impl ChatScreen {
             .label(tr("chat-context-title"))
             .application_vim(self.application_vim_enabled)
             .child(self.render_context_card(window, cx))
+            .pinned(self.card_compact_item())
+    }
+
+    /// The card's Compact, pinned under it as Manage is under the
+    /// integrations, so the keyboard reaches it after the card. While a
+    /// turn runs or the task already compacts it is disabled, and its note
+    /// says why.
+    fn card_compact_item(&self) -> MenuItem<Self> {
+        let compacting = self.compacting();
+        let item = MenuItem::new(
+            "context-compact-now",
+            tr("chat-compact"),
+            |this: &mut Self, _: &mut Window, cx: &mut Context<Self>| this.compact_now(cx),
+        );
+        if compacting || self.is_run_active() {
+            item.enabled(false).note(if compacting {
+                tr("chat-compacting")
+            } else {
+                tr("chat-compact-after-turn")
+            })
+        } else {
+            item.style(|row| row.text_color(gpui::rgb(theme::accent_ink())))
+        }
     }
 
     fn render_context_card(&mut self, window: &mut Window, cx: &mut Context<Self>) -> Div {
@@ -1279,17 +1408,30 @@ impl ChatScreen {
             .context_breakdown
             .map(|breakdown| scaled_parts(&breakdown, total))
             .unwrap_or_default();
-        let compact_at = self
+        // Where the task compacts, once the host has said, for the window
+        // the bar shows. After a model pick the host's threshold is still
+        // the task's model's until the next message, so the card claims
+        // nothing about it then, nor for a window the host does not know.
+        let threshold = self
             .context_breakdown
-            .and_then(|breakdown| breakdown.compact_at)
-            .filter(|at| *at > 0 && *at < window_tokens);
-        let busy = self.is_run_active() || self.compacting;
+            .filter(|breakdown| breakdown.window > 0 && breakdown.window == window_tokens)
+            .map(|breakdown| breakdown.compact_at);
+        let compact_at = threshold.flatten();
+        // A threshold of zero compacts after any step.
         let past = compact_at.is_some_and(|at| total > at);
-        // The parts grow in, left to right, as the card opens.
-        let opened = self.context_card_opened.unwrap_or_else(motion::now);
-        let reduced = cx.reduce_motion();
-        let now = motion::now();
-        let mut growing = false;
+        // The bar grows in as the card opens, its parts together, as the
+        // strip's bar fills; opened from the keyboard, it is there at once.
+        let grown = self.context_card_opened.map_or(1., |opened| {
+            motion::ease_out_cubic(motion::progress(
+                opened,
+                motion::PANEL,
+                motion::now(),
+                cx.reduce_motion(),
+            ))
+        });
+        if grown < 1. {
+            window.request_animation_frame();
+        }
         let share = move |tokens: u64| -> f32 {
             if window_tokens == 0 {
                 0.
@@ -1299,68 +1441,66 @@ impl ChatScreen {
         };
         let hover = self.context_hover;
         let segments = if parts.is_empty() {
-            vec![(ContextPart::Messages, total)]
+            // What fills the window is not known: one bar in the meter's own
+            // colour, which no part has.
+            vec![
+                div()
+                    .h_full()
+                    .flex_shrink(1.)
+                    .min_w(px(3.))
+                    .w(relative(share(total) * grown))
+                    .bg(gpui::rgb(level.color()))
+                    .into_any_element(),
+            ]
         } else {
-            parts.clone()
-        }
-        .into_iter()
-        .enumerate()
-        .map(|(order, (part, tokens))| {
-            let started = opened + Duration::from_millis(40 + 35 * order as u64);
-            let grown = if now < started {
-                0.
-            } else {
-                motion::ease_out_quint(motion::progress(
-                    started,
-                    motion::ENTER.scaled(1.45),
-                    now,
-                    reduced,
-                ))
-            };
-            growing |= grown < 1.;
-            let dimmed = hover.is_some_and(|hovered| hovered != part);
-            motion::animated(
-                ("context-segment", order),
-                if dimmed { 0.32 } else { 1. },
-                motion::HOVER,
-                move |strength| {
-                    div()
-                        .h_full()
-                        .flex_shrink(1.)
-                        .min_w(px(3.))
-                        .w(relative(share(tokens) * grown))
-                        .bg(gpui::rgb(part.color()))
-                        .opacity(strength)
-                        .into_any_element()
-                },
-            )
-            .into_any_element()
-        })
-        .collect::<Vec<_>>();
-        if growing {
-            window.request_animation_frame();
-        }
-        let tick = compact_at.map(|at| {
-            div()
-                .absolute()
-                .top(px(-5.))
-                .left(relative(share(at)))
-                .ml(px(-3.))
-                .w(px(6.))
-                .h(px(20.))
-                .rounded(px(3.))
-                .bg(gpui::rgb(theme::bg_elevated()))
-                .flex()
-                .justify_center()
-                .py(px(2.))
-                .child(
-                    div()
-                        .w(px(2.))
-                        .h_full()
-                        .rounded(px(1.))
-                        .bg(gpui::rgb(theme::context_tick())),
-                )
-        });
+            parts
+                .iter()
+                .copied()
+                .enumerate()
+                .map(|(order, (part, tokens))| {
+                    let dimmed = hover.is_some_and(|hovered| hovered != part);
+                    motion::animated(
+                        ("context-segment", order),
+                        if dimmed { 0.32 } else { 1. },
+                        motion::HOVER,
+                        move |strength| {
+                            div()
+                                .h_full()
+                                .flex_shrink(1.)
+                                .min_w(px(3.))
+                                .w(relative(share(tokens) * grown))
+                                .bg(gpui::rgb(part.color()))
+                                .opacity(strength)
+                                .into_any_element()
+                        },
+                    )
+                    .into_any_element()
+                })
+                .collect::<Vec<_>>()
+        };
+        let tick = compact_at
+            .filter(|at| *at > 0 && *at < window_tokens)
+            .map(|at| {
+                div()
+                    .absolute()
+                    .top(px(-5.))
+                    .left(relative(share(at)))
+                    .ml(px(-3.))
+                    .w(px(6.))
+                    .h(px(20.))
+                    .rounded(px(3.))
+                    .bg(gpui::rgb(theme::bg_elevated()))
+                    .flex()
+                    .justify_center()
+                    .py(px(2.))
+                    .child(
+                        div()
+                            .w(px(2.))
+                            .h_full()
+                            .rounded(px(1.))
+                            .bg(gpui::rgb(theme::context_tick())),
+                    )
+            });
         let legend = parts
             .iter()
             .copied()
@@ -1427,14 +1567,23 @@ impl ChatScreen {
             });
         // Where the task compacts by itself, once the host has said; an
         // older host does not, and the card claims nothing.
-        let compact_note = self.context_breakdown.map(|_| match compact_at {
-            Some(_) if past => tr("chat-context-compacts-next"),
-            Some(at) => self.messages.get(
-                "chat-context-compacts-at",
-                [("percent", format_percent(share(at)).into())],
-            ),
-            None => tr("chat-context-compacts-off"),
-        });
+        let note = threshold
+            .map(|compact_at| {
+                let note = match compact_at {
+                    Some(_) if past => tr("chat-context-compacts-next"),
+                    Some(at) => self.messages.get(
+                        "chat-context-compacts-at",
+                        [("percent", format_percent(share(at)).into())],
+                    ),
+                    None => tr("chat-context-compacts-off"),
+                };
+                ("context-compact-note", note)
+            })
+            // A task not loaded since launch has no breakdown until it runs.
+            .or_else(|| {
+                self.context_breakdown_later
+                    .then(|| ("context-details-later", tr("chat-context-details-later")))
+            });
         div()
             .debug_selector(|| "context-card".to_string())
             .flex()
@@ -1497,51 +1646,16 @@ impl ChatScreen {
                     .children(tick),
             )
             .child(div().flex().flex_col().gap(px(2.)).children(legend))
-            .child(
-                div()
-                    .mt_2p5()
-                    .pt_2p5()
-                    .border_t_1()
-                    .border_color(gpui::rgb(theme::border_subtle()))
-                    .flex()
-                    .items_center()
-                    .justify_between()
-                    .gap_2()
-                    .child(
-                        div()
-                            .text_xs()
-                            .text_color(gpui::rgb(theme::text_muted()))
-                            .when(compact_note.is_some(), |note| {
-                                note.debug_selector(|| "context-compact-note".to_string())
-                            })
-                            .children(compact_note.map(|note| gpui::text!(note))),
-                    )
-                    .child(
-                        widgets::secondary_button("context-compact-now")
-                            .debug_selector(|| "context-compact-now".to_string())
-                            .flex_none()
-                            .px_3()
-                            .py_1()
-                            .text_xs()
-                            .when(level != ContextLevel::Room, |button| {
-                                button
-                                    .bg(gpui::rgb(theme::accent_container()))
-                                    .text_color(gpui::rgb(theme::accent_ink()))
-                            })
-                            .when(busy, |button| {
-                                button
-                                    .opacity(0.5)
-                                    .tooltip(widgets::tooltip(tr("chat-compact-after-turn"), None))
-                            })
-                            .when(!busy, |button| {
-                                button.on_click(cx.listener(|this, _event, _window, cx| {
-                                    this.popup.close(cx);
-                                    this.compact_now(cx);
-                                }))
-                            })
-                            .child(gpui::text!(tr("chat-compact"))),
-                    ),
-            )
+            .when_some(note, |card, (id, note)| {
+                card.child(
+                    div()
+                        .debug_selector(move || id.to_string())
+                        .mt_2p5()
+                        .text_xs()
+                        .text_color(gpui::rgb(theme::text_muted()))
+                        .child(gpui::text!(note)),
+                )
+            })
     }
 }
 
@@ -1567,19 +1681,40 @@ mod tests {
     fn a_sliver_of_the_window_is_not_zero() {
         assert_eq!(format_percent(0.), "0%");
         assert_eq!(format_percent(0.004), "<1%");
-        assert_eq!(format_percent(0.486), "49%");
+        assert_eq!(format_percent(0.486), "48%");
+        assert_eq!(format_percent(0.29), "29%", "not 28% from f32's 0.2899…");
+        assert_eq!(format_percent(0.996), "99%", "100% only once full");
         assert_eq!(format_percent(1.), "100%");
     }
 
+    /// Each mode's icon is embedded; a name with no file draws nothing.
+    #[test]
+    fn every_mode_has_its_icon() {
+        use gpui::AssetSource as _;
+        for mode in MODES {
+            let path = format!("icons/{}.svg", mode_icon(mode));
+            assert!(
+                crate::assets::Assets.load(&path).unwrap().is_some(),
+                "{path} is not in the asset list"
+            );
+        }
+    }
+
     /// The bar's colours change at 75% and 90%, where Compact is offered
-    /// and where the window is nearly full.
+    /// and where the window is nearly full, as the percentage reads.
     #[test]
     fn the_context_level_turns_at_75_and_90_percent() {
-        assert_eq!(ContextLevel::of(0.), ContextLevel::Room);
-        assert_eq!(ContextLevel::of(0.749), ContextLevel::Room);
-        assert_eq!(ContextLevel::of(0.75), ContextLevel::Near);
-        assert_eq!(ContextLevel::of(0.899), ContextLevel::Near);
-        assert_eq!(ContextLevel::of(0.9), ContextLevel::Full);
+        for (fraction, written, level) in [
+            (0., "0%", ContextLevel::Room),
+            (0.749, "74%", ContextLevel::Room),
+            (0.75, "75%", ContextLevel::Near),
+            (0.899, "89%", ContextLevel::Near),
+            (0.9, "90%", ContextLevel::Full),
+            (1., "100%", ContextLevel::Full),
+        ] {
+            assert_eq!(format_percent(fraction), written, "{fraction}");
+            assert_eq!(ContextLevel::of(fraction), level, "{fraction}");
+        }
     }
 
     /// The strip keeps the widest fit that fits, trying an unmeasured one
@@ -1628,6 +1763,7 @@ mod tests {
             tool_results: 12_000,
             images: 3_000,
             compact_at: Some(114_688),
+            window: 128_000,
         };
         let parts = scaled_parts(&breakdown, 50_000);
         assert_eq!(

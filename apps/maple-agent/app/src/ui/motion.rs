@@ -40,6 +40,12 @@ pub const RUNNING_BREATH: Duration = Duration::from_millis(2400);
 /// One cycle of the band across a running task's title: a pass, then a
 /// rest, two breaths of [`RUNNING_BREATH`] so the dot and band keep step.
 pub const RUNNING_SHINE: Duration = Duration::from_millis(4800);
+/// One breath of the composer's round button while it listens: quicker
+/// than a running task's, since the microphone is live.
+pub const LISTENING_BREATH: Duration = Duration::from_millis(1400);
+/// One pass of the wave beside the composer's mic while it listens, out of
+/// step with [`LISTENING_BREATH`] so the two never pulse together.
+pub const LISTENING_WAVE: Duration = Duration::from_millis(1130);
 
 /// One kind of motion. Everything of that kind takes its timing from the
 /// token, so editing a token here retunes every animation that uses it.
@@ -1055,12 +1061,23 @@ pub fn fit_height(id: impl Into<ElementId>, content: impl IntoElement) -> FitHei
     FitHeight {
         id: id.into(),
         content: Some(content.into_any_element()),
+        instant: false,
     }
 }
 
 pub struct FitHeight {
     id: ElementId,
     content: Option<AnyElement>,
+    instant: bool,
+}
+
+impl FitHeight {
+    /// Follow the content at once, as reduced motion does, for a change
+    /// the keyboard made.
+    pub fn instant(mut self, instant: bool) -> Self {
+        self.instant = instant;
+        self
+    }
 }
 
 // The box's height, and its content's height when last laid out.
@@ -1097,7 +1114,7 @@ impl Element for FitHeight {
         cx: &mut App,
     ) -> (LayoutId, AnyElement) {
         let now = now();
-        let reduced = cx.reduce_motion();
+        let reduced = cx.reduce_motion() || self.instant;
         let (height, moving, natural) = window.with_element_state(
             id.expect("height-fitting content has an id"),
             |state: Option<Fitted>, _| {
@@ -1130,9 +1147,14 @@ impl Element for FitHeight {
         let measured = natural.clone();
         let frame = gpui::div()
             .relative()
-            .on_children_prepainted(move |bounds, _, _| {
-                if let Some(body) = bounds.first() {
-                    measured.set(Some(body.size.height));
+            .on_children_prepainted(move |bounds, window, _| {
+                // A new height takes effect at the next layout. Ask for it:
+                // with nothing else moving, as under reduced motion, no other
+                // frame would come, and the box would keep the old height.
+                if let Some(body) = bounds.first()
+                    && measured.replace(Some(body.size.height)) != Some(body.size.height)
+                {
+                    window.request_animation_frame();
                 }
             });
         let body = gpui::div().child(content);
@@ -1181,20 +1203,19 @@ impl Element for FitHeight {
 /// over [`TOGGLE`], as [`icon_swap`] does for two. For a control whose icon
 /// names one of several states, such as a permission mode.
 pub fn icon_cycle(
-    id: impl Into<ElementId>,
+    id: &'static str,
     shown: usize,
     icons: &[&'static str],
     size: Pixels,
     color: u32,
 ) -> gpui::Div {
-    let id = std::sync::Arc::new(id.into());
     gpui::div()
         .relative()
         .flex_none()
         .size(size)
         .children(icons.iter().enumerate().map(|(index, &name)| {
             animated(
-                ElementId::NamedChild(id.clone(), format!("icon-{index}").into()),
+                (id, index),
                 if index == shown { 1. } else { 0. },
                 TOGGLE,
                 move |on| {

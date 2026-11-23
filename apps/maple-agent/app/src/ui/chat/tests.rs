@@ -8114,6 +8114,50 @@ mod state_tests {
             queue.size.width > px(48.),
             "it widens to say Queue: {queue:?}"
         );
+        use crate::ui::chat::composer::PrimaryAction;
+        let primary = |chat: &Entity<ChatScreen>, cx: &mut gpui::VisualTestContext| {
+            chat.read_with(cx, |this, _| {
+                this.primary_action(true, false, false, true, true)
+            })
+        };
+        write(&chat, cx, "/btw why?");
+        cx.run_until_parked();
+        assert_eq!(
+            primary(&chat, cx),
+            PrimaryAction::Send,
+            "a side question is asked at once"
+        );
+        chat.update(cx, |this, cx| {
+            this.btw = Some(SideQuestionPanel {
+                request_id: "btw-1".to_string(),
+                turns: Vec::new(),
+                revision: 0,
+                pending: false,
+                error: None,
+            });
+            cx.notify();
+        });
+        write(&chat, cx, "and then?");
+        cx.run_until_parked();
+        assert_eq!(
+            primary(&chat, cx),
+            PrimaryAction::Send,
+            "so is a plain message while the side thread is open"
+        );
+        chat.update(cx, |this, cx| {
+            this.btw = None;
+            cx.notify();
+        });
+        write(&chat, cx, "/compact");
+        cx.run_until_parked();
+        assert_eq!(
+            primary(&chat, cx),
+            PrimaryAction::Send,
+            "a command runs at once too"
+        );
+        write(&chat, cx, "after that");
+        cx.run_until_parked();
+        assert_eq!(primary(&chat, cx), PrimaryAction::Queue);
     }
 
     /// Steps an open permissions menu from Full access, whose short note
@@ -8181,6 +8225,8 @@ mod state_tests {
         });
         press(cx, "composer-add");
         assert_eq!(open_menu(&chat, cx), "Add");
+        // The arrows step the mode once the keyboard is on its control.
+        cx.simulate_keystrokes("down");
         assert_mode_notes_fit(&chat, cx, "add-menu");
     }
 
@@ -8195,6 +8241,40 @@ mod state_tests {
         cx.run_until_parked();
         press(cx, "permission-mode-menu");
         assert_mode_notes_fit(&chat, cx, "mode-menu");
+    }
+
+    /// The control is the strip popover's one row: Left and Right step the
+    /// mode from anywhere in it and land the keyboard there, and Enter
+    /// closes it with the mode as it is.
+    #[gpui::test]
+    fn the_strip_permissions_step_on_their_row(cx: &mut TestAppContext) {
+        cx.update(|cx| cx.set_reduce_motion(true));
+        let (chat, cx) = chat_window(cx, |this, _| {
+            this.replace_timeline(vec![user_item("u1", "hi")]);
+            this.permission_mode = AgentPermissionMode::Auto;
+        });
+        cx.run_until_parked();
+        press(cx, "permission-mode-menu");
+        cx.simulate_keystrokes("right");
+        chat.read_with(cx, |this, _| {
+            assert_eq!(this.permission_mode, AgentPermissionMode::FullAccess);
+            assert_eq!(
+                this.popup.highlighted().cloned(),
+                Some("mode-control".into()),
+                "the keyboard is on the control"
+            );
+        });
+        cx.simulate_keystrokes("enter");
+        cx.run_until_parked();
+        assert!(cx.debug_bounds("mode-menu").is_none(), "Enter closes it");
+        assert_eq!(
+            chat.read_with(cx, |this, _| this.permission_mode),
+            AgentPermissionMode::FullAccess,
+            "with the mode as it is"
+        );
+        chat.update(cx, |this, cx| {
+            this.set_permission_mode(AgentPermissionMode::Auto, cx)
+        });
     }
 
     /// A note too long for a narrow window wraps without leaving its last
@@ -8247,8 +8327,8 @@ mod state_tests {
     }
 
     /// A new task's `+` turns to a page of integrations and back, and the
-    /// permission mode it holds steps with the arrow keys; the mode token
-    /// beside the model follows.
+    /// permission mode it holds steps with the arrow keys on its own row
+    /// only; the mode token beside the model follows.
     #[gpui::test]
     fn the_add_menu_holds_permissions_integrations_and_attach(cx: &mut TestAppContext) {
         cx.update(|cx| cx.set_reduce_motion(true));
@@ -8276,16 +8356,48 @@ mod state_tests {
         ] {
             assert!(cx.debug_bounds(id).is_some(), "{id} in the + menu");
         }
+        let mode = |chat: &Entity<ChatScreen>, cx: &mut gpui::VisualTestContext| {
+            chat.read_with(cx, |this, _| this.permission_mode)
+        };
+        cx.simulate_keystrokes("right left");
+        assert_eq!(
+            mode(&chat, cx),
+            AgentPermissionMode::Auto,
+            "arrows off the control leave the mode alone"
+        );
+        cx.simulate_keystrokes("down");
+        assert_eq!(
+            chat.read_with(cx, |this, _| this.popup.highlighted().cloned()),
+            Some("mode-control".into()),
+            "the control is the menu's first row"
+        );
         cx.simulate_keystrokes("right");
-        assert_eq!(
-            chat.read_with(cx, |this, _| this.permission_mode),
-            AgentPermissionMode::FullAccess
-        );
+        assert_eq!(mode(&chat, cx), AgentPermissionMode::FullAccess);
         cx.simulate_keystrokes("left left");
+        assert_eq!(mode(&chat, cx), AgentPermissionMode::ReadOnly);
+        cx.simulate_keystrokes("down");
         assert_eq!(
-            chat.read_with(cx, |this, _| this.permission_mode),
-            AgentPermissionMode::ReadOnly
+            chat.read_with(cx, |this, _| this.popup.highlighted().cloned()),
+            Some("add-integrations".into())
         );
+        cx.simulate_keystrokes("left");
+        assert_eq!(
+            mode(&chat, cx),
+            AgentPermissionMode::ReadOnly,
+            "nor does Left on Integrations"
+        );
+        cx.simulate_keystrokes("right");
+        wait_until(&chat, cx, "the keyboard's page turn", |this| {
+            this.add_page.is_some()
+        });
+        assert!(
+            chat.read_with(cx, |this, _| this.add_page_turned.is_none()),
+            "a page the keyboard turned shows at once"
+        );
+        cx.simulate_keystrokes("left");
+        cx.run_until_parked();
+        assert!(chat.read_with(cx, |this, _| this.add_page.is_none()));
+        assert_eq!(mode(&chat, cx), AgentPermissionMode::ReadOnly);
         press(cx, "add-integrations");
         wait_until(&chat, cx, "the rows reloading", |this| {
             this.draft_mcp_defaults.is_some()
@@ -8359,6 +8471,56 @@ mod state_tests {
     /// The context bar shows once the task has used some of its window:
     /// quiet below 75%, then Compact beside it while no turn runs. It
     /// steps aside while the task compacts.
+    /// The strip's controls are tab stops: Space or Enter on one opens its
+    /// menu, as a press does, without typing into the draft.
+    #[gpui::test]
+    fn the_strip_takes_the_keyboard(cx: &mut TestAppContext) {
+        cx.update(|cx| cx.set_reduce_motion(true));
+        let (chat, cx) = chat_window(cx, |this, _| {
+            this.replace_timeline(vec![user_item("u1", "hi")]);
+            this.context_limit = 100_000;
+            this.ledger_context_tokens = 40_000;
+        });
+        let composer = cx.update(|_, app| chat.read(app).composer.clone().unwrap());
+        composer.update(cx, |input, cx| input.set_text("Unsent draft", cx));
+        cx.run_until_parked();
+        for (control, menu) in [
+            ("mcp-menu", "Integrations"),
+            ("permission-mode-menu", "Mode"),
+            ("context-bar", "Context"),
+        ] {
+            // A press focuses the control; closing its menu hands focus back.
+            press(cx, control);
+            assert_eq!(open_menu(&chat, cx), menu);
+            cx.simulate_keystrokes("escape");
+            cx.run_until_parked();
+            let trigger = cx
+                .update(|window, app| window.focused(app))
+                .expect("focus returns to the control");
+            assert!(trigger.tab_stop, "{control} is a tab stop");
+            for key in ["space", "enter"] {
+                cx.simulate_keystrokes(key);
+                cx.update(|window, app| {
+                    window.dispatch_event(
+                        gpui::PlatformInput::KeyUp(gpui::KeyUpEvent {
+                            keystroke: gpui::Keystroke::parse(key).unwrap(),
+                        }),
+                        app,
+                    );
+                });
+                cx.run_until_parked();
+                assert_eq!(open_menu(&chat, cx), menu, "{key} on {control}");
+                cx.simulate_keystrokes("escape");
+                cx.run_until_parked();
+            }
+            assert_eq!(
+                composer.update(cx, |input, _| input.text()),
+                "Unsent draft",
+                "{control} keeps its keys from the draft"
+            );
+        }
+    }
+
     #[gpui::test]
     fn the_context_bar_offers_compact_near_the_limit(cx: &mut TestAppContext) {
         cx.update(|cx| cx.set_reduce_motion(true));
@@ -8386,13 +8548,13 @@ mod state_tests {
         assert!(!shown(cx, "compact-now"), "not while a turn runs");
         chat.update(cx, |this, cx| {
             this.active_runs.clear();
-            this.compacting = true;
+            this.compacting_runs.insert("s1".into());
             cx.notify();
         });
         assert!(!shown(cx, "context-bar"));
         assert!(shown(cx, "composer-compacting"));
         chat.update(cx, |this, cx| {
-            this.compacting = false;
+            this.compacting_runs.clear();
             cx.notify();
         });
         press(cx, "context-bar");
@@ -8429,6 +8591,15 @@ mod state_tests {
             cx.debug_bounds("context-compact-note").is_none(),
             "no claim about compaction without the host's answer"
         );
+        wait_until(&chat, cx, "the host saying it has nothing yet", |this| {
+            this.context_breakdown_later
+        });
+        cx.update(|window, _| window.refresh());
+        cx.run_until_parked();
+        assert!(
+            cx.debug_bounds("context-details-later").is_some(),
+            "it says when the details come"
+        );
 
         chat.update(cx, |this, cx| {
             this.context_breakdown = Some(maple_agent::agent::AgentContextBreakdown {
@@ -8438,6 +8609,7 @@ mod state_tests {
                 tool_results: 12_000,
                 images: 0,
                 compact_at: Some(83_616),
+                window: 100_000,
             });
             cx.notify();
         });
@@ -8459,6 +8631,23 @@ mod state_tests {
             assert!(cx.debug_bounds(empty).is_none(), "no row for {empty}");
         }
         assert!(cx.debug_bounds("context-compact-note").is_some());
+        assert!(cx.debug_bounds("context-details-later").is_none());
+
+        // After a pick of a model with another window, the host's threshold
+        // is still the old model's: the card says nothing about it.
+        chat.update(cx, |this, cx| {
+            if let Some(breakdown) = this.context_breakdown.as_mut() {
+                breakdown.window = 128_000;
+            }
+            cx.notify();
+        });
+        cx.update(|window, _| window.refresh());
+        cx.run_until_parked();
+        assert!(cx.debug_bounds("context-legend-Messages").is_some());
+        assert!(
+            cx.debug_bounds("context-compact-note").is_none(),
+            "no claim for another model's window"
+        );
     }
 
     /// In a narrow window the strip's controls keep to their own room: the
@@ -8588,7 +8777,7 @@ mod state_tests {
         });
         // The fixture's host has no such task and refuses at once.
         press(cx, "compact-now");
-        wait_until(&chat, cx, "the host's refusal", |this| !this.compacting);
+        wait_until(&chat, cx, "the host's refusal", |this| !this.compacting());
         cx.update(|window, _| window.refresh());
         cx.run_until_parked();
         assert!(cx.debug_bounds("composer-compacting").is_none());
@@ -8604,6 +8793,62 @@ mod state_tests {
             ),
             "and says it failed: {notice:?}"
         );
+    }
+
+    /// A compaction a run starts on its own ends when the host says it
+    /// failed or was stopped, not only when its summary lands. Each task
+    /// keeps its own, so one under way still shows after leaving the task
+    /// and coming back, and a run that ends takes its compaction with it.
+    #[gpui::test]
+    fn an_automatic_compaction_ends_however_it_ends(cx: &mut TestAppContext) {
+        use maple_agent::agent::{AgentRunEvent, AgentRunTerminal};
+        cx.update(|cx| cx.set_reduce_motion(true));
+        let (chat, cx) = chat_window(cx, |this, _| {
+            this.replace_timeline(vec![user_item("u1", "hi")]);
+            this.context_limit = 100_000;
+            this.ledger_context_tokens = 40_000;
+            this.active_runs.insert("s1".into(), "r1".into());
+        });
+        let deliver =
+            |chat: &Entity<ChatScreen>, cx: &mut gpui::VisualTestContext, event: AgentRunEvent| {
+                chat.update(cx, |this, cx| {
+                    this.handle_run_event("s1", "r1", event, cx);
+                    cx.notify();
+                });
+                cx.update(|window, _| window.refresh());
+                cx.run_until_parked();
+            };
+        deliver(&chat, cx, AgentRunEvent::Compacting);
+        assert!(
+            cx.debug_bounds("composer-compacting").is_some(),
+            "under way"
+        );
+        deliver(&chat, cx, AgentRunEvent::CompactionStopped);
+        assert!(
+            cx.debug_bounds("composer-compacting").is_none(),
+            "a failed or stopped compaction ends too"
+        );
+        assert!(cx.debug_bounds("context-bar").is_some(), "the bar is back");
+
+        deliver(&chat, cx, AgentRunEvent::Compacting);
+        chat.update(cx, |this, cx| {
+            this.clear_selected_session_presentation(cx);
+            this.selected_session = Some("s2".into());
+            assert!(!this.compacting(), "another task is not compacting");
+            this.clear_selected_session_presentation(cx);
+            this.selected_session = Some("s1".into());
+            assert!(this.compacting(), "back on the task, it still is");
+        });
+        deliver(
+            &chat,
+            cx,
+            AgentRunEvent::Finished(AgentRunTerminal::Cancelled),
+        );
+        assert!(
+            !chat.read_with(cx, |this, _| this.compacting()),
+            "the run's end ends its compaction"
+        );
+        assert!(cx.debug_bounds("composer-compacting").is_none());
     }
 
     /// With nothing drafted, the round button dictates when it can, and is a

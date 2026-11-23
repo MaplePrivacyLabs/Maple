@@ -56,6 +56,7 @@ chat-connections 2e9cd20dc2bd5d91
 chat-context-compacts-at ff3024e64ab0e16d
 chat-context-compacts-next 2cf514c623c5b263
 chat-context-compacts-off 41680ce5bc39d3ae
+chat-context-details-later b73b94e53bb45c6e
 chat-context-images 9350ee3eb31b0749
 chat-context-instructions 005287fd97240ffc
 chat-context-messages 60497696829a36d1

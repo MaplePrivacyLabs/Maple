@@ -417,7 +417,7 @@ async fn a_task_runs_saves_and_comes_back_after_a_restart() {
     assert_eq!(listed[0].message_count, 3);
     assert_eq!(listed[0].model.as_deref(), Some("glm-5-3"));
 
-    // The context ring reads Pi's count of the task's context.
+    // The context bar reads Pi's count of the task's context.
     let context = harness
         .handle
         .session_context_tokens(&task)
