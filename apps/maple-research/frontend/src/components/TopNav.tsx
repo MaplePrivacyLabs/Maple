@@ -5,6 +5,7 @@ import { useOpenSecret } from "@mapleai/sdk";
 import { Menu, X } from "lucide-react";
 import { useState, type ReactNode } from "react";
 import { isAndroid } from "@/utils/platform";
+import { MapleWordmark } from "./MapleWordmark";
 
 function NavLink({
   to,
@@ -35,8 +36,6 @@ function NavLink({
 export function TopNav() {
   const os = useOpenSecret();
   const navigate = useNavigate();
-  const matchRoute = useMatchRoute();
-  const isRedeem = matchRoute({ to: "/redeem" });
   const [mobileMenuOpen, setMobileMenuOpen] = useState(false);
   const androidConsumptionOnly = isAndroid();
 
@@ -47,28 +46,7 @@ export function TopNav() {
           <div className="relative z-10 flex w-full items-center justify-between">
             <div className="flex-shrink-0">
               <Link to="/" className="flex h-8 items-center gap-2 leading-none">
-                {isRedeem ? (
-                  <img
-                    src="/maple-wordmark-light.svg"
-                    alt="Maple"
-                    width={247.082}
-                    height={48}
-                    className="block h-6 w-auto shrink-0 object-contain sm:h-8"
-                  />
-                ) : (
-                  <>
-                    <img
-                      src="/maple-icon-nobg.png"
-                      alt=""
-                      className="block h-8 w-8 shrink-0 object-contain"
-                    />
-                    <img
-                      src="/maple-logo.svg"
-                      alt="Maple"
-                      className="block h-8 w-auto max-w-[6.25rem] shrink-0 object-left object-contain"
-                    />
-                  </>
-                )}
+                <MapleWordmark className="h-6 w-auto text-[#F7F7F9] sm:h-8" />
               </Link>
             </div>
 
