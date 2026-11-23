@@ -9797,7 +9797,7 @@ mod state_tests {
         });
         let composer = cx.update(|_, app| chat.read(app).composer.clone().unwrap());
         let composer_focus = cx.update(|_, app| composer.read(app).focus_handle(app));
-        for (tabs, tab_index, new_task) in [("tab tab", 3, false), ("tab tab tab tab", 5, true)] {
+        for (tab_index, new_task) in [(3, false), (5, true)] {
             for key in ["enter", "space"] {
                 chat.update(cx, |this, cx| {
                     this.selected_session = Some("s1".to_string());
@@ -9810,7 +9810,18 @@ mod state_tests {
                 composer.update(cx, |input, cx| input.set_text("Unsent draft", cx));
                 cx.run_until_parked();
                 cx.update(|window, app| window.focus(&composer_focus, app));
-                cx.simulate_keystrokes(tabs);
+                // Walk the real tab order: the composer's own controls come
+                // before the sidebar's.
+                for _ in 0..8 {
+                    cx.simulate_keystrokes("tab");
+                    if cx.update(|window, app| {
+                        window
+                            .focused(app)
+                            .is_some_and(|focus| focus.tab_index == tab_index)
+                    }) {
+                        break;
+                    }
+                }
                 let button_focus = cx.update(|window, app| window.focused(app).unwrap());
                 assert_eq!(button_focus.tab_index, tab_index, "Tab reaches the button");
                 cx.simulate_keystrokes("shift-tab");
@@ -9869,7 +9880,18 @@ mod state_tests {
             chat.update(cx, |this, cx| this.set_sidebar_collapsed(true, cx));
             cx.run_until_parked();
             cx.update(|window, app| window.focus(&composer_focus, app));
-            cx.simulate_keystrokes("tab");
+            // Past the composer's own controls to the mark, which holds the
+            // search field's place in the tab order.
+            for _ in 0..8 {
+                cx.simulate_keystrokes("tab");
+                if cx.update(|window, app| {
+                    window
+                        .focused(app)
+                        .is_some_and(|focus| focus.tab_index == 2)
+                }) {
+                    break;
+                }
+            }
             assert!(!cx.update(|window, _| composer_focus.is_focused(window)));
 
             // A keyboard click lands on the key's release.
