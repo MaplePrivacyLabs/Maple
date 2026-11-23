@@ -555,7 +555,26 @@ pub(super) fn remote_event(event: &AgentServiceEvent) -> bool {
 /// decode it and close the remote session on an event they cannot read.
 /// Theirs stops showing the compaction when the run finishes.
 fn remote_run_event(event: &maple_agent::agent::AgentRunEvent) -> bool {
-    !matches!(event, maple_agent::agent::AgentRunEvent::CompactionStopped)
+    use maple_agent::agent::AgentRunEvent;
+    // Exhaustive on purpose, like `remote_event`: a new variant needs an
+    // explicit decision before released controllers can receive it.
+    match event {
+        AgentRunEvent::CompactionStopped => false,
+        AgentRunEvent::SessionUpdated(_)
+        | AgentRunEvent::Started
+        | AgentRunEvent::TimelineItem(_)
+        | AgentRunEvent::SetupWarning(_)
+        | AgentRunEvent::SubagentStarted { .. }
+        | AgentRunEvent::SubagentActivity { .. }
+        | AgentRunEvent::SubagentFinished { .. }
+        | AgentRunEvent::Compacting
+        | AgentRunEvent::Compacted
+        | AgentRunEvent::HistoryReplaced
+        | AgentRunEvent::Error(_)
+        | AgentRunEvent::Finished(_)
+        | AgentRunEvent::QueueChanged(_)
+        | AgentRunEvent::QueuePromoted { .. } => true,
+    }
 }
 
 async fn send(tx: &mut SendStream, message: &Message) -> Result<(), String> {

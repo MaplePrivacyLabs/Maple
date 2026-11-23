@@ -55,6 +55,8 @@ impl Subscription {
         };
         match event {
             AgentServiceEvent::TimelineItem { session_id, .. } => tasks.contains(session_id),
+            // A compaction's start and end reach every task, open or not:
+            // the frame keeps each task's compaction until it hears the end.
             AgentServiceEvent::Run {
                 session_id, event, ..
             } => {
@@ -64,6 +66,9 @@ impl Subscription {
                         | AgentRunEvent::Finished(_)
                         | AgentRunEvent::SessionUpdated(_)
                         | AgentRunEvent::HistoryReplaced
+                        | AgentRunEvent::Compacting
+                        | AgentRunEvent::Compacted
+                        | AgentRunEvent::CompactionStopped
                 ) || tasks.contains(session_id)
             }
             _ => true,
@@ -159,6 +164,31 @@ mod tests {
         assert!(subscription.allows(&AgentServiceEvent::StoreStateChanged {
             state: maple_agent::store::StoreState::Open
         }));
+    }
+
+    /// Leaving a task while it compacts must not leave it saying so: the
+    /// compaction's end reaches the client with another task open.
+    #[test]
+    fn a_compaction_reaches_clients_watching_another_task() {
+        let mut subscription = Subscription::default();
+        subscription
+            .set(SubscribeRequest {
+                intent: 0,
+                tasks: vec![A.into()],
+            })
+            .unwrap();
+        for event in [
+            AgentRunEvent::Compacting,
+            AgentRunEvent::Compacted,
+            AgentRunEvent::CompactionStopped,
+        ] {
+            assert!(subscription.allows(&AgentServiceEvent::Run {
+                session_id: B.into(),
+                run_id: "run".into(),
+                event
+            }));
+        }
+        assert!(!subscription.allows(&delta(B)), "other deltas stay out");
     }
 
     #[test]

@@ -388,7 +388,11 @@ impl ChatScreen {
                 self.compacting(),
             )
                 .hash(&mut hasher);
-            format_percent(self.context_used()).len().hash(&mut hasher);
+            // The percentage's width, without writing it out: "<1%", or
+            // its number of digits.
+            let used = self.context_used();
+            let percent = whole_percent(used);
+            (percent == 0 && used > 0., percent.max(1).ilog10()).hash(&mut hasher);
             hasher.finish()
         };
         let mut measured = self.composer_frame.get();
@@ -409,7 +413,6 @@ impl ChatScreen {
                 .id("composer-compacting")
                 .debug_selector(|| "composer-compacting".to_string())
                 .role(gpui::Role::Status)
-                .aria_label(status.clone())
                 .flex()
                 .items_center()
                 .gap_1p5()
@@ -422,7 +425,7 @@ impl ChatScreen {
                     px(12.),
                     theme::text_muted(),
                 ))
-                .child(status)
+                .child(gpui::text!(status))
         });
         let meter =
             self.render_context_bar(selected == Some(ComposerControl::Context), fit, window, cx);
@@ -776,25 +779,36 @@ impl ChatScreen {
         let backend = self.backend.clone();
         let user_id = self.user_id.clone();
         let requested = session_id.clone();
-        self.call(
-            async move { backend.context_breakdown(&user_id, &requested).await },
+        self.call_semantic(
+            async move {
+                backend
+                    .call_presented::<Option<maple_agent::agent::AgentContextBreakdown>>(
+                        "context_breakdown",
+                        (&user_id, &requested),
+                    )
+                    .await
+            },
             cx,
             move |this, result, cx| {
+                use crate::ui::task::Failure;
                 // The answer describes the task it was asked about; a switch
                 // since then owns the card.
                 if this.selected_session.as_deref() != Some(session_id.as_str()) {
                     return;
                 }
                 // A failed refresh keeps what the card last showed. A host
-                // too old to say refuses as expected.
+                // too old to say refuses with a code, as expected.
                 let breakdown = match result {
                     Ok(breakdown) => breakdown,
-                    Err(error) if error.starts_with("remote-context-breakdown-") => {
-                        log::debug!("No context breakdown from the host: {error}");
+                    Err(Failure::Host(host))
+                        if host.code.starts_with("remote-context-breakdown-") =>
+                    {
+                        log::debug!("No context breakdown from the host: {}", host.code);
                         return;
                     }
-                    Err(error) => {
-                        log::warn!("Cannot read the context breakdown: {error}");
+                    Err(Failure::Cancelled(_)) => return,
+                    Err(failure) => {
+                        log::warn!("Cannot read the context breakdown: {failure:?}");
                         return;
                     }
                 };
@@ -1333,14 +1347,21 @@ impl ChatScreen {
                 })
                 .on_drop(dropped)
         });
-        // The key that pastes into the box, as bound now and written the
-        // way the app writes keys; nothing, if paste is unbound.
-        let paste = window
-            .highest_precedence_binding_for_action_in_context(
-                &crate::ui::text_input::Paste,
-                gpui::KeyContext::parse("TextInput").unwrap_or_default(),
-            )
-            .map(|binding| widgets::format_keystrokes(binding.keystrokes()));
+        // The key that pastes into the box, as bound when the popover
+        // opened and written the way the app writes keys; nothing, if paste
+        // is unbound.
+        let paste = self
+            .attach_paste_key
+            .borrow_mut()
+            .get_or_insert_with(|| {
+                window
+                    .highest_precedence_binding_for_action_in_context(
+                        &crate::ui::text_input::Paste,
+                        gpui::KeyContext::parse("TextInput").unwrap_or_default(),
+                    )
+                    .map(|binding| widgets::format_keystrokes(binding.keystrokes()).into())
+            })
+            .clone();
         let menu = Menu::new("attach-menu", px(300.))
             .label(tr("chat-attach"))
             .application_vim(self.application_vim_enabled)

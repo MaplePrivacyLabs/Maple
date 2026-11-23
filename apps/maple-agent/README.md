@@ -143,9 +143,9 @@ agent runtime; its desktop Agent page points users to Maple Work.
   one round button. With an empty field it dictates (or waits, without
   speech), and it becomes Stop while a run is active. Typing or attaching an
   image turns it into Send, with the microphone beside it; during a run it
-  becomes Queue, except for a slash command or a side question, which go at
-  once. Queued messages can be sent now, edited in the composer
-  (the message keeps its place in the queue), or removed.
+  becomes Queue, except for a built-in command such as `/compact` or a side
+  question, which go at once. Queued messages can be sent now, edited in the
+  composer (the message keeps its place in the queue), or removed.
 - Sidebar search filters tasks and projects by name; Escape clears it.
 - Up and Down in an empty composer recall prompts sent in this window.
 - Optional composer-only Vim editing provides Normal, Insert, and characterwise
@@ -364,8 +364,9 @@ button row, where `h/l` (or `j/k`) and `gg/G` move through the box's controls
 (`+`, the model, a new task's integrations and permission mode, and
 dictation), then a conversation's strip above the box (integrations,
 permission mode, context and Compact), and `Enter` presses one; a menu opens
-on its current choice. In the permissions menu `h/l` (or Left and Right) step
-the mode. `Space s n` starts a task and `Space ,` opens Settings. The Settings page itself is navigable, including its shortcut
+on its current choice. In the permissions menu Left and Right step the mode.
+`Space s n` starts a task and `Space ,`
+opens Settings. The Settings page itself is navigable, including its shortcut
 search and editable binding rows. Annotation motions are registered and report
 that no annotation source is available in the current app. A root action
 palette and which-key display remain follow-up work rather than hidden partial

@@ -597,9 +597,13 @@ pub struct ChatScreen {
     screen_focus_pending: bool,
     /// Composer holds non-blank text; refreshed when the composer changes.
     composer_has_text: bool,
-    /// The draft is a slash command, which runs at once rather than
+    /// The draft is a built-in command, which runs at once rather than
     /// queueing behind a run. Refreshed when the composer changes.
     composer_is_command: bool,
+    /// The paste key the attach popover names, looked up on its first
+    /// frame after it opens rather than on every frame; an inner `None`
+    /// is an unbound paste.
+    attach_paste_key: std::cell::RefCell<Option<Option<SharedString>>>,
     /// The permissions menus' width, measured once per locale and size.
     permissions_width: composer_frame::PermissionsWidth,
     /// Palette rows for the composer's current "/" token; rebuilt when the
@@ -1548,7 +1552,13 @@ impl ChatScreen {
         let input = composer.read(cx);
         let text = input.text_ref();
         let has_text = !text.trim().is_empty();
-        let command = text.trim().starts_with('/');
+        // Only a built-in runs at once; a skill or any other "/" draft is a
+        // message to the model.
+        let command = Self::parse_command(text.trim()).is_some_and(|(name, _)| {
+            composer::BUILT_IN_COMMANDS
+                .iter()
+                .any(|(built_in, _)| *built_in == name)
+        });
         let entries = match text.strip_prefix('/') {
             Some(token) if !token.contains(char::is_whitespace) && !token.contains('/') => {
                 slash_entries_for(token, &self.slash_commands)
@@ -1640,6 +1650,7 @@ impl ChatScreen {
             screen_focus_pending: true,
             composer_has_text: false,
             composer_is_command: false,
+            attach_paste_key: std::cell::RefCell::new(None),
             permissions_width: Default::default(),
             slash_entries: Vec::new(),
             models: Vec::new(),

@@ -533,6 +533,8 @@ impl ChatScreen {
     /// `+`: a new task's menu, or a conversation's attach popover.
     pub(super) fn open_add(&mut self, cx: &mut Context<Self>) {
         if self.selected_session.is_some() {
+            // Paste may have been rebound since the popover last opened.
+            *self.attach_paste_key.get_mut() = None;
             self.popup.open(ChatPopup::Attach, cx);
         } else {
             self.add_page = None;
@@ -567,7 +569,8 @@ impl ChatScreen {
             .role(gpui::Role::Button)
             .aria_label(label.clone())
             .tab_index(0)
-            .focus_visible(widgets::focus_ring)
+            // It has no fill at rest; the ring's own would cover the glyph.
+            .focus_visible(widgets::focus_ring_on(gpui::rgb(theme::bg_sidebar_pill())))
             .on_key_down(ChatScreen::sidebar_button_key_down)
             .size_8()
             .flex()
@@ -2290,29 +2293,35 @@ pub(super) struct SlashEntry {
     pub(super) description: String,
 }
 
+/// The built-in commands and the palette's description of each. They act
+/// as soon as they are sent (`ChatScreen::try_command`); a skill, or any
+/// other draft that starts with "/", goes to the model as a message, so
+/// during a run it queues.
+pub(super) const BUILT_IN_COMMANDS: [(&str, &str); 6] = [
+    ("btw", "chat-slash-btw"),
+    ("compact", "chat-slash-compact"),
+    ("new", "chat-slash-new"),
+    ("pin", "chat-slash-pin"),
+    ("model", "chat-slash-model"),
+    ("help", "chat-slash-help"),
+];
+
 /// Built-in and skill commands matching a "/" token, capped for the popup.
 pub(super) fn slash_entries_for(token: &str, skills: &[AgentSlashCommand]) -> Vec<SlashEntry> {
     let query = token.to_lowercase();
-    [
-        ("btw", "chat-slash-btw"),
-        ("compact", "chat-slash-compact"),
-        ("new", "chat-slash-new"),
-        ("pin", "chat-slash-pin"),
-        ("model", "chat-slash-model"),
-        ("help", "chat-slash-help"),
-    ]
-    .into_iter()
-    .map(|(name, description)| SlashEntry {
-        name: name.to_string(),
-        description: tr(description).to_string(),
-    })
-    .chain(skills.iter().map(|command| SlashEntry {
-        name: command.name.clone(),
-        description: command.description.clone(),
-    }))
-    .filter(|entry| entry.name.to_lowercase().starts_with(&query))
-    .take(8)
-    .collect()
+    BUILT_IN_COMMANDS
+        .into_iter()
+        .map(|(name, description)| SlashEntry {
+            name: name.to_string(),
+            description: tr(description).to_string(),
+        })
+        .chain(skills.iter().map(|command| SlashEntry {
+            name: command.name.clone(),
+            description: command.description.clone(),
+        }))
+        .filter(|entry| entry.name.to_lowercase().starts_with(&query))
+        .take(8)
+        .collect()
 }
 
 /// One control in the composer chip row. `detail` is a second, quieter

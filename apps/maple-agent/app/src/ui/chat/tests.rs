@@ -8155,6 +8155,24 @@ mod state_tests {
             PrimaryAction::Send,
             "a command runs at once too"
         );
+        // Only the built-ins: anything else that starts with "/" is a
+        // message to the model, and waits for the run like one.
+        chat.update(cx, |this, _| {
+            this.slash_commands = vec![maple_agent::agent::AgentSlashCommand {
+                name: "deploy".to_string(),
+                description: "Deploy the app".to_string(),
+                input_hint: None,
+            }];
+        });
+        for (draft, why) in [
+            ("/deploy staging", "a skill queues"),
+            ("/nope", "so does an unknown command"),
+            ("/Users/me/notes.md", "and a path"),
+        ] {
+            write(&chat, cx, draft);
+            cx.run_until_parked();
+            assert_eq!(primary(&chat, cx), PrimaryAction::Queue, "{why}");
+        }
         write(&chat, cx, "after that");
         cx.run_until_parked();
         assert_eq!(primary(&chat, cx), PrimaryAction::Queue);
@@ -8859,7 +8877,15 @@ mod state_tests {
             this.clear_selected_session_presentation(cx);
             this.selected_session = Some("s1".into());
             assert!(this.compacting(), "back on the task, it still is");
+            // The host sends a compaction's end with another task open.
+            this.clear_selected_session_presentation(cx);
+            this.selected_session = Some("s2".into());
+            this.handle_run_event("s1", "r1", AgentRunEvent::Compacted, cx);
+            this.clear_selected_session_presentation(cx);
+            this.selected_session = Some("s1".into());
+            assert!(!this.compacting(), "an end heard elsewhere ends it here");
         });
+        deliver(&chat, cx, AgentRunEvent::Compacting);
         deliver(
             &chat,
             cx,
