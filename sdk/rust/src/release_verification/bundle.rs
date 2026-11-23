@@ -4,7 +4,7 @@ use serde::de::{Deserialize, DeserializeSeed, Deserializer, MapAccess, SeqAccess
 use serde_json::{Map, Value};
 use sigstore_trust_root::TrustedRoot;
 use sigstore_types::{
-    Artifact, Bundle, DerPublicKey, MediaType, Sha256Hash, Sha384Hash, SignatureContent,
+    Artifact, Bundle, DerPublicKey, MediaType, Sha256Hash, SignatureContent,
     VerificationMaterialContent,
 };
 use sigstore_verify::{
@@ -18,7 +18,10 @@ const EXPECTED_MEDIA_TYPE: &str = "application/vnd.dev.sigstore.bundle.v0.3+json
 pub(super) const EXPECTED_PAYLOAD_TYPE: &str = "application/vnd.in-toto+json";
 const EXPECTED_STATEMENT_TYPE: &str = "https://in-toto.io/Statement/v1";
 const EXPECTED_PREDICATE_TYPE: &str = "https://maple.ai/attestations/enclave-release/v1";
+const SUBJECT_SHA256_HEX_LEN: usize = 64;
 const SOURCE_COMMIT_HEX_LEN: usize = 40;
+const MEASUREMENT_HEX_LEN: usize = 96;
+const MAX_SAFE_RUN_ATTEMPT: u64 = 9_007_199_254_740_991;
 const VERIFIED_TIMESTAMP_COUNT: usize = 1;
 const TRANSPARENCY_LOG_ENTRY_COUNT: usize = 1;
 const DSSE_SIGNATURE_COUNT: usize = 1;
@@ -50,30 +53,24 @@ pub(super) const PAYLOAD_MEMBER: &str = "payload";
 pub(super) const STATEMENT_TYPE_MEMBER: &str = "_type";
 pub(super) const PREDICATE_TYPE_MEMBER: &str = "predicateType";
 
-#[cfg(test)]
 pub(super) const SUBJECT_MEMBER: &str = "subject";
-#[cfg(test)]
+const SUBJECT_NAME_MEMBER: &str = "name";
 pub(super) const DIGEST_MEMBER: &str = "digest";
-#[cfg(test)]
 pub(super) const SHA256_MEMBER: &str = "sha256";
-#[cfg(test)]
 pub(super) const PREDICATE_MEMBER: &str = "predicate";
-#[cfg(test)]
 pub(super) const ENVIRONMENT_MEMBER: &str = "environment";
-#[cfg(test)]
 pub(super) const SOURCE_MEMBER: &str = "source";
-#[cfg(test)]
 pub(super) const REPOSITORY_MEMBER: &str = "repository";
-#[cfg(test)]
 pub(super) const COMMIT_MEMBER: &str = "commit";
 #[cfg(test)]
 pub(super) const WORKFLOW_MEMBER: &str = "workflow";
-#[cfg(test)]
 pub(super) const BUILD_MEMBER: &str = "build";
-#[cfg(test)]
 pub(super) const RUN_ID_MEMBER: &str = "runId";
-#[cfg(test)]
 pub(super) const RUN_ATTEMPT_MEMBER: &str = "runAttempt";
+const MEASUREMENTS_MEMBER: &str = "measurements";
+const PCR0_MEMBER: &str = "PCR0";
+const PCR1_MEMBER: &str = "PCR1";
+const PCR2_MEMBER: &str = "PCR2";
 #[cfg(test)]
 pub(super) const BUILDER_MEMBER: &str = "builder";
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -184,14 +181,13 @@ pub(super) fn verify_release_bundle(
         artifact,
         VerificationMode::EnclaveRelease,
     )?;
-    statement.validate(release_policy)?;
-    let ReleasePredicate { source, build, .. } = statement.predicate;
+    let source = statement.validate(release_policy)?;
     Ok(ReleaseVerificationEvidence {
         tlog_verified: evidence.tlog_verified,
         repository: source.repository,
         commit: source.commit,
-        build_run_id: build.run_id,
-        build_run_attempt: build.run_attempt,
+        build_run_id: source.run_id,
+        build_run_attempt: source.run_attempt,
         log_index: evidence.log_index,
     })
 }
@@ -458,114 +454,200 @@ fn parse_complete_json(input: &str) -> Result<Value, serde_json::Error> {
     Ok(value)
 }
 
-#[derive(serde::Deserialize)]
 pub(super) struct ReleaseStatement {
-    #[serde(rename = "_type")]
-    statement_type: String,
-    subject: Vec<ReleaseSubject>,
-    #[serde(rename = "predicateType")]
-    predicate_type: String,
+    subject_digest: Sha256Hash,
     predicate: ReleasePredicate,
 }
 
-#[derive(serde::Deserialize)]
-struct ReleaseSubject {
-    #[serde(rename = "name")]
-    _name: String,
-    digest: SubjectDigest,
-}
-
-#[derive(serde::Deserialize)]
-#[serde(deny_unknown_fields)]
-struct SubjectDigest {
-    sha256: String,
-}
-
-#[derive(serde::Deserialize)]
 struct ReleasePredicate {
-    environment: String,
-    source: ReleaseSource,
-    measurements: StatementMeasurements,
-    build: ReleaseBuild,
+    environment: Value,
+    measurements: Value,
+    source: Value,
+    build: Value,
 }
 
-#[derive(serde::Deserialize)]
-struct ReleaseSource {
+#[derive(Debug)]
+pub(super) struct ReleaseSource {
     repository: String,
     commit: String,
-}
-
-#[derive(serde::Deserialize)]
-#[serde(rename_all = "camelCase")]
-struct ReleaseBuild {
     run_id: String,
     run_attempt: u64,
 }
 
-#[derive(serde::Deserialize)]
-struct StatementMeasurements {
-    #[serde(rename = "PCR0")]
-    pcr0: String,
-    #[serde(rename = "PCR1")]
-    pcr1: String,
-    #[serde(rename = "PCR2")]
-    pcr2: String,
-}
-
 impl ReleaseStatement {
-    fn subject_digest(&self) -> Sha256Hash {
-        Sha256Hash::from_hex(&self.subject[0].digest.sha256)
-            .expect("subject SHA-256 was validated while parsing")
-    }
-
-    pub(super) fn validate(&self, policy: ReleasePolicy) -> Result<(), VerificationFailure> {
-        let has_supported_types = self.statement_type == EXPECTED_STATEMENT_TYPE
-            && self.predicate_type == EXPECTED_PREDICATE_TYPE;
-        if !has_supported_types {
+    fn from_value(payload: &Value) -> Result<Self, VerificationFailure> {
+        let object = payload
+            .as_object()
+            .ok_or_else(|| VerificationFailure::policy("statement-malformed"))?;
+        let statement_type = object.get(STATEMENT_TYPE_MEMBER).and_then(Value::as_str);
+        let has_supported_statement_type = statement_type == Some(EXPECTED_STATEMENT_TYPE);
+        if !has_supported_statement_type {
             return Err(VerificationFailure::policy("statement-unsupported"));
         }
-        let environment_matches = self.predicate.environment == policy.environment.release_name();
+        let subject = object
+            .get(SUBJECT_MEMBER)
+            .and_then(Value::as_array)
+            .ok_or_else(|| VerificationFailure::policy("statement-malformed"))?;
+        let has_subjects = !subject.is_empty();
+        if !has_subjects {
+            return Err(VerificationFailure::policy("statement-malformed"));
+        }
+        let subject_digests = subject
+            .iter()
+            .map(subject_sha256)
+            .collect::<Option<Vec<_>>>()
+            .ok_or_else(|| VerificationFailure::policy("statement-malformed"))?;
+        let predicate_type = object.get(PREDICATE_TYPE_MEMBER).and_then(Value::as_str);
+        let has_supported_predicate_type = predicate_type == Some(EXPECTED_PREDICATE_TYPE);
+        if !has_supported_predicate_type {
+            return Err(VerificationFailure::policy("statement-unsupported"));
+        }
+        let predicate = object
+            .get(PREDICATE_MEMBER)
+            .and_then(Value::as_object)
+            .ok_or_else(|| VerificationFailure::policy("statement-malformed"))?;
+        let subject_digest = Sha256Hash::from_hex(subject_digests[0])
+            .map_err(|_| VerificationFailure::policy("statement-malformed"))?;
+        Ok(Self {
+            subject_digest,
+            predicate: ReleasePredicate {
+                environment: predicate
+                    .get(ENVIRONMENT_MEMBER)
+                    .cloned()
+                    .unwrap_or(Value::Null),
+                measurements: predicate
+                    .get(MEASUREMENTS_MEMBER)
+                    .cloned()
+                    .unwrap_or(Value::Null),
+                source: predicate.get(SOURCE_MEMBER).cloned().unwrap_or(Value::Null),
+                build: predicate.get(BUILD_MEMBER).cloned().unwrap_or(Value::Null),
+            },
+        })
+    }
+
+    fn subject_digest(&self) -> Sha256Hash {
+        self.subject_digest
+    }
+
+    pub(super) fn validate(
+        &self,
+        policy: ReleasePolicy,
+    ) -> Result<ReleaseSource, VerificationFailure> {
+        let environment_matches =
+            self.predicate.environment.as_str() == Some(policy.environment.release_name());
         if !environment_matches {
             return Err(VerificationFailure::policy(
                 "statement-environment-mismatch",
             ));
         }
-        let pcr0 = Sha384Hash::from_hex(&self.predicate.measurements.pcr0)
-            .map_err(|_| VerificationFailure::policy("statement-measurement-mismatch"))?;
-        let pcr1 = Sha384Hash::from_hex(&self.predicate.measurements.pcr1)
-            .map_err(|_| VerificationFailure::policy("statement-measurement-mismatch"))?;
-        let pcr2 = Sha384Hash::from_hex(&self.predicate.measurements.pcr2)
-            .map_err(|_| VerificationFailure::policy("statement-measurement-mismatch"))?;
-        let measurements_match = pcr0.as_bytes() == &policy.measurements.pcr0
-            && pcr1.as_bytes() == &policy.measurements.pcr1
-            && pcr2.as_bytes() == &policy.measurements.pcr2;
+        let measurements = well_formed_measurements(&self.predicate.measurements)
+            .ok_or_else(|| VerificationFailure::policy("statement-malformed"))?;
+        let expected_pcr0 = hex::encode(policy.measurements.pcr0);
+        let expected_pcr1 = hex::encode(policy.measurements.pcr1);
+        let expected_pcr2 = hex::encode(policy.measurements.pcr2);
+        let measurements_match = measurements[0] == expected_pcr0.as_str()
+            && measurements[1] == expected_pcr1.as_str()
+            && measurements[2] == expected_pcr2.as_str();
         if !measurements_match {
             return Err(VerificationFailure::policy(
                 "statement-measurement-mismatch",
             ));
         }
-        // Source and build values are signed audit data, not policy inputs.
-        // Their shapes make the resulting diagnostics useful without pinning
-        // a repository, workflow run or other authorization identity.
-        let repository_present = !self.predicate.source.repository.is_empty();
-        let commit_is_hash = is_full_lower_hex_commit(&self.predicate.source.commit);
-        let run_id_is_decimal = is_decimal(&self.predicate.build.run_id);
-        let attempt_is_count = self.predicate.build.run_attempt >= 1;
-        let audit_data_is_well_formed =
-            repository_present && commit_is_hash && run_id_is_decimal && attempt_is_count;
-        if !audit_data_is_well_formed {
-            return Err(VerificationFailure::policy("statement-malformed"));
-        }
-        Ok(())
+        read_release_source(&self.predicate.source, &self.predicate.build)
     }
 }
 
-fn is_full_lower_hex_commit(commit: &str) -> bool {
-    let has_full_length = commit.len() == SOURCE_COMMIT_HEX_LEN;
-    let has_only_lowercase_hex = commit
+fn subject_sha256(subject: &Value) -> Option<&str> {
+    let subject = subject.as_object()?;
+    let name = subject.get(SUBJECT_NAME_MEMBER).and_then(Value::as_str);
+    let has_name = name.is_some_and(|name| !name.is_empty());
+    if !has_name {
+        return None;
+    }
+    let digest = subject.get(DIGEST_MEMBER).and_then(Value::as_object)?;
+    let digest = digest.get(SHA256_MEMBER).and_then(Value::as_str)?;
+    let is_sha256 = is_lower_hex(digest, SUBJECT_SHA256_HEX_LEN);
+    is_sha256.then_some(digest)
+}
+
+fn well_formed_measurements(value: &Value) -> Option<[&str; 3]> {
+    let measurements = value.as_object()?;
+    let values = [
+        measurements.get(PCR0_MEMBER).and_then(Value::as_str),
+        measurements.get(PCR1_MEMBER).and_then(Value::as_str),
+        measurements.get(PCR2_MEMBER).and_then(Value::as_str),
+    ];
+    let all_well_formed = values
+        .into_iter()
+        .all(|value| value.is_some_and(|value| is_lower_hex(value, MEASUREMENT_HEX_LEN)));
+    if !all_well_formed {
+        return None;
+    }
+    Some(values.map(|value| value.expect("every measurement was validated")))
+}
+
+fn read_release_source(
+    source: &Value,
+    build: &Value,
+) -> Result<ReleaseSource, VerificationFailure> {
+    // Source and build values are signed audit data, not policy inputs.
+    // Their shapes make the resulting diagnostics useful without pinning
+    // a repository, workflow run or other authorization identity.
+    let source = source
+        .as_object()
+        .ok_or_else(|| VerificationFailure::policy("statement-malformed"))?;
+    let build = build
+        .as_object()
+        .ok_or_else(|| VerificationFailure::policy("statement-malformed"))?;
+    let repository = source.get(REPOSITORY_MEMBER).and_then(Value::as_str);
+    let commit = source.get(COMMIT_MEMBER).and_then(Value::as_str);
+    let run_id = build.get(RUN_ID_MEMBER).and_then(Value::as_str);
+    let run_attempt = whole_safe_run_attempt(build.get(RUN_ATTEMPT_MEMBER));
+    let repository_present = repository.is_some_and(|value| !value.is_empty());
+    let commit_is_hash = commit.is_some_and(is_full_lower_hex_commit);
+    let run_id_is_decimal = run_id.is_some_and(is_decimal);
+    let attempt_is_count = run_attempt.is_some();
+    let audit_data_is_well_formed =
+        repository_present && commit_is_hash && run_id_is_decimal && attempt_is_count;
+    if !audit_data_is_well_formed {
+        return Err(VerificationFailure::policy("statement-malformed"));
+    }
+    Ok(ReleaseSource {
+        repository: repository.expect("audit data was validated").to_owned(),
+        commit: commit.expect("audit data was validated").to_owned(),
+        run_id: run_id.expect("audit data was validated").to_owned(),
+        run_attempt: run_attempt.expect("audit data was validated"),
+    })
+}
+
+fn whole_safe_run_attempt(value: Option<&Value>) -> Option<u64> {
+    // JSON notation does not change a number's value. Keep attempts within
+    // the range in which every SDK can represent the integer exactly.
+    let number = value?.as_number()?;
+    if let Some(integer) = number.as_u64() {
+        let is_count = (1..=MAX_SAFE_RUN_ATTEMPT).contains(&integer);
+        return is_count.then_some(integer);
+    }
+    let number = number.as_f64()?;
+    let is_whole = number.fract() == 0.0;
+    let is_in_range = (1.0..=MAX_SAFE_RUN_ATTEMPT as f64).contains(&number);
+    let is_count = is_whole && is_in_range;
+    if !is_count {
+        return None;
+    }
+    Some(number as u64)
+}
+
+fn is_lower_hex(value: &str, expected_len: usize) -> bool {
+    let has_expected_length = value.len() == expected_len;
+    let has_only_lowercase_hex = value
         .bytes()
         .all(|byte| matches!(byte, b'0'..=b'9' | b'a'..=b'f'));
-    has_full_length && has_only_lowercase_hex
+    has_expected_length && has_only_lowercase_hex
+}
+
+fn is_full_lower_hex_commit(commit: &str) -> bool {
+    is_lower_hex(commit, SOURCE_COMMIT_HEX_LEN)
 }
 
 fn is_decimal(value: &str) -> bool {
@@ -593,27 +675,12 @@ pub(super) fn decode_release_statement(
     let payload = BASE64
         .decode(encoded_payload)
         .map_err(|_| VerificationFailure::policy("statement-malformed"))?;
-    parse_without_duplicate_keys_bytes(&payload)?;
-    let payload = serde_json::from_slice::<Value>(&payload)
+    let payload_text = std::str::from_utf8(&payload)
         .map_err(|_| VerificationFailure::policy("statement-malformed"))?;
-    let object = payload
-        .as_object()
-        .ok_or_else(|| VerificationFailure::policy("statement-malformed"))?;
-    let statement_type = object.get(STATEMENT_TYPE_MEMBER).and_then(Value::as_str);
-    let predicate_type = object.get(PREDICATE_TYPE_MEMBER).and_then(Value::as_str);
-    let has_supported_types = statement_type == Some(EXPECTED_STATEMENT_TYPE)
-        && predicate_type == Some(EXPECTED_PREDICATE_TYPE);
-    if !has_supported_types {
-        return Err(VerificationFailure::policy("statement-unsupported"));
-    }
-    let statement: ReleaseStatement = serde_json::from_value(payload.clone())
-        .map_err(|_| VerificationFailure::policy("statement-malformed"))?;
-    let has_one_subject = statement.subject.len() == 1;
-    if !has_one_subject {
-        return Err(VerificationFailure::policy("statement-malformed"));
-    }
-    Sha256Hash::from_hex(&statement.subject[0].digest.sha256)
-        .map_err(|_| VerificationFailure::policy("statement-malformed"))?;
+    parse_without_duplicate_keys(payload_text)?;
+    let payload = parse_complete_json(payload_text)
+        .map_err(|_| VerificationFailure::policy("json-syntax-error"))?;
+    let statement = ReleaseStatement::from_value(&payload)?;
     Ok((payload, statement))
 }
 

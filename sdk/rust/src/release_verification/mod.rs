@@ -543,4 +543,6 @@ fn authenticated_pcr(document: &AttestationDocument, index: usize) -> Option<[u8
 #[cfg(test)]
 mod corpus_tests;
 #[cfg(test)]
+mod statement_tests;
+#[cfg(test)]
 mod tests;
