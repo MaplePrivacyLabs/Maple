@@ -14,9 +14,9 @@ use std::ops::Range;
 use std::sync::Arc;
 
 use gpui::{
-    App, Div, Element, ElementId, Entity, FocusHandle, GlobalElementId, Hitbox, HitboxBehavior,
-    InspectorElementId, LayoutId, MouseButton, Pixels, SharedString, StyledText, Window, div,
-    prelude::*,
+    AnyElement, App, Div, Element, ElementId, Entity, FocusHandle, GlobalElementId, Hitbox,
+    HitboxBehavior, InspectorElementId, LayoutId, MouseButton, Pixels, ScrollHandle, SharedString,
+    StyledText, Window, div, prelude::*,
 };
 use unicode_segmentation::UnicodeSegmentation;
 
@@ -793,9 +793,13 @@ pub fn plain_paragraph(text: SharedString, ordinal: Option<u64>, ctx: &RenderCtx
     paragraph(text, Inline::default(), None, None, ordinal, ctx)
 }
 
-/// Code block with a language label and a copy button. `label` is the
-/// display name of the language; `copy_id` must be unique per block.
+/// Code block with a language label, a copy button and a horizontal
+/// scrollbar for lines wider than the block. `label` is the display name
+/// of the language; `id_name` and `index` must be unique per block.
 /// `ordinal` makes the code selectable like a paragraph.
+///
+/// The scroll offset has to survive a frame, so the block is an element
+/// that keeps its [`ScrollHandle`] in element state, like markdown tables.
 pub fn code_block(
     code: SharedString,
     label: SharedString,
@@ -803,62 +807,168 @@ pub fn code_block(
     index: u64,
     ordinal: Option<u64>,
     ctx: &RenderCtx,
-) -> Div {
-    let copy_code = code.clone();
-    let copy_id = ElementId::NamedInteger(id_name.clone(), index);
-    let body_id = ElementId::NamedInteger(SharedString::from(format!("{id_name}-code")), index);
-    div()
-        .w_full()
-        .my_1()
-        .rounded(theme::RADIUS_SM)
-        .bg(gpui::rgb(theme::bg_code_block()))
-        .border_1()
-        .border_color(gpui::rgb(theme::border_subtle()))
-        .overflow_hidden()
-        .child(
-            div()
-                .flex()
-                .items_center()
-                .justify_between()
-                .px_3()
-                .py_1p5()
-                .border_b_1()
-                .border_color(gpui::rgb(theme::border_subtle()))
-                .child(
-                    div()
-                        .text_xs()
-                        .text_color(gpui::rgb(theme::text_muted()))
-                        .child(label),
-                )
-                .child(widgets::copy_button(copy_id, copy_code, None, ctx.view)),
-        )
-        .child(
-            // Long lines scroll sideways instead of wrapping; a vertical
-            // wheel still reaches the transcript.
-            div()
-                .id(body_id)
-                .px_3()
-                .py_2()
-                .w_full()
-                .overflow_x_scroll()
-                .restrict_scroll_to_axis()
-                .whitespace_nowrap()
-                .font_family(crate::assets::FONT_MONO)
-                .text_size(gpui::px(13.))
-                .text_color(gpui::rgb(theme::code_text()))
-                // The bare element, not a full-width paragraph div, so the
-                // scroll area measures the longest line.
-                .child(RichText {
-                    ordinal,
-                    text: code,
-                    highlights: Highlights::default(),
-                    links: Links::default(),
-                    mono: Mono::default(),
-                    selection: ctx.selection.clone(),
-                    focus: ctx.focus.clone(),
-                    styled: None,
-                }),
-        )
+) -> CodeBlockElement {
+    CodeBlockElement {
+        id: ElementId::NamedInteger(SharedString::from(format!("{id_name}-code-block")), index),
+        copy_id: ElementId::NamedInteger(id_name.clone(), index),
+        body_id: ElementId::NamedInteger(SharedString::from(format!("{id_name}-code")), index),
+        code,
+        label,
+        ordinal,
+        ctx: ctx.clone(),
+    }
+}
+
+/// A rendered code block: label and copy button above, the code in a
+/// sideways scroll area with an overlay bar underneath.
+pub struct CodeBlockElement {
+    id: ElementId,
+    copy_id: ElementId,
+    body_id: ElementId,
+    code: SharedString,
+    label: SharedString,
+    ordinal: Option<u64>,
+    ctx: RenderCtx,
+}
+
+impl CodeBlockElement {
+    /// The block's tree, its code scrolling through `scroll`.
+    fn build(&self, scroll: ScrollHandle) -> AnyElement {
+        let copy_id = self.copy_id.clone();
+        let copy_code = self.code.clone();
+        div()
+            .w_full()
+            .my_1()
+            .rounded(theme::RADIUS_SM)
+            .bg(gpui::rgb(theme::bg_code_block()))
+            .border_1()
+            .border_color(gpui::rgb(theme::border_subtle()))
+            .overflow_hidden()
+            .child(
+                div()
+                    .flex()
+                    .items_center()
+                    .justify_between()
+                    .px_3()
+                    .py_1p5()
+                    .border_b_1()
+                    .border_color(gpui::rgb(theme::border_subtle()))
+                    .child(
+                        div()
+                            .text_xs()
+                            .text_color(gpui::rgb(theme::text_muted()))
+                            .child(self.label.clone()),
+                    )
+                    .child(widgets::copy_button(
+                        copy_id,
+                        copy_code,
+                        None,
+                        self.ctx.view,
+                    )),
+            )
+            .child(
+                // Long lines scroll sideways instead of wrapping; a vertical
+                // wheel still reaches the transcript. The bar rides the
+                // block's bottom edge, in the body's bottom padding, so it
+                // stays put while the code moves.
+                div()
+                    .relative()
+                    .w_full()
+                    .child(
+                        div()
+                            .id(self.body_id.clone())
+                            .px_3()
+                            .py_2()
+                            .w_full()
+                            .overflow_x_scroll()
+                            .restrict_scroll_to_axis()
+                            .track_scroll(&scroll)
+                            .whitespace_nowrap()
+                            .font_family(crate::assets::FONT_MONO)
+                            .text_size(gpui::px(13.))
+                            .text_color(gpui::rgb(theme::code_text()))
+                            // The bare element, not a full-width paragraph
+                            // div, so the scroll area measures the longest
+                            // line.
+                            .child(RichText {
+                                ordinal: self.ordinal,
+                                text: self.code.clone(),
+                                highlights: Highlights::default(),
+                                links: Links::default(),
+                                mono: Mono::default(),
+                                selection: self.ctx.selection.clone(),
+                                focus: self.ctx.focus.clone(),
+                                styled: None,
+                            }),
+                    )
+                    .child(super::scrollbar::horizontal_scrollbar("bar", scroll)),
+            )
+            .into_any_element()
+    }
+}
+
+impl Element for CodeBlockElement {
+    type RequestLayoutState = AnyElement;
+    type PrepaintState = ();
+
+    fn id(&self) -> Option<ElementId> {
+        Some(self.id.clone())
+    }
+
+    fn source_location(&self) -> Option<&'static core::panic::Location<'static>> {
+        None
+    }
+
+    fn request_layout(
+        &mut self,
+        id: Option<&GlobalElementId>,
+        _inspector_id: Option<&InspectorElementId>,
+        window: &mut Window,
+        cx: &mut App,
+    ) -> (LayoutId, Self::RequestLayoutState) {
+        let id = id.expect("the code block has an id");
+        // The scroll offset survives across frames with the element.
+        let scroll = window.with_element_state::<ScrollHandle, _>(id, |state, _window| {
+            let handle = state.unwrap_or_else(ScrollHandle::new);
+            (handle.clone(), handle)
+        });
+        let mut tree = self.build(scroll);
+        let layout_id = tree.request_layout(window, cx);
+        (layout_id, tree)
+    }
+
+    fn prepaint(
+        &mut self,
+        _id: Option<&GlobalElementId>,
+        _inspector_id: Option<&InspectorElementId>,
+        _bounds: gpui::Bounds<Pixels>,
+        tree: &mut AnyElement,
+        window: &mut Window,
+        cx: &mut App,
+    ) {
+        tree.prepaint(window, cx);
+    }
+
+    fn paint(
+        &mut self,
+        _id: Option<&GlobalElementId>,
+        _inspector_id: Option<&InspectorElementId>,
+        _bounds: gpui::Bounds<Pixels>,
+        tree: &mut AnyElement,
+        _prepaint: &mut (),
+        window: &mut Window,
+        cx: &mut App,
+    ) {
+        tree.paint(window, cx);
+    }
+}
+
+impl IntoElement for CodeBlockElement {
+    type Element = Self;
+
+    fn into_element(self) -> Self {
+        self
+    }
 }
 
 #[cfg(test)]
