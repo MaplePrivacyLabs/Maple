@@ -308,6 +308,38 @@ fn inclusion_proof_log_index_must_match_the_entry() {
 }
 
 #[test]
+fn tlog_index_mismatch_precedes_an_unreadable_payload() {
+    let mut bundle: Value = serde_json::from_slice(DEVELOPMENT_BUNDLE).unwrap();
+    bundle[VERIFICATION_MATERIAL_MEMBER][TLOG_ENTRIES_MEMBER][0][LOG_INDEX_MEMBER] =
+        Value::String("1".to_owned());
+    bundle[DSSE_ENVELOPE_MEMBER][PAYLOAD_MEMBER] = Value::String(BASE64.encode("{"));
+    let error = verify_release_bundle(
+        bundle.to_string().as_bytes(),
+        &development_key(),
+        &embedded_trusted_root().unwrap(),
+        ReleasePolicy::new(Pcr0Environment::Development, measurements()),
+    )
+    .expect_err("the bundle's conflicting indexes must be rejected before its payload");
+    assert_eq!(error.code(), "tlog-index-mismatch");
+}
+
+#[test]
+fn message_signature_without_a_dsse_envelope_is_content_unsupported() {
+    let mut bundle: Value = serde_json::from_slice(DEVELOPMENT_BUNDLE).unwrap();
+    let object = bundle.as_object_mut().unwrap();
+    let content = object.remove(DSSE_ENVELOPE_MEMBER).unwrap();
+    object.insert(MESSAGE_SIGNATURE_MEMBER.to_owned(), content);
+    let error = verify_release_bundle(
+        bundle.to_string().as_bytes(),
+        &development_key(),
+        &embedded_trusted_root().unwrap(),
+        ReleasePolicy::new(Pcr0Environment::Development, measurements()),
+    )
+    .expect_err("message signatures are not release statements");
+    assert_eq!(error.code(), "content-unsupported");
+}
+
+#[test]
 fn signed_statement_tampering_is_rejected_before_policy_can_authorize_it() {
     let mut bundle: Value = serde_json::from_slice(DEVELOPMENT_BUNDLE).unwrap();
     let mut payload = decoded_payload(DEVELOPMENT_BUNDLE);
@@ -319,6 +351,24 @@ fn signed_statement_tampering_is_rejected_before_policy_can_authorize_it() {
         &development_key(),
         &embedded_trusted_root().unwrap(),
         ReleasePolicy::new(Pcr0Environment::Production, measurements()),
+    )
+    .unwrap_err();
+    assert_eq!(error.code(), "dsse-signature-invalid");
+}
+
+#[test]
+fn bad_signature_precedes_unsupported_statement_content() {
+    let mut bundle: Value = serde_json::from_slice(DEVELOPMENT_BUNDLE).unwrap();
+    let mut payload = decoded_payload(DEVELOPMENT_BUNDLE);
+    payload[STATEMENT_TYPE_MEMBER] =
+        Value::String("https://example.invalid/unsupported".to_owned());
+    bundle[DSSE_ENVELOPE_MEMBER][PAYLOAD_MEMBER] =
+        Value::String(BASE64.encode(serde_json::to_vec(&payload).unwrap()));
+    let error = verify_release_bundle(
+        serde_json::to_string(&bundle).unwrap().as_bytes(),
+        &development_key(),
+        &embedded_trusted_root().unwrap(),
+        ReleasePolicy::new(Pcr0Environment::Development, measurements()),
     )
     .unwrap_err();
     assert_eq!(error.code(), "dsse-signature-invalid");
@@ -870,6 +920,22 @@ fn json_syntax_errors_are_distinct_from_duplicate_members() {
     let duplicate =
         parse_without_duplicate_keys(r#"{"mediaType":"one","mediaType":"two"}"#).unwrap_err();
     assert_eq!(duplicate.code(), "duplicate-json-key");
+}
+
+#[test]
+fn json_syntax_precedes_duplicates_in_bundle_and_statement_text() {
+    let bundle =
+        parse_without_duplicate_keys(r#"{"mediaType":"one","mediaType":"two",}"#).unwrap_err();
+    assert_eq!(bundle.code(), "json-syntax-error");
+
+    let payload = serde_json::to_string(&decoded_payload(DEVELOPMENT_BUNDLE)).unwrap();
+    let original = format!("{PREDICATE_MEMBER:?}:{{");
+    let duplicate = format!("{PREDICATE_MEMBER:?}:{{{ENVIRONMENT_MEMBER:?}:\"production\",");
+    let mut payload = payload.replacen(&original, &duplicate, 1);
+    payload.pop();
+    let carrier = unsigned_statement_carrier(BASE64.encode(payload));
+    let statement = decode_release_statement(carrier.as_bytes()).err().unwrap();
+    assert_eq!(statement.code(), "json-syntax-error");
 }
 
 #[test]

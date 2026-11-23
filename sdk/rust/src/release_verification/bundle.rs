@@ -158,7 +158,7 @@ pub(super) fn verify_managed_key_bundle(
         bundle_bytes,
         approval_key,
         trusted_root,
-        artifact,
+        |_| Ok(artifact),
         VerificationMode::ManagedKeyCorpus,
     )
 }
@@ -172,15 +172,14 @@ pub(super) fn verify_release_bundle(
     // Maple has no EIF bytes here. The only artifact is the signed statement's
     // typed SHA-256 subject digest; the separate SHA-384 PCR tuple is checked
     // against the authenticated Nitro document after signature verification.
-    let (_, statement) = decode_release_statement(bundle_bytes)?;
-    let artifact = Artifact::from_digest(statement.subject_digest());
     let evidence = verify(
         bundle_bytes,
         approval_key,
         trusted_root,
-        artifact,
+        unverified_artifact,
         VerificationMode::EnclaveRelease,
     )?;
+    let (_, statement) = decode_release_statement(bundle_bytes)?;
     let source = statement.validate(release_policy)?;
     Ok(ReleaseVerificationEvidence {
         tlog_verified: evidence.tlog_verified,
@@ -200,11 +199,11 @@ enum VerificationMode {
     EnclaveRelease,
 }
 
-fn verify(
+fn verify<'artifact>(
     bundle_bytes: &[u8],
     approval_key: &DerPublicKey,
     trusted_root: &TrustedRoot,
-    artifact: Artifact<'_>,
+    prepare_artifact: impl FnOnce(&Value) -> Result<Artifact<'artifact>, VerificationFailure>,
     mode: VerificationMode,
 ) -> Result<VerificationEvidence, VerificationFailure> {
     let bundle_text = std::str::from_utf8(bundle_bytes)
@@ -233,6 +232,7 @@ fn verify(
     if let VerificationMode::EnclaveRelease = mode {
         enforce_release_content(&bundle)?;
     }
+    let artifact = prepare_artifact(&raw_bundle)?;
 
     let policy =
         PublicKeyVerificationPolicy::new(approval_key.clone()).require_checkpoint_log_binding();
@@ -454,8 +454,42 @@ fn parse_complete_json(input: &str) -> Result<Value, serde_json::Error> {
     Ok(value)
 }
 
+fn unverified_artifact(raw_bundle: &Value) -> Result<Artifact<'static>, VerificationFailure> {
+    let subject_digest = unverified_subject_digest(raw_bundle)?;
+    Ok(Artifact::from_digest(subject_digest))
+}
+
+fn unverified_subject_digest(raw_bundle: &Value) -> Result<Sha256Hash, VerificationFailure> {
+    let encoded_payload = raw_bundle
+        .get(DSSE_ENVELOPE_MEMBER)
+        .and_then(Value::as_object)
+        .and_then(|envelope| envelope.get(PAYLOAD_MEMBER))
+        .and_then(Value::as_str)
+        .ok_or_else(|| VerificationFailure::policy("statement-malformed"))?;
+    let payload = BASE64
+        .decode(encoded_payload)
+        .map_err(|_| VerificationFailure::policy("statement-malformed"))?;
+    let payload_text = std::str::from_utf8(&payload)
+        .map_err(|_| VerificationFailure::policy("statement-malformed"))?;
+    // The fork parses the payload as a statement with a subject digest before
+    // checking the signature. All SDK statement-policy checks wait for verified
+    // evidence.
+    let payload = parse_complete_json(payload_text)
+        .map_err(|_| VerificationFailure::policy("json-syntax-error"))?;
+    let digest = payload
+        .get(SUBJECT_MEMBER)
+        .and_then(Value::as_array)
+        .and_then(|subjects| subjects.first())
+        .and_then(Value::as_object)
+        .and_then(|subject| subject.get(DIGEST_MEMBER))
+        .and_then(Value::as_object)
+        .and_then(|digest| digest.get(SHA256_MEMBER))
+        .and_then(Value::as_str)
+        .ok_or_else(|| VerificationFailure::policy("statement-malformed"))?;
+    Sha256Hash::from_hex(digest).map_err(|_| VerificationFailure::policy("statement-malformed"))
+}
+
 pub(super) struct ReleaseStatement {
-    subject_digest: Sha256Hash,
     predicate: ReleasePredicate,
 }
 
@@ -492,11 +526,12 @@ impl ReleaseStatement {
         if !has_subjects {
             return Err(VerificationFailure::policy("statement-malformed"));
         }
-        let subject_digests = subject
+        let all_subjects_well_formed = subject
             .iter()
-            .map(subject_sha256)
-            .collect::<Option<Vec<_>>>()
-            .ok_or_else(|| VerificationFailure::policy("statement-malformed"))?;
+            .all(|subject| subject_sha256(subject).is_some());
+        if !all_subjects_well_formed {
+            return Err(VerificationFailure::policy("statement-malformed"));
+        }
         let predicate_type = object.get(PREDICATE_TYPE_MEMBER).and_then(Value::as_str);
         let has_supported_predicate_type = predicate_type == Some(EXPECTED_PREDICATE_TYPE);
         if !has_supported_predicate_type {
@@ -506,10 +541,7 @@ impl ReleaseStatement {
             .get(PREDICATE_MEMBER)
             .and_then(Value::as_object)
             .ok_or_else(|| VerificationFailure::policy("statement-malformed"))?;
-        let subject_digest = Sha256Hash::from_hex(subject_digests[0])
-            .map_err(|_| VerificationFailure::policy("statement-malformed"))?;
         Ok(Self {
-            subject_digest,
             predicate: ReleasePredicate {
                 environment: predicate
                     .get(ENVIRONMENT_MEMBER)
@@ -523,10 +555,6 @@ impl ReleaseStatement {
                 build: predicate.get(BUILD_MEMBER).cloned().unwrap_or(Value::Null),
             },
         })
-    }
-
-    fn subject_digest(&self) -> Sha256Hash {
-        self.subject_digest
     }
 
     pub(super) fn validate(
@@ -796,6 +824,9 @@ fn reason_for_message(message: &str) -> Option<&'static str> {
 }
 
 pub(super) fn parse_without_duplicate_keys(input: &str) -> Result<(), VerificationFailure> {
+    // Follow JSON.parse: malformed text wins over any repeated member found
+    // earlier in the same text. Only a complete JSON value reaches this check.
+    parse_complete_json(input).map_err(|_| VerificationFailure::policy("json-syntax-error"))?;
     parse_without_duplicate_keys_bytes(input.as_bytes())
 }
 

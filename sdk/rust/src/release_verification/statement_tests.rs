@@ -11,8 +11,8 @@ use sha2::{Digest, Sha256};
 const STATEMENT_VECTORS: &[u8] =
     include_bytes!("../../tests/fixtures/release-statement/vectors.json");
 const STATEMENT_VECTORS_SHA256: &str =
-    "d1af0b289ccc98365f233387c2cb67fbe2eaa590d469d7c94b4b47ba5bd2b22f";
-const STATEMENT_VECTOR_COUNT: usize = 48;
+    "cc1e934761241660e9eb3675f8fd43ef786cdcee7c8d9e20e8b17abc55dbce68";
+const STATEMENT_VECTOR_COUNT: usize = 50;
 
 #[derive(Deserialize)]
 struct VectorFile {
@@ -82,7 +82,7 @@ fn run(payload: &[u8], policy: ReleasePolicy) -> Result<(), VerificationFailure>
 }
 
 #[test]
-fn release_statement_all_48_vectors_with_ordered_categories() {
+fn release_statement_all_50_vectors_with_ordered_categories() {
     let digest = hex::encode(Sha256::digest(STATEMENT_VECTORS));
     assert_eq!(digest, STATEMENT_VECTORS_SHA256);
     let vectors: VectorFile = serde_json::from_slice(STATEMENT_VECTORS).unwrap();
