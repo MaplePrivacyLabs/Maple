@@ -1,15 +1,17 @@
 use super::bundle::{
     decode_release_statement, parse_without_duplicate_keys, verify_release_bundle,
-    MeasurementTuple, ReleasePolicy, BUILDER_MEMBER, BUILD_MEMBER, CERTIFICATE_MEMBER,
-    DSSE_ENVELOPE_MEMBER, ENVIRONMENT_MEMBER, MESSAGE_SIGNATURE_MEMBER, PAYLOAD_MEMBER,
+    MeasurementTuple, ReleasePolicy, VerificationFailure, BUILDER_MEMBER, BUILD_MEMBER,
+    CERTIFICATE_MEMBER, COMMIT_MEMBER, DSSE_ENVELOPE_MEMBER, ENVIRONMENT_MEMBER,
+    INCLUSION_PROOF_MEMBER, LOG_INDEX_MEMBER, MESSAGE_SIGNATURE_MEMBER, PAYLOAD_MEMBER,
     PREDICATE_MEMBER, RAW_BYTES_MEMBER, REPOSITORY_MEMBER, RFC3161_TIMESTAMPS_MEMBER,
-    SIGNATURE_MEMBER, SOURCE_MEMBER, STATEMENT_TYPE_MEMBER, TIMESTAMP_VERIFICATION_DATA_MEMBER,
-    VERIFICATION_MATERIAL_MEMBER, WORKFLOW_MEMBER,
+    RUN_ATTEMPT_MEMBER, RUN_ID_MEMBER, SIGNATURE_MEMBER, SOURCE_MEMBER, STATEMENT_TYPE_MEMBER,
+    TIMESTAMP_VERIFICATION_DATA_MEMBER, TLOG_ENTRIES_MEMBER, VERIFICATION_MATERIAL_MEMBER,
+    WORKFLOW_MEMBER,
 };
 use super::trust::{approval_key, embedded_trusted_root, tuf_http_client, RootRefresher};
 use super::{
-    ObservationTimeouts, ReleaseBundleSource, ReleaseVerificationOutcome, ReleaseVerifier,
-    MAX_BUNDLE_BYTES,
+    ObservationTimeouts, ReleaseBundleSource, ReleaseVerificationOutcome,
+    ReleaseVerificationResult, ReleaseVerifier, MAX_BUNDLE_BYTES,
 };
 use crate::attestation::AttestationDocument;
 use crate::pcr::Pcr0Environment;
@@ -35,6 +37,11 @@ const DEVELOPMENT_PCR1: &str =
     "e83dc536d4cf82daf0e0821e7fdbddf25cd76090602cb67bef7c9d5ab2914417ee6a94bd0c9c1e7ed15a3c3c3bfcc0a3";
 const DEVELOPMENT_PCR2: &str =
     "57b7e86919f571beff7539cb8643baafe81ec9f2ffb3434d683268978675a664e0d043dead3367aba14a5d2814a4be97";
+const DEVELOPMENT_REPOSITORY: &str = "https://github.com/MaplePrivacyLabs/Maple";
+const DEVELOPMENT_COMMIT: &str = "bcf6e84476be2cf08b575c5303f5a83d98adbf40";
+const DEVELOPMENT_BUILD_RUN_ID: &str = "44636648269";
+const DEVELOPMENT_BUILD_RUN_ATTEMPT: u64 = 1;
+const DEVELOPMENT_LOG_INDEX: u64 = 207746380;
 const UNSUPPORTED_STATEMENT_TYPE_ALIAS_MEMBER: &str = "payloadType";
 
 struct StubRootRefresher {
@@ -199,6 +206,36 @@ fn unsigned_statement_carrier(encoded_payload: String) -> String {
     Value::Object(bundle).to_string()
 }
 
+fn real_statement_mutation_error(mutate: impl FnOnce(&mut Value)) -> VerificationFailure {
+    // A changed signed payload cannot pass DSSE verification. Exercise the
+    // statement policy on this decoded real statement, as the other policy
+    // mutation tests do, rather than constructing a look-alike statement.
+    let mut payload = decoded_payload(DEVELOPMENT_BUNDLE);
+    mutate(&mut payload);
+    let encoded = BASE64.encode(serde_json::to_vec(&payload).unwrap());
+    let carrier = unsigned_statement_carrier(encoded);
+    decode_release_statement(carrier.as_bytes())
+        .and_then(|(_, statement)| {
+            statement.validate(ReleasePolicy::new(
+                Pcr0Environment::Development,
+                measurements(),
+            ))
+        })
+        .expect_err("mutated real statement must be rejected")
+}
+
+fn assert_development_identity(result: &ReleaseVerificationResult) {
+    let identity = result
+        .identity
+        .as_ref()
+        .expect("verified result exposes signed audit data");
+    assert_eq!(identity.repository, DEVELOPMENT_REPOSITORY);
+    assert_eq!(identity.commit, DEVELOPMENT_COMMIT);
+    assert_eq!(identity.build_run_id, DEVELOPMENT_BUILD_RUN_ID);
+    assert_eq!(identity.build_run_attempt, DEVELOPMENT_BUILD_RUN_ATTEMPT);
+    assert_eq!(identity.log_index, DEVELOPMENT_LOG_INDEX);
+}
+
 #[test]
 fn real_development_bundle_verifies_offline_with_verified_tlog() {
     let evidence = verify_release_bundle(
@@ -208,7 +245,13 @@ fn real_development_bundle_verifies_offline_with_verified_tlog() {
         ReleasePolicy::new(Pcr0Environment::Development, measurements()),
     )
     .unwrap();
+    assert_eq!(DEVELOPMENT_BUNDLE.len(), 5517);
     assert!(evidence.tlog_verified);
+    assert_eq!(evidence.repository, DEVELOPMENT_REPOSITORY);
+    assert_eq!(evidence.commit, DEVELOPMENT_COMMIT);
+    assert_eq!(evidence.build_run_id, DEVELOPMENT_BUILD_RUN_ID);
+    assert_eq!(evidence.build_run_attempt, DEVELOPMENT_BUILD_RUN_ATTEMPT);
+    assert_eq!(evidence.log_index, DEVELOPMENT_LOG_INDEX);
 }
 
 #[test]
@@ -232,6 +275,36 @@ fn development_bundle_cannot_be_relabeled_production_or_match_other_measurements
     )
     .unwrap_err();
     assert_eq!(error.code(), "statement-measurement-mismatch");
+}
+
+#[test]
+fn entry_log_index_must_match_the_inclusion_proof() {
+    let mut bundle: Value = serde_json::from_slice(DEVELOPMENT_BUNDLE).unwrap();
+    bundle[VERIFICATION_MATERIAL_MEMBER][TLOG_ENTRIES_MEMBER][0][LOG_INDEX_MEMBER] =
+        Value::String("207716380".to_owned());
+    let error = verify_release_bundle(
+        bundle.to_string().as_bytes(),
+        &development_key(),
+        &embedded_trusted_root().unwrap(),
+        ReleasePolicy::new(Pcr0Environment::Development, measurements()),
+    )
+    .expect_err("a changed entry index must not reach cryptographic verification");
+    assert_eq!(error.code(), "tlog-index-mismatch");
+}
+
+#[test]
+fn inclusion_proof_log_index_must_match_the_entry() {
+    let mut bundle: Value = serde_json::from_slice(DEVELOPMENT_BUNDLE).unwrap();
+    bundle[VERIFICATION_MATERIAL_MEMBER][TLOG_ENTRIES_MEMBER][0][INCLUSION_PROOF_MEMBER]
+        [LOG_INDEX_MEMBER] = Value::String("207716380".to_owned());
+    let error = verify_release_bundle(
+        bundle.to_string().as_bytes(),
+        &development_key(),
+        &embedded_trusted_root().unwrap(),
+        ReleasePolicy::new(Pcr0Environment::Development, measurements()),
+    )
+    .expect_err("a changed proof index must not reach cryptographic verification");
+    assert_eq!(error.code(), "tlog-index-mismatch");
 }
 
 #[test]
@@ -260,6 +333,7 @@ fn source_build_and_workflow_are_not_authorization_identity() {
         Value::String(".github/workflows/untrusted.yml".to_owned());
     payload[PREDICATE_MEMBER][BUILD_MEMBER][BUILDER_MEMBER] =
         Value::String("other-builder".to_owned());
+    payload[PREDICATE_MEMBER][BUILD_MEMBER][RUN_ID_MEMBER] = Value::String("1".to_owned());
     let encoded = BASE64.encode(serde_json::to_vec(&payload).unwrap());
     let carrier = unsigned_statement_carrier(encoded);
     let (_, statement) = decode_release_statement(carrier.as_bytes()).unwrap();
@@ -269,6 +343,52 @@ fn source_build_and_workflow_are_not_authorization_identity() {
             measurements(),
         ))
         .unwrap();
+}
+
+#[test]
+fn release_statement_rejects_an_empty_repository() {
+    let error = real_statement_mutation_error(|statement| {
+        statement[PREDICATE_MEMBER][SOURCE_MEMBER][REPOSITORY_MEMBER] =
+            Value::String(String::new());
+    });
+    assert_eq!(error.code(), "statement-malformed");
+}
+
+#[test]
+fn release_statement_rejects_a_short_commit() {
+    let error = real_statement_mutation_error(|statement| {
+        statement[PREDICATE_MEMBER][SOURCE_MEMBER][COMMIT_MEMBER] =
+            Value::String("bcf6e844".to_owned());
+    });
+    assert_eq!(error.code(), "statement-malformed");
+}
+
+#[test]
+fn release_statement_rejects_a_missing_build() {
+    let error = real_statement_mutation_error(|statement| {
+        statement[PREDICATE_MEMBER]
+            .as_object_mut()
+            .unwrap()
+            .remove(BUILD_MEMBER);
+    });
+    assert_eq!(error.code(), "statement-malformed");
+}
+
+#[test]
+fn release_statement_rejects_a_non_numeric_run_id() {
+    let error = real_statement_mutation_error(|statement| {
+        statement[PREDICATE_MEMBER][BUILD_MEMBER][RUN_ID_MEMBER] =
+            Value::String("not-a-run-id".to_owned());
+    });
+    assert_eq!(error.code(), "statement-malformed");
+}
+
+#[test]
+fn release_statement_rejects_a_zero_run_attempt() {
+    let error = real_statement_mutation_error(|statement| {
+        statement[PREDICATE_MEMBER][BUILD_MEMBER][RUN_ATTEMPT_MEMBER] = Value::from(0);
+    });
+    assert_eq!(error.code(), "statement-malformed");
 }
 
 #[test]
@@ -353,11 +473,13 @@ async fn embedded_bundle_verifies_and_then_uses_verified_cache() {
     assert_eq!(first.outcome, ReleaseVerificationOutcome::Verified);
     assert_eq!(first.source, ReleaseBundleSource::Embedded);
     assert!(first.tlog_verified());
+    assert_development_identity(&first);
     assert_eq!(verifier.cache_len(), 1);
 
     let second = verifier.observe(&document()).await;
     assert_eq!(second.outcome, ReleaseVerificationOutcome::Verified);
     assert_eq!(second.source, ReleaseBundleSource::Cache);
+    assert_development_identity(&second);
     assert_eq!(verifier.cache_len(), 1);
 }
 

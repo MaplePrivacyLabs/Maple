@@ -18,6 +18,7 @@ const EXPECTED_MEDIA_TYPE: &str = "application/vnd.dev.sigstore.bundle.v0.3+json
 pub(super) const EXPECTED_PAYLOAD_TYPE: &str = "application/vnd.in-toto+json";
 const EXPECTED_STATEMENT_TYPE: &str = "https://in-toto.io/Statement/v1";
 const EXPECTED_PREDICATE_TYPE: &str = "https://maple.ai/attestations/enclave-release/v1";
+const SOURCE_COMMIT_HEX_LEN: usize = 40;
 const VERIFIED_TIMESTAMP_COUNT: usize = 1;
 const TRANSPARENCY_LOG_ENTRY_COUNT: usize = 1;
 const DSSE_SIGNATURE_COUNT: usize = 1;
@@ -34,7 +35,9 @@ pub(super) const CERTIFICATE_MEMBER: &str = "certificate";
 #[cfg(test)]
 pub(super) const SIGNATURE_MEMBER: &str = "signature";
 const X509_CERTIFICATE_CHAIN_MEMBER: &str = "x509CertificateChain";
-const TLOG_ENTRIES_MEMBER: &str = "tlogEntries";
+pub(super) const TLOG_ENTRIES_MEMBER: &str = "tlogEntries";
+pub(super) const LOG_INDEX_MEMBER: &str = "logIndex";
+pub(super) const INCLUSION_PROOF_MEMBER: &str = "inclusionProof";
 const KIND_VERSION_MEMBER: &str = "kindVersion";
 const KIND_MEMBER: &str = "kind";
 const VERSION_MEMBER: &str = "version";
@@ -62,9 +65,15 @@ pub(super) const SOURCE_MEMBER: &str = "source";
 #[cfg(test)]
 pub(super) const REPOSITORY_MEMBER: &str = "repository";
 #[cfg(test)]
+pub(super) const COMMIT_MEMBER: &str = "commit";
+#[cfg(test)]
 pub(super) const WORKFLOW_MEMBER: &str = "workflow";
 #[cfg(test)]
 pub(super) const BUILD_MEMBER: &str = "build";
+#[cfg(test)]
+pub(super) const RUN_ID_MEMBER: &str = "runId";
+#[cfg(test)]
+pub(super) const RUN_ATTEMPT_MEMBER: &str = "runAttempt";
 #[cfg(test)]
 pub(super) const BUILDER_MEMBER: &str = "builder";
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -113,6 +122,17 @@ impl MeasurementTuple {
 #[derive(Debug)]
 pub(super) struct VerificationEvidence {
     pub(super) tlog_verified: bool,
+    log_index: u64,
+}
+
+#[derive(Debug)]
+pub(super) struct ReleaseVerificationEvidence {
+    pub(super) tlog_verified: bool,
+    pub(super) repository: String,
+    pub(super) commit: String,
+    pub(super) build_run_id: String,
+    pub(super) build_run_attempt: u64,
+    pub(super) log_index: u64,
 }
 
 #[derive(Clone, Copy)]
@@ -151,7 +171,7 @@ pub(super) fn verify_release_bundle(
     approval_key: &DerPublicKey,
     trusted_root: &TrustedRoot,
     release_policy: ReleasePolicy,
-) -> Result<VerificationEvidence, VerificationFailure> {
+) -> Result<ReleaseVerificationEvidence, VerificationFailure> {
     // Maple has no EIF bytes here. The only artifact is the signed statement's
     // typed SHA-256 subject digest; the separate SHA-384 PCR tuple is checked
     // against the authenticated Nitro document after signature verification.
@@ -165,7 +185,15 @@ pub(super) fn verify_release_bundle(
         VerificationMode::EnclaveRelease,
     )?;
     statement.validate(release_policy)?;
-    Ok(evidence)
+    let ReleasePredicate { source, build, .. } = statement.predicate;
+    Ok(ReleaseVerificationEvidence {
+        tlog_verified: evidence.tlog_verified,
+        repository: source.repository,
+        commit: source.commit,
+        build_run_id: build.run_id,
+        build_run_attempt: build.run_attempt,
+        log_index: evidence.log_index,
+    })
 }
 
 #[derive(Clone, Copy)]
@@ -188,6 +216,7 @@ fn verify(
     parse_without_duplicate_keys(bundle_text)?;
     let raw_bundle = parse_complete_json(bundle_text)
         .map_err(|_| VerificationFailure::policy("bundle-malformed"))?;
+    enforce_matching_tlog_indexes(&raw_bundle)?;
     enforce_managed_key_profile(&raw_bundle, mode)?;
 
     let bundle = Bundle::from_json(bundle_text)
@@ -224,9 +253,48 @@ fn verify(
     if !has_one_verified_timestamp {
         return Err(VerificationFailure::policy("verification-incomplete"));
     }
+    // Rekor v2 uses this entry index as the leaf position proved against the
+    // signed checkpoint. The earlier equality check makes it the proof's index.
+    let log_index = bundle
+        .verification_material
+        .tlog_entries
+        .first()
+        .map(|entry| entry.log_index.get())
+        .ok_or_else(|| VerificationFailure::policy("verification-incomplete"))?;
     Ok(VerificationEvidence {
         tlog_verified: result.tlog_verified(),
+        log_index,
     })
+}
+
+fn enforce_matching_tlog_indexes(raw_bundle: &Value) -> Result<(), VerificationFailure> {
+    // Verifiers differ in which duplicate index they prove. Reject conflicting
+    // values before verification so clients agree on both outcome and audit
+    // data. Missing proofs remain the verifier's existing rejection path.
+    let entries = raw_bundle
+        .get(VERIFICATION_MATERIAL_MEMBER)
+        .and_then(|material| material.get(TLOG_ENTRIES_MEMBER))
+        .and_then(Value::as_array);
+    let Some(entries) = entries else {
+        return Ok(());
+    };
+    for entry in entries {
+        let Some(entry) = entry.as_object() else {
+            continue;
+        };
+        let proof = entry.get(INCLUSION_PROOF_MEMBER).and_then(Value::as_object);
+        let Some(proof) = proof else {
+            continue;
+        };
+        let entry_index = entry.get(LOG_INDEX_MEMBER).and_then(Value::as_str);
+        let proof_index = proof.get(LOG_INDEX_MEMBER).and_then(Value::as_str);
+        let entry_index_is_decimal = entry_index.is_some_and(is_decimal);
+        let indexes_agree = entry_index_is_decimal && entry_index == proof_index;
+        if !indexes_agree {
+            return Err(VerificationFailure::policy("tlog-index-mismatch"));
+        }
+    }
+    Ok(())
 }
 
 fn enforce_managed_key_profile(
@@ -416,7 +484,22 @@ struct SubjectDigest {
 #[derive(serde::Deserialize)]
 struct ReleasePredicate {
     environment: String,
+    source: ReleaseSource,
     measurements: StatementMeasurements,
+    build: ReleaseBuild,
+}
+
+#[derive(serde::Deserialize)]
+struct ReleaseSource {
+    repository: String,
+    commit: String,
+}
+
+#[derive(serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct ReleaseBuild {
+    run_id: String,
+    run_attempt: u64,
 }
 
 #[derive(serde::Deserialize)]
@@ -461,8 +544,34 @@ impl ReleaseStatement {
                 "statement-measurement-mismatch",
             ));
         }
+        // Source and build values are signed audit data, not policy inputs.
+        // Their shapes make the resulting diagnostics useful without pinning
+        // a repository, workflow run or other authorization identity.
+        let repository_present = !self.predicate.source.repository.is_empty();
+        let commit_is_hash = is_full_lower_hex_commit(&self.predicate.source.commit);
+        let run_id_is_decimal = is_decimal(&self.predicate.build.run_id);
+        let attempt_is_count = self.predicate.build.run_attempt >= 1;
+        let audit_data_is_well_formed =
+            repository_present && commit_is_hash && run_id_is_decimal && attempt_is_count;
+        if !audit_data_is_well_formed {
+            return Err(VerificationFailure::policy("statement-malformed"));
+        }
         Ok(())
     }
+}
+
+fn is_full_lower_hex_commit(commit: &str) -> bool {
+    let has_full_length = commit.len() == SOURCE_COMMIT_HEX_LEN;
+    let has_only_lowercase_hex = commit
+        .bytes()
+        .all(|byte| matches!(byte, b'0'..=b'9' | b'a'..=b'f'));
+    has_full_length && has_only_lowercase_hex
+}
+
+fn is_decimal(value: &str) -> bool {
+    let is_not_empty = !value.is_empty();
+    let has_only_digits = value.bytes().all(|byte| byte.is_ascii_digit());
+    is_not_empty && has_only_digits
 }
 
 pub(super) fn decode_release_statement(

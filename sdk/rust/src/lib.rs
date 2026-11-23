@@ -24,7 +24,8 @@ pub use error::{Error, Result};
 pub use pcr::{Pcr0Environment, Pcr0TrustPolicy};
 pub use push::*;
 pub use release_verification::{
-    ReleaseBundleSource, ReleaseVerificationOutcome, ReleaseVerificationResult,
+    ReleaseBundleSource, ReleaseVerificationIdentity, ReleaseVerificationOutcome,
+    ReleaseVerificationResult,
 };
 pub use system_one::*;
 pub use types::*;

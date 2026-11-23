@@ -5,7 +5,7 @@ mod trust;
 use crate::attestation::AttestationDocument;
 use crate::pcr::Pcr0Environment;
 use bundle::{
-    verify_release_bundle, MeasurementTuple, ReleasePolicy, VerificationEvidence,
+    verify_release_bundle, MeasurementTuple, ReleasePolicy, ReleaseVerificationEvidence,
     VerificationFailure,
 };
 use futures::StreamExt;
@@ -39,6 +39,17 @@ pub enum ReleaseBundleSource {
     Unavailable,
 }
 
+/// Signed source, build and transparency-log data from a verified release.
+/// These values are diagnostics, never authorization policy inputs.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct ReleaseVerificationIdentity {
+    pub repository: String,
+    pub commit: String,
+    pub build_run_id: String,
+    pub build_run_attempt: u64,
+    pub log_index: u64,
+}
+
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct ReleaseVerificationResult {
     pub outcome: ReleaseVerificationOutcome,
@@ -46,16 +57,25 @@ pub struct ReleaseVerificationResult {
     pub source: ReleaseBundleSource,
     pub tlog_verified: bool,
     pub refresh_error: Option<&'static str>,
+    pub identity: Option<ReleaseVerificationIdentity>,
 }
 
 impl ReleaseVerificationResult {
-    fn verified(source: ReleaseBundleSource) -> Self {
+    fn verified(source: ReleaseBundleSource, evidence: ReleaseVerificationEvidence) -> Self {
+        let identity = ReleaseVerificationIdentity {
+            repository: evidence.repository,
+            commit: evidence.commit,
+            build_run_id: evidence.build_run_id,
+            build_run_attempt: evidence.build_run_attempt,
+            log_index: evidence.log_index,
+        };
         Self {
             outcome: ReleaseVerificationOutcome::Verified,
             category: "verified",
             source,
             tlog_verified: true,
             refresh_error: None,
+            identity: Some(identity),
         }
     }
 
@@ -66,6 +86,7 @@ impl ReleaseVerificationResult {
             source,
             tlog_verified: false,
             refresh_error: None,
+            identity: None,
         }
     }
 
@@ -315,7 +336,7 @@ impl ReleaseVerifier {
             )
             .await;
         let first_error = match first_result {
-            Ok(()) => return ReleaseVerificationResult::verified(source),
+            Ok(evidence) => return ReleaseVerificationResult::verified(source, evidence),
             Err(error) => error,
         };
         let is_refreshable = first_error.refreshable();
@@ -354,7 +375,7 @@ impl ReleaseVerifier {
             .verify_once(bytes, approval_key.clone(), *measurements, cancelled)
             .await
         {
-            Ok(()) => ReleaseVerificationResult::verified(source),
+            Ok(evidence) => ReleaseVerificationResult::verified(source, evidence),
             Err(error) => ReleaseVerificationResult::rejected(error.code(), source),
         }
     }
@@ -365,7 +386,7 @@ impl ReleaseVerifier {
         approval_key: DerPublicKey,
         measurements: MeasurementTuple,
         cancelled: &Arc<AtomicBool>,
-    ) -> Result<(), VerificationFailure> {
+    ) -> Result<ReleaseVerificationEvidence, VerificationFailure> {
         let trusted_root = {
             let trusted_root = self
                 .trusted_root
@@ -395,7 +416,7 @@ impl ReleaseVerifier {
                 &trusted_root,
                 measurements,
             )
-            .map(|evidence| {
+            .inspect(|evidence| {
                 debug_assert!(evidence.tlog_verified);
             })
         })
@@ -426,7 +447,7 @@ impl ReleaseVerifier {
         &self,
         bytes: &[u8],
         measurements: MeasurementTuple,
-    ) -> Result<VerificationEvidence, VerificationFailure> {
+    ) -> Result<ReleaseVerificationEvidence, VerificationFailure> {
         let approval_key = self
             .approval_key
             .as_ref()
@@ -483,7 +504,7 @@ fn verify_at(
     approval_key: &DerPublicKey,
     trusted_root: &TrustedRoot,
     measurements: MeasurementTuple,
-) -> Result<VerificationEvidence, VerificationFailure> {
+) -> Result<ReleaseVerificationEvidence, VerificationFailure> {
     verify_release_bundle(
         bytes,
         approval_key,

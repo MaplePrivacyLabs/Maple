@@ -20,7 +20,9 @@ use crate::{
     attestation::{AttestationDocument, AttestationVerifier},
     cbor::{self, Value as CborValue},
     pcr::Pcr0TrustPolicy,
-    release_verification::{ReleaseVerificationResult, ReleaseVerifier},
+    release_verification::{
+        ReleaseVerificationOutcome, ReleaseVerificationResult, ReleaseVerifier,
+    },
 };
 
 use super::{
@@ -70,15 +72,7 @@ impl ReleaseObservationOwner {
             if let Ok(mut last_result) = state.last_result.write() {
                 *last_result = Some(result.clone());
             }
-            tracing::info!(
-                target: "maple_sdk::release_verification",
-                outcome = ?result.outcome,
-                category = result.category,
-                source = ?result.source,
-                tlog_verified = result.tlog_verified,
-                refresh_error = result.refresh_error,
-                "release verification observation completed"
-            );
+            log_release_result(&result);
         });
         let mut tasks = self
             .state
@@ -93,6 +87,39 @@ impl ReleaseObservationOwner {
         let last_result = self.state.last_result.read().ok()?;
         last_result.clone()
     }
+}
+
+fn log_release_result(result: &ReleaseVerificationResult) {
+    let is_verified = result.outcome == ReleaseVerificationOutcome::Verified;
+    let verified_identity = result.identity.as_ref().filter(|_| is_verified);
+    if let Some(identity) = verified_identity {
+        let repository = identity.repository.as_str();
+        let commit = identity.commit.as_str();
+        let build_run = format!("{}/{}", identity.build_run_id, identity.build_run_attempt);
+        tracing::info!(
+            target: "maple_sdk::release_verification",
+            outcome = ?result.outcome,
+            category = result.category,
+            source = ?result.source,
+            tlog_verified = result.tlog_verified,
+            refresh_error = result.refresh_error,
+            repository,
+            commit,
+            build_run = %build_run,
+            log_index = identity.log_index,
+            "release verification observation completed"
+        );
+        return;
+    }
+    tracing::info!(
+        target: "maple_sdk::release_verification",
+        outcome = ?result.outcome,
+        category = result.category,
+        source = ?result.source,
+        tlog_verified = result.tlog_verified,
+        refresh_error = result.refresh_error,
+        "release verification observation completed"
+    );
 }
 
 impl Drop for ReleaseObservationOwner {
@@ -1161,6 +1188,13 @@ mod tests {
             source: crate::release_verification::ReleaseBundleSource::Embedded,
             tlog_verified: true,
             refresh_error: None,
+            identity: Some(crate::release_verification::ReleaseVerificationIdentity {
+                repository: "https://github.com/MaplePrivacyLabs/Maple".to_owned(),
+                commit: "bcf6e84476be2cf08b575c5303f5a83d98adbf40".to_owned(),
+                build_run_id: "44636648269".to_owned(),
+                build_run_attempt: 1,
+                log_index: 207746380,
+            }),
         }
     }
 
