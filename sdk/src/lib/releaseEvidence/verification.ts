@@ -85,15 +85,15 @@ function fail(category: string): Failure {
 }
 
 /**
- * Parses JSON text that must not name any member twice. Malformed text and
- * repeated members get their own categories.
+ * Parses JSON text that must not name any member twice. Text that is not
+ * JSON and text with a repeated member get their own categories.
  */
-function parseUnambiguousJson(text: string, malformedCategory: string): Parsed<unknown> {
+function parseUnambiguousJson(text: string): Parsed<unknown> {
   let repeated: boolean;
   try {
     repeated = hasDuplicateJsonMember(text);
   } catch {
-    return fail(malformedCategory);
+    return fail("json-syntax-error");
   }
   if (repeated) {
     return fail("duplicate-json-key");
@@ -107,37 +107,60 @@ function parseBundleText(text: string): Parsed<unknown> {
   if (tooLarge) {
     return fail("bundle-too-large");
   }
-  return parseUnambiguousJson(text, "bundle-malformed");
+  return parseUnambiguousJson(text);
 }
 
-/**
- * The log index the verifier checked. The verifier proves inclusion at
- * inclusionProof.logIndex and never compares it with the entry's own logIndex
- * member, so only the proof's value is reported.
- */
-function readVerifiedLogIndex(bundle: unknown): string {
+function readTlogEntries(bundle: unknown): unknown[] {
   if (!isRecord(bundle)) {
-    return "";
+    return [];
   }
   const material = bundle.verificationMaterial;
   if (!isRecord(material)) {
-    return "";
+    return [];
   }
   const entries = material.tlogEntries;
   if (!Array.isArray(entries)) {
-    return "";
+    return [];
   }
-  const entry: unknown = entries[0];
+  return entries;
+}
+
+/**
+ * A log entry names its index twice: on the entry and again in its inclusion
+ * proof. Verifiers differ in which of the two they prove inclusion at, so an
+ * entry whose two indexes differ is rejected before verification. Every
+ * client then gives the same answer for the same bundle, and the index that
+ * is reported is the one that was proven. An entry without a proof is left
+ * for the verifier to reject.
+ */
+function checkLogIndexesAgree(bundle: unknown): { ok: true } | Failure {
+  for (const entry of readTlogEntries(bundle)) {
+    if (!isRecord(entry)) {
+      continue;
+    }
+    const proof = entry.inclusionProof;
+    if (!isRecord(proof)) {
+      continue;
+    }
+    const entryIndex = entry.logIndex;
+    const proofIndex = proof.logIndex;
+    const entryIndexIsNumber = typeof entryIndex === "string" && LOG_INDEX_DIGITS.test(entryIndex);
+    const indexesAgree = entryIndexIsNumber && entryIndex === proofIndex;
+    if (!indexesAgree) {
+      return fail("tlog-index-mismatch");
+    }
+  }
+  return { ok: true };
+}
+
+/** The index of the bundle's log entry, once checkLogIndexesAgree and the verifier have passed. */
+function readVerifiedLogIndex(bundle: unknown): string {
+  const entry: unknown = readTlogEntries(bundle)[0];
   if (!isRecord(entry)) {
     return "";
   }
-  const proof = entry.inclusionProof;
-  if (!isRecord(proof)) {
-    return "";
-  }
-  const logIndex = proof.logIndex;
-  const isIndex = typeof logIndex === "string" && LOG_INDEX_DIGITS.test(logIndex);
-  if (!isIndex) {
+  const logIndex = entry.logIndex;
+  if (typeof logIndex !== "string") {
     return "";
   }
   return logIndex;
@@ -204,7 +227,7 @@ function parseStatement(payload: Uint8Array): Parsed<Json> {
   } catch {
     return fail("statement-malformed");
   }
-  const parsed = parseUnambiguousJson(text, "statement-malformed");
+  const parsed = parseUnambiguousJson(text);
   if (!parsed.ok) {
     return parsed;
   }
@@ -336,6 +359,10 @@ export async function verifyDsseBundle(
   const parsed = parseBundleText(bundleText);
   if (!parsed.ok) {
     return parsed;
+  }
+  const indexes = checkLogIndexesAgree(parsed.value);
+  if (!indexes.ok) {
+    return indexes;
   }
   try {
     const verifier = await strictVerifier(trustedRoot);

@@ -16,6 +16,10 @@ export type ReleaseEvidenceFailureCategory =
   | "bundle-not-found"
   // The response exceeded the byte cap before parsing.
   | "bundle-too-large"
+  // The bundle or the signed statement is not JSON.
+  | "json-syntax-error"
+  // A log entry's index differs from the index in its inclusion proof.
+  | "tlog-index-mismatch"
   // The DSSE payload is not a well-formed in-toto statement.
   | "statement-malformed"
   // The statement type, payload type or predicate type is not the expected one.

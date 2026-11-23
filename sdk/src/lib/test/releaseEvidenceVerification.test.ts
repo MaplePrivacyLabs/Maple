@@ -86,11 +86,23 @@ describe("published Dev release bundle", () => {
     });
   });
 
-  test("reports the inclusion proof's log index, not the entry's unverified one", async () => {
+  test("fails when the entry's log index differs from its inclusion proof's", async () => {
     const bundle = publishedBundle();
     bundle.verificationMaterial.tlogEntries[0].logIndex = "207716380";
     const result = await verifyPublished(JSON.stringify(bundle));
-    expect(result).toMatchObject({ ok: true, logIndex: DEV_LOG_INDEX });
+    expect(result).toEqual({ ok: false, category: "tlog-index-mismatch" });
+  });
+
+  test("fails when the inclusion proof's log index differs from the entry's", async () => {
+    const bundle = publishedBundle();
+    bundle.verificationMaterial.tlogEntries[0].inclusionProof.logIndex = "207716380";
+    const result = await verifyPublished(JSON.stringify(bundle));
+    expect(result).toEqual({ ok: false, category: "tlog-index-mismatch" });
+  });
+
+  test("fails for bundle text that is not JSON", async () => {
+    const result = await verifyPublished(PUBLISHED_BUNDLE.slice(0, -1));
+    expect(result).toEqual({ ok: false, category: "json-syntax-error" });
   });
 
   test("fails for a different PCR", async () => {
@@ -270,6 +282,11 @@ describe("statement policy on the real Dev statement", () => {
     expect(repeated).not.toBe(signed);
     const result = checkReleaseStatement(new TextEncoder().encode(repeated), DEV_RELEASE);
     expect(result).toEqual({ ok: false, category: "duplicate-json-key" });
+  });
+
+  test("rejects a payload that is not JSON", () => {
+    const result = checkReleaseStatement(new TextEncoder().encode("{"), DEV_RELEASE);
+    expect(result).toEqual({ ok: false, category: "json-syntax-error" });
   });
 
   test("rejects a payload that is not an object", () => {
