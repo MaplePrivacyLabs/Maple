@@ -1574,6 +1574,8 @@ chat-history-newer = Load newer messages
 chat-activity-outside = Additional live activity is outside this view
 chat-reload-latest = Reload latest
 chat-jump-latest = Jump to latest
+# The jump button's spoken name; $status is what it shows, such as Maple has a question.
+chat-jump-label = Jump to latest, { $status }
 # The jump button over the transcript's bottom edge while Maple runs and the reader has scrolled up.
 chat-jump-working = Maple is working
 # Beside the jump button's count of replies that arrived while the reader was scrolled up; the number shows in a badge before these words.
@@ -1589,8 +1591,14 @@ chat-jump-new-label = { $count ->
    *[other] { $count } new messages
 }
 # The date chip at the top of the transcript once the task's first message is in view.
-# $date is that message's date and time.
+# $date is the day the task started: Today, Yesterday or a date such as Nov 21.
 chat-history-start = Start of task · { $date }
+chat-day-today = Today
+chat-day-yesterday = Yesterday
+# $month is a translated short month name; $day is a number.
+chat-day = { $month } { $day }
+# $day is Today, Yesterday or a date such as Nov 21; $time is the time as HH:MM.
+chat-date = { $day } · { $time }
 chat-image-unavailable = Image unavailable
 chat-background = background
 chat-stop = Stop

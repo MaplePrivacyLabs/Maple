@@ -1461,6 +1461,8 @@ chat-history-newer = Cargar mensajes más recientes
 chat-activity-outside = Hay más actividad en vivo fuera de esta vista
 chat-reload-latest = Recargar lo más reciente
 chat-jump-latest = Ir a lo más reciente
+# The jump button's spoken name; $status is what it shows, such as Maple has a question.
+chat-jump-label = Ir a lo más reciente, { $status }
 chat-jump-working = Maple está trabajando
 chat-jump-new = { $count ->
     [one] mensaje nuevo
@@ -1470,7 +1472,14 @@ chat-jump-new-label = { $count ->
     [one] { $count } mensaje nuevo
    *[other] { $count } mensajes nuevos
 }
+# $date is the day the task started: Today, Yesterday or a date such as Nov 21.
 chat-history-start = Inicio de la tarea · { $date }
+chat-day-today = Hoy
+chat-day-yesterday = Ayer
+# $month is a translated short month name; $day is a number.
+chat-day = { $day } { $month }
+# $day is Today, Yesterday or a date such as Nov 21; $time is the time as HH:MM.
+chat-date = { $day } · { $time }
 chat-image-unavailable = Imagen no disponible
 chat-background = en segundo plano
 chat-stop = Detener

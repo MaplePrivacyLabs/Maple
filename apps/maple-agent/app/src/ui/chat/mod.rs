@@ -3887,6 +3887,14 @@ impl ChatScreen {
 
     /// Start the displayed card over: drop the step state and the answer
     /// input, then recreate the input when a question is showing.
+    /// The card the keyboard was on closed with nothing after it: the
+    /// keys go back to the composer rather than to a button now gone.
+    fn release_answered_card(&mut self) {
+        if self.current_question().is_none() {
+            self.screen_focus_pending = true;
+        }
+    }
+
     fn reset_question_card(&mut self, cx: &mut Context<Self>) {
         self.question_selected.clear();
         self.question_step = 0;
@@ -4768,7 +4776,11 @@ impl ChatScreen {
             return;
         }
         if self.current_question().is_some() {
-            self.skip_question(cx);
+            // Never skip, or deny, a card the reader cannot see: Escape
+            // brings it into view first, as the answer keys do.
+            if !self.question_out_of_view(cx) {
+                self.skip_question(cx);
+            }
             return;
         }
         if let Some(selection) = self.selection.clone()
@@ -5103,6 +5115,8 @@ impl ChatScreen {
             self.notice = Some(UiText::key("chat-answer-first"));
             self.question_collapsed = false;
             self.question_focus_pending = true;
+            // Further up the thread, the card is below the reader: go to it.
+            self.question_out_of_view(cx);
             cx.notify();
             return;
         }
@@ -5905,6 +5919,7 @@ impl ChatScreen {
         self.pending_questions
             .retain(|queued| queued.request_id != question.request_id);
         self.reset_question_card(cx);
+        self.release_answered_card();
         self.sync_sidebar_activity(cx);
         cx.notify();
         self.call_semantic(
@@ -5957,6 +5972,7 @@ impl ChatScreen {
         self.pending_questions
             .retain(|queued| queued.request_id != question.request_id);
         self.reset_question_card(cx);
+        self.release_answered_card();
         self.sync_sidebar_activity(cx);
         cx.notify();
         let backend = self.backend.clone();
@@ -7082,7 +7098,10 @@ impl ChatScreen {
                     self.question_selected.clear();
                     self.question_collapsed = false;
                     self.ensure_question_input(cx);
-                    self.question_focus_pending = true;
+                    // Only at the end: arriving further up, it waits for
+                    // the jump, so scrolling down later does not move the
+                    // keys out of the composer mid-word.
+                    self.question_focus_pending = self.list_state.is_following_tail();
                 }
             }
             AgentServiceEvent::Run {

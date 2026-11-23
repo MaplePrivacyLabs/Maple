@@ -20,6 +20,8 @@ pub(super) struct TranscriptPages {
     pub after: bool,
     pub epoch: Option<i64>,
     pub loading: bool,
+    /// The page in flight is older history, not newer.
+    pub loading_older: bool,
     pub live_has_more: bool,
     pub generation: u64,
     pub expanding: HashSet<String>,
@@ -172,6 +174,7 @@ impl ChatScreen {
         };
         let Some(identity) = identity else { return };
         self.pages.loading = true;
+        self.pages.loading_older = older;
         let generation = self.pages.generation;
         let backend = self.backend.clone();
         let user = self.user_id.clone();

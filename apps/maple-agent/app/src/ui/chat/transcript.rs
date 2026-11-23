@@ -981,6 +981,25 @@ fn render_thread_start(start: Option<SharedString>) -> Div {
 
 /// When a row was sent: the time today, the date and time before. The
 /// hover timestamp and the transcript's date chip say it the same way.
+/// The catalog key of a month's short name (`month` is 1 to 12).
+pub(super) fn month_key(month: u32) -> &'static str {
+    match month {
+        1 => "chat-month-1",
+        2 => "chat-month-2",
+        3 => "chat-month-3",
+        4 => "chat-month-4",
+        5 => "chat-month-5",
+        6 => "chat-month-6",
+        7 => "chat-month-7",
+        8 => "chat-month-8",
+        9 => "chat-month-9",
+        10 => "chat-month-10",
+        11 => "chat-month-11",
+        12 => "chat-month-12",
+        _ => unreachable!("chrono month"),
+    }
+}
+
 pub(super) fn when_label(created_ms: u128, messages: &MessageCache) -> SharedString {
     let sent = chrono::DateTime::<chrono::Local>::from(
         std::time::UNIX_EPOCH + std::time::Duration::from_millis(created_ms as u64),
@@ -990,21 +1009,7 @@ pub(super) fn when_label(created_ms: u128, messages: &MessageCache) -> SharedStr
         if sent.date_naive() == today {
             return sent.format("%H:%M").to_string().into();
         }
-        let month = tr(match chrono::Datelike::month(&sent) {
-            1 => "chat-month-1",
-            2 => "chat-month-2",
-            3 => "chat-month-3",
-            4 => "chat-month-4",
-            5 => "chat-month-5",
-            6 => "chat-month-6",
-            7 => "chat-month-7",
-            8 => "chat-month-8",
-            9 => "chat-month-9",
-            10 => "chat-month-10",
-            11 => "chat-month-11",
-            12 => "chat-month-12",
-            _ => unreachable!("chrono month"),
-        });
+        let month = tr(month_key(chrono::Datelike::month(&sent)));
         messages.get(
             "chat-message-date",
             [

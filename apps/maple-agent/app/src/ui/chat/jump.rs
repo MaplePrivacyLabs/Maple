@@ -214,6 +214,36 @@ pub(super) struct TailCard {
     heights: std::rc::Rc<std::cell::RefCell<std::collections::HashMap<String, Pixels>>>,
 }
 
+/// When `created_ms` was, on this computer's clock.
+fn local_time(created_ms: u128) -> chrono::DateTime<chrono::Local> {
+    chrono::DateTime::<chrono::Local>::from(
+        std::time::UNIX_EPOCH + std::time::Duration::from_millis(created_ms as u64),
+    )
+}
+
+/// How the date chip and the thread's start name a day.
+#[derive(Debug, PartialEq, Eq)]
+enum DayName {
+    Today,
+    Yesterday,
+    Date { month: u32, day: u32 },
+}
+
+impl DayName {
+    fn of(sent: chrono::NaiveDate, today: chrono::NaiveDate) -> Self {
+        if sent == today {
+            Self::Today
+        } else if today.pred_opt() == Some(sent) {
+            Self::Yesterday
+        } else {
+            Self::Date {
+                month: chrono::Datelike::month(&sent),
+                day: chrono::Datelike::day(&sent),
+            }
+        }
+    }
+}
+
 /// What the jump button says, kept while its news and the language stay.
 #[derive(Clone)]
 struct JumpText {
@@ -497,11 +527,44 @@ impl ChatScreen {
         )
     }
 
-    /// "Start of task" with when the task's first message was sent.
+    /// "Start of task" with the day the task's first message was sent.
     pub(super) fn start_label(&self, created_ms: u128) -> SharedString {
-        let when = super::transcript::when_label(created_ms, &self.messages);
+        let day = self.day_label(created_ms);
         self.messages
-            .get("chat-history-start", [("date", when.to_string().into())])
+            .get("chat-history-start", [("date", day.to_string().into())])
+    }
+
+    /// The date chip's words for a row: its day and time, as in
+    /// `Today · 14:05` or `Nov 21 · 09:30`.
+    pub(super) fn date_label(&self, created_ms: u128) -> SharedString {
+        let sent = local_time(created_ms);
+        self.messages.get(
+            "chat-date",
+            [
+                ("day", self.day_label(created_ms).to_string().into()),
+                ("time", sent.format("%H:%M").to_string().into()),
+            ],
+        )
+    }
+
+    /// The day a row was sent: Today, Yesterday or the month and day.
+    fn day_label(&self, created_ms: u128) -> SharedString {
+        let sent = local_time(created_ms).date_naive();
+        let today = chrono::Local::now().date_naive();
+        match DayName::of(sent, today) {
+            DayName::Today => tr("chat-day-today"),
+            DayName::Yesterday => tr("chat-day-yesterday"),
+            DayName::Date { month, day } => self.messages.get(
+                "chat-day",
+                [
+                    (
+                        "month",
+                        tr(super::transcript::month_key(month)).to_string().into(),
+                    ),
+                    ("day", day.into()),
+                ],
+            ),
+        }
     }
 
     /// The transcript scrolled. The list reports this from inside its own
@@ -898,7 +961,7 @@ impl ChatScreen {
     ) -> Option<AnyElement> {
         let now = motion::now();
         let reduced = cx.reduce_motion();
-        let loading = self.pages.loading && self.pages.before;
+        let loading = self.pages.loading && self.pages.loading_older;
         let want = !following
             && !self.timeline.is_empty()
             && (loading || self.floating.date_until.is_some_and(|until| until > now));
@@ -934,7 +997,7 @@ impl ChatScreen {
             if first {
                 self.start_label(at.created_ms)
             } else {
-                super::transcript::when_label(at.created_ms, &self.messages)
+                self.date_label(at.created_ms)
             }
         };
         let chip = div()
@@ -952,6 +1015,7 @@ impl ChatScreen {
             .text_xs()
             .font_weight(FontWeight::SEMIBOLD)
             .text_color(gpui::rgb(theme::text_secondary()))
+            .when(want, |chip| chip.block_mouse_except_scroll())
             .role(gpui::Role::Status)
             .when(loading, |chip| {
                 chip.child(spinner_with_id(
@@ -985,7 +1049,9 @@ impl ChatScreen {
     ) -> Option<AnyElement> {
         let now = motion::now();
         let reduced = cx.reduce_motion();
-        if !show && self.floating.jump.is_some() && self.list_state.is_following_tail() {
+        // At the end everything below has been read, whether the button
+        // is still fading or already gone (a long glide outlasts it).
+        if !show && self.list_state.is_following_tail() {
             self.floating.caught_up();
         }
         // The button leaving from under the keyboard (a wheel to the end, a
@@ -1221,8 +1287,15 @@ impl ChatScreen {
             .text_xs()
             .font_weight(FontWeight::MEDIUM)
             .text_color(gpui::rgb(theme::text_primary()))
+            // Shown, it takes the pointer from the row under it (the wheel
+            // still scrolls the thread); leaving, it lets it through.
+            // The plain arrow never opens, so the pointer gets its words.
+            .when(show && jump == Jump::Latest, |island| {
+                island.tooltip(crate::ui::widgets::tooltip(words.clone(), None))
+            })
             .when(show, |island| {
                 island
+                    .block_mouse_except_scroll()
                     .on_click(cx.listener(|this, _, _, cx| this.jump_clicked(cx)))
                     .on_hover(
                         cx.listener(|this, hovered: &bool, _, cx| this.jump_hovered(*hovered, cx)),
@@ -1346,11 +1419,18 @@ impl ChatScreen {
             Jump::Permission => tr("chat-notification-permission"),
             Jump::Failed => tr("chat-task-failed"),
         };
-        let label: SharedString = match jump {
+        // Said as what the button does, then what it found.
+        let status: SharedString = match jump {
             Jump::New { .. } => {
                 crate::ui::i18n::tr_args("chat-jump-new-label", [("count", (n as i64).into())])
             }
             _ => words.clone(),
+        };
+        let label: SharedString = match jump {
+            Jump::Latest => words.clone(),
+            _ => {
+                crate::ui::i18n::tr_args("chat-jump-label", [("status", status.to_string().into())])
+            }
         };
         let count: SharedString = match jump.count() {
             Some(count) if count > 99 => "99+".into(),
@@ -1447,6 +1527,23 @@ mod tests {
         // The next run starting with nothing unread re-arms it too.
         assert!(announcer.update(Jump::Working, Some("r2")));
         assert!(announcer.update(new, Some("r2")));
+    }
+
+    #[test]
+    fn days_are_named_from_today() {
+        let day = |y, m, d| chrono::NaiveDate::from_ymd_opt(y, m, d).unwrap();
+        let today = day(2026, 3, 1);
+        assert_eq!(DayName::of(today, today), DayName::Today);
+        assert_eq!(DayName::of(day(2026, 2, 28), today), DayName::Yesterday);
+        assert_eq!(
+            DayName::of(day(2026, 2, 27), today),
+            DayName::Date { month: 2, day: 27 }
+        );
+        assert_eq!(
+            DayName::of(day(2025, 3, 1), today),
+            DayName::Date { month: 3, day: 1 },
+            "a year back is a date, not today"
+        );
     }
 
     #[test]
