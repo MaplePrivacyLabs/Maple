@@ -47,6 +47,10 @@ chat-conversation a79faee049b595cd
 chat-copy fcc0d6c446691565
 chat-copy-link dddbb5b57e95b4a8
 chat-creating-task 56cf0adaaff8ab2d
+chat-date 788200637a2b0707
+chat-day 4b616d1dd31a430b
+chat-day-today 6412bcd37ec2042c
+chat-day-yesterday 94fc1495649233c8
 chat-delete 14c763a6f81dc3bd
 chat-delete-description da3b63413276b86e
 chat-delete-task c34f60d6df892bcc
@@ -111,7 +115,7 @@ chat-group-project 4ba8a89f51963833
 chat-group-status f494c2b5fca99715
 chat-history-loading 1737c0bffae15abe
 chat-history-newer a83b2253a8cc1acc
-chat-history-older 7203b7f6a0e8f096
+chat-history-start 76af0931078030d3
 chat-host-received a8309854280b240e
 chat-host-reconnecting-detail 2a59c5a9aa782dea
 chat-host-refreshing b9b36962bfae375e
@@ -127,7 +131,11 @@ chat-integration-change-error acc21ca89558c262
 chat-integration-count 0c322ece68cbaadc
 chat-integrations ed3391ac664f8fbd
 chat-invalid-unicode-path 0cf5bb1e83e62293
+chat-jump-label f3ce8a715feca58c
 chat-jump-latest 7f49bb374f8dbccb
+chat-jump-new 03b9abc7bb3cf0bd
+chat-jump-new-label f99f068e500c6012
+chat-jump-working 439d39d6b3266099
 chat-load-tasks-retry 4918f068cbce4611
 chat-loading-archive-count a8b08804062076de
 chat-loading-archived 538197aecb4268fa

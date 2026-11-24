@@ -12310,45 +12310,687 @@ mod state_tests {
         );
     }
 
-    /// A question card keeps its own wheel like the composer; the space
-    /// beside it scrolls the transcript.
+    fn pending_question(request_id: &str, permission: bool) -> crate::backend::PendingQuestion {
+        crate::backend::PendingQuestion {
+            session_id: "s1".to_string(),
+            request_id: request_id.to_string(),
+            questions: vec![maple_agent::agent::AgentQuestion {
+                multi_select: false,
+                id: "pick".to_string(),
+                header: "Question".to_string(),
+                question: "Which one?".to_string(),
+                options: Vec::new(),
+                permission: permission.then(|| maple_agent::agent::AgentPermissionPrompt {
+                    reason: maple_agent::agent::AgentPermissionReason::Secrets,
+                    tool: "shell".to_string(),
+                    action: "cat .env".to_string(),
+                }),
+            }],
+        }
+    }
+
+    fn assistant(id: &str, text: &str) -> AgentTimelineItem {
+        AgentTimelineItem {
+            role: Some("assistant".to_string()),
+            ..item(id, "message", Some(text))
+        }
+    }
+
+    fn redraw_chat(chat: &Entity<ChatScreen>, cx: &mut gpui::VisualTestContext) {
+        chat.update(cx, |_, cx| cx.notify());
+        cx.run_until_parked();
+    }
+
+    /// Allowing by click closes the card under the keyboard: the composer
+    /// takes the keys back, rather than a button that is gone.
     #[gpui::test]
-    fn test_question_card_keeps_its_wheel(cx: &mut TestAppContext) {
+    fn test_answering_by_click_hands_the_keys_back(cx: &mut TestAppContext) {
+        let start = std::time::Instant::now();
+        motion::set_test_now(Some(start));
         let (chat, cx) = chat_window(cx, |chat, _cx| {
             chat.sidebar_collapsed = true;
             chat.replace_timeline(long_timeline());
-            chat.pending_questions = vec![crate::backend::PendingQuestion {
-                session_id: "s1".to_string(),
-                request_id: "q1".to_string(),
-                questions: vec![maple_agent::agent::AgentQuestion {
-                    multi_select: false,
-                    id: "pick".to_string(),
-                    header: "Question".to_string(),
-                    question: "Which one?".to_string(),
-                    options: Vec::new(),
-                    permission: None,
-                }],
-            }];
+            // A permission's two options, as the host sends them.
+            let mut question = pending_question("q1", true);
+            question.questions[0].options = ["Allow", "Deny"]
+                .into_iter()
+                .map(|label| maple_agent::agent::AgentQuestionOption {
+                    label: label.into(),
+                    description: String::new(),
+                })
+                .collect();
+            chat.pending_questions = vec![question];
         });
-        wheel_at(cx, 600., 200., wheel_pixels(400.));
+        redraw_chat(&chat, cx);
+        motion::set_test_now(Some(start + motion::ENTER.settle));
+        redraw_chat(&chat, cx);
+        redraw_chat(&chat, cx);
+        motion::set_test_now(None);
+        let allow = cx
+            .debug_bounds("question-option-0-0")
+            .expect("the card shows Allow once");
+        cx.simulate_click(allow.center(), gpui::Modifiers::default());
+        redraw_chat(&chat, cx);
+        redraw_chat(&chat, cx);
+        chat.update(cx, |chat, _| {
+            assert!(chat.pending_questions.is_empty(), "the call was allowed");
+        });
+        let composer = cx.update(|_, app| chat.read(app).composer.clone().unwrap());
+        let focus = cx.update(|_, app| composer.read(app).focus_handle(app));
+        assert!(
+            cx.update(|window, _| focus.is_focused(window)),
+            "the composer has the keys again"
+        );
+    }
+
+    /// A card answered on a paired computer goes as if answered here: the
+    /// answer box it held the keys in is gone, so the composer takes them.
+    #[gpui::test]
+    fn test_a_question_answered_elsewhere_hands_the_keys_back(cx: &mut TestAppContext) {
+        let (chat, cx) = chat_window(cx, |chat, cx| {
+            chat.sidebar_collapsed = true;
+            chat.selected_session = Some("s1".to_string());
+            chat.replace_timeline(long_timeline());
+            chat.pending_questions = vec![pending_question("q1", false)];
+            chat.ensure_question_input(cx);
+            chat.question_focus_pending = true;
+        });
+        cx.update(|_, app| app.set_reduce_motion(true));
+        redraw_chat(&chat, cx);
+        redraw_chat(&chat, cx);
+        let answer = cx.update(|_, app| {
+            let input = chat.read(app).pending_question_input.clone().unwrap();
+            input.read(app).focus_handle(app)
+        });
+        assert!(
+            cx.update(|window, _| answer.is_focused(window)),
+            "the answer has the keys"
+        );
+        chat.update(cx, |chat, cx| {
+            chat.handle_service_event(
+                AgentServiceEvent::QuestionResolved {
+                    request_id: "q1".into(),
+                },
+                cx,
+            );
+        });
+        redraw_chat(&chat, cx);
+        redraw_chat(&chat, cx);
+        chat.update(cx, |chat, _| {
+            assert!(chat.pending_questions.is_empty());
+            assert!(chat.pending_question_input.is_none(), "the answer box went");
+        });
+        let composer = cx.update(|_, app| chat.read(app).composer.clone().unwrap());
+        let focus = cx.update(|_, app| composer.read(app).focus_handle(app));
+        assert!(
+            cx.update(|window, _| focus.is_focused(window)),
+            "the composer has the keys again"
+        );
+    }
+
+    /// A question is the thread's last row: in view only at the bottom,
+    /// scrolled with the rows, and a wheel over it scrolls the thread.
+    #[gpui::test]
+    fn test_question_card_is_the_threads_last_row(cx: &mut TestAppContext) {
+        // The card grows into place at the tail; let it finish.
+        let start = std::time::Instant::now();
+        motion::set_test_now(Some(start));
+        let (chat, cx) = chat_window(cx, |chat, _cx| {
+            chat.sidebar_collapsed = true;
+            chat.replace_timeline(long_timeline());
+            chat.pending_questions = vec![pending_question("q1", false)];
+        });
+        redraw_chat(&chat, cx);
+        motion::set_test_now(Some(start + motion::ENTER.settle));
+        redraw_chat(&chat, cx);
+        redraw_chat(&chat, cx);
+        motion::set_test_now(None);
+        let (rows, listed) = cx.update(|_window, app| {
+            let chat = chat.read(app);
+            (chat.timeline.len(), chat.list_state.item_count())
+        });
+        assert_eq!(
+            listed,
+            rows + 1,
+            "the card takes the row after the timeline"
+        );
+        assert!(
+            cx.debug_bounds("question-card").is_some(),
+            "at the bottom, the card shows"
+        );
+        // A little way up, the card still shows; a wheel over it scrolls
+        // the thread like any row.
+        wheel_at(cx, 600., 200., wheel_pixels(40.));
         let card = cx
             .debug_bounds("question-card")
-            .expect("the question card shows");
-        let y = f32::from(card.center().y);
+            .expect("just above the end, the card still shows");
         let ix = reference_row(&chat, cx);
         let before = row_top(&chat, cx, ix).expect("the reference row is on screen");
-        wheel_at(cx, f32::from(card.center().x), y, wheel_pixels(100.));
-        assert_eq!(
-            row_top(&chat, cx, ix),
-            Some(before),
-            "a wheel over the card leaves the transcript alone"
+        wheel_at(
+            cx,
+            f32::from(card.center().x),
+            f32::from(card.center().y),
+            wheel_pixels(100.),
         );
-        wheel_at(cx, 80., y, wheel_pixels(100.));
         assert_eq!(
             row_top(&chat, cx, ix).map(|after| after - before),
             Some(px(100.)),
-            "a wheel beside the card scrolls the transcript"
+            "a wheel over the card scrolls the thread"
         );
+
+        // Read further up, the card scrolls away and the jump button says
+        // what waits below.
+        wheel_at(cx, 600., 200., wheel_pixels(3000.));
+        redraw_chat(&chat, cx);
+        assert!(cx.debug_bounds("question-card").is_none());
+        chat.update(cx, |chat, _| {
+            assert_eq!(chat.jump_state(), crate::ui::chat::jump::Jump::Question);
+        });
+        assert!(cx.debug_bounds("jump-to-latest").is_some());
+    }
+
+    /// The jump button glides to the end, lands on the waiting question,
+    /// brightens its edge and hands its answer the focus.
+    #[gpui::test]
+    fn test_jump_button_glides_to_the_question(cx: &mut TestAppContext) {
+        let (chat, cx) = chat_window(cx, |chat, cx| {
+            chat.sidebar_collapsed = true;
+            chat.replace_timeline(long_timeline());
+            chat.pending_questions = vec![pending_question("q1", false)];
+            chat.ensure_question_input(cx);
+        });
+        wheel_at(cx, 600., 200., wheel_pixels(3000.));
+        redraw_chat(&chat, cx);
+        chat.update(cx, |chat, _| {
+            assert_eq!(chat.jump_state(), crate::ui::chat::jump::Jump::Question);
+            chat.question_focus_pending = false;
+            // Folded: landing unfolds it, so there is an answer to focus.
+            chat.question_collapsed = true;
+        });
+        let start = std::time::Instant::now();
+        motion::set_test_now(Some(start));
+        let button = cx
+            .debug_bounds("jump-to-latest")
+            .expect("scrolled up, the jump button shows");
+        cx.simulate_click(button.center(), gpui::Modifiers::default());
+        let top = |cx: &mut gpui::VisualTestContext| {
+            cx.update(|_window, app| -chat.read(app).list_state.scroll_px_offset_for_scrollbar().y)
+        };
+        let mut tops = vec![top(cx)];
+        let mut at = std::time::Duration::ZERO;
+        while at <= std::time::Duration::from_millis(500) {
+            at += std::time::Duration::from_millis(16);
+            motion::set_test_now(Some(start + at));
+            redraw_chat(&chat, cx);
+            tops.push(top(cx));
+        }
+        motion::set_test_now(None);
+        assert!(
+            tops.windows(2).all(|pair| pair[1] >= pair[0] - px(0.5)),
+            "the glide only moves down: {tops:?}"
+        );
+        assert!(
+            tops.windows(2).filter(|pair| pair[1] > pair[0]).count() > 3,
+            "it glides over several frames rather than jumping: {tops:?}"
+        );
+        assert!(following_tail(&chat, cx), "it lands on the tail");
+        assert!(cx.debug_bounds("question-card").is_some());
+        chat.update(cx, |chat, _| {
+            assert!(chat.floating.card_flash.is_some(), "the card brightens");
+            assert!(!chat.question_collapsed, "landing unfolds the card");
+        });
+        redraw_chat(&chat, cx);
+        let answer = cx.update(|_, app| {
+            let input = chat.read(app).pending_question_input.clone().unwrap();
+            input.read(app).focus_handle(app)
+        });
+        assert!(
+            cx.update(|window, _| answer.is_focused(window)),
+            "the answer takes the keys"
+        );
+    }
+
+    /// A glide from far up outlasts the button's exit: landing still
+    /// counts as having read everything, so scrolling back up afterwards
+    /// does not announce the same replies again.
+    #[gpui::test]
+    fn test_a_long_glide_clears_what_was_unread(cx: &mut TestAppContext) {
+        let (chat, cx) = chat_window(cx, |chat, _cx| {
+            chat.sidebar_collapsed = true;
+            chat.replace_timeline(long_timeline());
+        });
+        wheel_at(cx, 600., 200., wheel_pixels(3000.));
+        redraw_chat(&chat, cx);
+        chat.update(cx, |chat, cx| {
+            chat.floating.unseen = 3;
+            cx.notify();
+        });
+        redraw_chat(&chat, cx);
+        let start = std::time::Instant::now();
+        motion::set_test_now(Some(start));
+        let button = cx
+            .debug_bounds("jump-to-latest")
+            .expect("scrolled up, the jump button shows");
+        cx.simulate_click(button.center(), gpui::Modifiers::default());
+        let mut at = std::time::Duration::ZERO;
+        while at <= std::time::Duration::from_millis(900) {
+            at += std::time::Duration::from_millis(16);
+            motion::set_test_now(Some(start + at));
+            redraw_chat(&chat, cx);
+        }
+        motion::set_test_now(None);
+        assert!(following_tail(&chat, cx), "it lands on the tail");
+        chat.update(cx, |chat, _| {
+            assert_eq!(chat.floating.unseen, 0, "everything below was read");
+        });
+        wheel_at(cx, 600., 200., wheel_pixels(600.));
+        redraw_chat(&chat, cx);
+        chat.update(cx, |chat, _| {
+            assert_eq!(chat.jump_state(), crate::ui::chat::jump::Jump::Latest);
+        });
+    }
+
+    /// Escape skips a question, and skipping a permission denies it, so it
+    /// never acts on a card the reader cannot see: it brings it into view.
+    #[gpui::test]
+    fn test_escape_never_skips_an_unseen_card(cx: &mut TestAppContext) {
+        let (chat, cx) = chat_window(cx, |chat, _cx| {
+            chat.sidebar_collapsed = true;
+            chat.replace_timeline(long_timeline());
+            chat.pending_questions = vec![pending_question("q1", true)];
+        });
+        cx.update(|_, app| app.set_reduce_motion(true));
+        wheel_at(cx, 600., 200., wheel_pixels(3000.));
+        redraw_chat(&chat, cx);
+        assert!(!following_tail(&chat, cx));
+        cx.simulate_keystrokes("escape");
+        redraw_chat(&chat, cx);
+        redraw_chat(&chat, cx);
+        chat.update(cx, |chat, _| {
+            assert_eq!(chat.pending_questions.len(), 1, "nothing was skipped");
+        });
+        assert!(following_tail(&chat, cx), "the card came into view");
+        assert!(cx.debug_bounds("question-card").is_some());
+    }
+
+    /// A question that arrives while the reader is further up waits for
+    /// the jump: scrolling down later leaves the keys in the composer.
+    #[gpui::test]
+    fn test_a_question_arriving_off_screen_leaves_the_keys(cx: &mut TestAppContext) {
+        let (chat, cx) = chat_window(cx, |chat, _cx| {
+            chat.sidebar_collapsed = true;
+            chat.selected_session = Some("s1".to_string());
+            chat.replace_timeline(long_timeline());
+        });
+        cx.update(|_, app| app.set_reduce_motion(true));
+        let composer = cx.update(|_, app| chat.read(app).composer.clone().unwrap());
+        let composer_focus = cx.update(|_, app| composer.read(app).focus_handle(app));
+        wheel_at(cx, 600., 200., wheel_pixels(3000.));
+        redraw_chat(&chat, cx);
+        assert!(cx.update(|window, _| composer_focus.is_focused(window)));
+        chat.update(cx, |chat, cx| {
+            chat.handle_service_event(
+                AgentServiceEvent::Question {
+                    session_id: "s1".into(),
+                    request_id: "q1".into(),
+                    questions: pending_question("q1", false).questions,
+                },
+                cx,
+            );
+        });
+        redraw_chat(&chat, cx);
+        chat.update(cx, |chat, _| chat.list_state.scroll_to_end());
+        redraw_chat(&chat, cx);
+        redraw_chat(&chat, cx);
+        assert!(cx.debug_bounds("question-card").is_some());
+        assert!(
+            cx.update(|window, _| composer_focus.is_focused(window)),
+            "the composer keeps the keys"
+        );
+    }
+
+    /// With reduced motion the jump lands at once, from the click itself:
+    /// it still lands on the question and hands it the keys.
+    #[gpui::test]
+    fn test_reduced_motion_jump_lands_on_the_question(cx: &mut TestAppContext) {
+        let (chat, cx) = chat_window(cx, |chat, cx| {
+            chat.sidebar_collapsed = true;
+            chat.replace_timeline(long_timeline());
+            chat.pending_questions = vec![pending_question("q1", false)];
+            chat.ensure_question_input(cx);
+        });
+        cx.update(|_, app| app.set_reduce_motion(true));
+        wheel_at(cx, 600., 200., wheel_pixels(3000.));
+        redraw_chat(&chat, cx);
+        chat.update(cx, |chat, _| chat.question_focus_pending = false);
+        let button = cx
+            .debug_bounds("jump-to-latest")
+            .expect("scrolled up, the jump button shows");
+        cx.simulate_click(button.center(), gpui::Modifiers::default());
+        redraw_chat(&chat, cx);
+        redraw_chat(&chat, cx);
+        assert!(following_tail(&chat, cx));
+        let answer = cx.update(|_, app| {
+            let input = chat.read(app).pending_question_input.clone().unwrap();
+            input.read(app).focus_handle(app)
+        });
+        assert!(cx.update(|window, _| answer.is_focused(window)));
+    }
+
+    /// The card is out of view up the thread: a shortcut that would answer
+    /// it brings it into view instead, so a permission is never granted
+    /// unseen.
+    #[gpui::test]
+    fn test_answer_shortcut_reveals_an_unseen_card(cx: &mut TestAppContext) {
+        let (chat, cx) = chat_window(cx, |chat, _cx| {
+            chat.sidebar_collapsed = true;
+            chat.replace_timeline(long_timeline());
+            chat.pending_questions = vec![pending_question("q1", true)];
+        });
+        cx.update(|_, app| app.set_reduce_motion(true));
+        wheel_at(cx, 600., 200., wheel_pixels(3000.));
+        redraw_chat(&chat, cx);
+        assert!(!following_tail(&chat, cx));
+        chat.update(cx, |chat, cx| chat.pick_and_submit_question_option(0, cx));
+        redraw_chat(&chat, cx);
+        redraw_chat(&chat, cx);
+        chat.update(cx, |chat, _| {
+            assert_eq!(chat.pending_questions.len(), 1, "nothing was answered");
+        });
+        assert!(following_tail(&chat, cx), "the card came into view");
+        assert!(cx.debug_bounds("question-card").is_some());
+    }
+
+    /// Reaching the top without the wheel (keys, the scrollbar) still loads
+    /// the older page, now that no button asks for it.
+    #[gpui::test]
+    fn test_reaching_the_top_without_the_wheel_loads_older_history(cx: &mut TestAppContext) {
+        let (chat, cx) = chat_window(cx, |chat, _cx| {
+            chat.sidebar_collapsed = true;
+            chat.selected_session = Some("s1".to_string());
+            let rows = long_timeline()
+                .into_iter()
+                .enumerate()
+                .map(|(seq, mut item)| {
+                    item.persisted = Some(maple_agent::agent::AgentPersistedRowIdentity {
+                        task_id: "s1".to_string(),
+                        rows_epoch: 1,
+                        row_seq: seq as i64 + 100,
+                        update_seq: 0,
+                    });
+                    item
+                })
+                .collect();
+            chat.replace_timeline(rows);
+            chat.pages.before = true;
+        });
+        redraw_chat(&chat, cx);
+        chat.update(cx, |chat, _| {
+            assert!(!chat.pages.loading && chat.notice.is_none());
+        });
+        // As Vim's `gg` does: the list moves without a wheel event.
+        chat.update(cx, |chat, _| {
+            chat.list_state.scroll_to(gpui::ListOffset {
+                item_ix: 0,
+                offset_in_item: px(0.),
+            });
+        });
+        redraw_chat(&chat, cx);
+        redraw_chat(&chat, cx);
+        chat.update(cx, |chat, _| {
+            // Still in flight, or already failed against the test backend.
+            assert!(
+                chat.pages.loading || chat.notice.is_some(),
+                "the top asks for the older page"
+            );
+        });
+    }
+
+    /// Older rows arriving above take the space over the thread from the
+    /// row that had it; the message in view stays where it was.
+    #[gpui::test]
+    fn test_prepending_history_keeps_the_reader_in_place(cx: &mut TestAppContext) {
+        let (chat, cx) = chat_window(cx, |chat, _cx| {
+            chat.sidebar_collapsed = true;
+            chat.replace_timeline(long_timeline());
+        });
+        chat.update(cx, |chat, _| {
+            chat.list_state.scroll_to(gpui::ListOffset {
+                item_ix: 0,
+                offset_in_item: px(60.),
+            });
+        });
+        redraw_chat(&chat, cx);
+        let content_before = row_top(&chat, cx, 0).expect("the first row is on screen")
+            + crate::ui::chat::transcript::THREAD_START;
+        chat.update(cx, |chat, _| {
+            let anchor = chat.scroll_anchor();
+            let mut older: Vec<_> = (0..3)
+                .map(|i| item(&format!("older{i}"), "message", Some("Older")))
+                .collect();
+            older.append(&mut chat.timeline);
+            chat.timeline = older;
+            chat.rebuild_window(anchor);
+        });
+        redraw_chat(&chat, cx);
+        assert_eq!(
+            row_top(&chat, cx, 3),
+            Some(content_before),
+            "the message that was first has not moved"
+        );
+    }
+
+    /// New replies open the jump button once; after it settles, more only
+    /// change its count. Reading to the end clears the count.
+    #[gpui::test]
+    fn test_jump_button_announces_new_replies_once(cx: &mut TestAppContext) {
+        let (chat, cx) = chat_window(cx, |chat, _cx| {
+            chat.sidebar_collapsed = true;
+            chat.replace_timeline(long_timeline());
+        });
+        wheel_at(cx, 600., 200., wheel_pixels(3000.));
+        redraw_chat(&chat, cx);
+        let round = cx
+            .debug_bounds("jump-to-latest")
+            .expect("scrolled up, the jump button shows");
+        chat.update(cx, |chat, cx| {
+            chat.apply_incoming_item("s1", assistant("r1", "First reply"), cx);
+        });
+        redraw_chat(&chat, cx);
+        chat.update(cx, |chat, _| {
+            assert_eq!(
+                chat.jump_state(),
+                crate::ui::chat::jump::Jump::New {
+                    count: 1,
+                    running: false
+                }
+            );
+            assert!(chat.floating.is_open(), "the first reply opens the button");
+        });
+        // It settles on its own after a while.
+        cx.executor()
+            .advance_clock(std::time::Duration::from_millis(3000));
+        redraw_chat(&chat, cx);
+        chat.update(cx, |chat, _| assert!(!chat.floating.is_open()));
+        chat.update(cx, |chat, cx| {
+            chat.apply_incoming_item("s1", assistant("r2", "Second reply"), cx);
+        });
+        redraw_chat(&chat, cx);
+        chat.update(cx, |chat, _| {
+            assert_eq!(chat.floating.unseen, 2);
+            assert!(
+                !chat.floating.is_open(),
+                "a second reply only ticks the count"
+            );
+        });
+        cx.executor()
+            .advance_clock(std::time::Duration::from_millis(1000));
+        redraw_chat(&chat, cx);
+        let settled = cx
+            .debug_bounds("jump-to-latest")
+            .expect("the button still shows");
+        assert_eq!(settled.size.width, round.size.width, "it stays round");
+        // Read to the end: nothing is left unseen.
+        chat.update(cx, |chat, _| chat.list_state.scroll_to_end());
+        redraw_chat(&chat, cx);
+        redraw_chat(&chat, cx);
+        chat.update(cx, |chat, _| assert_eq!(chat.floating.unseen, 0));
+    }
+
+    /// "Maple is working" is said once per run: reading to the end and
+    /// scrolling back up during the same run leaves the button closed.
+    #[gpui::test]
+    fn test_maple_working_is_said_once_per_run(cx: &mut TestAppContext) {
+        let (chat, cx) = chat_window(cx, |chat, _cx| {
+            chat.sidebar_collapsed = true;
+            chat.replace_timeline(long_timeline());
+            chat.selected_session = Some("s1".to_string());
+            chat.active_runs
+                .insert("s1".to_string(), "run-1".to_string());
+        });
+        cx.update(|_, app| app.set_reduce_motion(true));
+        wheel_at(cx, 600., 200., wheel_pixels(3000.));
+        redraw_chat(&chat, cx);
+        chat.update(cx, |chat, _| {
+            assert_eq!(chat.jump_state(), crate::ui::chat::jump::Jump::Working);
+            assert!(chat.floating.is_open(), "the run is announced");
+        });
+        cx.executor()
+            .advance_clock(std::time::Duration::from_millis(3000));
+        redraw_chat(&chat, cx);
+        chat.update(cx, |chat, _| assert!(!chat.floating.is_open()));
+        chat.update(cx, |chat, _| chat.list_state.scroll_to_end());
+        redraw_chat(&chat, cx);
+        redraw_chat(&chat, cx);
+        assert!(cx.debug_bounds("jump-to-latest").is_none());
+        wheel_at(cx, 600., 200., wheel_pixels(3000.));
+        redraw_chat(&chat, cx);
+        chat.update(cx, |chat, _| {
+            assert_eq!(chat.jump_state(), crate::ui::chat::jump::Jump::Working);
+            assert!(!chat.floating.is_open(), "the same run is not news again");
+        });
+    }
+
+    /// Clicking the button sends it away from under the pointer, which
+    /// gets no hover-out for it: the next announcement still settles.
+    #[gpui::test]
+    fn test_announcement_settles_after_a_click(cx: &mut TestAppContext) {
+        let (chat, cx) = chat_window(cx, |chat, _cx| {
+            chat.sidebar_collapsed = true;
+            chat.replace_timeline(long_timeline());
+        });
+        cx.update(|_, app| app.set_reduce_motion(true));
+        wheel_at(cx, 600., 200., wheel_pixels(3000.));
+        redraw_chat(&chat, cx);
+        let button = cx
+            .debug_bounds("jump-to-latest")
+            .expect("scrolled up, the jump button shows");
+        cx.simulate_mouse_move(button.center(), None, gpui::Modifiers::default());
+        redraw_chat(&chat, cx);
+        cx.simulate_click(button.center(), gpui::Modifiers::default());
+        redraw_chat(&chat, cx);
+        redraw_chat(&chat, cx);
+        assert!(following_tail(&chat, cx));
+        assert!(cx.debug_bounds("jump-to-latest").is_none());
+        // The pointer moves on while there is no button to leave.
+        cx.simulate_mouse_move(
+            gpui::point(px(600.), px(200.)),
+            None,
+            gpui::Modifiers::default(),
+        );
+
+        wheel_at(cx, 600., 200., wheel_pixels(3000.));
+        redraw_chat(&chat, cx);
+        chat.update(cx, |chat, cx| {
+            chat.apply_incoming_item("s1", assistant("r1", "A reply"), cx);
+        });
+        redraw_chat(&chat, cx);
+        chat.update(cx, |chat, _| assert!(chat.floating.is_open()));
+        cx.executor()
+            .advance_clock(std::time::Duration::from_millis(3000));
+        redraw_chat(&chat, cx);
+        chat.update(cx, |chat, _| {
+            assert!(!chat.floating.is_open(), "the announcement settles");
+        });
+    }
+
+    /// The keyboard reaches the jump button like the pointer: focus peeks
+    /// at what it says, and Enter jumps and hands the keys back to the
+    /// composer.
+    #[gpui::test]
+    fn test_keyboard_peeks_and_jumps(cx: &mut TestAppContext) {
+        let (chat, cx) = chat_window(cx, |chat, _cx| {
+            chat.sidebar_collapsed = true;
+            chat.replace_timeline(long_timeline());
+        });
+        wheel_at(cx, 600., 200., wheel_pixels(3000.));
+        redraw_chat(&chat, cx);
+        chat.update(cx, |chat, cx| {
+            chat.apply_incoming_item("s1", assistant("r1", "First reply"), cx);
+        });
+        redraw_chat(&chat, cx);
+        cx.executor()
+            .advance_clock(std::time::Duration::from_millis(3000));
+        redraw_chat(&chat, cx);
+        chat.update(cx, |chat, _| assert!(!chat.floating.is_open()));
+        let focus = cx
+            .update(|_, app| chat.read(app).floating.focus())
+            .expect("the button has drawn");
+        cx.update(|window, app| window.focus(&focus, app));
+        redraw_chat(&chat, cx);
+        redraw_chat(&chat, cx);
+        chat.update(cx, |chat, _| {
+            assert!(chat.floating.is_open(), "focus opens the chip at once");
+        });
+
+        let composer = cx.update(|_, app| chat.read(app).composer.clone().unwrap());
+        let composer_focus = cx.update(|_, app| composer.read(app).focus_handle(app));
+        cx.update(|_, app| app.set_reduce_motion(true));
+        // A key activates a button on its release.
+        cx.simulate_keystrokes("enter");
+        cx.update(|window, app| {
+            window.dispatch_event(
+                gpui::PlatformInput::KeyUp(gpui::KeyUpEvent {
+                    keystroke: gpui::Keystroke::parse("enter").unwrap(),
+                }),
+                app,
+            );
+        });
+        redraw_chat(&chat, cx);
+        redraw_chat(&chat, cx);
+        assert!(following_tail(&chat, cx), "Enter jumps to the end");
+        assert!(
+            cx.update(|window, _| composer_focus.is_focused(window)),
+            "the composer takes the keys back"
+        );
+    }
+
+    /// There is no button for older history: scrolling back shows when the
+    /// messages in view were sent.
+    #[gpui::test]
+    fn test_scrolling_back_shows_the_date_chip(cx: &mut TestAppContext) {
+        let (chat, cx) = chat_window(cx, |chat, _cx| {
+            chat.sidebar_collapsed = true;
+            chat.replace_timeline(long_timeline());
+        });
+        assert!(cx.debug_bounds("date-chip").is_none());
+        let start = std::time::Instant::now();
+        motion::set_test_now(Some(start));
+        wheel_at(cx, 600., 300., wheel_pixels(400.));
+        redraw_chat(&chat, cx);
+        assert!(
+            cx.debug_bounds("date-chip").is_some(),
+            "scrolling back brings the date chip"
+        );
+        // It leaves once scrolling stops, easing out over FLOAT_OUT.
+        for millis in [1300, 1400, 1500, 1700] {
+            motion::set_test_now(Some(start + std::time::Duration::from_millis(millis)));
+            cx.executor()
+                .advance_clock(std::time::Duration::from_millis(100));
+            redraw_chat(&chat, cx);
+        }
+        motion::set_test_now(None);
+        assert!(cx.debug_bounds("date-chip").is_none(), "and leaves after");
     }
 
     #[gpui::test]

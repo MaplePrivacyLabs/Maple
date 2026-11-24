@@ -1570,11 +1570,29 @@ chat-folder-shown = Angezeigte Ordner: { $path }
 chat-full-output = Vollständige Ausgabe anzeigen
 chat-conversation = Gespräch
 chat-history-loading = Verlauf wird geladen…
-chat-history-older = Ältere Nachrichten laden
 chat-history-newer = Neuere Nachrichten laden
 chat-activity-outside = Weitere laufende Aktivitäten liegen außerhalb dieser Ansicht
 chat-reload-latest = Neuesten Stand laden
 chat-jump-latest = Zum neuesten Eintrag springen
+# The jump button's spoken name; $status is what it shows, such as Maple has a question.
+chat-jump-label = Zum neuesten Eintrag springen, { $status }
+chat-jump-working = Maple arbeitet
+chat-jump-new = { $count ->
+    [one] neue Nachricht
+   *[other] neue Nachrichten
+}
+chat-jump-new-label = { $count ->
+    [one] { $count } neue Nachricht
+   *[other] { $count } neue Nachrichten
+}
+# $date is the day the task started: Today, Yesterday or a date such as Nov 21.
+chat-history-start = Beginn der Aufgabe · { $date }
+chat-day-today = Heute
+chat-day-yesterday = Gestern
+# $month is a translated short month name; $day is a number.
+chat-day = { $day }. { $month }
+# $day is Today, Yesterday or a date such as Nov 21; $time is the time as HH:MM.
+chat-date = { $day } · { $time }
 chat-image-unavailable = Bild nicht verfügbar
 chat-background = im Hintergrund
 chat-stop = Stoppen

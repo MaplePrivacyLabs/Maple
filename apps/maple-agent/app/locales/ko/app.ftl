@@ -1516,11 +1516,23 @@ chat-folder-shown = 표시된 폴더: { $path }
 chat-full-output = 전체 출력 보기
 chat-conversation = 대화
 chat-history-loading = 기록 불러오는 중…
-chat-history-older = 이전 메시지 불러오기
 chat-history-newer = 최신 메시지 불러오기
 chat-activity-outside = 이 보기 밖에 진행 중인 활동이 더 있어요
 chat-reload-latest = 최신 내용 다시 불러오기
 chat-jump-latest = 최신으로 이동
+# The jump button's spoken name; $status is what it shows, such as Maple has a question.
+chat-jump-label = 최신으로 이동, { $status }
+chat-jump-working = Maple이 작업하는 중이에요
+chat-jump-new = 새 메시지
+chat-jump-new-label = 새 메시지 { $count }개
+# $date is the day the task started: Today, Yesterday or a date such as Nov 21.
+chat-history-start = 작업 시작 · { $date }
+chat-day-today = 오늘
+chat-day-yesterday = 어제
+# $month is a translated short month name; $day is a number.
+chat-day = { $month } { $day }일
+# $day is Today, Yesterday or a date such as Nov 21; $time is the time as HH:MM.
+chat-date = { $day } · { $time }
 chat-image-unavailable = 이미지를 사용할 수 없음
 chat-background = 백그라운드
 chat-stop = 중지

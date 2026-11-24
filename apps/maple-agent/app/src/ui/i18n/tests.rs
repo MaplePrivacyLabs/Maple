@@ -496,6 +496,7 @@ fn converted_modules_do_not_reintroduce_inline_labels() {
     visitor.visit_file(&syn::parse_file(include_str!("../chat/sidebar_computers.rs")).unwrap());
     visitor.visit_file(&syn::parse_file(include_str!("../chat/sidebar_paging.rs")).unwrap());
     visitor.visit_file(&syn::parse_file(include_str!("../chat/transcript.rs")).unwrap());
+    visitor.visit_file(&syn::parse_file(include_str!("../chat/jump.rs")).unwrap());
     visitor.visit_file(&syn::parse_file(include_str!("../chat/queue.rs")).unwrap());
     visitor.visit_file(&syn::parse_file(include_str!("../chat/sending.rs")).unwrap());
     visitor.visit_file(&syn::parse_file(include_str!("../chat/uploads.rs")).unwrap());

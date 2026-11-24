@@ -27,7 +27,8 @@ between the user and the next action. This page records the shared decisions;
   with the paint. Only SVG icons scale or rotate.
   Height animates only where a box truly changes size: text fields, the
   expanded composer, the sidebar, and a row arriving at the end of the
-  thread, which opens so older rows glide up rather than jump.
+  thread, which opens so older rows glide up rather than jump (the
+  question card closes the same way when it is answered there).
 - **High-frequency work stays still.** Streaming tokens, typed characters,
   keyboard navigation inside menus and lists, and history that loads or
   scrolls into view do not animate. Rows animate once, when they arrive
@@ -58,6 +59,8 @@ that spring takes to come to rest from a standstill.
 | `TOGGLE` | 150 ms | ease-out cubic | 230 ms | switches, checkboxes, chevrons, icon swaps, status changes |
 | `ENTER` | 180 ms | ease-out quint | 270 ms | live transcript rows, notices and cards above the composer, dialogs |
 | `PANEL` | 200 ms | ease-out cubic | 320 ms | sidebar, composer expand and shrink |
+| `FLOAT` | 280 ms | ease-out expo | 420 ms | controls floating over the transcript coming in: the date chip, the jump button and its count |
+| `FLOAT_OUT` | 180 ms | ease-out expo | 270 ms | the same controls leaving: quicker and half as far |
 | `resize(distance)` | 120–200 ms | ease-out cubic | 190–320 ms | text fields growing and shrinking with their text, by distance |
 
 `DAMPING_RATIO` sets how every spring is damped. At 1 a spring is the
@@ -104,6 +107,13 @@ plain title.
 | Sidebar collapse | width eases, `PANEL` | same, reversed |
 | Task status in the sidebar, project folders | indicators and folder icons cross-fade, `TOGGLE` | same |
 | A running task in the sidebar | grey dot breathes, `RUNNING_BREATH` (2.4 s); on dark a soft band crosses the title, then rests, `RUNNING_SHINE` (4.8 s) | stops at once when the run ends |
+| Date chip over the transcript's top edge, while scrolling back or loading older history | fades and settles from 6 px above, `FLOAT`; its words follow the scroll at once | fades and drifts 3 px up, `FLOAT_OUT`, 1.2 s after scrolling stops or 0.4 s after reading down |
+| Jump button over the transcript's bottom edge, while scrolled up | fades and settles from 6 px below, `FLOAT` | fades and drifts 3 px down, `FLOAT_OUT`; at once when it is clicked |
+| Jump button opening to say what happened below (Maple working, new replies, a question, a failed run) | width leads, `FLOAT`, and the words fade in over its second half; the round button's mark cross-fades, `TOGGLE`; a soft amber or red halo once as it turns to a question or failure | the words fade over the first half of the width closing, then the mark returns; new replies announce once, later ones only tick the count; Maple working is said once per run |
+| Jump button's count | one badge slides between the round button's corner and the open chip's lead, `FLOAT`, its ring fading inside the chip; its number morphs and the badge brightens for 520 ms when it changes | fades, `FLOAT_OUT` |
+| Hover or keyboard focus on the jump button | the pointer opens it after 60 ms, so a passing pointer does not; focus opens it at once | closes 220 ms after the pointer or focus leaves |
+| Jump to latest | the last stretch glides, at most 0.6 of the view, in 260–420 ms by distance, ease-out quint; anything else that moves the list (a wheel, a press, keys, the scrollbar) takes over; landing on a question unfolds it, brightens its edge for 600 ms and focuses its answer; with reduced motion it lands at once | — |
+| Question and permission card | the thread's last row: grows into place at the tail, `ENTER`; scrolled up it arrives out of view and the jump button says so | answered at the tail, it closes its space (220 ms) while its content fades (140 ms) |
 
 Loading spinners for work that usually finishes quickly (opening a task)
 appear only after 300 ms, so fast loads never flash a spinner.
