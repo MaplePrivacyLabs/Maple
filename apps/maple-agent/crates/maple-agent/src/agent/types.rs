@@ -782,6 +782,9 @@ pub enum AgentRunEvent {
     /// The summary replaced the history it covers; `HistoryReplaced`
     /// follows.
     Compacted,
+    /// The compaction ended without a summary: it failed, or it was
+    /// stopped. The history is unchanged.
+    CompactionStopped,
     /// The task's stored history changed under the rows shown so far: a
     /// compaction, or failed attempts that Pi retried. Reload it.
     HistoryReplaced,
@@ -902,6 +905,39 @@ pub struct AgentSubagent {
 pub struct ExternalAgentRef {
     pub provider: String,
     pub agent_id: String,
+}
+
+/// What fills a loaded task's model context, in tokens, by category in
+/// the order the window holds them. Each part is `pi_ai`'s request
+/// estimate (3.5 characters a token, a fixed size an image, tool
+/// declarations as the JSON they are sent as), so the parts give the
+/// proportions; the context meter's count, which starts from the
+/// provider's reported usage, stays the total. A part a peer leaves out
+/// reads as zero.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(default, rename_all = "camelCase")]
+pub struct AgentContextBreakdown {
+    /// The system prompt with its sections, and the tools declared to
+    /// the model.
+    pub instructions: u64,
+    /// What compactions and branch summaries left; zero until there is one.
+    pub summary: u64,
+    /// The user's prompts, the model's replies with their thinking and
+    /// tool calls, and extension messages, without their images.
+    pub messages: u64,
+    /// Tool output and the user's own shell commands, without images.
+    pub tool_results: u64,
+    /// Every image a prompt, tool result or extension message holds.
+    pub images: u64,
+    /// The context size past which the task compacts itself, compared
+    /// with the meter's count as Pi's compaction check does: the model's
+    /// window less the session's compaction reserve. `None` while
+    /// automatic compaction is off or the window is unknown.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub compact_at: Option<u64>,
+    /// The window `compact_at` belongs to: the task's model's, which a
+    /// model pick changes only from the next message. Zero when unknown.
+    pub window: u64,
 }
 
 /// Where a tool result carries an external agent's activity.

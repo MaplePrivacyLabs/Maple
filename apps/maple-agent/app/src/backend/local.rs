@@ -3372,12 +3372,17 @@ impl LocalBackend {
     }
 
     /// Compact a session's history now; reload the session afterwards.
-    pub async fn compact_session(&self, user_id: &str, session_id: &str) -> Result<(), String> {
+    pub async fn compact_session(
+        &self,
+        user_id: &str,
+        session_id: &str,
+    ) -> Result<(), HostFailure> {
         self.service
             .handle_for_user(user_id)
             .await?
             .compact_session(session_id.to_string())
             .await
+            .map_err(compaction_failure)
     }
 
     /// The subagents still working for a task. A task whose run ended can
@@ -3535,6 +3540,25 @@ impl LocalBackend {
         };
         let tokens = handle.session_context_tokens(session_id).await?;
         Ok(tokens.map(|tokens| (i64::try_from(tokens).unwrap_or(i64::MAX), limit)))
+    }
+
+    /// What fills a task's context window, by category, and where it
+    /// compacts itself, for the composer's context card. The card scales
+    /// the estimates to `context_usage`'s count. `None` while the task is
+    /// not loaded or holds nothing yet.
+    pub async fn context_breakdown(
+        &self,
+        user_id: &str,
+        session_id: &str,
+    ) -> Result<Option<maple_agent::agent::AgentContextBreakdown>, String> {
+        if self.account_scope(user_id).is_none() {
+            return Ok(None);
+        }
+        self.service
+            .handle_for_user(user_id)
+            .await?
+            .session_context_breakdown(session_id)
+            .await
     }
 
     /// Deliver the user's answer to an ask_user question. Returns false
@@ -3829,6 +3853,16 @@ fn credit_amount_failure(error: crate::billing::CreditAmountError) -> HostFailur
     failure
 }
 
+/// A refused compaction, coded so the app can tell a task with nothing old
+/// enough to summarize yet from a compaction that failed.
+fn compaction_failure(error: String) -> HostFailure {
+    if error == maple_agent::agent::NOTHING_TO_COMPACT_ERROR {
+        HostFailure::new("nothing-to-compact", error)
+    } else {
+        HostFailure::from(error)
+    }
+}
+
 #[cfg(test)]
 #[path = "project_names_tests.rs"]
 mod project_names_tests;
@@ -3836,6 +3870,18 @@ mod project_names_tests;
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn nothing_to_compact_keeps_its_own_code() {
+        let nothing = compaction_failure(maple_agent::agent::NOTHING_TO_COMPACT_ERROR.into());
+        assert_eq!(nothing.code, "nothing-to-compact");
+        assert_eq!(
+            nothing.message,
+            maple_agent::agent::NOTHING_TO_COMPACT_ERROR
+        );
+        let failed = compaction_failure("Compaction failed: the model refused".into());
+        assert_eq!(failed.code, "unknown", "any other refusal stays a failure");
+    }
 
     #[test]
     fn a_start_that_names_no_folder_is_a_gui_start_with_or_without_a_request() {
@@ -4170,6 +4216,79 @@ mod tests {
         assert_eq!(list().await.unwrap(), changed);
         backend.persisted_auth.forget_owner();
         refused_alike(&backend, "fixture-user").await;
+    }
+
+    /// A paired viewer's context breakdown request reaches the host's tasks
+    /// with the context meter's authority, and reads none, not an error,
+    /// for a task the host has not loaded.
+    #[tokio::test]
+    async fn a_remote_context_breakdown_is_read_with_the_meters_authority() {
+        use serde_json::{Value, json};
+        /// Dispatch a command as it travels on the wire.
+        async fn dispatch(
+            backend: &LocalBackend,
+            method: &str,
+            params: Value,
+        ) -> Result<Value, HostFailure> {
+            let command: crate::remote::wire::Command = serde_json::from_value(json!({
+                "id": 1,
+                "method": method,
+                "send_id": null,
+                "params": params
+            }))
+            .unwrap();
+            super::super::dispatch_remote_inner_presented(
+                backend,
+                crate::host::protocol::Request {
+                    id: command.id,
+                    method: command.method.name(),
+                    params: command.params,
+                    send_id: None,
+                },
+            )
+            .await
+        }
+        const TASK: &str = "0195f3a0-0000-7000-8000-000000000001";
+        let root = tempfile::tempdir().unwrap();
+        let backend = LocalBackend::isolated_for_test(root.path());
+        assert!(backend.persisted_auth.claim_and_persist(&auth_snapshot(
+            "fixture-user",
+            "fixture-session",
+            1,
+            "fixture-token"
+        )));
+        let breakdown = |user: &str| json!([user, TASK]);
+        assert_eq!(
+            dispatch(&backend, "context_breakdown", breakdown("fixture-user"))
+                .await
+                .unwrap(),
+            Value::Null
+        );
+        // It takes exactly an account and a task.
+        for params in [json!(["fixture-user"]), json!(["fixture-user", TASK, null])] {
+            let failure = dispatch(&backend, "context_breakdown", params)
+                .await
+                .unwrap_err();
+            assert_eq!(failure.code, "request-parameters");
+        }
+        // Another account is refused as the meter refuses it, and so is
+        // the host's own account once it has signed out.
+        for (user, signed_out) in [("other-user", false), ("fixture-user", true)] {
+            if signed_out {
+                backend.persisted_auth.forget_owner();
+            }
+            let refused = dispatch(&backend, "context_breakdown", breakdown(user))
+                .await
+                .unwrap_err();
+            assert_eq!(refused.code, "deletion-account-changed", "{user}");
+            assert_eq!(
+                dispatch(&backend, "context_usage", json!([user, TASK, null]))
+                    .await
+                    .unwrap_err(),
+                refused,
+                "{user}"
+            );
+        }
     }
 
     #[tokio::test]

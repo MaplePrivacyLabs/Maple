@@ -1858,6 +1858,7 @@ impl AcpConnectionContext {
                 // external agents are the desktop's.
                 Some(
                     AgentRunEvent::HistoryReplaced
+                    | AgentRunEvent::CompactionStopped
                     | AgentRunEvent::Started
                     | AgentRunEvent::SetupWarning(_)
                     | AgentRunEvent::SubagentStarted { .. }

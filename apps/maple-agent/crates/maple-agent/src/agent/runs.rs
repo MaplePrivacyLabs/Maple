@@ -2082,9 +2082,14 @@ impl RunWatch {
                 events.publish(AgentRunEvent::Compacted);
                 events.publish(AgentRunEvent::HistoryReplaced);
             }
-            AgentSessionEvent::CompactionEnd {
-                error: Some(error), ..
-            } => log::warn!("Agent compaction failed: {error}"),
+            // A compaction that failed, or that Stop or an extension cancelled,
+            // still ends: the desktop stops saying it is under way.
+            AgentSessionEvent::CompactionEnd { error, .. } => {
+                if let Some(error) = error {
+                    log::warn!("Agent compaction failed: {error}");
+                }
+                events.publish(AgentRunEvent::CompactionStopped);
+            }
             AgentSessionEvent::PersistenceError(_) => {
                 // Store adapters latch the typed failure for visible retry.
                 // Pi's generic error string can contain paths or values.
@@ -2138,6 +2143,48 @@ mod tests {
     use super::*;
     use crate::agent::attachments::split_attachment_prompt;
     use crate::agent::tests::{Harness, eventually, finished};
+
+    /// Every compaction that starts says how it ended: a failed or stopped
+    /// one too, so the desktop stops saying it is under way.
+    #[test]
+    fn every_compaction_that_starts_reports_its_end() {
+        use pi_coding_agent::CompactionReason;
+        let (events, mut receiver) = RunEvents::new(
+            crate::agent::AgentEventDispatcher::new(Arc::new(
+                crate::agent::tests::Recorder::default(),
+            )),
+            "task",
+            "run",
+        );
+        let watch = RunWatch {
+            state: Arc::default(),
+            shells: ShellProgress::new(None),
+        };
+        let live = Mutex::new(LiveTimeline::default());
+        let start = AgentSessionEvent::CompactionStart {
+            reason: CompactionReason::Threshold,
+        };
+        let ends = [(Some("the model refused".to_string()), false), (None, true)];
+        for (error, aborted) in ends {
+            watch.observe(&start, &live, &events);
+            watch.observe(
+                &AgentSessionEvent::CompactionEnd {
+                    reason: CompactionReason::Threshold,
+                    result: None,
+                    aborted,
+                    will_retry: false,
+                    error,
+                },
+                &live,
+                &events,
+            );
+            assert!(matches!(receiver.try_recv(), Ok(AgentRunEvent::Compacting)));
+            assert!(
+                matches!(receiver.try_recv(), Ok(AgentRunEvent::CompactionStopped)),
+                "aborted: {aborted}"
+            );
+        }
+    }
 
     #[test]
     fn external_only_markers_retain_revision_after_a_turn_finishes() {

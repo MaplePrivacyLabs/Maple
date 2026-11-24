@@ -14,6 +14,7 @@ mod attachments;
 mod bounded_process;
 mod catalog;
 mod config;
+mod context_breakdown;
 mod cua;
 mod external_agents;
 mod integrations;

@@ -326,6 +326,7 @@ operations! {
     summarize_thinking(user_id: (&str), session_id: (&str), thinking_text: (String)) -> Option<String>;
     ask_side_question(user_id: (&str), session_id: (&str), request_id: (String), prior: (Vec<maple_agent::agent::SideQuestionTurn>), question: (String)) -> ();
     context_usage(user_id: (&str), session_id: (&str), model: (Option<&str>)) -> Option<(i64, i64)>;
+    [test_only] context_breakdown(user_id: (&str), session_id: (&str)) -> Option<maple_agent::agent::AgentContextBreakdown>;
     [dispatch_only] answer_question(user_id: (&str), request_id: (&str), answer: (String)) -> bool;
     thinking_state(user_id: (&str), session_id: (Option<&str>), model: (&str)) -> maple_agent::agent::AgentThinkingState;
     set_thinking_level(user_id: (&str), session_id: (Option<&str>), model: (&str), level: (maple_agent::agent::ThinkingLevel)) -> maple_agent::agent::AgentThinkingState;
@@ -1342,6 +1343,25 @@ mod tests {
         backend.remote_host = Some("peer".into());
         assert!(!runtime.block_on(backend.host_summarizes_tool_calls_at_start()));
         assert!(backend.tool_summary_start.get().is_none());
+    }
+
+    #[test]
+    fn the_context_breakdown_client_carries_the_account_and_the_task() {
+        let backend = fixture();
+        let runtime = backend.runtime_handle();
+        runtime.block_on(async {
+            // A task the host has not loaded has no breakdown, and no error.
+            assert_eq!(
+                backend.context_breakdown("fixture-user", "task").await,
+                Ok(None)
+            );
+            assert_eq!(
+                backend
+                    .call::<Option<AgentContextBreakdown>>("context_breakdown", ("fixture-user",))
+                    .await,
+                Err("Invalid host request parameters".into())
+            );
+        });
     }
 
     #[test]

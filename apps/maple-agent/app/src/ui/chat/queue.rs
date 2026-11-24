@@ -9,7 +9,7 @@ use gpui::{
 };
 use maple_agent::agent::AgentQueuedMessage;
 
-use super::{COMPOSER_PLACEHOLDER, ChatScreen, QUEUE_EDIT_PLACEHOLDER, QueueEdit};
+use super::{ChatScreen, QueueEdit};
 use crate::backend::QueuedMessageRequest;
 use crate::ui::i18n::{UiText, tr};
 use crate::ui::icons::icon;
@@ -219,11 +219,9 @@ impl ChatScreen {
                             draft,
                         });
                         if let Some(composer) = this.composer.clone() {
-                            composer.update(cx, |input, cx| {
-                                input.set_text(&text, cx);
-                                input.set_placeholder_key(QUEUE_EDIT_PLACEHOLDER, cx);
-                            });
+                            composer.update(cx, |input, cx| input.set_text(&text, cx));
                         }
+                        this.sync_composer_placeholder(cx);
                     }
                     Ok(None) => {
                         if this.selection_generation == generation && this.is_selected(&target) {
@@ -266,11 +264,9 @@ impl ChatScreen {
             return;
         };
         if let Some(composer) = self.composer.clone() {
-            composer.update(cx, |input, cx| {
-                input.set_text(&edit.draft, cx);
-                input.set_placeholder_key(COMPOSER_PLACEHOLDER, cx);
-            });
+            composer.update(cx, |input, cx| input.set_text(&edit.draft, cx));
         }
+        self.sync_composer_placeholder(cx);
         cx.notify();
     }
 

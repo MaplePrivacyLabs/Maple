@@ -17,11 +17,10 @@ use super::computers::{Destination, Navigate};
 use super::thinking::thinking_label;
 use super::transcript::{render_plan_row, render_subagent_row};
 use super::{
-    COMPOSER_PLACEHOLDER, ChatPopup, ChatScreen, DraftAttachment, OpenSettingsSection,
-    ProjectComputer, SIDE_THREAD_PLACEHOLDER, Section,
+    ChatPopup, ChatScreen, DraftAttachment, OpenSettingsSection, ProjectComputer, Section,
 };
 use crate::ui::i18n::{UiText, tr};
-use crate::ui::icons::{icon, spinner};
+use crate::ui::icons::{icon, spinner, spinner_with_id};
 use crate::ui::markdown;
 use crate::ui::motion;
 use crate::ui::popup::{Menu, MenuItem, Placement};
@@ -30,41 +29,158 @@ use crate::ui::theme;
 use crate::ui::titlebar;
 use crate::ui::widgets;
 
-/// The composer's button row, left to right. The row renders from this
-/// list and application Vim walks it, so a new control is reachable from
-/// the keyboard once it has an entry here, a rendering, and an action.
+/// The composer's controls application Vim walks. A control is reachable
+/// from the keyboard once it has an entry here, a rendering, and an action.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(super) enum ComposerControl {
+    /// `+`: a new task's menu (permissions, integrations, attach), or a
+    /// conversation's attach popover.
+    Add,
     Model,
-    Integrations,
-    Mode,
-    Attachments,
     Dictate,
+    /// The integrations that are on: a conversation's frame, or a new
+    /// task's row once any is on.
+    Integrations,
+    /// The permission mode: a conversation's frame, or a new task's row
+    /// once it is not the default.
+    Mode,
+    /// A conversation's context bar, once the task has used some.
+    Context,
+    /// A conversation's Compact, once the window nears its limit.
+    Compact,
 }
 
 impl ComposerControl {
-    const ALL: [Self; 5] = [
+    /// A conversation's: the box's row, then its frame.
+    const ALL: [Self; 7] = [
+        Self::Add,
+        Self::Model,
+        Self::Dictate,
+        Self::Integrations,
+        Self::Mode,
+        Self::Context,
+        Self::Compact,
+    ];
+    /// A new task's one row, its tokens after the model.
+    const NEW_TASK: [Self; 5] = [
+        Self::Add,
         Self::Model,
         Self::Integrations,
         Self::Mode,
-        Self::Attachments,
         Self::Dictate,
     ];
 }
 
-fn mode_item_id(mode: AgentPermissionMode) -> SharedString {
-    SharedString::from(format!("mode-{}", mode.as_str()))
+/// What the composer's one round button does now. It names the most
+/// likely next step: dictate into an empty box, send a draft, queue a
+/// draft behind a run, or stop the run.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(super) enum PrimaryAction {
+    /// Nothing drafted and dictation available: the button is the mic.
+    Dictate,
+    /// Nothing drafted and no dictation: a muted Send, waiting for a draft.
+    Idle,
+    Send,
+    /// A run is going and a draft is waiting: it goes out next turn.
+    Queue,
+    Stop,
+    /// Dictation is listening; pressing stops it.
+    Recording,
+    /// Something is under way that the button waits for: transcribing,
+    /// starting, or files still being prepared.
+    Busy,
 }
 
-fn mode_icon(mode: AgentPermissionMode) -> &'static str {
-    match mode {
-        AgentPermissionMode::ReadOnly => "lock",
-        AgentPermissionMode::Auto => "shield-check",
-        AgentPermissionMode::FullAccess => "zap",
+/// The order a context window holds its parts, which the context card's
+/// bar and legend both follow.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(super) enum ContextPart {
+    Instructions,
+    Summary,
+    Messages,
+    ToolResults,
+    Images,
+}
+
+impl ContextPart {
+    pub(super) const ALL: [Self; 5] = [
+        Self::Instructions,
+        Self::Summary,
+        Self::Messages,
+        Self::ToolResults,
+        Self::Images,
+    ];
+
+    pub(super) fn label(self) -> &'static str {
+        match self {
+            Self::Instructions => "chat-context-instructions",
+            Self::Summary => "chat-context-summary",
+            Self::Messages => "chat-context-messages",
+            Self::ToolResults => "chat-context-tool-results",
+            Self::Images => "chat-context-images",
+        }
+    }
+
+    pub(super) fn color(self) -> u32 {
+        match self {
+            Self::Instructions => theme::context_instructions(),
+            Self::Summary => theme::context_summary(),
+            Self::Messages => theme::context_messages(),
+            Self::ToolResults => theme::context_tool_results(),
+            Self::Images => theme::context_images(),
+        }
     }
 }
 
-fn mode_label(mode: AgentPermissionMode) -> &'static str {
+/// How full the context window is, as the bar and card color it: quiet
+/// until it nears the limit.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(super) enum ContextLevel {
+    Room,
+    Near,
+    Full,
+}
+
+/// A share of the window in whole percent, rounded down as the plan bar's
+/// is, so it reads 100% only once full. The nudge keeps a share such as
+/// 29 of 100, which `f32` holds as 0.2899…, at 29.
+pub(super) fn whole_percent(fraction: f32) -> u32 {
+    (fraction * 100. + 1e-3).floor().clamp(0., 100.) as u32
+}
+
+impl ContextLevel {
+    /// The level of the percentage the bar writes, so "75%" is never quiet
+    /// and "90%" never amber.
+    pub(super) fn of(fraction: f32) -> Self {
+        match whole_percent(fraction) {
+            90.. => Self::Full,
+            75.. => Self::Near,
+            _ => Self::Room,
+        }
+    }
+
+    /// The level's ink: the bar's fill, the percentage, Compact.
+    pub(super) fn color(self) -> u32 {
+        match self {
+            Self::Room => theme::meter_quiet(),
+            Self::Near => theme::status_warning(),
+            Self::Full => theme::status_error(),
+        }
+    }
+}
+
+/// Each mode's icon. None of them means anything else in Maple: `lock` is
+/// the encryption mark and an untrusted folder, `shield-check` a trusted
+/// folder, and `zap` a warning.
+pub(super) fn mode_icon(mode: AgentPermissionMode) -> &'static str {
+    match mode {
+        AgentPermissionMode::ReadOnly => "eye",
+        AgentPermissionMode::Auto => "wand-sparkles",
+        AgentPermissionMode::FullAccess => "key-round",
+    }
+}
+
+pub(super) fn mode_label(mode: AgentPermissionMode) -> &'static str {
     match mode {
         AgentPermissionMode::ReadOnly => "chat-mode-read-only",
         AgentPermissionMode::Auto => "chat-mode-auto",
@@ -73,7 +189,7 @@ fn mode_label(mode: AgentPermissionMode) -> &'static str {
 }
 
 /// The chip's accessible name: its mode alone does not say what it sets.
-fn mode_chip_label(mode: AgentPermissionMode) -> &'static str {
+pub(super) fn mode_chip_label(mode: AgentPermissionMode) -> &'static str {
     match mode {
         AgentPermissionMode::ReadOnly => "chat-mode-read-only-chip",
         AgentPermissionMode::Auto => "chat-mode-auto-chip",
@@ -81,7 +197,7 @@ fn mode_chip_label(mode: AgentPermissionMode) -> &'static str {
     }
 }
 
-fn mode_note(mode: AgentPermissionMode) -> &'static str {
+pub(super) fn mode_note(mode: AgentPermissionMode) -> &'static str {
     match mode {
         AgentPermissionMode::ReadOnly => "chat-mode-read-only-note",
         AgentPermissionMode::Auto => "chat-mode-auto-note",
@@ -107,6 +223,13 @@ pub(super) const EMPTY_PANE_PADDING_REMS: f32 = 1.5;
 pub(super) struct ComposerFrame {
     /// The composer region: cards, composer box, palette, padding.
     pub(super) region: Option<gpui::Pixels>,
+    /// A conversation's strip: its width, how wide its two groups are at
+    /// each [`StripFit`](super::composer_frame::StripFit), and the words
+    /// they were measured with.
+    pub(super) strip_width: Option<gpui::Pixels>,
+    pub(super) strip_left: [Option<gpui::Pixels>; 4],
+    pub(super) strip_right: [Option<gpui::Pixels>; 4],
+    pub(super) strip_words: u64,
     /// The height the region takes when expanded.
     pub(super) room: Option<gpui::Pixels>,
     /// The empty state's title and privacy line at rest, which fold away
@@ -301,39 +424,26 @@ impl ChatScreen {
                     Placement::AboveStart,
                     window,
                     cx,
-                    Self::project_menu,
+                    |this, _, cx| this.project_menu(cx),
                 )
                 .min_w_0()
                 .max_w_full(),
             )
-            .when_some(self.branch_label.clone(), |row, branch| {
-                row.child(
-                    div()
-                        .flex_none()
-                        .text_xs()
-                        .font_weight(gpui::FontWeight::MEDIUM)
-                        .text_color(gpui::rgb(theme::status_error()))
-                        .max_w(px(200.))
-                        .truncate()
-                        .debug_selector(|| "project-branch".to_string())
-                        .child(gpui::text!(branch)),
-                )
-            })
     }
 
     /// `button` as the opener of `popup`, with `menu` attached below or
     /// above it while the popup is open.
-    fn with_menu<E: gpui::StatefulInteractiveElement + IntoElement>(
+    pub(super) fn with_menu<E: gpui::StatefulInteractiveElement + IntoElement>(
         &self,
         popup: ChatPopup,
         button: E,
         placement: Placement,
         window: &mut Window,
         cx: &mut Context<Self>,
-        menu: impl FnOnce(&Self, &mut Context<Self>) -> Menu<Self>,
+        menu: impl FnOnce(&Self, &mut Window, &mut Context<Self>) -> Menu<Self>,
     ) -> Div {
         let menu = self.popup.is_open(&popup).then(|| {
-            let menu = menu(self, cx);
+            let menu = menu(self, window, cx);
             self.popup.render(menu, placement, window, cx)
         });
         div()
@@ -352,18 +462,51 @@ impl ChatScreen {
     fn press_chip(&mut self, popup: ChatPopup, window: &mut Window, cx: &mut Context<Self>) {
         match popup {
             ChatPopup::Project => self.execute_command(ChatCommand::ChooseProject, window, cx),
+            // From the keyboard, the permissions open on their control.
+            ChatPopup::Mode if !self.popup.is_open(&popup) && window.last_input_was_keyboard() => {
+                self.open_permissions(true, cx)
+            }
             popup => self.toggle_popup(popup, cx),
         }
     }
 
-    /// The controls the row shows now, in order.
+    /// The controls the composer shows now, in application Vim's order:
+    /// left to right as drawn. A new task's tokens sit between the model
+    /// and dictation; a conversation's frame follows the box's row.
     pub(super) fn composer_controls(&self) -> impl Iterator<Item = ComposerControl> + '_ {
-        ComposerControl::ALL
-            .into_iter()
-            .filter(|control| match control {
-                ComposerControl::Dictate => self.audio_caps.transcription,
-                _ => true,
-            })
+        let conversation = self.selected_session.is_some();
+        let listening = self.recording || self.transcribing;
+        let order: &[ComposerControl] = if conversation {
+            &ComposerControl::ALL
+        } else {
+            &ComposerControl::NEW_TASK
+        };
+        order.iter().copied().filter(move |control| match control {
+            // While dictation listens, its row takes the place of `+`
+            // and the model.
+            ComposerControl::Add | ComposerControl::Model => !listening,
+            // Only while it is drawn: during a run the round button is Stop.
+            ComposerControl::Dictate => self.audio_caps.transcription && self.dictation_drawn,
+            ComposerControl::Integrations => {
+                conversation || (!listening && self.integrations_token_shown())
+            }
+            ComposerControl::Mode => conversation || (!listening && self.mode_token_shown()),
+            ComposerControl::Context => conversation && self.context_shown(),
+            ComposerControl::Compact => conversation && self.compact_offered(),
+        })
+    }
+
+    /// A new task shows its integrations beside the model once any is on,
+    /// and keeps the token while its menu is open, so switching the last
+    /// one off does not pull the menu away.
+    fn integrations_token_shown(&self) -> bool {
+        self.mcp_enabled_count > 0 || self.popup.is_open(&ChatPopup::Integrations)
+    }
+
+    /// A new task shows its permission mode beside the model once it is not
+    /// Auto, and keeps the token while its menu is open.
+    fn mode_token_shown(&self) -> bool {
+        self.permission_mode != AgentPermissionMode::Auto || self.popup.is_open(&ChatPopup::Mode)
     }
 
     /// Press `control` from the keyboard, as a click would. A menu opens on
@@ -374,197 +517,600 @@ impl ChatScreen {
         cx: &mut Context<Self>,
     ) {
         match control {
+            ComposerControl::Add => self.open_add(cx),
             ComposerControl::Model => self.open_model_panel(cx),
+            ComposerControl::Dictate => self.toggle_recording(cx),
             ComposerControl::Integrations => {
                 self.popup.open(ChatPopup::Integrations, cx);
                 self.refresh_session_mcp(cx);
             }
-            ComposerControl::Mode => {
-                self.popup
-                    .open_highlighted(ChatPopup::Mode, mode_item_id(self.permission_mode), cx)
-            }
-            ComposerControl::Attachments => self.pick_attachments(cx),
-            ComposerControl::Dictate => self.toggle_recording(cx),
+            ComposerControl::Mode => self.open_permissions(true, cx),
+            ComposerControl::Context => self.open_context_card(true, cx),
+            ComposerControl::Compact => self.compact_now(cx),
         }
     }
 
-    /// One control of the button row, underlined while application Vim has
-    /// it selected.
-    fn render_composer_control(
+    /// `+`: a new task's menu, or a conversation's attach popover.
+    pub(super) fn open_add(&mut self, cx: &mut Context<Self>) {
+        if self.selected_session.is_some() {
+            // Paste may have been rebound since the popover last opened.
+            *self.attach_paste_key.get_mut() = None;
+            self.popup.open(ChatPopup::Attach, cx);
+        } else {
+            self.add_page = None;
+            self.popup.open(ChatPopup::Add, cx);
+        }
+    }
+
+    /// The `+` button. A new task's opens the menu with permissions,
+    /// integrations and attach; a conversation keeps those in its frame,
+    /// so its `+` only attaches.
+    fn render_add_button(
         &self,
-        control: ComposerControl,
         selected: bool,
         window: &mut Window,
         cx: &mut Context<Self>,
-    ) -> gpui::AnyElement {
-        let element = match control {
-            ComposerControl::Model => {
-                let label = self
-                    .selected_model
-                    .as_deref()
-                    .map(|model| self.model_label(model))
-                    .map(str::to_string)
-                    .unwrap_or_else(|| tr("chat-model").to_string());
-                let chip_name = label.clone();
-                // The level rides on the chip once the model's levels are
-                // known, for a model that thinks: a pick waiting to save,
-                // else the saved level, as the panel shows it.
-                let chosen = self.effort_chosen();
-                let level = chosen.map(thinking_label);
-                // At a model's top level the effort word stays warm, as the
-                // panel's slider does.
-                let detail_color: gpui::Hsla = match (self.thinking.as_ref(), chosen) {
-                    (Some(state), Some(chosen))
-                        if state.levels.len() > 1 && state.levels.last() == Some(&chosen) =>
-                    {
-                        crate::ui::effort_slider::heat_color(super::effort::level_heat(chosen))
-                    }
-                    _ => gpui::rgb(theme::text_muted()).into(),
-                };
-                let mut button = chip(
-                    "model-picker",
-                    None,
-                    label,
-                    level
-                        .clone()
-                        .map(|level| (level, detail_color, self.thinking_epoch)),
-                    true,
-                    self.popup.is_open(&ChatPopup::Model),
-                );
-                if let Some(level) = level {
-                    button = button.aria_label(self.messages.get(
-                        "chat-model-effort-chip",
-                        [
-                            ("model", chip_name.into()),
-                            ("effort", level.to_string().into()),
-                        ],
-                    ));
-                }
-                self.with_menu(
-                    ChatPopup::Model,
-                    button,
-                    Placement::AboveStart,
-                    window,
-                    cx,
-                    |this, cx| this.model_menu(cx),
-                )
-                // The model's name truncates before the row squeezes Send.
-                .min_w_0()
-            }
-            ComposerControl::Integrations => self.with_menu(
-                ChatPopup::Integrations,
-                chip(
-                    "mcp-menu",
-                    Some("puzzle"),
-                    if self.mcp_enabled_count == 0 {
-                        tr("chat-integrations")
-                    } else {
-                        self.messages.get(
-                            "chat-integration-count",
-                            [("count", self.mcp_enabled_count.into())],
-                        )
-                    },
-                    None,
-                    false,
-                    self.popup.is_open(&ChatPopup::Integrations),
-                ),
-                Placement::AboveStart,
-                window,
-                cx,
-                |this, _| this.integrations_menu(),
-            ),
-            ComposerControl::Mode => self.with_menu(
-                ChatPopup::Mode,
-                chip(
-                    "permission-mode-menu",
-                    Some(mode_icon(self.permission_mode)),
-                    tr(mode_label(self.permission_mode)).to_string(),
-                    None,
-                    true,
-                    self.popup.is_open(&ChatPopup::Mode),
-                )
-                .aria_label(tr(mode_chip_label(self.permission_mode))),
-                Placement::AboveStart,
-                window,
-                cx,
-                |this, _| this.mode_menu(),
-            ),
-            ComposerControl::Attachments => div().child(
-                div()
-                    .id("add-attachments")
-                    .size_8()
-                    .flex()
-                    .items_center()
-                    .justify_center()
-                    .rounded(theme::RADIUS_LG)
-                    .hover_bg(gpui::rgb(theme::bg_sidebar_pill()))
-                    .hover(|style| style.cursor_pointer())
-                    .active(|style| style.bg(gpui::rgb(theme::bg_sidebar_pill())))
-                    .when(self.attachment_picking, |el| el.opacity(0.5))
-                    .tooltip(widgets::tooltip(tr("chat-attach"), None))
-                    .on_click(cx.listener(|this, _event, _window, cx| {
-                        this.activate_composer_control(ComposerControl::Attachments, cx);
-                    }))
-                    .child(icon("paperclip", px(16.), theme::text_secondary())),
-            ),
-            ComposerControl::Dictate => {
-                let recording = self.recording;
-                let transcribing = self.transcribing;
-                div().child(
-                    div()
-                        .id("record-voice")
-                        .size_8()
-                        .flex()
-                        .items_center()
-                        .justify_center()
-                        .rounded(theme::RADIUS_LG)
-                        .when(recording, |el| el.bg(gpui::rgb(theme::status_error())))
-                        .hover_bg(gpui::rgb(if recording {
-                            theme::status_error()
-                        } else {
-                            theme::bg_sidebar_pill()
-                        }))
-                        .hover(|style| style.cursor_pointer())
-                        .when(transcribing, |el| el.opacity(0.5))
-                        .tooltip(widgets::tooltip(
-                            if recording {
-                                tr("chat-stop-recording")
-                            } else {
-                                tr("chat-dictate")
-                            },
-                            None,
-                        ))
-                        .on_click(cx.listener(|this, _event, _window, cx| {
-                            this.activate_composer_control(ComposerControl::Dictate, cx);
-                        }))
-                        .child(if transcribing {
-                            spinner("transcribing", px(16.), theme::text_secondary())
-                        } else if recording {
-                            icon("square", px(14.), theme::on_accent()).into_any_element()
-                        } else {
-                            icon("mic", px(16.), theme::text_secondary()).into_any_element()
-                        }),
-                )
-            }
+    ) -> Div {
+        let conversation = self.selected_session.is_some();
+        let popup = if conversation {
+            ChatPopup::Attach
+        } else {
+            ChatPopup::Add
         };
-        // The accent bar is the application Vim selection mark, as on
-        // sidebar and transcript rows; under a chip it sits along the
-        // bottom without changing the row's layout.
-        element
-            .relative()
-            .when(selected, |element| {
-                element.child(
-                    div()
-                        .absolute()
-                        .bottom_0()
-                        .left_1()
-                        .right_1()
-                        .h(px(2.))
-                        .rounded_full()
-                        .bg(gpui::rgb(theme::accent())),
+        let open = self.popup.is_open(&popup);
+        let label = if conversation {
+            tr("chat-attach")
+        } else {
+            tr("chat-add")
+        };
+        let button = div()
+            .id("composer-add")
+            .debug_selector(|| "composer-add".to_string())
+            .role(gpui::Role::Button)
+            .aria_label(label.clone())
+            .tab_index(0)
+            // It has no fill at rest; the ring's own would cover the glyph.
+            .focus_visible(widgets::focus_ring_on(gpui::rgb(theme::bg_sidebar_pill())))
+            .on_key_down(ChatScreen::sidebar_button_key_down)
+            .size_8()
+            .flex()
+            .items_center()
+            .justify_center()
+            .rounded(theme::RADIUS_LG)
+            .when(open, |el| el.bg(gpui::rgb(theme::bg_sidebar_pill())))
+            .hover_bg(gpui::rgb(theme::bg_sidebar_pill()))
+            .hover(|style| style.cursor_pointer())
+            .active(|style| style.bg(gpui::rgb(theme::bg_sidebar_row_selected())))
+            .when(self.attachment_picking, |el| el.opacity(0.5))
+            .when(!open, |el| el.tooltip(widgets::tooltip(label, None)))
+            .child(icon("plus", px(18.), chip_color(open)));
+        let menu = self.popup.is_open(&popup).then(|| {
+            let menu = if conversation {
+                self.attach_menu(window, cx)
+            } else {
+                self.add_menu(window, cx)
+            };
+            self.popup.render(menu, Placement::AboveStart, window, cx)
+        });
+        vim_mark(
+            div()
+                .relative()
+                .child(self.popup.trigger(popup, button, cx, |this, _, cx| {
+                    if this.popup.is_open(&ChatPopup::Add) || this.popup.is_open(&ChatPopup::Attach)
+                    {
+                        this.popup.close(cx);
+                    } else {
+                        this.open_add(cx);
+                    }
+                }))
+                .children(menu),
+            selected,
+        )
+    }
+
+    /// The model chip, with the effort level riding on it.
+    fn render_model_chip(
+        &self,
+        selected: bool,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> Div {
+        let label = self
+            .selected_model
+            .as_deref()
+            .map(|model| self.model_label(model))
+            .map(str::to_string)
+            .unwrap_or_else(|| tr("chat-model").to_string());
+        let chip_name = label.clone();
+        // The level rides on the chip once the model's levels are
+        // known, for a model that thinks: a pick waiting to save,
+        // else the saved level, as the panel shows it.
+        let chosen = self.effort_chosen();
+        let level = chosen.map(thinking_label);
+        // At a model's top level the effort word stays warm, as the
+        // panel's slider does.
+        let detail_color: gpui::Hsla = match (self.thinking.as_ref(), chosen) {
+            (Some(state), Some(chosen))
+                if state.levels.len() > 1 && state.levels.last() == Some(&chosen) =>
+            {
+                crate::ui::effort_slider::heat_color(super::effort::level_heat(chosen))
+            }
+            _ => gpui::rgb(theme::text_muted()).into(),
+        };
+        let mut button = chip(
+            "model-picker",
+            None,
+            label,
+            level
+                .clone()
+                .map(|level| (level, detail_color, self.thinking_epoch)),
+            true,
+            self.popup.is_open(&ChatPopup::Model),
+        );
+        if let Some(level) = level {
+            button = button.aria_label(self.messages.get(
+                "chat-model-effort-chip",
+                [
+                    ("model", chip_name.into()),
+                    ("effort", level.to_string().into()),
+                ],
+            ));
+        }
+        vim_mark(
+            self.with_menu(
+                ChatPopup::Model,
+                button,
+                Placement::AboveStart,
+                window,
+                cx,
+                |this, _, cx| this.model_menu(cx),
+            ),
+            selected,
+        )
+        // The model's name truncates before the row squeezes Send.
+        .min_w_0()
+    }
+
+    /// A new task's quiet tokens beside the model: the integrations once
+    /// any is on, and the permission mode once it is not the default. A
+    /// conversation shows both in its frame instead.
+    fn render_new_task_tokens(
+        &self,
+        selected: Option<ComposerControl>,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> Vec<gpui::AnyElement> {
+        let mut tokens = Vec::new();
+        if self.integrations_token_shown() {
+            let open = self.popup.is_open(&ChatPopup::Integrations);
+            let button = token_frame("mcp-menu", false, open)
+                .aria_label(self.integrations_count_label())
+                .when(!open, |el| {
+                    el.tooltip(widgets::tooltip(self.integrations_tooltip(), None))
+                })
+                .child(icon("puzzle", px(14.), theme::text_secondary()))
+                .child(self.integrations_count_text());
+            tokens.push(
+                vim_mark(
+                    self.with_menu(
+                        ChatPopup::Integrations,
+                        button,
+                        Placement::AboveStart,
+                        window,
+                        cx,
+                        |this, _, _| this.integrations_menu(),
+                    ),
+                    selected == Some(ComposerControl::Integrations),
                 )
+                .into_any_element(),
+            );
+        }
+        if self.mode_token_shown() {
+            let warm = self.permission_mode == AgentPermissionMode::FullAccess;
+            let open = self.popup.is_open(&ChatPopup::Mode);
+            let ink = if warm {
+                theme::accent_ink()
+            } else {
+                theme::text_secondary()
+            };
+            let button = token_frame("permission-mode-menu", warm, open)
+                .aria_label(tr(mode_chip_label(self.permission_mode)))
+                .when(!open, |el| {
+                    el.tooltip(widgets::tooltip(tr("chat-mode"), None))
+                })
+                .child(icon(mode_icon(self.permission_mode), px(14.), ink))
+                .child(
+                    div()
+                        .whitespace_nowrap()
+                        .child(tr(mode_label(self.permission_mode))),
+                );
+            tokens.push(
+                vim_mark(
+                    self.with_menu(
+                        ChatPopup::Mode,
+                        button,
+                        Placement::AboveStart,
+                        window,
+                        cx,
+                        |this, window, cx| this.permissions_menu(window, cx),
+                    ),
+                    selected == Some(ComposerControl::Mode),
+                )
+                .into_any_element(),
+            );
+        }
+        tokens
+    }
+
+    /// What the round button does now, from the draft and the run.
+    pub(super) fn primary_action(
+        &self,
+        running: bool,
+        pending_create: bool,
+        disabled: bool,
+        drafting: bool,
+        can_send: bool,
+    ) -> PrimaryAction {
+        // Only a message waits for a run. A command runs at once, and while
+        // the side thread is open a plain message is asked there at once.
+        let asks_now = self.composer_is_command || self.btw.is_some();
+        if self.recording {
+            PrimaryAction::Recording
+        } else if self.transcribing || self.recording_starting {
+            PrimaryAction::Busy
+        } else if running && !self.booting && !pending_create && !drafting {
+            PrimaryAction::Stop
+        } else if can_send {
+            if running && !asks_now {
+                PrimaryAction::Queue
+            } else {
+                PrimaryAction::Send
+            }
+        } else if drafting || disabled {
+            PrimaryAction::Busy
+        } else if self.audio_caps.transcription {
+            PrimaryAction::Dictate
+        } else {
+            PrimaryAction::Idle
+        }
+    }
+
+    /// The round button. Its fills and glyphs cross-fade over TOGGLE as
+    /// it changes job, and it widens into a pill to say Queue; its role,
+    /// name and handler switch at once.
+    fn render_primary(
+        &mut self,
+        action: PrimaryAction,
+        status_label: SharedString,
+        selected: bool,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> Div {
+        let now = motion::now();
+        let reduced = cx.reduce_motion();
+        let (queue, moving) = self.primary_width.step(
+            if action == PrimaryAction::Queue {
+                1.
+            } else {
+                0.
+            },
+            motion::TOGGLE,
+            now,
+            reduced,
+        );
+        if moving {
+            window.request_animation_frame();
+        }
+        let (selector, label): (&'static str, Option<SharedString>) = match action {
+            PrimaryAction::Dictate => ("record-voice", Some(tr("chat-dictate"))),
+            PrimaryAction::Recording => ("record-voice", Some(tr("chat-stop-recording"))),
+            PrimaryAction::Send => ("send-message", Some(tr("chat-send"))),
+            PrimaryAction::Queue => ("send-message", Some(tr("chat-queue-next-turn"))),
+            PrimaryAction::Stop => ("stop-run", Some(tr("chat-stop-run"))),
+            PrimaryAction::Busy => ("send-message", Some(self.busy_label(status_label))),
+            // A Send with nothing to send: named, and disabled.
+            PrimaryAction::Idle => ("send-message", Some(tr("chat-send"))),
+        };
+        // One layer per look; each eases to on or off by itself, so a
+        // change of job never shows two glyphs at full strength.
+        let neutral = matches!(
+            action,
+            PrimaryAction::Dictate
+                | PrimaryAction::Busy
+                | PrimaryAction::Queue
+                | PrimaryAction::Idle
+        );
+        // The arrow lifts away as a message goes out.
+        let launched = self
+            .send_launched
+            .is_some_and(|at| now.saturating_duration_since(at) < motion::TOGGLE.settle);
+        let layers = [
+            primary_layer("composer-primary-neutral", neutral, |on| {
+                fill(on, theme::bg_sidebar_pill()).into_any_element()
+            }),
+            primary_layer(
+                "composer-primary-send",
+                action == PrimaryAction::Send,
+                |on| {
+                    fill(on, theme::send_top())
+                        .bg(gpui::linear_gradient(
+                            180.,
+                            gpui::linear_color_stop(gpui::rgb(theme::send_top()), 0.),
+                            gpui::linear_color_stop(gpui::rgb(theme::send_bottom()), 1.),
+                        ))
+                        .into_any_element()
+                },
+            ),
+            primary_layer(
+                "composer-primary-stop",
+                action == PrimaryAction::Stop,
+                |on| fill(on, theme::bg_default_button()).into_any_element(),
+            ),
+            primary_layer(
+                "composer-primary-recording",
+                action == PrimaryAction::Recording,
+                |on| {
+                    if on <= 0. {
+                        return fill(0., theme::status_error()).into_any_element();
+                    }
+                    // Listening breathes, so the button says it is live.
+                    motion::ticker(
+                        "composer-primary-breath",
+                        motion::LISTENING_BREATH,
+                        move |phase| {
+                            fill(
+                                on * motion::pulse(phase, 0., 0.78, 1.),
+                                theme::status_error(),
+                            )
+                            .into_any_element()
+                        },
+                    )
+                    .into_any_element()
+                },
+            ),
+            primary_layer(
+                "composer-primary-mic",
+                action == PrimaryAction::Dictate,
+                |on| glyph(on, scaled_icon("mic", theme::text_secondary(), on)),
+            ),
+            primary_layer(
+                "composer-primary-arrow",
+                action == PrimaryAction::Send && !launched,
+                move |on| {
+                    let lift = if launched { 1. - on } else { 0. };
+                    motion::shifted(glyph(on, scaled_icon("arrow-up", theme::on_accent(), on)))
+                        .offset(gpui::point(px(0.), px(-7. * lift)))
+                        .into_any_element()
+                },
+            ),
+            // Nothing to send and no dictation: Send, waiting for a draft.
+            primary_layer(
+                "composer-primary-idle",
+                action == PrimaryAction::Idle,
+                |on| glyph(on, scaled_icon("arrow-up", theme::text_muted(), on)),
+            ),
+            primary_layer(
+                "composer-primary-stop-square",
+                action == PrimaryAction::Stop,
+                |on| glyph(on, square(theme::text_on_default_button())),
+            ),
+            primary_layer(
+                "composer-primary-recording-square",
+                action == PrimaryAction::Recording,
+                |on| glyph(on, square(theme::on_accent())),
+            ),
+            primary_layer(
+                "composer-primary-queue",
+                action == PrimaryAction::Queue,
+                |on| {
+                    glyph(
+                        on,
+                        div()
+                            .text_xs()
+                            .font_weight(gpui::FontWeight::MEDIUM)
+                            .text_color(gpui::rgb(theme::text_primary()))
+                            .whitespace_nowrap()
+                            .child(tr("chat-queue"))
+                            .into_any_element(),
+                    )
+                },
+            ),
+        ];
+        let busy = (action == PrimaryAction::Busy).then(|| {
+            glyph(
+                1.,
+                spinner_with_id(
+                    SharedString::new_static("spinner-composer-primary-busy"),
+                    px(16.),
+                    theme::text_secondary(),
+                ),
+            )
+        });
+        let shortcut = matches!(action, PrimaryAction::Send | PrimaryAction::Queue).then_some("↵");
+        let pressable = !matches!(action, PrimaryAction::Busy | PrimaryAction::Idle);
+        let button = div()
+            .id("composer-primary")
+            .debug_selector(move || selector.to_string())
+            .when_some(label.clone(), |el, label| {
+                el.role(gpui::Role::Button).aria_label(label)
             })
-            .into_any_element()
+            .when(!pressable, |el| {
+                el.a11y_synthetic_children(|tree| tree.parent_node().set_disabled())
+            })
+            .relative()
+            .flex_none()
+            .h_8()
+            .w(px(32. + 40. * queue))
+            .rounded_full()
+            .children(layers)
+            .children(busy)
+            .when(pressable, |el| {
+                el.hover(|style| style.opacity(0.9).cursor_pointer())
+                    .active(|style| style.opacity(0.75))
+                    .when_some(label, |el, label| {
+                        el.tooltip(widgets::tooltip(label, shortcut))
+                    })
+                    .on_click(cx.listener(move |this, _event, _window, cx| match action {
+                        PrimaryAction::Dictate | PrimaryAction::Recording => {
+                            this.toggle_recording(cx)
+                        }
+                        PrimaryAction::Send | PrimaryAction::Queue => this.send_inner(cx),
+                        PrimaryAction::Stop => this.stop(cx),
+                        PrimaryAction::Busy | PrimaryAction::Idle => {}
+                    }))
+            });
+        vim_mark(
+            div().child(button),
+            selected && matches!(action, PrimaryAction::Dictate | PrimaryAction::Recording),
+        )
+    }
+
+    /// What the round button waits on while it shows Busy: the words it
+    /// is transcribing, the microphone starting, files still being
+    /// prepared, or else the composer's own wait (`status_label`).
+    fn busy_label(&self, status_label: SharedString) -> SharedString {
+        if self.transcribing {
+            tr("chat-transcribing")
+        } else if self.recording_starting {
+            tr("chat-dictate")
+        } else if !self.draft_attachments.iter().all(DraftAttachment::ready) {
+            tr("chat-files-preparing")
+        } else {
+            status_label
+        }
+    }
+
+    /// The mic beside Send while a draft waits: it slides in from under
+    /// Send, whose job it held while the box was empty, and folds away the
+    /// same way. Its slot eases open, so nothing jumps.
+    fn render_mic_aside(
+        &mut self,
+        shown: bool,
+        selected: bool,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> Div {
+        let now = motion::now();
+        let (on, moving) = self.mic_aside.step(
+            if shown { 1. } else { 0. },
+            motion::TOGGLE,
+            now,
+            cx.reduce_motion(),
+        );
+        if moving {
+            window.request_animation_frame();
+        }
+        let eased = motion::ease_out_cubic(on);
+        let frame = div()
+            .id("record-voice-aside")
+            .debug_selector(|| "record-voice-aside".to_string())
+            .absolute()
+            .inset_0()
+            .flex()
+            .items_center()
+            .justify_center()
+            .rounded(theme::RADIUS_LG)
+            .opacity(eased);
+        let glyph = icon("mic", px(16.), theme::text_muted());
+        let button = if shown {
+            frame
+                .role(gpui::Role::Button)
+                .aria_label(tr("chat-dictate"))
+                .hover_bg(gpui::rgb(theme::bg_sidebar_pill()))
+                .hover(|style| style.cursor_pointer())
+                .active(|style| style.bg(gpui::rgb(theme::bg_sidebar_row_selected())))
+                .tooltip(widgets::tooltip(tr("chat-dictate"), None))
+                .on_click(cx.listener(|this, _event, _window, cx| {
+                    this.toggle_recording(cx);
+                }))
+                .child(glyph)
+                .into_any_element()
+        } else {
+            // Folding away: drawn, but no longer a control.
+            frame.child(glyph).into_any_element()
+        };
+        vim_mark(
+            div()
+                .relative()
+                .flex_none()
+                .h_8()
+                .w(px(32. * eased))
+                .mr(px(2. * eased))
+                .child(
+                    motion::shifted(div().absolute().inset_0().child(button))
+                        .offset(gpui::point(px(10. * (1. - eased)), px(0.))),
+                ),
+            selected && shown,
+        )
+    }
+
+    /// Dictation's row, in place of `+` and the model while it listens: a
+    /// level wave, what it is doing, and for how long.
+    fn render_listening(&self, cx: &mut Context<Self>) -> Div {
+        let recording = self.recording;
+        let since = self.recording_since;
+        let label = if recording {
+            tr("chat-listening")
+        } else {
+            tr("chat-transcribing")
+        };
+        let elapsed = since.filter(|_| recording).map(|since| {
+            let seconds = motion::now().saturating_duration_since(since).as_secs();
+            format!("{}:{:02}", seconds / 60, seconds % 60)
+        });
+        if recording {
+            self.schedule_recording_tick(cx);
+        }
+        div()
+            .debug_selector(|| "composer-listening".to_string())
+            .flex()
+            .items_center()
+            .gap_2()
+            .h_8()
+            .px_2()
+            .text_xs()
+            .font_weight(gpui::FontWeight::MEDIUM)
+            .text_color(gpui::rgb(theme::text_secondary()))
+            .when(recording, |row| {
+                row.child(motion::ticker(
+                    "composer-listening-wave",
+                    motion::LISTENING_WAVE,
+                    |phase| {
+                        div()
+                            .flex()
+                            .items_center()
+                            .gap(px(2.))
+                            .h(px(18.))
+                            .children((0..14).map(|bar| {
+                                // A travelling wave: calm, never empty, never
+                                // touching the row's edges.
+                                let wave = ((phase * std::f32::consts::TAU) + bar as f32 * 0.9)
+                                    .sin()
+                                    .abs();
+                                div()
+                                    .w(px(2.))
+                                    .h(px(4. + 12. * wave))
+                                    .rounded_full()
+                                    .bg(gpui::rgb(theme::status_error()))
+                            }))
+                            .into_any_element()
+                    },
+                ))
+            })
+            .when(!recording, |row| {
+                row.child(spinner_with_id(
+                    SharedString::new_static("spinner-composer-transcribing"),
+                    px(12.),
+                    theme::text_muted(),
+                ))
+            })
+            .child(gpui::text!(label))
+            .children(elapsed.map(|elapsed| {
+                div()
+                    .font_family(crate::assets::FONT_MONO)
+                    .text_color(gpui::rgb(theme::text_muted()))
+                    .child(elapsed)
+            }))
     }
 
     /// Explicit new-project choices, followed by at most three recent projects.
@@ -726,124 +1272,6 @@ impl ChatScreen {
     }
 
     /// What the task may do without asking.
-    fn mode_menu(&self) -> Menu<Self> {
-        Menu::new("mode-menu", px(320.))
-            .label(tr("chat-mode"))
-            .application_vim(self.application_vim_enabled)
-            .items(
-                [
-                    AgentPermissionMode::ReadOnly,
-                    AgentPermissionMode::Auto,
-                    AgentPermissionMode::FullAccess,
-                ]
-                .map(|mode| {
-                    MenuItem::new(
-                        mode_item_id(mode),
-                        tr(mode_label(mode)),
-                        move |this: &mut Self, _: &mut Window, cx: &mut Context<Self>| {
-                            this.set_permission_mode(mode, cx);
-                        },
-                    )
-                    .icon(mode_icon(mode))
-                    .note(tr(mode_note(mode)))
-                    .current(self.permission_mode == mode)
-                }),
-            )
-    }
-
-    /// The task's integrations, each with a switch. A server that still
-    /// needs setup opens Settings instead.
-    fn integrations_menu(&self) -> Menu<Self> {
-        let mut menu = Menu::new("integrations-menu", px(360.))
-            .label(tr("chat-integrations"))
-            .max_height(px(320.))
-            .application_vim(self.application_vim_enabled)
-            .header(tr("chat-integrations"));
-        if self.session_mcp.is_empty() {
-            menu = menu.child(
-                div()
-                    .px_3()
-                    .py_2()
-                    .text_sm()
-                    .text_color(gpui::rgb(theme::text_muted()))
-                    .child(tr("chat-no-integrations")),
-            );
-        }
-        for server in &self.session_mcp {
-            let name = server.name.clone();
-            let kind = server.kind;
-            let enabled = server.enabled;
-            let available = server.available;
-            let usable = available || enabled;
-            let content = div()
-                .flex()
-                .flex_col()
-                .child(
-                    div()
-                        .font_weight(gpui::FontWeight::MEDIUM)
-                        .line_clamp(1)
-                        .text_ellipsis()
-                        .child(server.display_name.clone()),
-                )
-                .when(!server.description.is_empty(), |column| {
-                    column.child(
-                        div()
-                            .text_xs()
-                            .text_color(gpui::rgb(theme::text_muted()))
-                            .line_clamp(2)
-                            .child(
-                                if server.kind
-                                    == maple_agent::agent::AgentSessionIntegrationKind::Mcp
-                                    && server.name == "cua-driver"
-                                {
-                                    tr("settings-integration-cua-description")
-                                } else {
-                                    crate::ui::settings::saved_description(
-                                        &server.display_name,
-                                        &server.description,
-                                    )
-                                },
-                            ),
-                    )
-                })
-                .when(!available, |column| {
-                    column.child(
-                        div()
-                            .text_xs()
-                            .text_color(gpui::rgb(theme::status_warning()))
-                            .child(tr("chat-setup-integrations")),
-                    )
-                });
-            let item = MenuItem::new(
-                SharedString::from(format!("mcp-{kind:?}-{name}")),
-                server.display_name.clone(),
-                move |this: &mut Self, _: &mut Window, cx: &mut Context<Self>| {
-                    if usable {
-                        this.toggle_session_mcp(name.clone(), kind, !enabled, cx);
-                    } else {
-                        cx.emit(OpenSettingsSection(Section::Integrations));
-                    }
-                },
-            )
-            .content(content);
-            menu = menu.item(if usable {
-                item.switch(enabled)
-            } else {
-                item.trailing(widgets::switch_track(enabled))
-            });
-        }
-        menu.separator().item(
-            MenuItem::new(
-                "mcp-manage",
-                tr("chat-manage-integrations"),
-                |_: &mut Self, _: &mut Window, cx: &mut Context<Self>| {
-                    cx.emit(OpenSettingsSection(Section::Integrations));
-                },
-            )
-            .style(|row| row.text_color(gpui::rgb(theme::accent()))),
-        )
-    }
-
     /// Command palette shown while the composer text starts with "/".
     /// Lists built-ins plus the project's skill commands, filtered by the
     /// typed prefix; clicking completes the command in the composer.
@@ -966,13 +1394,7 @@ impl ChatScreen {
             pending: true,
             error: None,
         });
-        if self.queue_edit.is_none()
-            && let Some(composer) = self.composer.clone()
-        {
-            composer.update(cx, |input, cx| {
-                input.set_placeholder_key(SIDE_THREAD_PLACEHOLDER, cx)
-            });
-        }
+        self.sync_composer_placeholder(cx);
         let backend = self.backend.clone();
         let user_id = self.user_id.clone();
         let session_id = session_id.to_string();
@@ -1002,13 +1424,7 @@ impl ChatScreen {
     /// Close the side thread; later messages go to the task again.
     pub(super) fn close_side_thread(&mut self, cx: &mut Context<Self>) {
         self.btw = None;
-        if self.queue_edit.is_none()
-            && let Some(composer) = self.composer.clone()
-        {
-            composer.update(cx, |input, cx| {
-                input.set_placeholder_key(COMPOSER_PLACEHOLDER, cx)
-            });
-        }
+        self.sync_composer_placeholder(cx);
         cx.notify();
     }
 
@@ -1417,6 +1833,7 @@ impl ChatScreen {
     }
 
     pub(super) fn render_composer(&mut self, window: &mut Window, cx: &mut Context<Self>) -> Div {
+        self.sync_composer_placeholder(cx);
         let running = self.is_run_active();
         // The first send's create keeps the composer's text on show and
         // the composer waiting, like the runtime boot does.
@@ -1436,11 +1853,10 @@ impl ChatScreen {
         let has_attachments = !self.draft_attachments.is_empty();
         let attachments_ready = self.draft_attachments.iter().all(DraftAttachment::ready);
         let can_send = !disabled && attachments_ready && (has_text || has_attachments);
-        // One control. Stop only while a run is active and nothing is
-        // waiting to send. Text, or an file that is still being prepared,
-        // turns it back into Send, which queues behind the run.
         let drafting = has_text || has_attachments;
-        let show_stop = running && !self.booting && !pending_create && !drafting;
+        let conversation = self.selected_session.is_some();
+        let listening = self.recording || self.transcribing;
+        let primary = self.primary_action(running, pending_create, disabled, drafting, can_send);
         let usage_tray = self
             .usage_limit_reached()
             .then(|| self.render_usage_tray(cx));
@@ -1449,20 +1865,38 @@ impl ChatScreen {
         // Layout follows the box while it eases; the icon and tooltip
         // name the state it is heading to.
         let fills = self.composer_fills();
-        // Send ↔ Stop and the send fill's enabled state ease over TOGGLE.
-        let (send_stop, send_ready) = {
-            let now = motion::now();
-            let reduced = cx.reduce_motion();
-            let step = |tween: &mut motion::Tween, on: bool| {
-                tween.step(if on { 1. } else { 0. }, motion::TOGGLE, now, reduced)
-            };
-            let (stop, stop_moving) = step(&mut self.send_stop, show_stop);
-            let (ready, ready_moving) = step(&mut self.send_ready, can_send);
-            if stop_moving || ready_moving {
-                window.request_animation_frame();
-            }
-            (stop, ready)
-        };
+        let now = motion::now();
+        let reduced = cx.reduce_motion();
+        // A hairline at rest; coral while the box has focus or one of its
+        // own menus is open.
+        let focused = !disabled && self.composer_focused(conversation, window, cx);
+        let (focus, focus_moving) = self.composer_focus_ring.step(
+            if focused { 1. } else { 0. },
+            motion::TOGGLE,
+            now,
+            reduced,
+        );
+        // The expand button shows while the pointer is over the box, for a
+        // draft of more than one line, and while expanded. It eases in
+        // over ENTER and out, quicker, over HOVER.
+        let multiline = self
+            .composer
+            .as_ref()
+            .is_some_and(|input| input.read(cx).height_beyond_one_row() > px(0.5));
+        let reveal_expand = self.composer_hovered || multiline || expanded || fills;
+        let (expand_shown, expand_moving) = self.expand_reveal.step(
+            if reveal_expand { 1. } else { 0. },
+            if reveal_expand {
+                motion::ENTER
+            } else {
+                motion::HOVER
+            },
+            now,
+            reduced,
+        );
+        if focus_moving || expand_moving {
+            window.request_animation_frame();
+        }
         let composer = self.composer.clone();
         let vim_badge = composer
             .as_ref()
@@ -1507,18 +1941,54 @@ impl ChatScreen {
                     })
             });
         let selected_control = self.application_vim_selected_control(window);
-        let controls = self
-            .composer_controls()
-            .map(|control| {
-                self.render_composer_control(control, selected_control == Some(control), window, cx)
-            })
-            .collect::<Vec<_>>();
-        let (controls, controls_held) = self.reveal_composer_controls(controls);
+        // While dictation listens its row takes the place of `+`, the
+        // model and the tokens; otherwise they reveal together once the
+        // model is known.
+        let (controls, controls_held) = if listening {
+            (self.render_listening(cx).into_any_element(), false)
+        } else {
+            let mut controls = vec![
+                self.render_add_button(selected_control == Some(ComposerControl::Add), window, cx)
+                    .into_any_element(),
+                self.render_model_chip(
+                    selected_control == Some(ComposerControl::Model),
+                    window,
+                    cx,
+                )
+                .into_any_element(),
+            ];
+            if !conversation {
+                controls.extend(self.render_new_task_tokens(selected_control, window, cx));
+            }
+            self.reveal_composer_controls(controls)
+        };
+        let aside_shown = drafting && !listening && !self.recording_starting;
+        self.dictation_drawn = self.audio_caps.transcription
+            && (aside_shown
+                || matches!(primary, PrimaryAction::Dictate | PrimaryAction::Recording));
+        let aside = self.audio_caps.transcription.then(|| {
+            let shown = aside_shown;
+            self.render_mic_aside(
+                shown,
+                selected_control == Some(ComposerControl::Dictate),
+                window,
+                cx,
+            )
+        });
+        let primary_button = self.render_primary(
+            primary,
+            status_label.clone(),
+            selected_control == Some(ComposerControl::Dictate),
+            window,
+            cx,
+        );
         let drafts = &self.draft_attachments;
         let upload = self
             .selected_upload()
             .map(|(id, upload)| (id.to_string(), upload.label.clone()));
+        let border = gpui::rgb(theme::border()).into();
         let composer_box = div()
+            .id("composer-box")
             .w_full()
             .flex()
             .flex_col()
@@ -1526,12 +1996,24 @@ impl ChatScreen {
             .debug_selector(|| "composer-box".to_string())
             .when(fills, |container| container.flex_1().min_h_0())
             .rounded(theme::RADIUS_XL)
-            .bg(gpui::rgb(theme::bg_app()))
+            .bg(gpui::rgb(theme::bg_input()))
             .border_1()
-            .border_color(gpui::rgb(theme::accent()))
-            .when(disabled, |container| {
-                container.border_color(gpui::rgb(theme::border()))
+            .border_color(if disabled {
+                border
+            } else {
+                motion::mix(border, gpui::rgb(theme::composer_focus()).into(), focus)
             })
+            // A new task's box floats on the page; a conversation's sits
+            // in its frame, which carries the shadow instead.
+            .when(!conversation, |container| {
+                container.shadow(composer_shadow())
+            })
+            .on_hover(cx.listener(|this, hovered: &bool, _window, cx| {
+                if this.composer_hovered != *hovered {
+                    this.composer_hovered = *hovered;
+                    cx.notify();
+                }
+            }))
             // Native files are copied locally before any execution-side upload.
             .can_drop(|dragged, _window, _cx| {
                 dragged.downcast_ref::<gpui::ExternalPaths>().is_some()
@@ -1677,35 +2159,7 @@ impl ChatScreen {
                             // task creation settles; keep its real focus path.
                             .children(composer),
                     )
-                    .child({
-                        let label = if expanded {
-                            tr("chat-shrink-composer")
-                        } else {
-                            tr("chat-expand-composer")
-                        };
-                        div()
-                            .id("composer-expand")
-                            .role(gpui::Role::Button)
-                            .aria_label(label.clone())
-                            .size(gpui::rems(EXPAND_BUTTON_REMS))
-                            .flex()
-                            .items_center()
-                            .justify_center()
-                            .rounded(theme::RADIUS_SM)
-                            .hover_bg(gpui::rgb(theme::bg_sidebar_pill()))
-                            .hover(|style| style.cursor_pointer())
-                            .tooltip(widgets::tooltip(label, None))
-                            .on_click(cx.listener(|this, _event, _window, cx| {
-                                this.toggle_composer_expanded(cx);
-                            }))
-                            .child(motion::icon_swap(
-                                "composer-expand-icon",
-                                expanded,
-                                ["maximize-2", "minimize-2"],
-                                px(14.),
-                                theme::text_muted(),
-                            ))
-                    }),
+                    .child(self.render_expand_button(expanded, expand_shown, cx)),
             )
             .child(
                 div()
@@ -1736,105 +2190,11 @@ impl ChatScreen {
                         )
                     })
                     .child(div().flex_1())
-                    .child(
-                        div()
-                            .id("context-indicator")
-                            .flex_none()
-                            .flex()
-                            .items_center()
-                            .mr_1()
-                            .child(crate::ui::context_ring::ContextRing::new(
-                                self.context_fraction.unwrap_or(0.0),
-                            )),
-                    )
-                    .child({
-                        let button_id = if show_stop {
-                            "stop-run"
-                        } else {
-                            "send-message"
-                        };
-                        let button_label: SharedString = if show_stop {
-                            tr("chat-stop-run")
-                        } else if running && drafting {
-                            tr("chat-queue-next-turn")
-                        } else {
-                            tr("chat-send")
-                        };
-                        // The fills cross-fade and the arrow scales while
-                        // the handler, role and label switch at once.
-                        let send_layer = (send_stop < 1.).then(|| {
-                            div()
-                                .absolute()
-                                .inset_0()
-                                .flex()
-                                .items_center()
-                                .justify_center()
-                                .rounded_full()
-                                .bg(gpui::linear_gradient(
-                                    180.,
-                                    gpui::linear_color_stop(gpui::rgb(theme::send_top()), 0.),
-                                    gpui::linear_color_stop(gpui::rgb(theme::send_bottom()), 1.),
-                                ))
-                                .opacity((0.4 + 0.6 * send_ready) * (1. - send_stop))
-                                .child(if disabled {
-                                    spinner("send-booting", px(16.), theme::on_accent())
-                                } else {
-                                    let scale = 1. - 0.4 * send_stop;
-                                    icon("arrow-up", px(16.), theme::on_accent())
-                                        .with_transformation(gpui::Transformation::scale(
-                                            gpui::size(scale, scale),
-                                        ))
-                                        .into_any_element()
-                                })
-                        });
-                        let stop_layer = (send_stop > 0.).then(|| {
-                            div()
-                                .absolute()
-                                .inset_0()
-                                .flex()
-                                .items_center()
-                                .justify_center()
-                                .rounded_full()
-                                .bg(gpui::rgb(theme::status_error()))
-                                .opacity(send_stop)
-                                .child(
-                                    div()
-                                        .size_3()
-                                        .rounded(theme::RADIUS_SM)
-                                        .bg(gpui::rgb(theme::bg_app())),
-                                )
-                        });
-                        div()
-                            .id(button_id)
-                            .debug_selector(move || button_id.to_string())
-                            .role(gpui::Role::Button)
-                            .aria_label(button_label.clone())
-                            .relative()
-                            .flex_none()
-                            .size_8()
-                            .rounded_full()
-                            .children(send_layer)
-                            .children(stop_layer)
-                            .when(show_stop, |el| {
-                                el.hover(|style| style.opacity(0.85).cursor_pointer())
-                                    .active(|style| style.opacity(0.7))
-                                    .tooltip(widgets::tooltip(tr("chat-stop-run"), None))
-                                    .on_click(cx.listener(|this, _event, _window, cx| {
-                                        this.stop(cx);
-                                    }))
-                            })
-                            .when(!show_stop && can_send, |el| {
-                                el.hover(|style| style.opacity(0.9).cursor_pointer())
-                                    .active(|style| style.opacity(0.75))
-                                    .tooltip(widgets::tooltip(button_label.clone(), Some("↵")))
-                                    .on_click(cx.listener(|this, _event, _window, cx| {
-                                        this.send_inner(cx);
-                                    }))
-                            })
-                    }),
+                    .children(aside)
+                    .child(primary_button),
             );
-        if self.selected_session.is_some() {
-            return composer_box;
+        if conversation {
+            return self.render_composer_frame(composer_box, window, cx);
         }
         div()
             .w_full()
@@ -1847,6 +2207,63 @@ impl ChatScreen {
             .when(fills, |container| container.flex_1().min_h_0())
             .child(self.render_project_context(window, cx).flex_none())
             .child(composer_box)
+    }
+
+    /// Whether the box draws its focus line: its field has focus, or a menu
+    /// opened from inside the box is open (focus is in the menu then). A
+    /// conversation's frame sits outside the box, so its menus do not count.
+    fn composer_focused(&self, conversation: bool, window: &Window, cx: &gpui::App) -> bool {
+        let field = self.composer.as_ref().is_some_and(|input| {
+            gpui::Focusable::focus_handle(input.read(cx), cx).contains_focused(window, cx)
+        });
+        let own_menu = [ChatPopup::Add, ChatPopup::Attach, ChatPopup::Model]
+            .iter()
+            .any(|popup| self.popup.is_open(popup))
+            || (!conversation
+                && (self.popup.is_open(&ChatPopup::Integrations)
+                    || self.popup.is_open(&ChatPopup::Mode)));
+        field || own_menu
+    }
+
+    /// The expand button: shown on hover, for a long draft and while
+    /// expanded (`shown` eases between them), its glyph turning between
+    /// expand and shrink. Hidden, it takes no clicks.
+    fn render_expand_button(
+        &self,
+        expanded: bool,
+        shown: f32,
+        cx: &mut Context<Self>,
+    ) -> gpui::AnyElement {
+        let label = if expanded {
+            tr("chat-shrink-composer")
+        } else {
+            tr("chat-expand-composer")
+        };
+        let glyphs = expand_glyphs(expanded, shown);
+        let button = div()
+            .id("composer-expand")
+            .debug_selector(|| "composer-expand".to_string())
+            .size(gpui::rems(EXPAND_BUTTON_REMS))
+            .flex_none()
+            .flex()
+            .items_center()
+            .justify_center()
+            .rounded(theme::RADIUS_SM);
+        if shown < 0.5 {
+            // Keeps its place, so the field's width never changes.
+            return button.child(glyphs).into_any_element();
+        }
+        button
+            .role(gpui::Role::Button)
+            .aria_label(label.clone())
+            .hover_bg(gpui::rgb(theme::bg_sidebar_pill()))
+            .hover(|style| style.cursor_pointer())
+            .tooltip(widgets::tooltip(label, None))
+            .on_click(cx.listener(|this, _event, _window, cx| {
+                this.toggle_composer_expanded(cx);
+            }))
+            .child(glyphs)
+            .into_any_element()
     }
 }
 
@@ -1876,29 +2293,35 @@ pub(super) struct SlashEntry {
     pub(super) description: String,
 }
 
+/// The built-in commands and the palette's description of each. They act
+/// as soon as they are sent (`ChatScreen::try_command`); a skill, or any
+/// other draft that starts with "/", goes to the model as a message, so
+/// during a run it queues.
+pub(super) const BUILT_IN_COMMANDS: [(&str, &str); 6] = [
+    ("btw", "chat-slash-btw"),
+    ("compact", "chat-slash-compact"),
+    ("new", "chat-slash-new"),
+    ("pin", "chat-slash-pin"),
+    ("model", "chat-slash-model"),
+    ("help", "chat-slash-help"),
+];
+
 /// Built-in and skill commands matching a "/" token, capped for the popup.
 pub(super) fn slash_entries_for(token: &str, skills: &[AgentSlashCommand]) -> Vec<SlashEntry> {
     let query = token.to_lowercase();
-    [
-        ("btw", "chat-slash-btw"),
-        ("compact", "chat-slash-compact"),
-        ("new", "chat-slash-new"),
-        ("pin", "chat-slash-pin"),
-        ("model", "chat-slash-model"),
-        ("help", "chat-slash-help"),
-    ]
-    .into_iter()
-    .map(|(name, description)| SlashEntry {
-        name: name.to_string(),
-        description: tr(description).to_string(),
-    })
-    .chain(skills.iter().map(|command| SlashEntry {
-        name: command.name.clone(),
-        description: command.description.clone(),
-    }))
-    .filter(|entry| entry.name.to_lowercase().starts_with(&query))
-    .take(8)
-    .collect()
+    BUILT_IN_COMMANDS
+        .into_iter()
+        .map(|(name, description)| SlashEntry {
+            name: name.to_string(),
+            description: tr(description).to_string(),
+        })
+        .chain(skills.iter().map(|command| SlashEntry {
+            name: command.name.clone(),
+            description: command.description.clone(),
+        }))
+        .filter(|entry| entry.name.to_lowercase().starts_with(&query))
+        .take(8)
+        .collect()
 }
 
 /// One control in the composer chip row. `detail` is a second, quieter
@@ -1991,6 +2414,170 @@ fn chip_color(active: bool) -> u32 {
         theme::text_primary()
     } else {
         theme::text_secondary()
+    }
+}
+
+/// One look of the round button, easing on or off by itself.
+fn primary_layer(
+    id: &'static str,
+    on: bool,
+    build: impl Fn(f32) -> gpui::AnyElement + 'static,
+) -> motion::Animated {
+    motion::animated(id, if on { 1. } else { 0. }, motion::TOGGLE, build)
+}
+
+/// The round button's fill at `on` strength.
+fn fill(on: f32, color: u32) -> Div {
+    div()
+        .absolute()
+        .inset_0()
+        .rounded_full()
+        .bg(gpui::rgb(color))
+        .opacity(on)
+}
+
+/// A glyph centered in the round button at `on` strength.
+fn glyph(on: f32, child: gpui::AnyElement) -> gpui::AnyElement {
+    div()
+        .absolute()
+        .inset_0()
+        .flex()
+        .items_center()
+        .justify_center()
+        .opacity(on)
+        .child(child)
+        .into_any_element()
+}
+
+/// A 16 px glyph that grows in from 60% as it fades in.
+fn scaled_icon(name: &'static str, color: u32, on: f32) -> gpui::AnyElement {
+    let scale = 0.6 + 0.4 * on;
+    icon(name, px(16.), color)
+        .with_transformation(gpui::Transformation::scale(gpui::size(scale, scale)))
+        .into_any_element()
+}
+
+/// Stop's square.
+fn square(color: u32) -> gpui::AnyElement {
+    div()
+        .size(px(10.))
+        .rounded(px(2.5))
+        .bg(gpui::rgb(color))
+        .into_any_element()
+}
+
+/// The expand button's glyphs: expand and shrink cross-fade with a scale
+/// as it turns (TOGGLE), and the pair lifts in from 80% as the button
+/// reveals.
+fn expand_glyphs(expanded: bool, shown: f32) -> Div {
+    let lift = 0.8 + 0.2 * shown;
+    div().relative().flex_none().size(px(14.)).children(
+        [("maximize-2", !expanded), ("minimize-2", expanded)]
+            .into_iter()
+            .enumerate()
+            .map(move |(index, (name, current))| {
+                motion::animated(
+                    ("composer-expand-glyph", index),
+                    if current { 1. } else { 0. },
+                    motion::TOGGLE,
+                    move |on| {
+                        let scale = (0.5 + 0.5 * on) * lift;
+                        div()
+                            .absolute()
+                            .inset_0()
+                            .flex()
+                            .items_center()
+                            .justify_center()
+                            .opacity(on * shown)
+                            .child(
+                                icon(name, px(14.), theme::text_muted()).with_transformation(
+                                    gpui::Transformation::scale(gpui::size(scale, scale)),
+                                ),
+                            )
+                            .into_any_element()
+                    },
+                )
+            }),
+    )
+}
+
+/// The accent bar application Vim draws under the control it has
+/// selected, as on sidebar and transcript rows: along the bottom, without
+/// changing the row's layout.
+pub(super) fn vim_mark(element: Div, selected: bool) -> Div {
+    element.relative().when(selected, |element| {
+        element.child(
+            div()
+                .absolute()
+                .bottom_0()
+                .left_1()
+                .right_1()
+                .h(px(2.))
+                .rounded_full()
+                .bg(gpui::rgb(theme::accent())),
+        )
+    })
+}
+
+/// A new task's token beside the model: a 28 px capsule with a soft fill,
+/// warm for a mode that runs everything without asking.
+fn token_frame(id: &'static str, warm: bool, open: bool) -> crate::ui::motion::HoverBackground {
+    let rest: gpui::Hsla = if warm {
+        gpui::rgb(theme::accent_container()).into()
+    } else {
+        theme::overlay_hover()
+    };
+    let hover: gpui::Hsla = if warm {
+        motion::mix(rest, gpui::rgb(theme::accent()).into(), 0.14)
+    } else {
+        gpui::rgb(theme::bg_sidebar_pill()).into()
+    };
+    div()
+        .id(id)
+        .debug_selector(|| id.to_string())
+        .role(gpui::Role::Button)
+        // A tab stop, so the keyboard reaches it without application Vim.
+        .tab_index(0)
+        .focus_visible(widgets::focus_ring_on(hover))
+        .on_key_down(ChatScreen::sidebar_button_key_down)
+        .flex_none()
+        .h_7()
+        .pl_2()
+        .pr_2p5()
+        .flex()
+        .items_center()
+        .gap_1p5()
+        .rounded(px(14.))
+        .text_xs()
+        .font_weight(gpui::FontWeight::MEDIUM)
+        .text_color(gpui::rgb(if warm {
+            theme::accent_ink()
+        } else {
+            theme::text_secondary()
+        }))
+        .bg(if open { hover } else { rest })
+        .hover_bg(hover)
+        .hover(|style| style.cursor_pointer())
+}
+
+/// The lift under a composer that floats on the page: a new task's box,
+/// or a conversation's frame.
+pub(super) fn composer_shadow() -> Vec<gpui::BoxShadow> {
+    let shadow = |alpha: f32, y: f32, blur: f32| gpui::BoxShadow {
+        color: if theme::is_light() {
+            gpui::hsla(0., 0., 0.09, alpha)
+        } else {
+            gpui::hsla(0., 0., 0., alpha)
+        },
+        offset: gpui::point(px(0.), px(y)),
+        blur_radius: px(blur),
+        spread_radius: px(0.),
+        inset: false,
+    };
+    if theme::is_light() {
+        vec![shadow(0.05, 1., 2.), shadow(0.05, 6., 18.)]
+    } else {
+        vec![shadow(0.22, 6., 18.)]
     }
 }
 

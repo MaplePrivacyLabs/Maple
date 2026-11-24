@@ -1454,6 +1454,47 @@ chat-scratch-switched-computers = 메시지를 보내지 못했어요. 컴퓨터
 chat-no-integrations = 이 작업에 사용할 수 있는 연동이 없어요.
 chat-setup-integrations = 설정 → 연동에서 설정
 chat-manage-integrations = 연동 관리…
+# $count is the number of integrations turned on for the task. Shown beside a
+# puzzle icon in the composer; as it changes only the number should change.
+chat-integrations-on = { $count ->
+    [0] 연동 없음
+   *[other] 연동 { $count }개
+}
+# $names is the comma-separated list of integrations turned on for the task.
+chat-integrations-on-tooltip = 이 작업에서 켜짐: { $names }
+chat-integrations-turn-on = 이 작업에 연동 켜기
+chat-integrations-for-task = 이 작업의 연동
+chat-integrations-summary-none = 없음
+# $count is the number of integrations turned on, beside "Integrations" in the + menu.
+chat-integrations-summary-on = { $count }개 켜짐
+chat-add = 권한, 연동, 파일
+chat-attach-drop-hint = 입력창 아무 곳에나 놓아도 돼요
+chat-attach-choose = 파일 또는 이미지 선택
+chat-attach-drop = 놓으면 첨부돼요
+chat-attach-or-drop = 또는 여기에 놓기
+chat-attach-paste = 이미지 붙여넣기
+chat-queue = 대기열
+chat-listening = 듣는 중
+chat-transcribing = 받아쓰는 중…
+chat-context-title = 사용한 컨텍스트
+# $percent is how much of the model's context window the task uses, such as 48%.
+chat-context-used = 사용한 컨텍스트: { $percent }. 자세히 보기
+# $percent is how much of the model's context window the task uses, such as 92%.
+chat-context-near-limit = 컨텍스트 { $percent } 사용, 한도에 가까워요. 자세히 보기
+# $used and $limit are token counts written short, such as 48.6k and 131k.
+chat-context-of = { $limit } 토큰 중 { $used }
+# $percent is the share of the context window at which the task compacts itself, such as 88%.
+chat-context-compacts-at = { $percent }에서 자동 압축
+chat-context-compacts-next = 이 단계가 끝나면 압축해요
+chat-context-compacts-off = 자동 압축이 꺼져 있어요
+chat-context-details-later = 이 작업의 다음 턴이 끝나면 세부 정보가 보여요
+chat-context-instructions = 지침 및 도구
+chat-context-summary = 요약
+chat-context-messages = 메시지
+chat-context-tool-results = 도구 결과
+chat-context-images = 이미지
+chat-compact = 압축
+chat-compact-after-turn = 이번 턴이 끝나면 사용할 수 있어요
 chat-side-thread-hint = 곁가지 스레드예요. Esc를 누를 때까지 메시지가 여기에 머물러요
 chat-thinking = 생각하는 중…
 chat-external-agents = 외부 에이전트
@@ -1480,8 +1521,6 @@ chat-model-new-row = { $model }, 신규
 chat-model-popular = 인기
 # $model is the model's name. The model row's accessible name when it carries the Popular badge.
 chat-model-popular-row = { $model }, 인기
-# $count is the number of integrations.
-chat-integration-count = 연동 { $count }개
 # $count is the number of running agents.
 chat-agents-running = { $count }개 실행 중
 chat-folder-choose = 프로젝트 폴더 선택
@@ -1637,6 +1676,7 @@ chat-send-failed-retained = 실패한 초안은 보존했어요. 계속 진행�
 chat-send-unknown = 전송 결과를 아직 알 수 없어요. 메시지와 파일은 보존했으며, 다시 연결되면 Maple이 다시 확인해요.
 # $message is the underlying error, which may be untranslated.
 chat-compaction-failed = 압축하지 못했어요: { $message }
+chat-nothing-to-compact = 아직 압축할 내용이 없어요
 # $query is the text the user typed.
 chat-no-model-match = “{ $query }”과(와) 일치하는 모델이 없어요
 # $message is the underlying error, which may be untranslated.
@@ -1662,6 +1702,8 @@ chat-host-reload-failed = 호스트 상태를 다시 불러오지 못했어요: 
 # $error is an untranslated diagnostic.
 chat-thinking-save-failed = 사고 수준을 저장하지 못했어요: { $error }
 chat-composer-placeholder = 이 폴더에서 할 작업을 Maple에 요청하세요…
+chat-composer-placeholder-reply = Maple에 답하세요…
+chat-composer-placeholder-queue = 다음 메시지를 대기열에 추가하세요…
 chat-side-thread-placeholder = 곁가지 질문을 입력하세요(Esc로 스레드 나가기)…
 chat-queue-edit-placeholder = 대기 중인 메시지를 편집한 뒤 보내면 순서가 유지돼요. Escape를 누르면 취소돼요.
 chat-status-completed = 완료됨

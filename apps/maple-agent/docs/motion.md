@@ -85,7 +85,7 @@ plain title.
 | Tooltips | fade, `REVEAL`, after the existing delay | immediate |
 | Dialogs, confirmations and the image preview | scrim fades, card fades and rises, `ENTER` | immediate |
 | Screen change (Chat ↔ Settings) and Settings sections | new content fades in, `REVEAL` | immediate |
-| Empty state ↔ conversation (first message, opening a task, New Task) | the composer changes place at once | at once |
+| Empty state ↔ conversation (first message, opening a task, New Task) | the composer changes place at once; on the first message its frame fades in around the box, its tray and strip together, `PANEL` | at once |
 | Switching tasks | transcript fades in when its snapshot lands, `REVEAL` | immediate |
 | Live transcript rows at the end of the thread (sent message, reply, thinking, tool card, error, stop notice) | height grows from 0 and the row fades in, `ENTER`, so older rows glide up; scrolled up, a fade and 6 px rise | — |
 | Sent message | the composer empties at once and the bubble's slot opens from the height it gave up, so the thread does not drop; the bubble rises in, the real row takes its exact place, and "Sending…" and the waiting dots share one slot under it | — |
@@ -98,7 +98,17 @@ plain title.
 | Composer and multi-line fields | height eases to the new line count, `resize(distance)` | same |
 | Composer expand / shrink | height eases, `PANEL`; maximize and minimize icons cross-fade and scale, `TOGGLE` | same, reversed |
 | A field a choice reveals (Buy credits → Custom amount) | box unfolds to the field's height and the field fades in, `PANEL` | folds the same way, reversed |
-| Send ↔ Stop | icons cross-fade and scale, `TOGGLE` | same |
+| The composer's round button (dictate, send, queue, stop, listening, busy) | fills and glyphs cross-fade, glyphs scale from 60%, `TOGGLE`; it widens into the Queue pill, `TOGGLE`; a sent message's arrow lifts 7 px as it fades; listening breathes, `LISTENING_BREATH` (1.4 s), and the wave beside the mic runs, `LISTENING_WAVE` (1.13 s) | same, reversed |
+| The mic beside Send while a draft waits | its slot opens and it slides 10 px out from under Send, `TOGGLE` | folds back the same way |
+| The composer's border on focus | eases from its hairline to coral, `TOGGLE` | same, reversed |
+| The composer's expand button | fades and scales in from 80% while the pointer is over the box, `ENTER` | fades out, `HOVER` |
+| The composer's placeholder changing with the task (new task, reply, queue a follow-up) | the new one fades in, `TOGGLE` | — |
+| Integrations turned on or off | only the count's changed characters morph | same |
+| Permission mode | the segmented control's knob slides, `TOGGLE`; the strip's icon cross-fades and scales, `TOGGLE`, and its label morphs | same, reversed |
+| The context bar | fill eases to the new share, `PANEL` | same |
+| The context card | its bar grows in, its parts together, `PANEL`; from the keyboard, at once; hovering a part dims the others, `HOVER` | — |
+| The new task's `+` menu turning to Integrations and back | pointer: the panel eases to the page's height, `resize(distance)`, and the page's rows fade in together, `REVEAL`; keyboard: at once | same |
+| The attach popover's well | the tile lightens and the clip tilts on hover, `REVEAL`; files dragged over it swap its text | same, reversed |
 | Switches and checkboxes | knob slides, fill cross-fades, `TOGGLE` | same, reversed |
 | Disclosure chevrons | rotate 90°, `TOGGLE` | same, reversed |
 | Sidebar collapse | width eases, `PANEL` | same, reversed |

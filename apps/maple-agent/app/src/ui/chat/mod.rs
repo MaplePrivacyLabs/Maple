@@ -36,6 +36,7 @@ use crate::ui::widgets;
 mod cache;
 mod commands;
 mod composer;
+mod composer_frame;
 pub(crate) mod computers;
 use computers::{Computer, Destination, Navigate, NavigationChanged};
 mod attachments;
@@ -195,6 +196,10 @@ const PLAN_DONE_HOLD: std::time::Duration = std::time::Duration::from_millis(150
 const PLAN_RETURN_REFRESH: std::time::Duration = std::time::Duration::from_secs(30);
 
 const COMPOSER_PLACEHOLDER: &str = "chat-composer-placeholder";
+/// Between turns of a task: the next message continues the conversation.
+const REPLY_PLACEHOLDER: &str = "chat-composer-placeholder-reply";
+/// While a turn runs: a message waits for the next turn.
+const QUEUE_PLACEHOLDER: &str = "chat-composer-placeholder-queue";
 const SIDE_THREAD_PLACEHOLDER: &str = "chat-side-thread-placeholder";
 const QUEUE_EDIT_PLACEHOLDER: &str = "chat-queue-edit-placeholder";
 /// Sent prompts kept for Up/Down recall.
@@ -235,6 +240,18 @@ pub(crate) struct SpeechState {
     pub item_id: String,
     /// False while the first chunk is still being synthesized.
     pub playing: bool,
+}
+
+/// What the notice says when the host turns a compaction down. A task with
+/// nothing old enough to summarize yet is not a failure: Compact is one
+/// click away in the context card, on a task of any length.
+fn compaction_refused_notice(failure: UiFailure) -> UiText {
+    match failure {
+        UiFailure::Host(host) if host.code == "nothing-to-compact" => {
+            UiText::key("chat-nothing-to-compact")
+        }
+        failure => UiText::context("chat-compaction-failed", "message", failure.into()),
+    }
 }
 
 /// The key that picks option `index` of a question as the keymap has it
@@ -293,8 +310,14 @@ pub(super) enum ChatPopup {
     /// the selected model's effort slider. `/model` opens it too.
     Model,
     Integrations,
-    /// The composer chip's permission modes.
+    /// The permission modes: a conversation's frame, or a new task's token.
     Mode,
+    /// A new task's `+`: permissions, integrations and attach.
+    Add,
+    /// A conversation's `+`: attach files or images.
+    Attach,
+    /// The context bar's card: what fills the window.
+    Context,
     Settings,
     /// The transcript's right-click menu, at a window position.
     Transcript(gpui::Point<gpui::Pixels>),
@@ -549,8 +572,6 @@ pub struct ChatScreen {
     pending_questions: Vec<PendingQuestion>,
     /// Lazily created answer input for the question card.
     pending_question_input: Option<Entity<TextInput>>,
-    /// Fraction of the context window in use for the selected session.
-    context_fraction: Option<f32>,
     /// Session the usage poller follows, if one is running. A run on a
     /// newly selected session replaces the poller of the previous one.
     usage_poller_session: Option<String>,
@@ -576,6 +597,15 @@ pub struct ChatScreen {
     screen_focus_pending: bool,
     /// Composer holds non-blank text; refreshed when the composer changes.
     composer_has_text: bool,
+    /// The draft is a built-in command, which runs at once rather than
+    /// queueing behind a run. Refreshed when the composer changes.
+    composer_is_command: bool,
+    /// The paste key the attach popover names, looked up on its first
+    /// frame after it opens rather than on every frame; an inner `None`
+    /// is an unbound paste.
+    attach_paste_key: std::cell::RefCell<Option<Option<SharedString>>>,
+    /// The permissions menus' width, measured once per locale and size.
+    permissions_width: composer_frame::PermissionsWidth,
     /// Palette rows for the composer's current "/" token; rebuilt when the
     /// composer changes, not per frame.
     slash_entries: Vec<SlashEntry>,
@@ -702,16 +732,6 @@ pub struct ChatScreen {
     /// On a paired computer, what the project chip says about it. `None` on
     /// this computer.
     project_computer: Option<ProjectComputer>,
-    /// Git branch of the project root, read off the UI thread. `None`
-    /// when the root is not a git checkout.
-    project_branch: Option<String>,
-    /// `project_branch` in parentheses, ready for the project chip's row.
-    branch_label: Option<SharedString>,
-    /// Watches the git dir of the current root so a checkout by the agent
-    /// or from a terminal updates the branch. Replaced when the git dir
-    /// changes, dropped with the root.
-    branch_watcher: Option<notify::RecommendedWatcher>,
-    watched_git_dir: Option<std::path::PathBuf>,
     /// Sidebar hidden; a toggle in the main pane brings it back.
     sidebar_collapsed: bool,
     /// Collapse (0) or expand (1) under way; `None` at rest.
@@ -747,8 +767,10 @@ pub struct ChatScreen {
     controls_revealed: Option<(std::time::Instant, u32)>,
     /// MCP servers with their enabled state for the selected task.
     session_mcp: Vec<AgentSessionMcpServer>,
-    /// Count of enabled servers in `session_mcp`, for the composer chip.
+    /// Count of enabled servers in `session_mcp`, for the composer.
     mcp_enabled_count: usize,
+    /// Their names, for the tooltip on the composer's integrations.
+    integrations_on_names: SharedString,
     /// Composer fills the pane (fullscreen editing).
     composer_expanded: bool,
     /// How far the composer is from the height of its text (0) toward
@@ -756,10 +778,56 @@ pub struct ChatScreen {
     composer_resize: Option<motion::Tween>,
     /// Heights that transition eases between, measured last frame.
     composer_frame: std::rc::Rc<std::cell::Cell<self::composer::ComposerFrame>>,
-    /// Send (0) or Stop (1) on the composer's main control.
-    send_stop: motion::Tween,
-    /// The send fill, disabled (0) or ready (1).
-    send_ready: motion::Tween,
+    /// The composer's border, from its hairline (0) to its focus line (1).
+    composer_focus_ring: motion::Tween,
+    /// The pointer is over the composer box, which shows the expand button.
+    composer_hovered: bool,
+    /// How far the expand button is shown.
+    expand_reveal: motion::Tween,
+    /// The round button, from round (0) to the Queue pill (1).
+    primary_width: motion::Tween,
+    /// The mic beside Send while a draft waits: folded (0) to shown (1).
+    mic_aside: motion::Tween,
+    /// The composer drew a dictation control last frame: the round button
+    /// as Dictate or Recording, or the mic beside Send. Application Vim
+    /// stops only on a control it can see.
+    dictation_drawn: bool,
+    /// When the last message went out, which lifts Send's arrow away.
+    send_launched: Option<std::time::Instant>,
+    /// The context bar's fill, as a share of the window.
+    context_fill: motion::Tween,
+    /// What fills the selected task's context window, when the host can
+    /// say; `None` before it answers, or for an older host.
+    context_breakdown: Option<maple_agent::agent::AgentContextBreakdown>,
+    /// The host can break the selected task's context down, but has nothing
+    /// to say until the task loads, on its next turn.
+    context_breakdown_later: bool,
+    /// When the context card opened, which its bar grows in from; `None`
+    /// when the keyboard opened it, which shows it at once.
+    context_card_opened: Option<std::time::Instant>,
+    /// The context card's part under the pointer; the others dim.
+    context_hover: Option<composer::ContextPart>,
+    /// Tasks whose run is summarizing their history on its own, until the
+    /// summary lands or the compaction fails or stops.
+    compacting_runs: HashSet<String>,
+    /// The task the user asked to compact, until the host answers.
+    compaction_requested: Option<String>,
+    /// The page a new task's `+` menu is on beyond its first.
+    add_page: Option<composer_frame::AddPage>,
+    /// When the `+` menu last turned a page, which its rows arrive from.
+    add_page_turned: Option<std::time::Instant>,
+    /// When the first message's conversation showed: the composer's frame
+    /// fades in around the box from then. The box itself changes place at
+    /// once.
+    frame_arrived: Option<std::time::Instant>,
+    /// The first message is out and the conversation has not shown yet:
+    /// when it does, the frame fades in.
+    frame_on_landing: bool,
+    /// The last frame showed the new task's empty state.
+    showed_empty_state: bool,
+    /// The placeholder the composer shows now, which follows the task: a
+    /// new task, a reply between turns, a follow-up queued behind a run.
+    composer_placeholder: &'static str,
     /// Latest todo list from the selected task, pinned above the composer
     /// while any entry is unfinished. A finished list stays in the
     /// transcript.
@@ -923,6 +991,10 @@ pub struct ChatScreen {
     recording_starting: bool,
     /// A recording is at Whisper.
     transcribing: bool,
+    /// When the microphone opened, for the listening row's clock.
+    recording_since: Option<std::time::Instant>,
+    /// A repaint is on its way for the listening row's clock.
+    recording_tick_pending: std::cell::Cell<bool>,
     /// Text-to-speech in progress.
     speech: Option<SpeechState>,
     /// Backend-call bridges retained so their final drop stays on this
@@ -1480,6 +1552,13 @@ impl ChatScreen {
         let input = composer.read(cx);
         let text = input.text_ref();
         let has_text = !text.trim().is_empty();
+        // Only a built-in runs at once; a skill or any other "/" draft is a
+        // message to the model.
+        let command = Self::parse_command(text.trim()).is_some_and(|(name, _)| {
+            composer::BUILT_IN_COMMANDS
+                .iter()
+                .any(|(built_in, _)| *built_in == name)
+        });
         let entries = match text.strip_prefix('/') {
             Some(token) if !token.contains(char::is_whitespace) && !token.contains('/') => {
                 slash_entries_for(token, &self.slash_commands)
@@ -1494,8 +1573,12 @@ impl ChatScreen {
         // The palette just opened: re-read the skills, so one installed
         // since the last scan (a toggle in Settings) is in the list.
         let palette_opened = self.slash_entries.is_empty() && !entries.is_empty();
-        if has_text != self.composer_has_text || entries_changed {
+        if has_text != self.composer_has_text
+            || command != self.composer_is_command
+            || entries_changed
+        {
             self.composer_has_text = has_text;
+            self.composer_is_command = command;
             self.slash_entries = entries;
             cx.notify();
         }
@@ -1555,7 +1638,6 @@ impl ChatScreen {
             project_mcp_save_pending: false,
             pending_questions: Vec::new(),
             pending_question_input: None,
-            context_fraction: None,
             usage_poller_session: None,
             usage_poller_generation: 0,
             ledger_context_tokens: 0,
@@ -1567,6 +1649,9 @@ impl ChatScreen {
             application_focus: None,
             screen_focus_pending: true,
             composer_has_text: false,
+            composer_is_command: false,
+            attach_paste_key: std::cell::RefCell::new(None),
+            permissions_width: Default::default(),
             slash_entries: Vec::new(),
             models: Vec::new(),
             selected_model: None,
@@ -1643,11 +1728,30 @@ impl ChatScreen {
             controls_revealed: None,
             session_mcp: Vec::new(),
             mcp_enabled_count: 0,
+            integrations_on_names: SharedString::default(),
             composer_expanded: false,
             composer_resize: None,
             composer_frame: std::rc::Rc::default(),
-            send_stop: motion::Tween::new(0.),
-            send_ready: motion::Tween::new(0.),
+            composer_focus_ring: motion::Tween::new(0.),
+            composer_hovered: false,
+            expand_reveal: motion::Tween::new(0.),
+            primary_width: motion::Tween::new(0.),
+            mic_aside: motion::Tween::new(0.),
+            dictation_drawn: false,
+            send_launched: None,
+            context_fill: motion::Tween::new(0.),
+            context_breakdown: None,
+            context_breakdown_later: false,
+            context_card_opened: None,
+            context_hover: None,
+            compacting_runs: HashSet::new(),
+            compaction_requested: None,
+            add_page: None,
+            add_page_turned: None,
+            frame_arrived: None,
+            frame_on_landing: false,
+            showed_empty_state: true,
+            composer_placeholder: COMPOSER_PLACEHOLDER,
             permission_mode: settings.new_task_permission_mode.unwrap_or_default(),
             new_task_permission_mode: settings.new_task_permission_mode.unwrap_or_default(),
             markdown_cache: MarkdownCache::default(),
@@ -1660,10 +1764,6 @@ impl ChatScreen {
             root_selecting: false,
             project_label: tr("chat-choose-folder"),
             project_computer: None,
-            project_branch: None,
-            branch_label: None,
-            branch_watcher: None,
-            watched_git_dir: None,
             selection_generation: 0,
             reload_generation: 0,
             attachment_images: HashMap::new(),
@@ -1729,6 +1829,8 @@ impl ChatScreen {
             recording: false,
             recording_starting: false,
             transcribing: false,
+            recording_since: None,
+            recording_tick_pending: std::cell::Cell::new(false),
             speech: None,
             bridged_tasks: std::cell::RefCell::new(Vec::new()),
             speech_generation: 0,
@@ -1940,6 +2042,8 @@ impl ChatScreen {
                 // and unregistered themselves; ask again for what is still
                 // missing.
                 this.summarize_loaded_tools(cx);
+                // So did the opened task's context, which needs the catalog.
+                this.refresh_context_usage(cx);
             },
         );
     }
@@ -2348,119 +2452,9 @@ impl ChatScreen {
         cx.notify();
     }
 
-    /// The root changed: update the project chip, then read its branch
-    /// and watch its git dir.
+    /// The root changed: update the project chip.
     fn project_root_changed(&mut self, cx: &mut Context<Self>) {
         self.refresh_project_caption(cx);
-        self.refresh_branch(cx);
-    }
-
-    /// Read the branch for the current root, or clear it when there is
-    /// no root. The read also resolves the git dir, and the watcher is
-    /// replaced when that dir changed.
-    fn refresh_branch(&mut self, cx: &mut Context<Self>) {
-        if self.project_root.is_some() {
-            self.read_branch(cx);
-            return;
-        }
-        self.branch_watcher = None;
-        self.watched_git_dir = None;
-        self.set_branch(None, cx);
-    }
-
-    fn set_branch(&mut self, branch: Option<String>, cx: &mut Context<Self>) {
-        if self.project_branch == branch {
-            return;
-        }
-        self.branch_label = branch
-            .as_deref()
-            .map(|branch| SharedString::from(format!("({branch})")));
-        self.project_branch = branch;
-        cx.notify();
-    }
-
-    /// Watch `git_dir` and re-read the branch when `HEAD` changes. The
-    /// watch is on the directory, not the file: git replaces `HEAD` by
-    /// rename, so a watch on the file itself is lost after the first
-    /// checkout. Non-recursive, so a busy `objects/` tree costs nothing.
-    /// Events arrive on the watcher's own thread and cross to the UI
-    /// through a channel, like backend events. Dropping the watcher
-    /// closes the channel, which ends the receiver task.
-    fn watch_branch(&mut self, git_dir: &std::path::Path, cx: &mut Context<Self>) {
-        use notify::Watcher as _;
-        let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel();
-        let mut watcher =
-            match notify::recommended_watcher(move |event: notify::Result<notify::Event>| {
-                let Ok(event) = event else { return };
-                if head_change_event(&event) {
-                    tx.send(()).ok();
-                }
-            }) {
-                Ok(watcher) => watcher,
-                Err(error) => {
-                    log::debug!("branch watcher unavailable: {error}");
-                    return;
-                }
-            };
-        if let Err(error) = watcher.watch(git_dir, notify::RecursiveMode::NonRecursive) {
-            log::debug!("cannot watch {}: {error}", git_dir.display());
-            return;
-        }
-        self.branch_watcher = Some(watcher);
-        cx.spawn(async move |this, cx| {
-            while rx.recv().await.is_some() {
-                // A rebase or a checkout touches HEAD several times in a
-                // row; one read per burst is enough.
-                while rx.try_recv().is_ok() {}
-                if this.update(cx, |this, cx| this.read_branch(cx)).is_err() {
-                    break;
-                }
-            }
-        })
-        .detach();
-    }
-
-    /// Read the branch for the current root off the UI thread. The git
-    /// dir comes back with it so the watcher follows a root change without
-    /// a file stat on the UI thread.
-    fn read_branch(&mut self, cx: &mut Context<Self>) {
-        if self.backend.remote_host().is_some() {
-            self.branch_watcher = None;
-            self.set_branch(None, cx);
-            return;
-        }
-        let Some(root) = self.project_root.clone() else {
-            return;
-        };
-        self.call(
-            async move {
-                tokio::task::spawn_blocking(move || {
-                    let git_dir = git_dir(std::path::Path::new(&root));
-                    let branch = git_dir.as_deref().and_then(git_branch);
-                    Ok((root, git_dir, branch))
-                })
-                .await
-                .map_err(|error| format!("Branch lookup failed: {error}"))?
-            },
-            cx,
-            |this, result, cx| {
-                // Drop a late answer for a root that is no longer current.
-                let Ok((root, git_dir, branch)) = result else {
-                    return;
-                };
-                if this.project_root.as_deref() != Some(root.as_str()) {
-                    return;
-                }
-                if this.watched_git_dir != git_dir {
-                    this.branch_watcher = None;
-                    if let Some(dir) = &git_dir {
-                        this.watch_branch(dir, cx);
-                    }
-                    this.watched_git_dir = git_dir;
-                }
-                this.set_branch(branch, cx);
-            },
-        );
     }
 
     /// Open or close a new task's project menu from its chip.
@@ -3103,6 +3097,8 @@ impl ChatScreen {
     /// draft meanwhile, in the history).
     fn fail_new_session(&mut self, message: UiText, cx: &mut Context<Self>) {
         self.session_setup_pending = false;
+        // The conversation never showed, so its frame has nothing to meet.
+        self.frame_on_landing = false;
         self.first_send_waiting_for_mcp = false;
         self.notice = Some(message);
         if let Some(action) = self.pending_first_send.take() {
@@ -3535,19 +3531,31 @@ impl ChatScreen {
         let backend = self.backend.clone();
         let user_id = self.user_id.clone();
         let model = self.selected_model.clone();
+        let requested = session_id.clone();
         self.call(
             async move {
                 backend
-                    .context_usage(&user_id, &session_id, model.as_deref())
+                    .context_usage(&user_id, &requested, model.as_deref())
                     .await
             },
             cx,
-            |this, result, cx| match result {
-                Ok(Some((tokens, limit))) => this.apply_context_usage(tokens, limit, cx),
-                Ok(None) => this.apply_context_usage(0, 0, cx),
-                Err(_) => {}
+            move |this, result, cx| {
+                // The answer is for the task that asked; another one on
+                // screen by now reads its own.
+                if !this.is_selected(&session_id) {
+                    return;
+                }
+                match result {
+                    Ok(Some((tokens, limit))) => this.apply_context_usage(tokens, limit, cx),
+                    Ok(None) => this.apply_context_usage(0, 0, cx),
+                    Err(_) => {}
+                }
             },
         );
+        // The open card's parts follow the total as it moves.
+        if self.popup.is_open(&ChatPopup::Context) {
+            self.refresh_context_breakdown(cx);
+        }
     }
 
     /// Rebuild the subagent card for the task on screen. A background
@@ -3628,16 +3636,80 @@ impl ChatScreen {
         cx.notify();
     }
 
-    fn apply_context_usage(&mut self, tokens: i64, limit: i64, cx: &mut Context<Self>) {
-        self.ledger_context_tokens = tokens;
-        self.context_limit = limit;
-        let fraction = if limit > 0 {
-            tokens as f32 / limit as f32
+    /// The placeholder the composer should show for the task on screen: a
+    /// new task, a reply between turns, or a follow-up queued behind the
+    /// turn that runs. A side question and a queued message's edit keep
+    /// their own.
+    fn composer_placeholder_key(&self) -> &'static str {
+        if self.queue_edit.is_some() {
+            QUEUE_EDIT_PLACEHOLDER
+        } else if self.btw.is_some() {
+            SIDE_THREAD_PLACEHOLDER
+        } else if self.selected_session.is_none() && !self.session_setup_pending {
+            COMPOSER_PLACEHOLDER
+        } else if self.is_run_active() || self.session_setup_pending || self.send_pending() {
+            // The first send counts as running from the moment it leaves,
+            // so the new conversation never shows Reply first.
+            QUEUE_PLACEHOLDER
         } else {
-            0.0
-        };
-        if self.context_fraction != Some(fraction) {
-            self.context_fraction = Some(fraction);
+            REPLY_PLACEHOLDER
+        }
+    }
+
+    /// The first message's conversation just showed: the box is already
+    /// in its place, and its frame fades in around it.
+    fn composer_landing(&mut self, empty: bool, cx: &mut Context<Self>) {
+        let landed = self.showed_empty_state && !empty;
+        self.showed_empty_state = empty;
+        if landed && std::mem::take(&mut self.frame_on_landing) && !cx.reduce_motion() {
+            self.frame_arrived = Some(motion::now());
+        }
+    }
+
+    /// Bring the composer's placeholder in line with the task on screen.
+    pub(super) fn sync_composer_placeholder(&mut self, cx: &mut Context<Self>) {
+        let key = self.composer_placeholder_key();
+        if self.composer_placeholder == key {
+            return;
+        }
+        self.composer_placeholder = key;
+        if let Some(composer) = self.composer.clone() {
+            composer.update(cx, |input, cx| input.set_placeholder_key(key, cx));
+        }
+    }
+
+    /// Repaint once a second while dictation listens, for its clock. The
+    /// wave has its own loop, which reduced motion stills.
+    pub(super) fn schedule_recording_tick(&self, cx: &mut Context<Self>) {
+        if !self.recording || self.recording_tick_pending.replace(true) {
+            return;
+        }
+        cx.spawn(async move |entity, cx| {
+            cx.background_executor()
+                .timer(std::time::Duration::from_secs(1))
+                .await;
+            entity
+                .update(cx, |this, cx| {
+                    this.recording_tick_pending.set(false);
+                    if this.recording {
+                        cx.notify();
+                    }
+                })
+                .ok();
+        })
+        .detach();
+    }
+
+    fn apply_context_usage(&mut self, tokens: i64, limit: i64, cx: &mut Context<Self>) {
+        if (self.ledger_context_tokens, self.context_limit) != (tokens, limit) {
+            let hidden = self.ledger_context_tokens <= 0 || self.context_limit <= 0;
+            self.ledger_context_tokens = tokens;
+            self.context_limit = limit;
+            if hidden {
+                // A bar that was not showing, as on opening a task, arrives
+                // at its share; only a share that changes on screen moves.
+                self.context_fill = motion::Tween::new(self.context_used());
+            }
             cx.notify();
         }
     }
@@ -3691,6 +3763,14 @@ impl ChatScreen {
         .detach();
     }
 
+    /// The selected task is compacting, by request or on its own.
+    pub(super) fn compacting(&self) -> bool {
+        self.selected_session.as_deref().is_some_and(|session_id| {
+            self.compaction_requested.as_deref() == Some(session_id)
+                || self.compacting_runs.contains(session_id)
+        })
+    }
+
     fn compact_now(&mut self, cx: &mut Context<Self>) {
         let Some(session_id) = self.selected_session.clone() else {
             return;
@@ -3698,7 +3778,10 @@ impl ChatScreen {
         let backend = self.backend.clone();
         let user_id = self.user_id.clone();
         let compacted = session_id.clone();
-        self.notice = Some(UiText::key("chat-compacting"));
+        // The strip says it is compacting; an older notice no longer applies.
+        self.notice = None;
+        self.compaction_requested = Some(session_id.clone());
+        self.popup.close(cx);
         cx.notify();
         self.call_semantic(
             async move {
@@ -3710,6 +3793,7 @@ impl ChatScreen {
             cx,
             move |this, result, cx| match result {
                 Ok(()) => {
+                    this.end_compaction_request(&compacted);
                     this.notice = Some(UiText::key("chat-compacted"));
                     // Reload the task that was compacted, not whatever is
                     // selected by the time the call returns.
@@ -3719,16 +3803,28 @@ impl ChatScreen {
                     }
                     cx.notify();
                 }
-                Err(message) => {
-                    this.notice = Some(UiText::context(
-                        "chat-compaction-failed",
-                        "message",
-                        message.into(),
-                    ));
+                Err(failure) => {
+                    this.end_compaction_request(&compacted);
+                    this.notice = Some(compaction_refused_notice(failure));
                     cx.notify();
                 }
             },
         );
+    }
+
+    /// The host answered the compaction asked for `session_id`.
+    fn end_compaction_request(&mut self, session_id: &str) {
+        if self.compaction_requested.as_deref() == Some(session_id) {
+            self.compaction_requested = None;
+        }
+    }
+
+    /// Forget the compactions of runs the host no longer has, for when its
+    /// snapshot replaces the runs without a `Finished` for each.
+    fn retain_running_compactions(&mut self) {
+        let active = &self.active_runs;
+        self.compacting_runs
+            .retain(|session_id| active.contains_key(session_id));
     }
 
     /// Leave the selected task's presentation without discarding anything
@@ -3747,6 +3843,14 @@ impl ChatScreen {
         if self.btw.is_some() {
             self.close_side_thread(cx);
         }
+        // Another task's context is its own. Compactions are kept by task,
+        // so one under way still shows on coming back.
+        self.frame_on_landing = false;
+        self.ledger_context_tokens = 0;
+        self.context_limit = 0;
+        self.context_breakdown = None;
+        self.context_breakdown_later = false;
+        self.context_hover = None;
         self.subagent_epoch += 1;
         self.subagents.clear();
         self.tool_summaries.clear();
@@ -3848,7 +3952,12 @@ impl ChatScreen {
         }
         self.set_queue(Vec::new());
         self.permission_mode = session.permission_mode;
+        let model = self.selected_model.clone();
         self.apply_session_model(&session, cx);
+        if changed && self.selected_model == model {
+            // Another task's context; a model change has already asked.
+            self.refresh_context_usage(cx);
+        }
         self.replace_timeline(timeline);
         self.load_attachment_images(cx);
         self.refresh_subagents(cx);
@@ -4125,11 +4234,7 @@ impl ChatScreen {
             {
                 server.enabled = enabled;
             }
-            self.mcp_enabled_count = self
-                .session_mcp
-                .iter()
-                .filter(|server| server.enabled)
-                .count();
+            self.count_enabled_integrations();
             self.draft_mcp_changes
                 .retain(|change| !same_integration(&change.name, change.kind, &name, kind));
             self.draft_mcp_changes.push(DraftMcpChange {
@@ -4290,7 +4395,7 @@ impl ChatScreen {
     }
 
     /// A refused change, such as one an older paired computer cannot make,
-    /// puts the chip back and says why.
+    /// puts the chip back to the mode the task has and says why.
     fn finish_permission_mode_change(
         &mut self,
         session_id: &str,
@@ -4304,7 +4409,15 @@ impl ChatScreen {
             }
             Err(message) => {
                 if self.selected_session.as_deref() == Some(session_id) {
-                    self.permission_mode = previous;
+                    // The task's row holds the mode its computer last
+                    // reported. The chip's mode before this change can be
+                    // an earlier step still on its way, since Left and
+                    // Right send the next step without waiting.
+                    self.permission_mode = self
+                        .sessions
+                        .iter()
+                        .find(|task| task.id == session_id)
+                        .map_or(previous, |task| task.permission_mode);
                 }
                 self.notice = Some(UiText::context(
                     "chat-mode-failed",
@@ -5135,12 +5248,18 @@ impl ChatScreen {
             }
             return;
         }
+        self.send_launched = (!cx.reduce_motion()).then(motion::now);
         match session_id {
             Some(session_id) => {
                 let queue_id = self.queue_edit.as_ref().map(|edit| edit.queue_id.clone());
                 self.send_to_session(&session_id, text, steer, queue_id, cx);
             }
-            None => self.create_for_first_send(FirstSend::Message { text, steer }, cx),
+            None => {
+                // The frame fades in around the box once the conversation
+                // shows.
+                self.frame_on_landing = !cx.reduce_motion();
+                self.create_for_first_send(FirstSend::Message { text, steer }, cx)
+            }
         }
     }
 
@@ -6795,6 +6914,7 @@ impl ChatScreen {
         self.loading_timeline.clear();
         self.finished_runs.clear();
         self.active_runs = snapshot.status.active_runs;
+        self.retain_running_compactions();
         self.pending_questions.clear();
         self.question_selected.clear();
         self.sessions = snapshot.bootstrap.sessions;
@@ -6807,6 +6927,8 @@ impl ChatScreen {
         if self.selection_generation == selection {
             if let Some(detail) = snapshot.selected {
                 self.snapshot_revision = detail.timeline_revision;
+                // The sidebar keeps this row across the drop; a refused mode step returns to it.
+                self.upsert_session(detail.session.clone(), cx);
                 self.set_active_session(detail.session, detail.timeline, HashMap::new(), cx);
                 self.set_queue(detail.queue.items);
             } else if self.selected_session.is_some() {
@@ -6998,6 +7120,7 @@ impl ChatScreen {
                     return false;
                 }
                 self.active_runs = status.active_runs;
+                self.retain_running_compactions();
                 // Run membership decides the inbox sections: a task woken
                 // from elsewhere moves the moment the snapshot lands.
                 self.sync_sidebar(cx);
@@ -7208,8 +7331,28 @@ impl ChatScreen {
                     self.notice = Some(message.into());
                 }
             }
-            // The reload that follows shows the compaction's notice.
-            AgentRunEvent::Compacting | AgentRunEvent::Compacted => return false,
+            // The reload that follows shows the compaction's notice; the
+            // frame says it is under way meanwhile. Each task keeps its own,
+            // so leaving and coming back mid-compaction still shows it.
+            AgentRunEvent::Compacting => {
+                if !self.compacting_runs.insert(session_id.to_string())
+                    || !self.is_selected(session_id)
+                {
+                    return false;
+                }
+            }
+            AgentRunEvent::Compacted => {
+                self.compacting_runs.remove(session_id);
+                if !self.is_selected(session_id) {
+                    return false;
+                }
+                self.refresh_context_usage(cx);
+            }
+            AgentRunEvent::CompactionStopped => {
+                if !self.compacting_runs.remove(session_id) || !self.is_selected(session_id) {
+                    return false;
+                }
+            }
             AgentRunEvent::HistoryReplaced => {
                 if self.is_selected(session_id) {
                     // Replace history only; the run keeps flowing.
@@ -7241,6 +7384,9 @@ impl ChatScreen {
                     .is_none_or(|active| active == run_id);
                 if owns_session {
                     self.active_runs.remove(session_id);
+                    // A compaction cannot outlive its run, whatever its
+                    // own end said or failed to say.
+                    self.compacting_runs.remove(session_id);
                     // The markers follow the latest terminal: a completion
                     // or a failure off screen sets one; a stop sets none.
                     // Opening the task (`set_active_session`) is the only
@@ -7271,9 +7417,6 @@ impl ChatScreen {
                             self.subagent_epoch += 1;
                         }
                     }
-                    // The watcher covers checkouts; this catches a
-                    // change that landed between two events.
-                    self.read_branch(cx);
                     // The run that asked is gone (stopped or failed): its
                     // questions would block the composer forever.
                     self.clear_session_questions(session_id, cx);
@@ -7524,6 +7667,7 @@ impl Render for ChatScreen {
                     .debug_selector(|| "trust-backdrop".to_string())
             });
         let empty = self.shows_empty_state();
+        self.composer_landing(empty, cx);
         let sidebar_expansion = self.sidebar_expansion(window, cx);
         let rise = gpui::point(px(0.), motion::RISE);
         let composer_resize = self.composer_resize_frame(window, cx);
@@ -8525,11 +8669,23 @@ impl ChatScreen {
         !self.plan.is_empty() && (self.plan_done < self.plan.len() || self.plan_hold.is_some())
     }
 
-    /// Replace the session's MCP servers and the enabled count the
-    /// composer chip shows.
+    /// Replace the session's MCP servers and what the composer shows of
+    /// them.
     fn set_session_mcp(&mut self, servers: Vec<AgentSessionMcpServer>) {
-        self.mcp_enabled_count = servers.iter().filter(|server| server.enabled).count();
         self.session_mcp = servers;
+        self.count_enabled_integrations();
+    }
+
+    /// The count of integrations that are on, and their names for the
+    /// tooltip, worked out when they change rather than in render.
+    fn count_enabled_integrations(&mut self) {
+        let enabled = self.session_mcp.iter().filter(|server| server.enabled);
+        self.mcp_enabled_count = enabled.clone().count();
+        self.integrations_on_names = enabled
+            .map(|server| server.display_name.as_str())
+            .collect::<Vec<_>>()
+            .join(", ")
+            .into();
     }
 
     /// Raise a desktop notification when enabled and the window is not
@@ -8662,65 +8818,6 @@ impl ChatScreen {
                     .child(when),
             )
     }
-}
-
-/// The directory that holds `HEAD` for a checkout, or `None` when `root`
-/// is not one. Supports worktrees, whose `.git` is a file that points at
-/// the real git dir.
-fn git_dir(root: &std::path::Path) -> Option<std::path::PathBuf> {
-    let dot_git = root.join(".git");
-    if dot_git.is_dir() {
-        return Some(dot_git);
-    }
-    let pointer = std::fs::read_to_string(&dot_git).ok()?;
-    let target = pointer.trim().strip_prefix("gitdir:")?.trim();
-    let target = std::path::Path::new(target);
-    Some(if target.is_absolute() {
-        target.to_path_buf()
-    } else {
-        root.join(target)
-    })
-}
-
-/// Current git branch from a git dir, or the short commit id when HEAD
-/// is detached. `None` when there is no readable `HEAD`.
-fn git_branch(git_dir: &std::path::Path) -> Option<String> {
-    let head = std::fs::read_to_string(git_dir.join("HEAD")).ok()?;
-    let head = head.trim();
-    match head.strip_prefix("ref: ") {
-        Some(reference) => Some(
-            reference
-                .strip_prefix("refs/heads/")
-                .unwrap_or(reference)
-                .to_string(),
-        ),
-        // Detached: a hex id. Anything else is a corrupt HEAD.
-        None => head
-            .get(..7)
-            .filter(|id| id.bytes().all(|byte| byte.is_ascii_hexdigit()))
-            .map(str::to_string),
-    }
-}
-
-/// True when a watcher event means the branch may have changed: a semantic
-/// change to a `HEAD` path (write, create, remove, or the rename pair of an
-/// atomic replacement), or a rescan the backend requires. Access-only events
-/// (open, read, close) are dropped: the branch read they would trigger emits
-/// those same events again under Linux inotify, looping the watcher at full
-/// CPU while idle (#945). Real writes still arrive as `Modify` on every
-/// backend, so no true change is lost; `Any`/`Other` stay forwarded for
-/// backends that cannot classify.
-fn head_change_event(event: &notify::Event) -> bool {
-    if event.need_rescan() {
-        return true;
-    }
-    if matches!(event.kind, notify::EventKind::Access(_)) {
-        return false;
-    }
-    event
-        .paths
-        .iter()
-        .any(|path| path.file_name().is_some_and(|name| name == "HEAD"))
 }
 
 /// Section heading in the sidebar.

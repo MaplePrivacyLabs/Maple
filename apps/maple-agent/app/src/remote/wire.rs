@@ -180,6 +180,8 @@ pub enum Method {
     SummarizeThinking,
     AskSideQuestion,
     ContextUsage,
+    /// Only sent to a host advertising `context_breakdown_v1`.
+    ContextBreakdown,
     AnswerQuestion,
     ThinkingState,
     SetThinkingLevel,
@@ -510,6 +512,7 @@ mod tests {
             "create_project_folder",
             "list_tools",
             "set_tool_enabled",
+            "context_breakdown",
             // Controllers on older builds still send it; the host saves the
             // task's legacy flag.
             "set_session_web_enabled",

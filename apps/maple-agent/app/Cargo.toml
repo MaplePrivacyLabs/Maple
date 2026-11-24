@@ -26,7 +26,6 @@ desktop = [
     "dep:pulldown-cmark",
     "dep:cpal",
     "dep:rodio",
-    "dep:notify",
     "dep:spellbook",
     "dep:wayland-client",
     "dep:tray-icon",
@@ -81,7 +80,6 @@ unicode-segmentation = { version = "1", optional = true }
 pulldown-cmark = { version = "0.13.6", default-features = false, optional = true }
 cpal = { version = "0.17", optional = true }
 rodio = { version = "0.22", default-features = false, features = ["playback", "wav"], optional = true }
-notify = { version = "8", optional = true }
 spellbook = { version = "0.4", optional = true }
 rusqlite = { workspace = true }
 chrono = "0.4"

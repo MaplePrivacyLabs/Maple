@@ -527,6 +527,7 @@ fn event_belongs_to_account(event: &AgentServiceEvent, account: &str) -> bool {
 pub(super) fn remote_event(event: &AgentServiceEvent) -> bool {
     // Exhaustive on purpose: new local events need an explicit remote decision.
     match event {
+        AgentServiceEvent::Run { event, .. } => remote_run_event(event),
         AgentServiceEvent::RuntimeStatus(_)
         | AgentServiceEvent::ProjectsChanged { .. }
         | AgentServiceEvent::ProjectRemoved { .. }
@@ -536,7 +537,6 @@ pub(super) fn remote_event(event: &AgentServiceEvent) -> bool {
         | AgentServiceEvent::SessionCreated(_)
         | AgentServiceEvent::SessionUpdated { .. }
         | AgentServiceEvent::TimelineItem { .. }
-        | AgentServiceEvent::Run { .. }
         | AgentServiceEvent::SideQuestion { .. } => true,
         AgentServiceEvent::HistoryReplaced { .. }
         | AgentServiceEvent::PersistenceFailureChanged { .. } => true,
@@ -547,6 +547,33 @@ pub(super) fn remote_event(event: &AgentServiceEvent) -> bool {
         | AgentServiceEvent::HostReconnecting
         | AgentServiceEvent::HostReconnected
         | AgentServiceEvent::HostDisconnected => false,
+    }
+}
+
+/// Whether a paired computer receives a run event. A compaction that ends
+/// without a summary stays on this computer: released controllers cannot
+/// decode it and close the remote session on an event they cannot read.
+/// Theirs stops showing the compaction when the run finishes.
+fn remote_run_event(event: &maple_agent::agent::AgentRunEvent) -> bool {
+    use maple_agent::agent::AgentRunEvent;
+    // Exhaustive on purpose, like `remote_event`: a new variant needs an
+    // explicit decision before released controllers can receive it.
+    match event {
+        AgentRunEvent::CompactionStopped => false,
+        AgentRunEvent::SessionUpdated(_)
+        | AgentRunEvent::Started
+        | AgentRunEvent::TimelineItem(_)
+        | AgentRunEvent::SetupWarning(_)
+        | AgentRunEvent::SubagentStarted { .. }
+        | AgentRunEvent::SubagentActivity { .. }
+        | AgentRunEvent::SubagentFinished { .. }
+        | AgentRunEvent::Compacting
+        | AgentRunEvent::Compacted
+        | AgentRunEvent::HistoryReplaced
+        | AgentRunEvent::Error(_)
+        | AgentRunEvent::Finished(_)
+        | AgentRunEvent::QueueChanged(_)
+        | AgentRunEvent::QueuePromoted { .. } => true,
     }
 }
 
@@ -912,6 +939,22 @@ mod tests {
             serde_json::from_slice::<Message>(&encoded).unwrap(),
             Message::Resync
         ));
+    }
+
+    /// A failed or stopped compaction never reaches a paired computer, so a
+    /// released controller never sees an event it cannot decode; its
+    /// compaction ends with the run.
+    #[test]
+    fn a_compaction_that_stops_stays_on_this_computer() {
+        use maple_agent::agent::AgentRunEvent;
+        let run = |event| AgentServiceEvent::Run {
+            session_id: "01234567-89ab-7def-8123-456789abcdef".into(),
+            run_id: "run".into(),
+            event,
+        };
+        assert!(!remote_event(&run(AgentRunEvent::CompactionStopped)));
+        assert!(remote_event(&run(AgentRunEvent::Compacting)));
+        assert!(remote_event(&run(AgentRunEvent::Compacted)));
     }
 
     #[test]

@@ -1,6 +1,7 @@
 //! Chat reading typography: family, size, and line-height that apply to
 //! the transcript and composer. Chrome stays Manrope 14; this module is
-//! the user-facing reading face.
+//! the user-facing reading face. It also holds the helpers that fit a
+//! line of text to its box.
 
 use std::sync::atomic::{AtomicU8, Ordering};
 
@@ -117,6 +118,36 @@ pub fn heading_size(level: pulldown_cmark::HeadingLevel) -> gpui::Pixels {
         pulldown_cmark::HeadingLevel::H5 | pulldown_cmark::HeadingLevel::H6 => 0.875,
     };
     px((body * em).round())
+}
+
+/// How wide `text` runs on one line as GPUI's line wrapper measures it:
+/// each character's own width, summed, before kerning. Text wraps in any
+/// box narrower than this, even where the kerned line would fit.
+pub(crate) fn single_line_width(
+    window: &gpui::Window,
+    text: &str,
+    family: &'static str,
+    font_size: gpui::Pixels,
+) -> gpui::Pixels {
+    let text_system = window.text_system();
+    let font_id = text_system.resolve_font(&gpui::font(family));
+    text.chars()
+        .map(|character| text_system.layout_width(font_id, font_size, character))
+        .fold(px(0.), |width, character| width + character)
+}
+
+/// Holds a line's last two words together with a no-break space, so text
+/// that wraps never leaves its last word alone on a line. Line breaking
+/// follows Unicode's rules, which never break at a no-break space.
+pub(crate) fn keep_last_words_together(text: &str) -> gpui::SharedString {
+    let text = text.trim_end();
+    if let Some(space) = text.rfind(' ') {
+        let head = text[..space].trim_end();
+        if !head.is_empty() {
+            return format!("{head}\u{a0}{}", &text[space + 1..]).into();
+        }
+    }
+    text.to_string().into()
 }
 
 /// Emphasis in chat markdown: SemiBold, not Bold. Manrope 700 at body

@@ -39,6 +39,15 @@ pub fn focus_ring(style: StyleRefinement) -> StyleRefinement {
     ])
 }
 
+/// The focus ring for a labeled control with no opaque fill at rest. The
+/// halo's shadow paints under the whole control, so without a fill its
+/// label would sit on solid coral; the control takes `fill` while focused
+/// and the coral shows only as the ring around it.
+pub fn focus_ring_on(fill: impl Into<Hsla>) -> impl FnOnce(StyleRefinement) -> StyleRefinement {
+    let fill = fill.into();
+    move |style| focus_ring(style.bg(fill))
+}
+
 /// The pressed state's depth: a faint inset shadow along the top edge,
 /// the brand's "physical" press without any motion.
 fn press_depth(style: StyleRefinement) -> StyleRefinement {

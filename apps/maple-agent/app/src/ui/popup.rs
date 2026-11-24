@@ -237,7 +237,6 @@ impl<V: 'static, K: Clone + PartialEq + 'static> Popup<V, K> {
         self.open.as_ref()
     }
 
-    #[cfg(test)]
     pub(crate) fn highlighted(&self) -> Option<&ElementId> {
         self.highlighted.as_ref()
     }
@@ -547,6 +546,9 @@ impl<V: 'static, K: Clone + PartialEq + 'static> Popup<V, K> {
             application_vim,
             adjust,
             footer,
+            pinned,
+            ease_height,
+            height_at_once,
         } = menu;
 
         // What the keyboard needs about each item: its id, its action,
@@ -619,6 +621,43 @@ impl<V: 'static, K: Clone + PartialEq + 'static> Popup<V, K> {
                 Entry::Element(element) => children.push(element),
             }
         }
+        // Pinned rows follow every scrolling row for the keyboard, and
+        // reaching one scrolls the list to its end.
+        let last_row = children.len().saturating_sub(1);
+        let mut pinned_rows: Vec<AnyElement> = Vec::with_capacity(pinned.len());
+        for item in pinned {
+            let highlighted = self.highlighted.as_ref() == Some(&item.id);
+            picks.push(Pick {
+                id: item.id.clone(),
+                on_select: item.on_select.clone(),
+                enabled: item.enabled,
+                keep_open: item.keep_open,
+                submenu: false,
+                initial: initial(&item.label),
+                child: last_row,
+            });
+            pinned_rows.push(item_row(item, highlighted, self.keyboard, get, cx));
+        }
+        let footer = if pinned_rows.is_empty() {
+            footer
+        } else {
+            Some(
+                div()
+                    .flex_none()
+                    .flex()
+                    .flex_col()
+                    .child(
+                        div()
+                            .flex_none()
+                            .my_1()
+                            .h(px(1.))
+                            .bg(gpui::rgb(theme::border())),
+                    )
+                    .children(pinned_rows)
+                    .children(footer)
+                    .into_any_element(),
+            )
+        };
         match self.reveal.get() {
             Reveal::Done | Reveal::NextFrame => {}
             Reveal::AfterLayout => {
@@ -665,8 +704,8 @@ impl<V: 'static, K: Clone + PartialEq + 'static> Popup<V, K> {
             .max_w(room_width)
             .max_h(max_height)
             // Rows scroll; a footer stays put under them, so only the rows
-            // scroll then.
-            .when(footer.is_none(), |panel| {
+            // scroll then, as they do in a panel easing its height.
+            .when(footer.is_none() && !ease_height, |panel| {
                 panel.overflow_y_scroll().track_scroll(&self.scroll)
             })
             .on_mouse_down_out(cx.listener(move |view, _: &MouseDownEvent, window, cx| {
@@ -744,6 +783,30 @@ impl<V: 'static, K: Clone + PartialEq + 'static> Popup<V, K> {
                 })
             });
         let panel = match footer {
+            // Capped at the panel's room inside its padding and border, so
+            // a page taller than that scrolls its rows under a footer that
+            // stays put, as below.
+            _ if ease_height => panel.child(
+                crate::ui::motion::fit_height(
+                    ElementId::NamedChild(std::sync::Arc::new(id.clone()), "ease-height".into()),
+                    div()
+                        .flex()
+                        .flex_col()
+                        .max_h((max_height - px(10.)).max(px(0.)))
+                        .child(
+                            div()
+                                .id("menu-rows")
+                                .flex()
+                                .flex_col()
+                                .min_h_0()
+                                .overflow_y_scroll()
+                                .track_scroll(&self.scroll)
+                                .children(children),
+                        )
+                        .children(footer),
+                )
+                .instant(height_at_once),
+            ),
             None => panel.children(children),
             Some(footer) => panel
                 .child(
@@ -823,6 +886,9 @@ pub(crate) enum Placement {
     BelowEnd,
     /// Above the trigger, sharing its left edge.
     AboveStart,
+    /// Above the trigger, sharing its right edge, for a control at the
+    /// right of a row.
+    AboveEnd,
     /// At a point in window coordinates, for a right-click.
     At(Point<Pixels>),
     /// Right of the trigger, sharing its top edge; flips left when needed.
@@ -847,6 +913,7 @@ impl Placement {
             Placement::BelowStart => (trigger, true, true, GAP),
             Placement::BelowEnd => (trigger, true, false, GAP),
             Placement::AboveStart => (trigger, false, true, GAP),
+            Placement::AboveEnd => (trigger, false, false, GAP),
             Placement::At(position) => (Bounds::new(position, Size::default()), true, true, px(0.)),
             Placement::Beside => return beside(trigger, size, window, margin),
         };
@@ -1077,6 +1144,12 @@ pub(crate) struct Menu<V: 'static> {
     application_vim: bool,
     adjust: Option<OnAdjust<V>>,
     footer: Option<AnyElement>,
+    /// Rows held under the scrolling ones, such as a list's "Manage…".
+    pinned: Vec<MenuItem<V>>,
+    /// Ease to a new height when the rows change, rather than jump.
+    ease_height: bool,
+    /// Take the new height at once: the keyboard made the change.
+    height_at_once: bool,
 }
 
 enum Entry<V: 'static> {
@@ -1098,7 +1171,33 @@ impl<V: 'static> Menu<V> {
             application_vim: false,
             adjust: None,
             footer: None,
+            pinned: Vec::new(),
+            ease_height: false,
+            height_at_once: false,
         }
+    }
+
+    /// Ease the panel to its new height when its rows change, such as a
+    /// menu that turns to another page, instead of jumping to it. A page
+    /// taller than the room still scrolls its rows, under any pinned ones.
+    pub(crate) fn ease_height(mut self) -> Self {
+        self.ease_height = true;
+        self
+    }
+
+    /// With [`Self::ease_height`], take a new height at once instead, for
+    /// a change the keyboard made: keyboard moves in a menu never animate.
+    pub(crate) fn height_at_once(mut self, at_once: bool) -> Self {
+        self.height_at_once = at_once;
+        self
+    }
+
+    /// A row held under the scrolling rows, after a separator, so it stays
+    /// in view however long the list runs. The keyboard reaches it after
+    /// the last row.
+    pub(crate) fn pinned(mut self, item: MenuItem<V>) -> Self {
+        self.pinned.push(item);
+        self
     }
 
     /// Left and Right step a control of the menu's own, such as a slider,
@@ -1194,6 +1293,9 @@ pub(crate) struct MenuItem<V: 'static> {
     style: Option<RowStyle>,
     on_select: OnSelect<V>,
     submenu: Option<Box<Submenu<V>>>,
+    /// Draws no plate under the pointer or the keyboard: its content
+    /// shows its own highlight, such as a segmented control.
+    plain: bool,
 }
 
 #[derive(Clone, Copy)]
@@ -1222,7 +1324,16 @@ impl<V: 'static> MenuItem<V> {
             style: None,
             on_select: Rc::new(on_select),
             submenu: None,
+            plain: false,
         }
+    }
+
+    /// A row that is a control of its own, such as a segmented control:
+    /// the keyboard stops on it, but it draws no plate or press, and its
+    /// content shows the highlight.
+    pub(crate) fn plain(mut self) -> Self {
+        self.plain = true;
+        self
     }
 
     pub(crate) fn icon(mut self, name: &'static str) -> Self {
@@ -1335,6 +1446,7 @@ fn item_row<V: 'static, K: Clone + PartialEq + 'static>(
         style,
         on_select,
         submenu,
+        plain,
     } = item;
     let role = match state {
         None => Role::MenuItem,
@@ -1354,10 +1466,16 @@ fn item_row<V: 'static, K: Clone + PartialEq + 'static>(
         .id(id)
         .role(role)
         .aria_label(label.clone())
-        .when(opens_submenu, |row| {
-            row.aria_expanded(expanded).a11y_synthetic_children(|tree| {
-                tree.parent_node()
-                    .set_has_popup(gpui::accesskit::HasPopup::Menu);
+        .when(opens_submenu, |row| row.aria_expanded(expanded))
+        .when(opens_submenu || !enabled, |row| {
+            row.a11y_synthetic_children(move |tree| {
+                if opens_submenu {
+                    tree.parent_node()
+                        .set_has_popup(gpui::accesskit::HasPopup::Menu);
+                }
+                if !enabled {
+                    tree.parent_node().set_disabled();
+                }
             })
         })
         .when_some(state, |row, state| {
@@ -1429,8 +1547,10 @@ fn item_row<V: 'static, K: Clone + PartialEq + 'static>(
         }))
         .when(enabled, |row_element| {
             row_element
-                .cursor_pointer()
-                .active(|style| style.bg(gpui::rgb(theme::bg_sidebar_row_selected())))
+                .when(!plain, |row| {
+                    row.cursor_pointer()
+                        .active(|style| style.bg(gpui::rgb(theme::bg_sidebar_row_selected())))
+                })
                 .on_click(cx.listener(move |view, _: &ClickEvent, window, cx| {
                     cx.stop_propagation();
                     if get(view).closes_on_select(opens_submenu, keep_open) {
@@ -1511,6 +1631,12 @@ fn item_row<V: 'static, K: Clone + PartialEq + 'static>(
         Some(style) => style(row_element),
         None => row_element,
     };
+    if plain {
+        return row_element
+            .hover_bg(gpui::transparent_black())
+            .highlighted(false)
+            .into_any_element();
+    }
     row_element
         .hover_bg(gpui::rgb(theme::bg_sidebar_row_hover()))
         .highlighted(highlighted)

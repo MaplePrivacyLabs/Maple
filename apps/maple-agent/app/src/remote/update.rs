@@ -23,6 +23,9 @@ pub const PERMISSION_MODES_CAPABILITY: &str = "permission_modes_v1";
 /// A paired controller may list and switch the host's tools (Settings →
 /// Tools). Agent 0.0.21 and earlier cannot decode either call.
 pub const TOOL_SWITCHES_CAPABILITY: &str = "tool_switches_v1";
+/// A paired controller may read what fills a task's context window (the
+/// composer's context card). Earlier hosts cannot decode the call.
+pub const CONTEXT_BREAKDOWN_CAPABILITY: &str = "context_breakdown_v1";
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ProtocolInfo {
@@ -46,6 +49,7 @@ impl ProtocolInfo {
                 DOWNLOAD_CAPABILITY.into(),
                 PERMISSION_MODES_CAPABILITY.into(),
                 TOOL_SWITCHES_CAPABILITY.into(),
+                CONTEXT_BREAKDOWN_CAPABILITY.into(),
             ],
         }
     }
@@ -257,6 +261,10 @@ impl PeerInfo {
 
     pub fn supports_tool_switches(&self) -> bool {
         self.protocol.supports(TOOL_SWITCHES_CAPABILITY)
+    }
+
+    pub fn supports_context_breakdown(&self) -> bool {
+        self.protocol.supports(CONTEXT_BREAKDOWN_CAPABILITY)
     }
 
     pub(crate) fn validate(&self) -> Result<(), String> {
@@ -1109,6 +1117,47 @@ mod tests {
         for version in ["6.2.0", "8.0.0", "invalid"] {
             info.protocol.version = version.into();
             assert!(!info.supports_tool_switches(), "{version}");
+        }
+    }
+
+    #[test]
+    fn a_context_breakdown_needs_the_capability_and_current_major() {
+        // Agent 0.0.25 reports exactly these capabilities and cannot decode
+        // the call, so a controller must not send it.
+        let released: PeerInfo = serde_json::from_value(serde_json::json!({
+            "protocol": {
+                "version": "7.1.0",
+                "capabilities": [
+                    "peer_info_v1",
+                    "remote_update_install_v1",
+                    "remote_update_refresh_v1",
+                    "project_folders_v1",
+                    "scratch_project_v1",
+                    "recent_projects_v1",
+                    "tool_summary_start_v1",
+                    "remote_update_download_v1",
+                    "permission_modes_v1",
+                    "tool_switches_v1"
+                ]
+            },
+            "running": {"version": "0.0.25", "source_sha": "a78ed18a", "platform": "darwin-aarch64"},
+            "update": {}
+        }))
+        .unwrap();
+        released.validate().unwrap();
+        assert!(released.supports_tool_switches());
+        assert!(!released.supports_context_breakdown());
+        let mut info = PeerInfo {
+            protocol: ProtocolInfo::current(),
+            ..released
+        };
+        for version in ["7.0.0", "7.1.0", "7.2.0"] {
+            info.protocol.version = version.into();
+            assert!(info.supports_context_breakdown(), "{version}");
+        }
+        for version in ["6.2.0", "8.0.0", "invalid"] {
+            info.protocol.version = version.into();
+            assert!(!info.supports_context_breakdown(), "{version}");
         }
     }
 

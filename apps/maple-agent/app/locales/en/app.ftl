@@ -1531,11 +1531,57 @@ chat-model-new-row = { $model }, New
 chat-model-popular = Popular
 # $model is the model's name. The model row's accessible name when it carries the Popular badge.
 chat-model-popular-row = { $model }, Popular
-# $count is the number of integrations.
-chat-integration-count = { $count ->
-    [one] 1 integration
+# $count is the number of integrations turned on for the task. Shown beside a
+# puzzle icon in the composer; as it changes only the number should change.
+chat-integrations-on = { $count ->
+    [0] No integrations
+    [one] { $count } integration
    *[other] { $count } integrations
 }
+# $names is the comma-separated list of integrations turned on for the task.
+chat-integrations-on-tooltip = On for this task: { $names }
+chat-integrations-turn-on = Turn on integrations for this task
+# Heading of the list of integrations a task can switch on.
+chat-integrations-for-task = Integrations for this task
+# Beside "Integrations" in the + menu when none is on.
+chat-integrations-summary-none = None
+# $count is the number of integrations turned on, beside "Integrations" in the + menu.
+chat-integrations-summary-on = { $count } on
+# The + button of a new task: it holds permissions, integrations and attach.
+chat-add = Permissions, integrations and files
+chat-attach-drop-hint = Or drop them anywhere on the box
+# The attach popover's drop zone: a title, the title while files are over it, and a line under it.
+chat-attach-choose = Choose files or images
+chat-attach-drop = Drop to attach
+chat-attach-or-drop = or drop them here
+# Followed by the paste shortcut, such as ⌘V.
+chat-attach-paste = Paste an image with
+# The send button while a turn runs and a message is drafted: it waits for the next turn.
+chat-queue = Queue
+chat-listening = Listening
+chat-transcribing = Transcribing…
+# The context card's title and its accessible name.
+chat-context-title = Context used
+# $percent is how much of the model's context window the task uses, such as 48%.
+chat-context-used = Context used: { $percent }. Show details
+# $percent is how much of the model's context window the task uses, such as 92%.
+chat-context-near-limit = Context { $percent } used, near the limit. Show details
+# $used and $limit are token counts written short, such as 48.6k and 131k.
+chat-context-of = { $used } of { $limit } tokens
+# $percent is the share of the context window at which the task compacts itself, such as 88%.
+chat-context-compacts-at = Auto-compacts at { $percent }
+chat-context-compacts-next = Compacts after this step
+chat-context-compacts-off = Automatic compaction is off
+# The context card, for a task not loaded since the app started: what fills its window shows once it runs.
+chat-context-details-later = Details show after this task's next turn
+# What fills the context window, in the context card's legend.
+chat-context-instructions = Instructions & tools
+chat-context-summary = Summary
+chat-context-messages = Messages
+chat-context-tool-results = Tool results
+chat-context-images = Images
+chat-compact = Compact
+chat-compact-after-turn = Available when this turn finishes
 # $count is the number of running agents.
 chat-agents-running = { $count } running
 chat-folder-choose = Choose a project folder
@@ -1692,6 +1738,7 @@ chat-send-failed-retained = The failed draft is retained. You can continue; open
 chat-send-unknown = Send outcome is still unknown. Your message and files are retained; Maple will check again after reconnecting.
 # $message is the underlying error, which may be untranslated.
 chat-compaction-failed = Compaction failed: { $message }
+chat-nothing-to-compact = Nothing to compact yet
 # $query is the text the user typed.
 chat-no-model-match = No model matches “{ $query }”
 # $message is the underlying error, which may be untranslated.
@@ -1717,6 +1764,10 @@ chat-host-reload-failed = Could not reload host state: { $error }. Reopen Maple 
 # $error is an untranslated diagnostic.
 chat-thinking-save-failed = Could not save the thinking level: { $error }
 chat-composer-placeholder = Ask Maple to work in this folder…
+# The composer's placeholder in a task between turns.
+chat-composer-placeholder-reply = Reply to Maple…
+# The composer's placeholder while a turn runs: a message sent now waits for the next turn.
+chat-composer-placeholder-queue = Queue a follow-up…
 chat-side-thread-placeholder = Ask a side question (Esc to leave the thread)…
 chat-queue-edit-placeholder = Edit the queued message, then send to keep its place. Escape discards.
 chat-status-completed = completed

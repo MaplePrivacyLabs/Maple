@@ -40,6 +40,9 @@ const PERMISSIONS_UNSUPPORTED: &str =
 const TOOLS_UNCONFIRMED: &str = "Could not confirm that the remote computer can switch tools. Try again, or update Maple there.";
 const TOOLS_UNSUPPORTED: &str =
     "Update Maple on the remote computer to choose its tools from here.";
+const CONTEXT_UNCONFIRMED: &str = "Could not confirm that the remote computer can break down a task's context. Try again, or update Maple there.";
+const CONTEXT_UNSUPPORTED: &str =
+    "Update Maple on the remote computer to see what fills a task's context.";
 // Attachments may take longer than control traffic on a slow link, but cannot
 // retain an admitted stream indefinitely.
 const TRANSFER_TIMEOUT: Duration = Duration::from_secs(60);
@@ -141,6 +144,7 @@ pub struct Client {
     project_folders: OnceCell<bool>,
     permission_modes: OnceCell<bool>,
     tool_switches: OnceCell<bool>,
+    context_breakdown: OnceCell<bool>,
     scratch_project: OnceCell<bool>,
     recent_projects: OnceCell<bool>,
     discovery_timeout: Duration,
@@ -165,6 +169,7 @@ impl Client {
             project_folders: OnceCell::new(),
             permission_modes: OnceCell::new(),
             tool_switches: OnceCell::new(),
+            context_breakdown: OnceCell::new(),
             scratch_project: OnceCell::new(),
             recent_projects: OnceCell::new(),
             discovery_timeout: DISCOVERY_TIMEOUT,
@@ -185,6 +190,12 @@ impl Client {
                 check: super::update::PeerInfo::supports_tool_switches,
                 unconfirmed: ("remote-tools-unconfirmed", TOOLS_UNCONFIRMED),
                 unsupported: ("remote-tools-unsupported", TOOLS_UNSUPPORTED),
+            },
+            Method::ContextBreakdown => CodedGate {
+                support: &self.context_breakdown,
+                check: super::update::PeerInfo::supports_context_breakdown,
+                unconfirmed: ("remote-context-breakdown-unconfirmed", CONTEXT_UNCONFIRMED),
+                unsupported: ("remote-context-breakdown-unsupported", CONTEXT_UNSUPPORTED),
             },
             _ => return None,
         })
@@ -544,3 +555,6 @@ mod permission_tests;
 
 #[cfg(test)]
 mod tool_switch_tests;
+
+#[cfg(test)]
+mod context_breakdown_tests;
