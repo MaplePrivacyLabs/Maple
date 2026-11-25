@@ -1296,6 +1296,21 @@ mod state_tests {
         }
     }
 
+    /// The host's semantic label, not a characteristic shape in the input,
+    /// authorizes file-change accounting.
+    fn file_tool(tool: &str, input: serde_json::Value) -> AgentTimelineItem {
+        AgentTimelineItem {
+            status: Some("completed".to_string()),
+            label: Some(maple_agent::agent::AgentTimelineLabel {
+                kind: "tool".to_string(),
+                name: Some(tool.to_string()),
+                detail: None,
+            }),
+            input: Some(input),
+            ..item(tool, "tool", None)
+        }
+    }
+
     /// Serializes constructions that read the shared settings snapshot while
     /// another fixture installs its own host-backed settings cache.
     use crate::settings::SETTINGS_IO_LOCK as SETTINGS_LOCK;
@@ -2312,6 +2327,213 @@ mod state_tests {
         }
     }
 
+    #[gpui::test]
+    fn permission_waits_for_host_acceptance_and_preserves_an_unsent_answer(
+        cx: &mut TestAppContext,
+    ) {
+        cx.executor().allow_parking();
+        let screen = screen(cx);
+        screen.update(cx, |this, cx| {
+            this.selected_session = Some("s1".into());
+            this.handle_service_event(permission_event("pending"), cx);
+            this.toggle_question_option(0, 1, cx);
+            assert_eq!(this.pending_questions.len(), 1);
+            assert!(this.step_permissions.is_empty());
+
+            this.finish_question_answer(
+                "pending".into(),
+                Some(("call".into(), false)),
+                Ok(false),
+                cx,
+            );
+            assert_eq!(this.pending_questions.len(), 1);
+            assert!(this.step_permissions.is_empty());
+            this.finish_question_answer(
+                "pending".into(),
+                Some(("call".into(), false)),
+                Err(UiFailure::Local("test answer failed", "connection lost")),
+                cx,
+            );
+            assert_eq!(this.pending_questions.len(), 1);
+            assert!(this.step_permissions.is_empty());
+            assert!(this.question_selected.contains_key(&0));
+
+            this.finish_question_answer(
+                "pending".into(),
+                Some(("call".into(), false)),
+                Ok(true),
+                cx,
+            );
+            assert!(this.pending_questions.is_empty());
+            assert_eq!(this.step_permissions.get("call"), Some(&false));
+        });
+    }
+
+    #[gpui::test]
+    fn a_failed_batch_answer_keeps_every_step_and_the_current_draft(cx: &mut TestAppContext) {
+        cx.executor().allow_parking();
+        let screen = screen(cx);
+        screen.update(cx, |this, cx| {
+            this.handle_service_event(one_question("first", "First question"), cx);
+            this.pending_questions[0]
+                .questions
+                .push(maple_agent::agent::AgentQuestion {
+                    multi_select: false,
+                    id: "second".into(),
+                    header: "Second".into(),
+                    question: "Second question".into(),
+                    options: Vec::new(),
+                    permission: None,
+                });
+            let input = this.pending_question_input.clone().expect("first answer");
+            input.update(cx, |input, cx| input.set_text("first response", cx));
+            this.submit_question(cx);
+            assert_eq!(this.question_step, 1);
+            input.update(cx, |input, cx| input.set_text("second response", cx));
+
+            // Exercise the real final submission path, then deliver a
+            // transport failure through the same callback it uses.
+            this.submit_question(cx);
+            this.finish_question_answer(
+                "req-first".into(),
+                None,
+                Err(UiFailure::Local("test answer failed", "connection lost")),
+                cx,
+            );
+            assert_eq!(this.question_step, 1);
+            assert_eq!(
+                this.question_step_answers,
+                std::collections::HashMap::from([
+                    (0, vec!["first response".to_owned()]),
+                    (1, vec!["second response".to_owned()]),
+                ])
+            );
+            assert_eq!(input.read(cx).text(), "second response");
+            assert_eq!(this.pending_questions.len(), 1);
+
+            let answers =
+                serde_json::from_str::<serde_json::Value>(&this.composed_question_answer(cx))
+                    .expect("composed retry");
+            assert_eq!(answers["answers"]["first"]["answers"][0], "first response");
+            assert_eq!(
+                answers["answers"]["second"]["answers"][0],
+                "second response"
+            );
+            this.finish_question_answer("req-first".into(), None, Ok(true), cx);
+            assert!(this.question_step_answers.is_empty());
+            assert_eq!(this.question_step, 0);
+            assert!(this.pending_questions.is_empty());
+            assert!(this.pending_question_input.is_none());
+        });
+    }
+
+    #[gpui::test]
+    fn typed_allow_once_records_allow_only_after_acceptance(cx: &mut TestAppContext) {
+        cx.executor().allow_parking();
+        let screen = screen(cx);
+        screen.update(cx, |this, cx| {
+            this.selected_session = Some("s1".into());
+            let tool = AgentTimelineItem {
+                id: "push".into(),
+                item_type: "tool".into(),
+                status: Some("running".into()),
+                label: Some(maple_agent::agent::AgentTimelineLabel {
+                    kind: "tool".into(),
+                    name: Some("bash".into()),
+                    detail: Some("git push".into()),
+                }),
+                input: Some(serde_json::json!({"command": "git push"})),
+                ..item("push", "tool", None)
+            };
+            this.replace_timeline(vec![user_item("user", "push it"), tool]);
+            this.handle_service_event(permission_event("typed"), cx);
+            let input = this.pending_question_input.clone().expect("answer field");
+            input.update(cx, |input, cx| input.set_text("Allow once", cx));
+            let answer = this.composed_question_answer(cx);
+            let permission = this.permission_answer_intent(&answer);
+            assert_eq!(permission, Some(("push".into(), true)));
+            this.answer_question(answer, cx);
+            assert!(this.step_permissions.is_empty());
+            assert_eq!(input.read(cx).text(), "Allow once");
+            this.finish_question_answer("typed".into(), permission, Ok(true), cx);
+            assert_eq!(this.step_permissions.get("push"), Some(&true));
+            assert!(this.pending_questions.is_empty());
+        });
+    }
+
+    #[gpui::test]
+    fn stale_question_answers_do_not_cross_into_the_next_request(cx: &mut TestAppContext) {
+        cx.executor().allow_parking();
+        let screen = screen(cx);
+        let batch = AgentServiceEvent::Question {
+            session_id: "s1".into(),
+            request_id: "first-request".into(),
+            questions: vec![
+                maple_agent::agent::AgentQuestion {
+                    multi_select: false,
+                    id: "first".into(),
+                    header: "First".into(),
+                    question: "First question".into(),
+                    options: Vec::new(),
+                    permission: None,
+                },
+                maple_agent::agent::AgentQuestion {
+                    multi_select: false,
+                    id: "second".into(),
+                    header: "Second".into(),
+                    question: "Second question".into(),
+                    options: Vec::new(),
+                    permission: None,
+                },
+            ],
+        };
+        screen.update(cx, |this, cx| {
+            this.handle_service_event(batch, cx);
+            this.question_step = 1;
+            this.question_step_answers
+                .insert(0, vec!["an answer from the other card".into()]);
+            this.question_selected.insert(
+                1,
+                QuestionSelection {
+                    cursor: Some(0),
+                    picked: BTreeSet::from([0]),
+                },
+            );
+            let old_input = this.pending_question_input.clone().expect("answer input");
+            old_input.update(cx, |input, cx| input.set_text("stale draft", cx));
+            this.handle_service_event(
+                AgentServiceEvent::QuestionResolved {
+                    request_id: "unrelated-request".into(),
+                },
+                cx,
+            );
+            assert_eq!(old_input.read(cx).text(), "stale draft");
+            this.handle_service_event(
+                AgentServiceEvent::QuestionResolved {
+                    request_id: "first-request".into(),
+                },
+                cx,
+            );
+            assert_eq!(this.question_step, 0);
+            assert!(this.question_step_answers.is_empty());
+            assert!(this.question_selected.is_empty());
+            assert!(this.pending_question_input.is_none());
+
+            this.handle_service_event(one_question("next", "fresh question"), cx);
+            let new_input = this.pending_question_input.clone().expect("fresh input");
+            new_input.update(cx, |input, cx| input.set_text("new answer", cx));
+            this.handle_service_event(
+                AgentServiceEvent::QuestionResolved {
+                    request_id: "another-unrelated-request".into(),
+                },
+                cx,
+            );
+            assert_eq!(new_input.read(cx).text(), "new answer");
+            this.finish_question_answer("first-request".into(), None, Ok(true), cx);
+            assert_eq!(new_input.read(cx).text(), "new answer");
+        });
+    }
+
     /// A click answers a permission card at once. Moving the keyboard
     /// selection does not: walking past Allow must not allow anything.
     #[gpui::test]
@@ -2325,10 +2547,9 @@ mod state_tests {
             this.focus_question_option(0, 1, cx);
             assert_eq!(this.pending_questions.len(), 1, "moving answers nothing");
             this.toggle_question_option(0, 0, cx);
-            assert!(
-                this.pending_questions.is_empty(),
-                "a click on an option answers the card"
-            );
+            assert_eq!(this.pending_questions.len(), 1, "wait for acceptance");
+            this.finish_question_answer("p1".into(), None, Ok(true), cx);
+            assert!(this.pending_questions.is_empty());
         });
     }
 
@@ -2367,6 +2588,7 @@ mod state_tests {
                 "the request is about the call that would do what it says, not the newest"
             );
             this.toggle_question_option(0, 0, cx);
+            this.finish_question_answer("p1".into(), Some(("push".into(), true)), Ok(true), cx);
             assert_eq!(this.step_permissions.get("push"), Some(&true));
 
             // The same command again is the next call's; it is refused,
@@ -2375,6 +2597,7 @@ mod state_tests {
             this.handle_service_event(permission_event("p2"), cx);
             assert_eq!(this.waiting_step(), Some(4));
             this.toggle_question_option(0, 1, cx);
+            this.finish_question_answer("p2".into(), Some(("again".into(), false)), Ok(true), cx);
             assert_eq!(this.step_permissions.get("again"), Some(&false));
             assert_eq!(this.step_permissions.get("push"), Some(&true));
 
@@ -2385,6 +2608,7 @@ mod state_tests {
             this.handle_service_event(permission_event("p3"), cx);
             assert_eq!(this.waiting_step(), None);
             this.toggle_question_option(0, 0, cx);
+            this.finish_question_answer("p3".into(), None, Ok(true), cx);
             assert_eq!(this.step_permissions.len(), 2);
         });
     }
@@ -2839,6 +3063,8 @@ mod state_tests {
             assert!(this.current_question().is_some());
             // The last click answers the whole card.
             this.toggle_question_option(1, 0, cx);
+            assert!(this.current_question().is_some(), "wait for acceptance");
+            this.finish_question_answer("q5".into(), None, Ok(true), cx);
             assert!(this.current_question().is_none());
         });
     }
@@ -2912,6 +3138,146 @@ mod state_tests {
             assert!(this.pending_questions.is_empty());
             assert!(this.question_selected.is_empty());
             assert_eq!(this.sidebar.read(cx).session_activity("s1"), None);
+        });
+    }
+
+    #[gpui::test]
+    fn same_task_reload_preserves_an_observed_started_wait(cx: &mut TestAppContext) {
+        cx.executor().allow_parking();
+        let screen = screen(cx);
+        screen.update(cx, |this, cx| {
+            this.replace_timeline(vec![
+                user_item("old-user", "old request"),
+                file_tool(
+                    "edit",
+                    serde_json::json!({
+                        "path": "old",
+                        "edits": [{"oldText": "", "newText": "old"}]
+                    }),
+                ),
+                AgentTimelineItem {
+                    role: Some("assistant".into()),
+                    ..item("old-reply", "message", Some("finished"))
+                },
+            ]);
+            this.handle_run_event(
+                "s1",
+                "new-run",
+                maple_agent::agent::AgentRunEvent::Started,
+                cx,
+            );
+            assert!(this.awaiting_first_token);
+
+            // The reload has not caught up with the run's canonical user
+            // row yet. Losing timing must not resurrect the previous turn.
+            this.replace_timeline(Vec::new());
+            assert!(this.awaiting_first_token);
+            assert!(this.waiting_slot_shown());
+            this.replace_timeline(vec![user_item("new-user", "new request")]);
+            assert!(this.awaiting_first_token);
+            assert!(this.waiting_slot_shown());
+            assert!(this.run_clocks.is_empty());
+        });
+    }
+
+    #[gpui::test]
+    fn external_started_and_recovery_clocks_never_claim_a_previous_turn(cx: &mut TestAppContext) {
+        use std::time::Duration;
+
+        let line = |chat: &ChatScreen| {
+            let lead = chat
+                .turns
+                .turn_of(chat.timeline.len() - 1)
+                .expect("a file call must have a turn");
+            chat.turn_line(lead, false)
+        };
+        let worked = |chat: &ChatScreen| match line(chat) {
+            turn::Line::Live { worked, .. } | turn::Line::Done { worked } => worked,
+        };
+        struct UiClock;
+        impl Drop for UiClock {
+            fn drop(&mut self) {
+                motion::set_test_now(None);
+            }
+        }
+        let _clock = UiClock;
+        let began = motion::now();
+        motion::set_test_now(Some(began));
+
+        cx.executor().allow_parking();
+        let screen = screen(cx);
+        let mut old_edit = file_tool(
+            "edit",
+            serde_json::json!({
+                "path": "old",
+                "edits": [{"oldText": "", "newText": "old"}]
+            }),
+        );
+        old_edit.id = "old-edit".into();
+        let mut new_edit = file_tool(
+            "edit",
+            serde_json::json!({
+                "path": "new",
+                "edits": [{"oldText": "", "newText": "new"}]
+            }),
+        );
+        new_edit.id = "new-edit".into();
+        screen.update(cx, |this, cx| {
+            this.replace_timeline(vec![
+                user_item("old-user", "old request"),
+                old_edit,
+                AgentTimelineItem {
+                    role: Some("assistant".into()),
+                    ..item("old-reply", "message", Some("finished"))
+                },
+            ]);
+            this.handle_run_event(
+                "s1",
+                "run-2",
+                maple_agent::agent::AgentRunEvent::Started,
+                cx,
+            );
+            assert!(this.awaiting_first_token);
+            assert_eq!(line(this), turn::Line::Done { worked: None });
+            this.handle_run_event(
+                "s1",
+                "run-2",
+                maple_agent::agent::AgentRunEvent::TimelineItem(user_item(
+                    "new-user",
+                    "new request",
+                )),
+                cx,
+            );
+            assert!(this.awaiting_first_token);
+            this.handle_run_event(
+                "s1",
+                "run-2",
+                maple_agent::agent::AgentRunEvent::TimelineItem(new_edit.clone()),
+                cx,
+            );
+            assert!(this.turn_worked.is_empty());
+        });
+        motion::set_test_now(Some(began + Duration::from_secs(9)));
+        screen.update(cx, |this, cx| {
+            assert_eq!(worked(this), Some(Duration::from_secs(9)));
+            // A task replacement is the boundary at which a missed terminal
+            // event can no longer be distinguished from an in-flight edit.
+            this.invalidate_turn_timing();
+            assert!(this.run_clocks.is_empty());
+            assert!(this.turn_worked.is_empty());
+            assert_eq!(worked(this), None);
+            this.replace_timeline(vec![user_item("new-user", "new request"), new_edit]);
+            assert!(this.run_clocks.is_empty());
+            assert!(this.turn_worked.is_empty());
+            this.handle_run_event(
+                "s1",
+                "run-2",
+                maple_agent::agent::AgentRunEvent::Finished(
+                    maple_agent::agent::AgentRunTerminal::Completed,
+                ),
+                cx,
+            );
+            assert_eq!(worked(this), None);
         });
     }
 
@@ -2995,6 +3361,7 @@ mod state_tests {
             // Answer step two: the queue pops and both answers are recorded.
             this.select_question_option(1, 0, cx);
             this.submit_question(cx);
+            this.finish_question_answer("batch".into(), None, Ok(true), cx);
             assert!(this.pending_questions.is_empty());
             assert_eq!(this.question_step, 0);
             assert!(this.question_step_answers.is_empty());
@@ -3031,6 +3398,7 @@ mod state_tests {
             );
             // Answering pops the head and leaves the rest queued.
             this.answer_question("first".to_string(), cx);
+            this.finish_question_answer("q1".into(), None, Ok(true), cx);
             assert_eq!(this.pending_questions.len(), 2);
             assert_eq!(this.pending_questions[0].request_id, "q2");
             // Skipping pops the head too.
@@ -3041,6 +3409,7 @@ mod state_tests {
             // without one is unanswerable.
             assert!(this.pending_question_input.is_some());
             this.answer_question("third".to_string(), cx);
+            this.finish_question_answer("q3".into(), None, Ok(true), cx);
             assert!(this.pending_questions.is_empty());
             assert!(this.pending_question_input.is_none());
             assert_eq!(this.sidebar.read(cx).session_activity("s1"), None);
@@ -6373,11 +6742,13 @@ mod state_tests {
 
     #[test]
     fn test_diff_lines_stop_at_the_cap() {
-        let mut tool = item("edit", "tool", None);
-        tool.input = Some(serde_json::json!({
-            "path": "big.txt",
-            "content": (0..1000).map(|n| n.to_string()).collect::<Vec<_>>().join("\n"),
-        }));
+        let tool = file_tool(
+            "write",
+            serde_json::json!({
+                "path": "big.txt",
+                "content": (0..1000).map(|n| n.to_string()).collect::<Vec<_>>().join("\n"),
+            }),
+        );
         let lines = diff_lines_for(&tool);
         assert_eq!(lines.len(), MAX_DIFF_LINES);
         assert_eq!(lines[0], (' ', SharedString::from("big.txt")));
@@ -6394,19 +6765,138 @@ mod state_tests {
                 .collect::<Vec<_>>()
                 .join("\n")
         };
-        let mut write = item("write", "tool", None);
-        write.input = Some(serde_json::json!({ "path": "big.txt", "content": lines(1000) }));
+        let write = file_tool(
+            "write",
+            serde_json::json!({ "path": "big.txt", "content": lines(1000) }),
+        );
         assert_eq!(diff_counts(&write), (1000, 0));
 
-        let mut edit = item("edit", "tool", None);
-        edit.input = Some(serde_json::json!({
-            "path": "big.txt",
-            "edits": [
-                { "oldText": lines(300), "newText": lines(2) },
-                { "oldText": "one", "newText": "one\ntwo" },
-            ],
-        }));
+        let edit = file_tool(
+            "edit",
+            serde_json::json!({
+                "path": "big.txt",
+                "edits": [
+                    { "oldText": lines(300), "newText": lines(2) },
+                    { "oldText": "one", "newText": "one\ntwo" },
+                ],
+            }),
+        );
         assert_eq!(diff_counts(&edit), (4, 301));
+    }
+
+    #[test]
+    fn all_accepted_edit_input_shapes_contribute_the_same_diff() {
+        let edit = serde_json::json!({"oldText": "old\nline", "newText": "new\nline\nvalue"});
+        let expected = (3, 2);
+        for edits in [
+            serde_json::json!([edit.clone()]),
+            edit.clone(),
+            serde_json::Value::String(edit.to_string()),
+        ] {
+            let row = file_tool(
+                "edit",
+                serde_json::json!({"path": "file.txt", "edits": edits}),
+            );
+            assert_eq!(diff_counts(&row), expected);
+        }
+        let legacy = file_tool(
+            "edit",
+            serde_json::json!({
+                "path": "file.txt",
+                "oldText": "old\nline",
+                "newText": "new\nline\nvalue"
+            }),
+        );
+        assert_eq!(diff_counts(&legacy), expected);
+        for edits in [
+            serde_json::json!([{"oldText": "a", "newText": "A"}]),
+            serde_json::json!({"oldText": "a", "newText": "A"}),
+            serde_json::json!("[{\"oldText\":\"a\",\"newText\":\"A\"}]"),
+        ] {
+            let mixed = file_tool(
+                "edit",
+                serde_json::json!({
+                    "path": "file.txt",
+                    "edits": edits,
+                    "oldText": "b",
+                    "newText": "B"
+                }),
+            );
+            // The legacy pair is a second replacement, never an alternative
+            // that loses the structured `edits` already accepted by the host.
+            assert_eq!(diff_counts(&mixed), (2, 2), "{edits}");
+            assert_eq!(diff_lines_for(&mixed).len(), 5, "{edits}");
+        }
+        let mixed = file_tool(
+            "edit",
+            serde_json::json!({
+                "path": "file.txt",
+                "edits": [{"oldText": "a", "newText": "A"}],
+                "oldText": "b",
+                "newText": "B"
+            }),
+        );
+        assert_eq!(
+            diff_lines_for(&mixed),
+            vec![
+                (' ', "file.txt".into()),
+                ('-', "a".into()),
+                ('+', "A".into()),
+                ('-', "b".into()),
+                ('+', "B".into())
+            ]
+        );
+        for edits in [serde_json::Value::Null, serde_json::json!("not valid JSON")] {
+            let legacy = file_tool(
+                "edit",
+                serde_json::json!({
+                    "path": "file.txt",
+                    "edits": edits,
+                    "oldText": "b",
+                    "newText": "B"
+                }),
+            );
+            assert_eq!(diff_counts(&legacy), (1, 1));
+            assert_eq!(diff_lines_for(&legacy).len(), 3);
+        }
+        for edits in [
+            serde_json::json!({"old_text": "ignored", "new_text": "also ignored"}),
+            serde_json::Value::String(
+                serde_json::json!({"old_text": "ignored", "new_text": "also ignored"}).to_string(),
+            ),
+        ] {
+            let fallback = file_tool(
+                "edit",
+                serde_json::json!({
+                    "path": "file.txt",
+                    "edits": edits,
+                    "oldText": "b",
+                    "newText": "B"
+                }),
+            );
+            // A malformed object is discarded on the top-level fallback.
+            // Its snake_case fields are not accepted host edit entries.
+            assert_eq!(diff_counts(&fallback), (1, 1));
+            assert_eq!(
+                diff_lines_for(&fallback),
+                vec![' ', '-', '+']
+                    .into_iter()
+                    .zip(["file.txt", "b", "B"])
+                    .map(|(sign, text)| (sign, text.into()))
+                    .collect::<Vec<_>>()
+            );
+        }
+        let unrelated = AgentTimelineItem {
+            label: Some(maple_agent::agent::AgentTimelineLabel {
+                kind: "tool".into(),
+                name: Some("mcp.chart.export".into()),
+                detail: None,
+            }),
+            input: Some(serde_json::json!({"path": "file.txt", "content": "not a file edit"})),
+            ..item("mcp", "tool", None)
+        };
+        assert!(diff_lines_for(&unrelated).is_empty());
+        assert_eq!(diff_counts(&unrelated), (0, 0));
     }
 
     #[test]

@@ -531,6 +531,9 @@ impl ChatScreen {
                             this.local_error_text.remove(&key);
                             this.timeline[index] = item;
                             this.pages.weights.set(&this.timeline[index]);
+                            // Restoring a full todo status can promote or
+                            // demote an entire activity step and its chunk.
+                            this.turns.rebuild(&this.timeline);
                             this.markdown_cache.clear();
                             this.derived.clear();
                             this.messages = Default::default();

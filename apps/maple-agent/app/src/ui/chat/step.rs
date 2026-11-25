@@ -57,6 +57,16 @@ pub(super) enum Asked {
     Denied,
 }
 
+/// One effective state for both expanded rows and their folded chunk.
+/// Host status is the fallback when a view-local answer does not apply.
+pub(super) fn state(status: Option<&str>, asked: Option<Asked>) -> StepState {
+    match asked {
+        Some(Asked::Waiting) => StepState::Waiting,
+        Some(Asked::Denied) => StepState::Denied,
+        Some(Asked::Allowed) | None => StepState::of(status),
+    }
+}
+
 /// Whether the rail runs on from a step's node to the step drawn right
 /// above it, and to the one right below.
 pub(super) type Rail = (bool, bool);

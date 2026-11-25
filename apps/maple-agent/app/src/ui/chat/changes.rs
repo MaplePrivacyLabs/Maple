@@ -15,7 +15,7 @@ use maple_agent::agent::AgentTimelineItem;
 
 use super::ChatScreen;
 use super::step::{self, StepState};
-use super::transcript::diff_rows;
+use super::transcript::{changed_path, diff_rows};
 use super::turn::TurnRow;
 use crate::ui::i18n::MessageCache;
 use crate::ui::motion::{self, HoverBg as _};
@@ -51,15 +51,6 @@ pub(super) struct ReplyChanges<'a> {
     pub(super) lead: &'a str,
     /// The files whose changes show.
     pub(super) open: Option<&'a BTreeSet<usize>>,
-}
-
-/// The path an edit or a write call names.
-fn changed_path(item: &AgentTimelineItem) -> Option<&str> {
-    let input = item.input.as_ref()?.as_object()?;
-    if !input.contains_key("edits") && !input.contains_key("content") {
-        return None;
-    }
-    input.get("path")?.as_str()
 }
 
 fn counts(added: usize, removed: usize) -> (SharedString, SharedString) {
@@ -297,13 +288,25 @@ impl ChatScreen {
     /// over, and it changed files.
     pub(super) fn changes_under(&self, reply: usize) -> Option<(usize, Rc<TurnChanges>)> {
         let lead = self.turns.reply_of(reply)?;
-        if self.turn_runs(lead) {
+        if self.turn_runs(lead)
+            || !self.turns.complete_turn(lead)
+            || (self.turns.tail() == Some(lead) && (self.pages.after || self.pages.has_live_gap()))
+        {
+            // A partial or still-changing history cannot supply exact totals.
+            return None;
+        }
+        let steps = self.timeline.get(lead..reply)?;
+        if steps.iter().enumerate().any(|(offset, item)| {
+            self.turns.row(lead + offset) != TurnRow::Plain && item.truncated.is_some()
+        }) {
+            // Neither `read_row` nor an aggregate of shortened arguments may
+            // silently turn an unknown change into an apparently exact one.
             return None;
         }
         let lead_id = &self.timeline.get(lead)?.id;
         let changes = self.turn_changes.get(lead_id, || {
             TurnChanges::of(
-                self.timeline[lead..reply]
+                steps
                     .iter()
                     .enumerate()
                     // Only the calls that changed a file have their
@@ -350,7 +353,20 @@ mod tests {
 
     fn call(status: &str, input: serde_json::Value) -> AgentTimelineItem {
         AgentTimelineItem {
-            label: None,
+            label: Some(maple_agent::agent::AgentTimelineLabel {
+                kind: "tool".into(),
+                name: Some(
+                    if input.get("edits").is_some()
+                        || (input.get("oldText").is_some() && input.get("newText").is_some())
+                    {
+                        "edit"
+                    } else {
+                        "write"
+                    }
+                    .into(),
+                ),
+                detail: None,
+            }),
             persisted: None,
             live: None,
             truncated: None,

@@ -144,17 +144,7 @@ impl ChatScreen {
                         turn != TurnRow::Plain
                             && matches!(chat.turns.row(ix + 1), TurnRow::Step(_)),
                     ),
-                    asked: if waiting_step == Some(ix) {
-                        Some(step::Asked::Waiting)
-                    } else {
-                        chat.step_permissions.get(&item.id).map(|allowed| {
-                            if *allowed {
-                                step::Asked::Allowed
-                            } else {
-                                step::Asked::Denied
-                            }
-                        })
-                    },
+                    asked: chat.step_asked(ix, waiting_step),
                     changes: chat.changes_under(ix).map(|(lead, changes)| {
                         let lead = chat.timeline[lead].id.as_str();
                         changes::ReplyChanges {
@@ -197,6 +187,21 @@ impl ChatScreen {
                 row.when(shown < 1., |row| row.opacity(motion::ease_out_quint(shown)))
             });
             let body = if let Some(chunk) = chat.turns.chunk(ix) {
+                let range = ix..chat.turns.end(ix);
+                let outcome = if chat.turn_runs(ix)
+                    && waiting_step.is_some_and(|step| range.contains(&step))
+                {
+                    Some(step::StepState::Waiting)
+                } else if range.into_iter().any(|step| {
+                    step::state(
+                        chat.timeline[step].status.as_deref(),
+                        chat.step_asked(step, waiting_step),
+                    ) == step::StepState::Denied
+                }) {
+                    Some(step::StepState::Denied)
+                } else {
+                    None
+                };
                 Some(
                     div()
                         .child(turn::render_chunk(
@@ -204,8 +209,7 @@ impl ChatScreen {
                             chunk,
                             open,
                             chat.turn_runs(ix),
-                            waiting_step
-                                .is_some_and(|step| (ix..chat.turns.end(ix)).contains(&step)),
+                            outcome,
                             &entity,
                             &chat.messages,
                         ))
@@ -985,9 +989,9 @@ pub(super) fn render_timeline_item(
                     None => return div().into_any_element(),
                 }
             } else {
-                // An edit or a write carries replacements to show.
-                let diff = has_tool_input(item, "edits")
-                    || (has_tool_input(item, "content") && has_tool_input(item, "path"));
+                // Only the first-party editing tools carry replacements
+                // here. An unrelated MCP payload may have the same keys.
+                let diff = changed_path(item).is_some();
                 render_tool(item, revision, expanded, diff, transcript)
             }
         }
@@ -1784,12 +1788,71 @@ pub(super) fn render_plan_row(entry: &PlanEntry) -> Div {
     )
 }
 
+/// Whether this is the first-party tool whose input is an edit or write.
+/// Host-owned labels identify tools; coincidentally similar MCP payloads
+/// must not become local file changes. Unknown labels retain raw fallback.
+pub(super) fn changed_path(item: &AgentTimelineItem) -> Option<&str> {
+    let label = item.label.as_ref().filter(|label| label.kind == "tool")?;
+    let input = item.input.as_ref()?.as_object()?;
+    match label.name.as_deref() {
+        Some("edit") => input.get("path")?.as_str(),
+        Some("write")
+            if input
+                .get("content")
+                .is_some_and(serde_json::Value::is_string) =>
+        {
+            input.get("path")?.as_str()
+        }
+        _ => None,
+    }
+}
+
+/// Visit every edit form accepted by EditTool::prepare_arguments, including
+/// its JSON-string/single-object `edits` forms and legacy top-level pair.
+fn for_each_edit(input: &serde_json::Value, mut visit: impl FnMut(&str, &str)) {
+    fn one(value: &serde_json::Value, visit: &mut impl FnMut(&str, &str)) {
+        // EditParams accepts camelCase entries only. A malformed object is
+        // discarded on the top-level fallback, including when JSON-encoded.
+        if let Some(old) = value.get("oldText").and_then(serde_json::Value::as_str)
+            && let Some(new) = value.get("newText").and_then(serde_json::Value::as_str)
+        {
+            visit(old, new);
+        }
+    }
+    fn edits(value: &serde_json::Value, visit: &mut impl FnMut(&str, &str)) {
+        match value {
+            serde_json::Value::Array(edits) => edits.iter().for_each(|edit| one(edit, visit)),
+            serde_json::Value::Object(_) => one(value, visit),
+            _ => {}
+        }
+    }
+    if let Some(raw_edits) = input.get("edits") {
+        if let Some(encoded) = raw_edits.as_str() {
+            if let Ok(decoded) = serde_json::from_str::<serde_json::Value>(encoded) {
+                edits(&decoded, &mut visit);
+            }
+        } else {
+            edits(raw_edits, &mut visit);
+        }
+    }
+    // The host appends this pair to `edits`, rather than choosing one or
+    // the other. It also falls back to an empty edit list, so the pair can
+    // be valid even beside an absent, null or malformed `edits` value.
+    if let (Some(old), Some(new)) = (
+        input.get("oldText").and_then(serde_json::Value::as_str),
+        input.get("newText").and_then(serde_json::Value::as_str),
+    ) {
+        visit(old, new);
+    }
+}
+
 /// +/- lines of an edit or write tool input, stopping at the display cap.
 pub(super) fn diff_lines_for(item: &AgentTimelineItem) -> Vec<(char, SharedString)> {
     let mut lines: Vec<(char, SharedString)> = Vec::new();
-    let Some(serde_json::Value::Object(map)) = item.input.as_ref() else {
+    let Some(path) = changed_path(item) else {
         return lines;
     };
+    let input = item.input.as_ref().expect("changed_path has an input");
     let push = |lines: &mut Vec<(char, SharedString)>, sign: char, text: &str| {
         for line in text.lines() {
             if lines.len() >= MAX_DIFF_LINES {
@@ -1799,24 +1862,20 @@ pub(super) fn diff_lines_for(item: &AgentTimelineItem) -> Vec<(char, SharedStrin
         }
         true
     };
-    if let Some(path) = map.get("path").and_then(|v| v.as_str()) {
-        push(&mut lines, ' ', path);
-    }
-    if let Some(serde_json::Value::Array(edits)) = map.get("edits") {
-        for edit in edits {
-            if let Some(old) = edit.get("oldText").and_then(|v| v.as_str())
-                && !push(&mut lines, '-', old)
-            {
-                return lines;
+    push(&mut lines, ' ', path);
+    if item
+        .label
+        .as_ref()
+        .is_some_and(|label| label.name.as_deref() == Some("edit"))
+    {
+        let mut full = false;
+        for_each_edit(input, |old, new| {
+            if full {
+                return;
             }
-            if let Some(new) = edit.get("newText").and_then(|v| v.as_str())
-                && !push(&mut lines, '+', new)
-            {
-                return lines;
-            }
-        }
-    }
-    if let Some(content) = map.get("content").and_then(|v| v.as_str()) {
+            full = !push(&mut lines, '-', old) || !push(&mut lines, '+', new);
+        });
+    } else if let Some(content) = input.get("content").and_then(|value| value.as_str()) {
         push(&mut lines, '+', content);
     }
     lines
@@ -1825,19 +1884,22 @@ pub(super) fn diff_lines_for(item: &AgentTimelineItem) -> Vec<(char, SharedStrin
 /// How many lines an edit or write adds and removes, counted from the
 /// whole input. `diff_lines_for` stops at the display cap; this does not.
 pub(super) fn diff_counts(item: &AgentTimelineItem) -> (usize, usize) {
-    let Some(serde_json::Value::Object(map)) = item.input.as_ref() else {
+    if changed_path(item).is_none() {
         return (0, 0);
-    };
-    let lines = |text: Option<&serde_json::Value>| {
-        text.and_then(|text| text.as_str())
-            .map_or(0, |text| text.lines().count())
-    };
-    let (mut added, mut removed) = (lines(map.get("content")), 0);
-    if let Some(serde_json::Value::Array(edits)) = map.get("edits") {
-        for edit in edits {
-            removed += lines(edit.get("oldText"));
-            added += lines(edit.get("newText"));
-        }
+    }
+    let input = item.input.as_ref().expect("changed_path has an input");
+    let (mut added, mut removed) = (0, 0);
+    if item
+        .label
+        .as_ref()
+        .is_some_and(|label| label.name.as_deref() == Some("edit"))
+    {
+        for_each_edit(input, |old, new| {
+            removed += old.lines().count();
+            added += new.lines().count();
+        });
+    } else if let Some(content) = input.get("content").and_then(|value| value.as_str()) {
+        added = content.lines().count();
     }
     (added, removed)
 }
@@ -1929,11 +1991,7 @@ fn render_tool(
     // What the user was asked about the call says more than its status: a
     // call that waits is not running, and one the user refused did not
     // fail on its own.
-    let state = match transcript.asked {
-        Some(step::Asked::Waiting) => StepState::Waiting,
-        Some(step::Asked::Denied) => StepState::Denied,
-        Some(step::Asked::Allowed) | None => StepState::of(item.status.as_deref()),
-    };
+    let state = step::state(item.status.as_deref(), transcript.asked);
     let item_id = item.id.clone();
     let chat = transcript.chat.clone();
     let derived = transcript.derived.get(item, revision);
@@ -2891,6 +2949,19 @@ mod motion_tests {
         }
     }
 
+    fn file_tool(tool: &str, input: serde_json::Value) -> AgentTimelineItem {
+        AgentTimelineItem {
+            status: Some("completed".into()),
+            label: Some(maple_agent::agent::AgentTimelineLabel {
+                kind: "tool".into(),
+                name: Some(tool.into()),
+                detail: None,
+            }),
+            input: Some(input),
+            ..item(tool, "tool", None)
+        }
+    }
+
     fn screen(cx: &mut TestAppContext) -> Entity<ChatScreen> {
         cx.executor().allow_parking();
         cx.new(|cx| {
@@ -3804,6 +3875,11 @@ mod motion_tests {
             for row in [
                 AgentTimelineItem {
                     status: Some("completed".to_string()),
+                    label: Some(maple_agent::agent::AgentTimelineLabel {
+                        kind: "tool".into(),
+                        name: Some("edit".into()),
+                        detail: None,
+                    }),
                     input: Some(serde_json::json!({
                         "path": "src/net/retry.rs",
                         "edits": [{
@@ -3858,6 +3934,135 @@ mod motion_tests {
             "the file's changes open inside the card, and the row grows again: \
              {diff:?} in {opened:?} in {reply:?}"
         );
+    }
+
+    #[gpui::test]
+    fn partial_or_clipped_turn_inputs_do_not_claim_a_complete_change_card(cx: &mut TestAppContext) {
+        let (chat, cx) = pane(cx, 0);
+        chat.update(cx, |chat, _cx| {
+            let edit = file_tool(
+                "edit",
+                serde_json::json!({
+                    "path": "src/timed.rs",
+                    "edits": [{"oldText": "loop {", "newText": "bounded_loop {"}]
+                }),
+            );
+            let reply = item("reply", "message", Some("Done."));
+            chat.replace_timeline(vec![edit.clone(), reply.clone()]);
+            assert!(chat.changes_under(1).is_none(), "no known turn start");
+
+            chat.replace_timeline(vec![
+                user_item("ask", "Bound the loop"),
+                edit.clone(),
+                reply.clone(),
+            ]);
+            let (_, card) = chat.changes_under(2).expect("complete turn data");
+            assert_eq!(card.files(), vec![("src/timed.rs", "+1", "−1")]);
+
+            let mut clipped = edit;
+            clipped.truncated = Some(1);
+            chat.replace_timeline(vec![
+                user_item("ask", "Bound the loop"),
+                clipped,
+                item("reply", "message", Some("Done.")),
+            ]);
+            assert!(chat.changes_under(2).is_none(), "input may be incomplete");
+
+            // A window that retains its beginning can still have evicted
+            // the last edit and final reply, leaving an interim reply at
+            // the tail. A finished run cannot make the cuts disappear.
+            chat.replace_timeline(vec![
+                user_item("ask", "Bound the loop"),
+                file_tool(
+                    "edit",
+                    serde_json::json!({
+                        "path": "src/timed.rs",
+                        "edits": [{"oldText": "a", "newText": "A"}]
+                    }),
+                ),
+                item("interim", "message", Some("Checking.")),
+            ]);
+            chat.pages.after = true;
+            assert!(chat.changes_under(2).is_none());
+            chat.pages.after = false;
+            assert!(chat.changes_under(2).is_some());
+        });
+    }
+
+    #[gpui::test]
+    fn a_live_snapshot_with_newest_rows_does_not_fake_a_finished_turn(cx: &mut TestAppContext) {
+        use maple_agent::agent::AgentRunEvent;
+
+        let (chat, cx) = pane(cx, 0);
+        chat.update(cx, |chat, cx| {
+            chat.handle_service_event(run_event(AgentRunEvent::Started), cx);
+            for row in [
+                user_item("ask", "Run the test"),
+                file_tool(
+                    "edit",
+                    serde_json::json!({
+                        "path": "src/lib.rs",
+                        "edits": [{"oldText": "fn old() {}", "newText": "fn fixed() {}"}]
+                    }),
+                ),
+                item("reply", "message", Some("I will verify this.")),
+            ] {
+                chat.handle_service_event(run_event(AgentRunEvent::TimelineItem(row)), cx);
+            }
+            // The host's page left out some of the run's live rows.
+            chat.pages.snapshot_partial = true;
+            assert!(chat.changes_under(2).is_none());
+            assert!(matches!(chat.turn_line(1, false), turn::Line::Live { .. }));
+
+            chat.handle_service_event(
+                run_event(AgentRunEvent::Finished(
+                    maple_agent::agent::AgentRunTerminal::Completed,
+                )),
+                cx,
+            );
+            assert!(chat.changes_under(2).is_none());
+            chat.pages.snapshot_partial = false;
+            chat.pages.after = true;
+            assert!(chat.changes_under(2).is_none());
+            chat.pages.after = false;
+            assert!(chat.changes_under(2).is_some());
+        });
+    }
+
+    #[gpui::test]
+    fn paged_and_externally_started_history_does_not_become_live(cx: &mut TestAppContext) {
+        use maple_agent::agent::AgentRunEvent;
+
+        let (chat, cx) = pane(cx, 0);
+        chat.update(cx, |chat, cx| {
+            chat.replace_timeline(vec![
+                user_item("old-user", "old request"),
+                file_tool(
+                    "edit",
+                    serde_json::json!({
+                        "path": "old",
+                        "edits": [{"oldText": "a", "newText": "A"}]
+                    }),
+                ),
+                item("old-reply", "message", Some("Finished.")),
+            ]);
+            chat.pages.snapshot_partial = true;
+            chat.handle_service_event(run_event(AgentRunEvent::Started), cx);
+            assert!(chat.awaiting_first_token);
+            assert_eq!(chat.turn_line(1, false), turn::Line::Done { worked: None });
+
+            // While paged back an incoming live row is omitted and marks
+            // the gap. That does not make this historical lead the new run.
+            chat.pages.after = true;
+            chat.pages.snapshot_partial = false;
+            chat.handle_service_event(
+                run_event(AgentRunEvent::TimelineItem(item("unseen", "tool", None))),
+                cx,
+            );
+            assert!(!chat.awaiting_first_token);
+            assert!(chat.pages.has_missed_live());
+            assert_eq!(chat.turn_line(1, false), turn::Line::Done { worked: None });
+        });
     }
 
     #[gpui::test]
