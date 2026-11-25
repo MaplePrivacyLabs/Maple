@@ -121,6 +121,9 @@ pub(super) struct Turns {
     replies: HashMap<usize, usize>,
     /// The reply of the turn at the end, while no step has followed it.
     tail_reply: Option<usize>,
+    /// The first turn whose user row is outside the loaded window.
+    partial: Option<usize>,
+    seen_user: bool,
     chunk: Option<usize>,
 }
 
@@ -183,6 +186,8 @@ impl Turns {
         self.tail = None;
         self.replies.clear();
         self.tail_reply = None;
+        self.partial = None;
+        self.seen_user = false;
         for item in timeline {
             self.push(item);
         }
@@ -193,6 +198,7 @@ impl Turns {
         let index = self.rows.len();
         let (starts_turn, is_step, breaks_chunk) = part(item);
         let row = if starts_turn {
+            self.seen_user = true;
             self.tail = None;
             self.chunk = None;
             self.tail_reply = None;
@@ -226,6 +232,9 @@ impl Turns {
                 self.chunk = Some(index);
                 if self.tail.is_none() {
                     self.tail = Some(index);
+                    if !self.seen_user {
+                        self.partial = Some(index);
+                    }
                     TurnRow::Lead
                 } else {
                     TurnRow::Chunk
@@ -246,6 +255,12 @@ impl Turns {
 
     pub(super) fn tail(&self) -> Option<usize> {
         self.tail
+    }
+
+    /// The earliest step of a turn supplies no complete count if its user
+    /// row was cut off by the page boundary. Earlier rows can complete it.
+    pub(super) fn complete_turn(&self, lead: usize) -> bool {
+        self.partial != Some(lead)
     }
 
     /// The lead of the turn the row at `row` is the reply of.
@@ -610,23 +625,20 @@ pub(super) fn render_chunk(
     chunk: &Chunk,
     open: bool,
     live: bool,
-    // One of the chunk's calls waits for the user to allow it. Folded, the
-    // step that says so is hidden, so the header says it.
-    waiting: bool,
+    // A folded header shows a waiting or locally settled call's effective
+    // state, rather than the raw status of an apparently failed refusal.
+    outcome: Option<step::StepState>,
     chat: &gpui::WeakEntity<ChatScreen>,
     messages: &MessageCache,
 ) -> Div {
     let label = messages.get("chat-activity-steps", [("count", chunk.count().into())]);
-    let state = if waiting {
-        Some(step::StepState::Waiting)
-    } else {
-        chunk.state(live)
-    };
+    let state = outcome.or_else(|| chunk.state(live));
     let status = state.map(|state| {
         let (key, ink) = match state {
             step::StepState::Failed => ("chat-status-failed", theme::status_error()),
             step::StepState::Stopped => ("chat-status-stopped", theme::text_muted()),
             step::StepState::Waiting => ("chat-status-waiting", theme::accent_ink()),
+            step::StepState::Denied => ("chat-status-denied", theme::text_muted()),
             _ => ("chat-status-running", theme::text_muted()),
         };
         let id = SharedString::from(format!("activity-status-{lead}"));
@@ -728,6 +740,18 @@ impl ChatScreen {
         if self.turn_runs(lead) {
             return self.live_line(still);
         }
+        if self.turns.tail().is_some_and(|turn| lead >= turn)
+            && self.is_run_active()
+            && !self.awaiting_first_token
+            && !self.pages.after
+            && self.pages.has_live_gap()
+        {
+            // The host can omit older live rows while retaining the newest.
+            // Show undetermined active work, not a completed turn with an
+            // unknown duration. A newly Started run still waiting for its
+            // user row, or a paged-back historical tail, must not borrow it.
+            return self.live_line(true);
+        }
         Line::Done {
             worked: self
                 .timeline
@@ -804,10 +828,12 @@ impl ChatScreen {
     /// started it and its first event report it; the second changes
     /// nothing.
     pub(super) fn run_began(&mut self, session_id: &str, run_id: &str, cx: &mut Context<Self>) {
-        if self
-            .run_clocks
-            .get(session_id)
-            .is_some_and(|timed| timed.run_id == run_id)
+        if !self.is_selected(session_id)
+            || !self.awaiting_first_token
+            || self
+                .run_clocks
+                .get(session_id)
+                .is_some_and(|timed| timed.run_id == run_id)
         {
             return;
         }
@@ -959,23 +985,31 @@ impl ChatScreen {
 
     /// The user answered a permission request: the call it was about keeps
     /// what they said for as long as this view shows the task.
-    pub(super) fn settle_permission(&mut self, question: &crate::backend::PendingQuestion) {
-        let Some(asked) = question
-            .questions
-            .iter()
-            .position(|entry| entry.permission.is_some())
-        else {
-            return;
-        };
-        let Some(call) = self.waiting_step().and_then(|step| self.timeline.get(step)) else {
-            return;
-        };
-        // Only the first option, "Allow once", lets the call run.
-        let allowed = self
-            .question_selected
-            .get(&asked)
-            .is_some_and(|selection| selection.picked.contains(&0));
-        self.step_permissions.insert(call.id.clone(), allowed);
+    /// Record a choice only after the host accepts it. Capture this row
+    /// before sending: an accepted call may finish before the reply lands.
+    pub(super) fn settle_permission(&mut self, call: String, allowed: bool) {
+        self.step_permissions.insert(call, allowed);
+    }
+
+    /// How the expanded row presents this call. The folded header uses the
+    /// same decision instead of reporting a refused call as a failure.
+    pub(super) fn step_asked(&self, index: usize, waiting: Option<usize>) -> Option<step::Asked> {
+        let item = self.timeline.get(index)?;
+        let live = self
+            .turns
+            .turn_of(index)
+            .is_some_and(|lead| self.turn_runs(lead));
+        if live && waiting == Some(index) {
+            Some(step::Asked::Waiting)
+        } else {
+            self.step_permissions.get(&item.id).map(|allowed| {
+                if *allowed {
+                    step::Asked::Allowed
+                } else {
+                    step::Asked::Denied
+                }
+            })
+        }
     }
 
     /// Paint once a second while a run is timed, so the time on its line
@@ -1016,10 +1050,22 @@ fn call_action(item: &AgentTimelineItem) -> Option<&str> {
 /// Whether the action a request shows is the call's. The request cuts the
 /// middle out of a long one and says so on a line of its own.
 fn same_action(shown: &str, full: &str) -> bool {
-    shown == full
-        || shown.split_once("\n[").is_some_and(|(start, _)| {
-            !start.is_empty() && full.len() > shown.len() && full.starts_with(start)
-        })
+    const SHOWN: usize = 1_500;
+    if shown == full {
+        return true;
+    }
+    let length = full.chars().count();
+    if length <= SHOWN {
+        return false;
+    }
+    let kept = SHOWN / 2;
+    let start: String = full.chars().take(kept).collect();
+    let end: String = full.chars().skip(length - kept).collect();
+    shown
+        == format!(
+            "{start}\n[{} characters not shown]\n{end}",
+            length - 2 * kept
+        )
 }
 
 #[cfg(test)]
@@ -1044,6 +1090,67 @@ mod tests {
             created_ms: 0,
             merge: "replace".into(),
         }
+    }
+
+    #[test]
+    fn a_full_row_can_complete_a_page_pseudo_lead() {
+        let reply = AgentTimelineItem {
+            text: Some("Done".into()),
+            ..item("message", Some("assistant"))
+        };
+        let mut turns = Turns::default();
+        turns.rebuild(&[item("tool", None), reply.clone()]);
+        assert!(!turns.complete_turn(0));
+        turns.rebuild(&[item("message", Some("user")), item("tool", None), reply]);
+        assert!(turns.complete_turn(1));
+        assert_eq!(turns.reply_of(2), Some(1));
+    }
+
+    #[test]
+    fn folded_chunks_use_the_same_permission_state_as_expanded_steps() {
+        let call = AgentTimelineItem {
+            id: "call".into(),
+            status: Some("failed".into()),
+            ..item("tool", None)
+        };
+        let mut turns = Turns::default();
+        turns.rebuild(std::slice::from_ref(&call));
+        assert_eq!(
+            step::state(call.status.as_deref(), Some(step::Asked::Waiting)),
+            step::StepState::Waiting
+        );
+        assert_eq!(
+            turns.chunk(0).unwrap().state(false),
+            Some(step::StepState::Failed)
+        );
+        assert_eq!(
+            step::state(call.status.as_deref(), Some(step::Asked::Denied)),
+            step::StepState::Denied
+        );
+        assert_eq!(
+            step::state(call.status.as_deref(), Some(step::Asked::Allowed)),
+            step::StepState::Failed
+        );
+    }
+
+    #[test]
+    fn clipped_permission_actions_use_the_hosts_unicode_character_budget() {
+        let full = format!("{}é{}", "a".repeat(750), "b".repeat(750));
+        let shown = format!(
+            "{}\n[1 characters not shown]\n{}",
+            "a".repeat(750),
+            "b".repeat(750)
+        );
+        assert!(same_action(&shown, &full));
+        assert!(!same_action("different command", &full));
+
+        let long = "x".repeat(2000);
+        let shown = format!(
+            "{}\n[500 characters not shown]\n{}",
+            "x".repeat(750),
+            "x".repeat(750)
+        );
+        assert!(same_action(&shown, &long));
     }
 
     #[test]

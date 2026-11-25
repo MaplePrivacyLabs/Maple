@@ -3565,9 +3565,21 @@ impl ChatScreen {
             })
     }
 
+    /// Page replacement, navigation and recovery can lose the observed
+    /// boundaries a view-local clock depends on. Omit its time instead of
+    /// assigning elapsed time to a turn whose beginning was not seen.
+    /// A same-task reload may land between `Started` and its user row:
+    /// retain that observed wait. Navigation and recovery clear it through
+    /// `reset_transcript_view` instead.
+    fn invalidate_turn_timing(&mut self) {
+        self.turn_worked.clear();
+        self.run_clocks.clear();
+    }
+
     /// Install a new timeline and reset every per-item structure that is
     /// keyed by its contents.
     fn replace_timeline(&mut self, timeline: Vec<AgentTimelineItem>) {
+        self.invalidate_turn_timing();
         if let Some(session) = self.selected_session.clone() {
             self.reconcile_send_snapshot(&session, &timeline);
         }
@@ -3871,7 +3883,7 @@ impl ChatScreen {
         self.attachment_viewport = 0..0;
         self.toggled_tools.clear();
         self.toggled_chunks.clear();
-        self.turn_worked.clear();
+        self.invalidate_turn_timing();
         self.step_permissions.clear();
         self.turn_changes.clear();
         self.open_changes.clear();
@@ -6017,19 +6029,11 @@ impl ChatScreen {
         if answer.trim().is_empty() {
             return;
         }
-        self.settle_permission(&question);
+        let permission = self.permission_answer_intent(&answer);
         let request_id = question.request_id.clone();
         let callback_request_id = request_id.clone();
         let backend = self.backend.clone();
         let user_id = self.user_id.clone();
-        // Drop the answered question and its input so the next card starts
-        // fresh; a queued question's event already fired, so the input is
-        // recreated right away when one is showing.
-        self.pending_questions
-            .retain(|queued| queued.request_id != question.request_id);
-        self.reset_question_card(cx);
-        self.sync_sidebar_activity(cx);
-        cx.notify();
         self.call_semantic(
             async move {
                 backend
@@ -6038,31 +6042,90 @@ impl ChatScreen {
                     .map_err(UiFailure::from)
             },
             cx,
-            move |this, result, cx| match result {
-                Ok(true) => {}
-                Ok(false) => {
-                    log::warn!(
-                        "answer for question {} matched nothing pending",
-                        callback_request_id
-                    );
-                    this.notice = Some(UiText::key("chat-no-longer-waiting"));
-                    cx.notify();
-                }
-                Err(message) => {
-                    log::warn!(
-                        "answer for question {} failed: {message:?}",
-                        callback_request_id
-                    );
-                    this.notice = Some(UiText::context(
-                        "chat-answer-failed",
-                        "message",
-                        message.into(),
-                    ));
-                    cx.notify();
-                }
+            move |this, result, cx| {
+                this.finish_question_answer(callback_request_id, permission, result, cx);
             },
         );
     }
+
+    /// Capture the call and what the encoded answer means to the host before
+    /// sending. Neither is committed until `Ok(true)` comes back.
+    fn permission_answer_intent(&self, answer: &str) -> Option<(String, bool)> {
+        let question = self.current_question()?;
+        let entry = question
+            .questions
+            .iter()
+            .find(|entry| entry.permission.is_some())?;
+        let call = self
+            .waiting_step()
+            .and_then(|step| self.timeline.get(step))?
+            .id
+            .clone();
+        // Derive this from what crosses the host boundary, not from which
+        // option index was picked: a typed "Allow once" also allows.
+        let values = serde_json::from_str::<serde_json::Value>(answer)
+            .ok()
+            .and_then(|value| {
+                value
+                    .get("answers")?
+                    .get(&entry.id)?
+                    .get("answers")?
+                    .as_array()
+                    .map(|values| {
+                        values
+                            .iter()
+                            .filter_map(serde_json::Value::as_str)
+                            .map(str::to_owned)
+                            .collect::<Vec<_>>()
+                    })
+            })
+            .unwrap_or_else(|| vec![answer.trim().to_owned()]);
+        Some((
+            call,
+            values.first().map(String::as_str) == Some("Allow once"),
+        ))
+    }
+
+    /// Complete one answer's RPC. Keep a rejected or failed submission
+    /// intact; a late reply from an earlier card must not erase a newer one.
+    fn finish_question_answer(
+        &mut self,
+        request_id: String,
+        permission: Option<(String, bool)>,
+        result: Result<bool, UiFailure>,
+        cx: &mut Context<Self>,
+    ) {
+        match result {
+            Ok(true) => {
+                if let Some((call, allowed)) = permission {
+                    self.settle_permission(call, allowed);
+                }
+                let displayed = self
+                    .current_question()
+                    .is_some_and(|question| question.request_id == request_id);
+                self.pending_questions
+                    .retain(|question| question.request_id != request_id);
+                if displayed {
+                    self.reset_question_card(cx);
+                }
+                self.sync_sidebar_activity(cx);
+            }
+            Ok(false) => {
+                log::warn!("answer for question {request_id} matched nothing pending");
+                self.notice = Some(UiText::key("chat-no-longer-waiting"));
+            }
+            Err(message) => {
+                log::warn!("answer for question {request_id} failed: {message:?}");
+                self.notice = Some(UiText::context(
+                    "chat-answer-failed",
+                    "message",
+                    message.into(),
+                ));
+            }
+        }
+        cx.notify();
+    }
+
     /// Dismiss a question: cancel the run like the Stop button and
     /// unblock the tool with an empty answer if it is still waiting.
     pub(super) fn toggle_question_collapsed(&mut self, cx: &mut Context<Self>) {
@@ -6216,10 +6279,9 @@ impl ChatScreen {
                 .unwrap_or_else(|| self.step_answer(question, step, cx));
             answers.insert(entry.id.clone(), serde_json::json!({ "answers": answer }));
         }
-        let composed = serde_json::json!({ "answers": answers }).to_string();
-        self.question_step_answers.clear();
-        self.question_step = 0;
-        composed
+        // This is only the payload. Keep every saved answer, ordinal and
+        // draft until the host accepts it (or the request resolves elsewhere).
+        serde_json::json!({ "answers": answers }).to_string()
     }
 
     pub(crate) fn sign_out(&mut self, cx: &mut Context<Self>) {
@@ -6784,6 +6846,7 @@ impl ChatScreen {
         if self.host_recovery.store_maintenance {
             return;
         }
+        self.invalidate_turn_timing();
         self.host_recovery.epoch += 1;
         let epoch = self.host_recovery.epoch;
         self.host_recovery.unavailable = true;
@@ -7163,8 +7226,11 @@ impl ChatScreen {
                     .is_some_and(|question| question.request_id == request_id);
                 self.pending_questions
                     .retain(|question| question.request_id != request_id);
+                // A different request's resolution must not discard a
+                // draft. Resolving the shown request resets every stage,
+                // including saved steps, free text and its placeholder.
                 if showing {
-                    self.question_selected.clear();
+                    self.reset_question_card(cx);
                 }
                 self.sync_sidebar_activity(cx);
             }
@@ -7353,6 +7419,11 @@ impl ChatScreen {
             AgentRunEvent::Started => {
                 self.active_runs
                     .insert(session_id.to_string(), run_id.to_string());
+                // A run begun on another surface must not make the previous
+                // turn live before this turn's canonical user row arrives.
+                if self.is_selected(session_id) {
+                    self.awaiting_first_token = true;
+                }
                 self.run_began(session_id, run_id, cx);
                 // The sections read `active_runs`; keep them in step.
                 self.sync_sidebar(cx);
