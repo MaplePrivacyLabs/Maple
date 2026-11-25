@@ -3636,8 +3636,10 @@ mod password_reset_limits {
         // own secret, all through the async app-state creation path. Each
         // worker owns a minimal runtime, so the initiations truly overlap.
         let initiations = 12;
+        let outcomes = std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0));
         std::thread::scope(|scope| {
             let state = &app_state;
+            let outcomes = &outcomes;
             for attempt in 0..initiations {
                 let email = email.clone();
                 scope.spawn(move || {
@@ -3646,22 +3648,34 @@ mod password_reset_limits {
                         .build()
                         .expect("initiation worker runtime should start");
                     runtime.block_on(async move {
-                        let _ = state
+                        if state
                             .create_password_reset_request(
                                 email,
                                 generate_reset_hash(format!("concurrent-cap-{attempt}")),
                                 project.id,
                             )
-                            .await;
+                            .await
+                            .is_ok()
+                        {
+                            outcomes.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+                        }
                     });
                 });
             }
         });
 
+        // Exactly the cap: creation is bounded from below as well as above,
+        // so the test fails on a path that creates nothing.
+        let cap = crate::models::password_reset::PASSWORD_RESET_REQUESTS_PER_HOUR;
         let created = unconsumed_reset_requests(&app_state, &user);
-        assert!(
-            created <= crate::models::password_reset::PASSWORD_RESET_REQUESTS_PER_HOUR,
-            "the durable email cap bounds concurrent creation, got {created}"
+        assert_eq!(
+            created, cap,
+            "concurrent creation must reach and not exceed the durable email cap"
+        );
+        assert_eq!(
+            outcomes.load(std::sync::atomic::Ordering::Relaxed),
+            initiations as usize,
+            "every initiation call itself succeeds; the cap refuses to create rows"
         );
 
         app_state.db.delete_user(&user).unwrap();
@@ -3734,6 +3748,251 @@ mod password_reset_limits {
                 .expect("recent rows should be countable")
         };
         assert_eq!(created, 1, "only the fresh row is inside the window");
+
+        app_state.db.delete_user(&user).unwrap();
+    }
+
+    /// The durable budget binds to the request the submitted code selects,
+    /// not to any other request sharing the secret: a spent request stays
+    /// closed even when a fresher request with the same secret exists, and a
+    /// fresh request never shields a spent one from its own exhaustion.
+    #[tokio::test]
+    #[ignore = "requires AEAD_TAMPER_TEST_DATABASE_URL pointing at disposable migrated local Postgres"]
+    async fn db_reset_budget_binds_to_the_code_selected_request_not_the_secret() {
+        let database_url =
+            std::env::var("AEAD_TAMPER_TEST_DATABASE_URL").expect("disposable migrated Postgres");
+        let app_state = Arc::new(build_local_test_app_state(database_url).await);
+        let project = first_active_project(&app_state);
+        let user = create_user(&app_state, &project, "code-bound").await;
+        let email = user.email.clone().expect("test user has an email");
+        let new_password = test_credential("code-bound-new");
+
+        // Two requests created with the same secret but different codes.
+        let secret = "code-bound-shared-secret".to_string();
+        let first_code = app_state
+            .create_password_reset_request(
+                email.clone(),
+                generate_reset_hash(secret.clone()),
+                project.id,
+            )
+            .await
+            .unwrap();
+        let second_code = app_state
+            .create_password_reset_request(
+                email.clone(),
+                generate_reset_hash(secret.clone()),
+                project.id,
+            )
+            .await
+            .unwrap();
+        assert_ne!(first_code, second_code);
+
+        // Spend the first request's budget with wrong codes.
+        for _ in 0..5 {
+            let result = app_state
+                .confirm_password_reset(
+                    email.clone(),
+                    wrong_code(&first_code),
+                    secret.clone(),
+                    new_password.to_string(),
+                    project.id,
+                )
+                .await;
+            assert!(matches!(result, Err(Error::InvalidPasswordResetRequest)));
+        }
+
+        // The spent request stays closed to its correct code, even though a
+        // fresher request shares the secret and still has its whole budget.
+        let result = app_state
+            .confirm_password_reset(
+                email.clone(),
+                first_code.clone(),
+                secret.clone(),
+                new_password.to_string(),
+                project.id,
+            )
+            .await;
+        assert!(
+            matches!(
+                result,
+                Err(Error::RateLimited(ApiError::RateLimited { .. }))
+            ),
+            "a spent request must stay closed; a same-secret sibling cannot reopen it"
+        );
+        assert!(!password_opens_account(&app_state, &project, &user, new_password).await);
+
+        // Wrong-code guesses charge the shared per-secret budget (#1486
+        // charges every active request whose reset-secret hash matches the
+        // submitted secret), so the same-secret sibling has spent it too and
+        // stays closed to its own correct code.
+        let result = app_state
+            .confirm_password_reset(
+                email.clone(),
+                second_code,
+                secret,
+                new_password.to_string(),
+                project.id,
+            )
+            .await;
+        assert!(
+            matches!(
+                result,
+                Err(Error::RateLimited(ApiError::RateLimited { .. }))
+            ),
+            "wrong-code guesses charge the shared per-secret budget, so the sibling is spent too"
+        );
+        assert!(!password_opens_account(&app_state, &project, &user, new_password).await);
+
+        // A request created with a different secret keeps its own budget and
+        // still completes.
+        let fresh_secret = "code-bound-fresh-secret".to_string();
+        let fresh_code = app_state
+            .create_password_reset_request(
+                email.clone(),
+                generate_reset_hash(fresh_secret.clone()),
+                project.id,
+            )
+            .await
+            .unwrap();
+        app_state
+            .confirm_password_reset(
+                email,
+                fresh_code,
+                fresh_secret,
+                new_password.to_string(),
+                project.id,
+            )
+            .await
+            .expect("a different-secret request must still complete the reset");
+        assert!(password_opens_account(&app_state, &project, &user, new_password).await);
+
+        app_state.db.delete_user(&user).unwrap();
+    }
+
+    /// Expired requests never charge and never spend a sibling's budget: a
+    /// correct code for an expired request reports expiry, a wrong code
+    /// leaves every expired row's counter untouched, and an active sibling
+    /// still completes afterwards.
+    #[tokio::test]
+    #[ignore = "requires AEAD_TAMPER_TEST_DATABASE_URL pointing at disposable migrated local Postgres"]
+    async fn db_expired_requests_report_expiry_without_charging_any_budget() {
+        let database_url =
+            std::env::var("AEAD_TAMPER_TEST_DATABASE_URL").expect("disposable migrated Postgres");
+        let app_state = Arc::new(build_local_test_app_state(database_url).await);
+        let project = first_active_project(&app_state);
+        let user = create_user(&app_state, &project, "expired").await;
+        let email = user.email.clone().expect("test user has an email");
+        let new_password = test_credential("expired-new");
+
+        let expired_secret = "expired-secret".to_string();
+        let expired_code = app_state
+            .create_password_reset_request(
+                email.clone(),
+                generate_reset_hash(expired_secret.clone()),
+                project.id,
+            )
+            .await
+            .unwrap();
+        // Backdate the row past its expiration without touching the clock.
+        {
+            use crate::models::schema::password_reset_requests;
+            let conn = &mut app_state
+                .db
+                .get_pool()
+                .get()
+                .expect("test database connection should be available");
+            diesel::update(password_reset_requests::table)
+                .filter(password_reset_requests::user_id.eq(user.uuid))
+                .filter(
+                    password_reset_requests::hashed_secret
+                        .eq(generate_reset_hash(expired_secret.clone())),
+                )
+                .set(
+                    password_reset_requests::expiration_time
+                        .eq(chrono::Utc::now() - chrono::Duration::hours(1)),
+                )
+                .execute(conn)
+                .expect("the expired fixture row should backdate");
+        }
+
+        // The correct code for the expired request reports expiry, never a
+        // budget response, and never charges.
+        let result = app_state.verify_password_reset_proof(
+            email.clone(),
+            expired_code.clone(),
+            expired_secret.clone(),
+            project.id,
+        );
+        assert!(
+            matches!(result, Err(Error::PasswordResetExpired)),
+            "an expired request must report expiry, got {result:?}"
+        );
+
+        // A wrong code against the same secret is refused without charging:
+        // the expired row's counter must stay at zero.
+        let _ = app_state
+            .confirm_password_reset(
+                email.clone(),
+                wrong_code(&expired_code),
+                expired_secret.clone(),
+                new_password.to_string(),
+                project.id,
+            )
+            .await;
+        let result = app_state.verify_password_reset_proof(
+            email.clone(),
+            wrong_code(&expired_code),
+            expired_secret,
+            project.id,
+        );
+        assert!(
+            matches!(result, Err(Error::InvalidPasswordResetRequest))
+                | matches!(result, Err(Error::PasswordResetExpired)),
+            "a wrong code against an expired request is refused, got {result:?}"
+        );
+        let expired_attempts = {
+            use crate::models::schema::password_reset_requests;
+            let conn = &mut app_state
+                .db
+                .get_pool()
+                .get()
+                .expect("test database connection should be available");
+            password_reset_requests::table
+                .filter(password_reset_requests::user_id.eq(user.uuid))
+                .filter(
+                    password_reset_requests::hashed_secret
+                        .eq(generate_reset_hash("expired-secret".to_string())),
+                )
+                .select(password_reset_requests::failed_attempts)
+                .first::<i32>(conn)
+                .expect("the expired row should load")
+        };
+        assert_eq!(
+            expired_attempts, 0,
+            "an expired request must never be charged"
+        );
+
+        // An active sibling request still completes with its whole budget.
+        let active_secret = "expired-active-secret".to_string();
+        let active_code = app_state
+            .create_password_reset_request(
+                email.clone(),
+                generate_reset_hash(active_secret.clone()),
+                project.id,
+            )
+            .await
+            .unwrap();
+        app_state
+            .confirm_password_reset(
+                email,
+                active_code,
+                active_secret,
+                new_password.to_string(),
+                project.id,
+            )
+            .await
+            .expect("an active sibling must still complete after expired refusals");
+        assert!(password_opens_account(&app_state, &project, &user, new_password).await);
 
         app_state.db.delete_user(&user).unwrap();
     }

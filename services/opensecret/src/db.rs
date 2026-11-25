@@ -247,20 +247,13 @@ pub trait DBConnection {
         new_request: NewPasswordResetRequest,
     ) -> Result<Option<PasswordResetRequest>, DBError>;
     /// Atomically charges one failed email-code guess to the durable budget
-    /// of the account's unconsumed requests created with the secret. Fails
+    /// of the account's active requests created with the secret. Fails
     /// closed once every matching request's budget is exhausted.
     fn charge_password_reset_attempt_for_secret(
         &self,
         user_id: Uuid,
         hashed_secret: &str,
     ) -> Result<(), DBError>;
-    /// The newest unconsumed request for the account created with the
-    /// secret: the request a completion through this secret would select.
-    fn get_password_reset_request_by_user_id_and_secret(
-        &self,
-        user_id: Uuid,
-        hashed_secret: &str,
-    ) -> Result<Option<PasswordResetRequest>, DBError>;
     fn get_password_reset_request_by_user_id_and_code(
         &self,
         user_id: Uuid,
@@ -1176,29 +1169,14 @@ impl DBConnection for PostgresConnection {
             Err(PasswordResetError::AttemptBudgetExhausted) => {
                 Err(DBError::PasswordResetRequestNotFound)
             }
+            Err(PasswordResetError::NoActivePasswordResetRequest) => Err(
+                DBError::PasswordResetError(PasswordResetError::NoActivePasswordResetRequest),
+            ),
             Err(e) => {
                 error!("Failed to charge password reset attempt: {:?}", e);
                 Err(DBError::from(e))
             }
         }
-    }
-
-    fn get_password_reset_request_by_user_id_and_secret(
-        &self,
-        user_id: Uuid,
-        hashed_secret: &str,
-    ) -> Result<Option<PasswordResetRequest>, DBError> {
-        let conn = &mut self.db.get().map_err(|_| DBError::ConnectionError)?;
-        let result = PasswordResetRequest::newest_unconsumed_for_user_id_and_secret(
-            conn,
-            user_id,
-            hashed_secret,
-        )
-        .map_err(DBError::from);
-        if let Err(ref e) = result {
-            error!("Failed to look up password reset request: {:?}", e);
-        }
-        result
     }
 
     fn get_password_reset_request_by_user_id_and_code(

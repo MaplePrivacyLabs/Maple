@@ -11,6 +11,8 @@ pub enum PasswordResetError {
     DatabaseError(#[from] diesel::result::Error),
     #[error("No attempt budget left for this reset request")]
     AttemptBudgetExhausted,
+    #[error("No active reset request carries this secret")]
+    NoActivePasswordResetRequest,
 }
 
 /// Durable per-request guess budget shared by every process that reaches the
@@ -88,14 +90,15 @@ impl PasswordResetRequest {
     }
 
     /// Charges one failed guess to the durable budget of the account's
-    /// unconsumed requests created with `hashed_secret`.
+    /// active requests created with `hashed_secret`.
     ///
     /// Used when the submitted code matched no request: the secret has
     /// already been proven to belong to at least one unconsumed request (the
     /// admission check), so the wrong code is charged to that request's
-    /// owner. The guarded `UPDATE` matches only rows carrying that secret, so
-    /// nobody without the secret can spend this budget, and an unrelated
-    /// secret cannot burn anyone else's.
+    /// owner. The guarded `UPDATE` matches only active rows carrying that
+    /// secret, so nobody without the secret can spend this budget, an
+    /// unrelated secret cannot burn anyone else's, and expired requests keep
+    /// their spent budget without charging further.
     pub fn charge_failed_attempt_for_secret(
         conn: &mut PgConnection,
         lookup_user_id: Uuid,
@@ -107,6 +110,13 @@ impl PasswordResetRequest {
                 .filter(password_reset_requests::hashed_secret.eq(lookup_hashed_secret))
                 .filter(password_reset_requests::is_reset.eq(false))
                 .filter(
+                    password_reset_requests::expiration_time.gt(diesel::dsl::sql::<
+                        diesel::sql_types::Timestamptz,
+                    >(
+                        "clock_timestamp()"
+                    )),
+                )
+                .filter(
                     password_reset_requests::failed_attempts.lt(PASSWORD_RESET_MAX_FAILED_ATTEMPTS),
                 ),
         )
@@ -116,50 +126,36 @@ impl PasswordResetRequest {
         )
         .execute(conn)?;
         if charged == 0 {
+            // Distinguish a spent budget from a secret whose requests have
+            // all left the active window: only the former is a budget
+            // failure the caller reports as rate-limited.
+            let any_active = diesel::select(diesel::dsl::exists(
+                password_reset_requests::table
+                    .filter(password_reset_requests::user_id.eq(lookup_user_id))
+                    .filter(password_reset_requests::hashed_secret.eq(lookup_hashed_secret))
+                    .filter(password_reset_requests::is_reset.eq(false))
+                    .filter(
+                        password_reset_requests::expiration_time.gt(diesel::dsl::sql::<
+                            diesel::sql_types::Timestamptz,
+                        >(
+                            "clock_timestamp()"
+                        )),
+                    ),
+            ))
+            .get_result::<bool>(conn)?;
+            if !any_active {
+                return Err(PasswordResetError::NoActivePasswordResetRequest);
+            }
             return Err(PasswordResetError::AttemptBudgetExhausted);
         }
         Ok(())
     }
 
-    /// The newest unconsumed request for the account created with
-    /// `hashed_secret`, if any: the request a completion through this
-    /// secret would select. Expiry is left to the caller.
-    pub fn newest_unconsumed_for_user_id_and_secret(
-        conn: &mut PgConnection,
-        lookup_user_id: Uuid,
-        lookup_hashed_secret: &str,
-    ) -> Result<Option<PasswordResetRequest>, PasswordResetError> {
-        password_reset_requests::table
-            .filter(password_reset_requests::user_id.eq(lookup_user_id))
-            .filter(password_reset_requests::hashed_secret.eq(lookup_hashed_secret))
-            .filter(password_reset_requests::is_reset.eq(false))
-            .order(password_reset_requests::id.desc())
-            .first::<PasswordResetRequest>(conn)
-            .optional()
-            .map_err(PasswordResetError::DatabaseError)
-    }
-
     /// Whether this request still has unused guess budget. A read-only view
-    /// of the same durable counter `charge_failed_attempt` spends.
+    /// of the same durable counter `charge_failed_attempt_for_secret`
+    /// spends.
     pub fn has_attempt_budget(&self) -> bool {
         self.failed_attempts < PASSWORD_RESET_MAX_FAILED_ATTEMPTS
-    }
-
-    /// Count of this account's reset requests created inside the rolling
-    /// email window. Every request row means one sent email, so this count is
-    /// the durable per-account email budget already spent.
-    pub fn count_recent_requests_for_user(
-        conn: &mut PgConnection,
-        lookup_user_id: Uuid,
-    ) -> Result<i64, PasswordResetError> {
-        let window_start =
-            Utc::now() - chrono::Duration::seconds(PASSWORD_RESET_EMAIL_WINDOW_SECONDS);
-        password_reset_requests::table
-            .filter(password_reset_requests::user_id.eq(lookup_user_id))
-            .filter(password_reset_requests::created_at.gt(window_start))
-            .count()
-            .get_result(conn)
-            .map_err(PasswordResetError::DatabaseError)
     }
 }
 

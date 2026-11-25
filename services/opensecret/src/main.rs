@@ -14,7 +14,9 @@ use crate::login_routes::RegisterCredentials;
 use crate::models::account_deletion::{AccountDeletionError, NewAccountDeletionRequest};
 use crate::models::email_verification::{EmailVerificationError, NewEmailVerification};
 use crate::models::oauth::{NewUserOAuthConnection, OAuthError};
-use crate::models::password_reset::{NewPasswordResetRequest, PasswordResetRequest};
+use crate::models::password_reset::{
+    NewPasswordResetRequest, PasswordResetError, PasswordResetRequest,
+};
 use crate::models::platform_password_reset::NewPlatformPasswordResetRequest;
 use crate::models::platform_users::PlatformUser;
 use crate::sqs::SqsEventPublisher;
@@ -2272,22 +2274,6 @@ impl AppState {
             .check_available(attempt_key)
             .map_err(Error::RateLimited)?;
 
-        // The durable budget closes the request once its attempts are spent,
-        // even to the correct code: check it on the request this secret would
-        // select, before any code is examined, mirroring the process-local
-        // limiter.
-        let budget_request = self
-            .db
-            .get_password_reset_request_by_user_id_and_secret(user.uuid, &hashed_plaintext)?;
-        match &budget_request {
-            Some(request) if !request.is_expired() && !request.has_attempt_budget() => {
-                return Err(Error::RateLimited(ApiError::RateLimited {
-                    retry_after: web::rate_limit::reset_request_retry_after(),
-                }));
-            }
-            _ => {}
-        }
-
         // MAC the provided alphanumeric code for lookup, bound to this user/project.
         let reset_code_mac =
             password_reset_code_mac(&self.enclave_key, project_id, user.uuid, &alphanumeric_code)
@@ -2298,11 +2284,20 @@ impl AppState {
             .get_password_reset_request_by_user_id_and_code(user.uuid, reset_code_mac.to_vec())?;
         let failure = match &reset_request {
             Some(request) if request.is_expired() => {
-                // Expired requests keep their spent budget but charge
+                // Expired requests keep their spent budget and charge
                 // nothing: the expiry itself has already ended guessing.
-                Error::PasswordResetExpired
+                return Err(Error::PasswordResetExpired);
             }
             Some(request) => {
+                // The durable budget is checked on the request this code
+                // selects, not on any other request sharing the secret: a
+                // spent request stays closed even to its correct code, and a
+                // fresh request sharing the secret cannot reopen it.
+                if !request.has_attempt_budget() {
+                    return Err(Error::RateLimited(ApiError::RateLimited {
+                        retry_after: web::rate_limit::reset_request_retry_after(),
+                    }));
+                }
                 if hashed_plaintext
                     .as_bytes()
                     .ct_eq(request.hashed_secret.as_bytes())
@@ -2320,16 +2315,25 @@ impl AppState {
             None => Error::InvalidPasswordResetRequest,
         };
         // A wrong code against the request this secret belongs to: charge
-        // the durable per-secret budget before reporting the failure. Once
-        // the budget is spent, the charge itself fails closed, which maps to
-        // the generic rate-limited response.
-        self.db
+        // the durable per-secret budget before reporting the failure. Only a
+        // genuinely spent budget maps to the rate-limited response, and a
+        // secret whose requests have all expired reports the failure without
+        // charging; any other database failure stays an infrastructure error.
+        match self
+            .db
             .charge_password_reset_attempt_for_secret(user.uuid, &hashed_plaintext)
-            .map_err(|_| {
-                Error::RateLimited(ApiError::RateLimited {
+        {
+            Ok(()) => {}
+            Err(DBError::PasswordResetRequestNotFound) => {
+                return Err(Error::RateLimited(ApiError::RateLimited {
                     retry_after: web::rate_limit::reset_request_retry_after(),
-                })
-            })?;
+                }));
+            }
+            Err(DBError::PasswordResetError(PasswordResetError::NoActivePasswordResetRequest)) => {
+                return Err(failure)
+            }
+            Err(other) => return Err(Error::DatabaseError(other)),
+        }
         attempts.check(attempt_key).map_err(Error::RateLimited)?;
         Err(failure)
     }
@@ -2716,16 +2720,21 @@ impl AppState {
             // this secret belongs to, so charge the durable per-request
             // budget before reporting the failure. The platform lookup
             // filters active requests by code; the secret was proven to
-            // belong to at least one active request above.
+            // belong to at least one active request above. Only a genuinely
+            // spent budget maps to the rate-limited response; any other
+            // database failure stays an infrastructure error.
             self.db
                 .charge_platform_password_reset_attempt_for_secret(
                     platform_user.uuid,
                     &hashed_plaintext,
                 )
-                .map_err(|_| {
-                    Error::RateLimited(ApiError::RateLimited {
-                        retry_after: web::rate_limit::reset_request_retry_after(),
-                    })
+                .map_err(|e| match e {
+                    DBError::PlatformPasswordResetRequestNotFound => {
+                        Error::RateLimited(ApiError::RateLimited {
+                            retry_after: web::rate_limit::reset_request_retry_after(),
+                        })
+                    }
+                    other => Error::DatabaseError(other),
                 })?;
             Err(Error::InvalidPasswordResetRequest)
         }
