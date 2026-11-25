@@ -2142,7 +2142,10 @@ impl AppState {
                 // Only password-backed users can use the password reset flow. OAuth-only
                 // users recover by signing in with their linked OAuth provider.
                 if user.get_email().is_some() && user.password_enc.is_some() {
-                    // User exists, proceed with the actual reset request
+                    // User exists, proceed with the actual reset request.
+                    // The durable per-account email budget decides whether a
+                    // new request (and so a new email) may exist at all;
+                    // past the cap nothing is created or sent.
                     let reset_code_mac = password_reset_code_mac(
                         &self.enclave_key,
                         project_id,
@@ -2158,20 +2161,35 @@ impl AppState {
                         24, // 24 hours expiration
                     );
 
-                    self.db.create_password_reset_request(new_request)?;
-
-                    // Send the actual email in the background
-                    let app_state = self.clone();
-                    let user_email = email.clone();
-                    let code = alphanumeric_code.clone();
-                    tokio::spawn(async move {
-                        if let Err(e) =
-                            send_password_reset_email(&app_state, project_id, user_email, code)
+                    match self
+                        .db
+                        .create_password_reset_request_within_email_budget(new_request)
+                    {
+                        Ok(Some(_)) => {
+                            // Send the actual email in the background; the
+                            // request row exists, so the budget was spent.
+                            let app_state = self.clone();
+                            let user_email = email.clone();
+                            let code = alphanumeric_code.clone();
+                            tokio::spawn(async move {
+                                if let Err(e) = send_password_reset_email(
+                                    &app_state, project_id, user_email, code,
+                                )
                                 .await
-                        {
-                            error!("Failed to send password reset email: {:?}", e);
+                                {
+                                    error!("Failed to send password reset email: {:?}", e);
+                                }
+                            });
                         }
-                    });
+                        Ok(None) => {
+                            // Throttled: the account is at its rolling-hour
+                            // email cap, so no request and no email.
+                            debug!("Password reset email cap reached for existing account");
+                        }
+                        Err(e) => {
+                            error!("Error during password reset request: {:?}", e);
+                        }
+                    }
                 }
             }
             Err(DBError::UserNotFound) => {
@@ -2220,8 +2238,11 @@ impl AppState {
     /// the v2 options route: the alphanumeric code must MAC to an active,
     /// unexpired reset request for the addressed user, and the client reset
     /// secret must match the stored hash. Valid proofs spend no guess budget
-    /// and leave the request unchanged. Failed proofs charge only a budget
-    /// belonging to the submitted account and client secret.
+    /// and leave the request unchanged. Failed proofs charge the request's
+    /// durable database budget: the counter lives on the request row, so the
+    /// limit holds across enclave processes and restarts, and the guarded
+    /// charge matches the request's own secret, so nobody else can spend its
+    /// attempts.
     fn verify_password_reset_proof(
         &self,
         email: String,
@@ -2243,11 +2264,29 @@ impl AppState {
         {
             return Err(Error::InvalidPasswordResetRequest);
         }
-        let attempt_key = web::rate_limit::Key::scoped(user.uuid, &[hashed_plaintext.as_bytes()]);
         let attempts = &self.rate_limits.password_reset_attempt;
+        let attempt_key = web::rate_limit::Key::scoped(user.uuid, &[hashed_plaintext.as_bytes()]);
+        // Process-local guardrail first: it cheaply sheds most of a burst
+        // before any database work.
         attempts
             .check_available(attempt_key)
             .map_err(Error::RateLimited)?;
+
+        // The durable budget closes the request once its attempts are spent,
+        // even to the correct code: check it on the request this secret would
+        // select, before any code is examined, mirroring the process-local
+        // limiter.
+        let budget_request = self
+            .db
+            .get_password_reset_request_by_user_id_and_secret(user.uuid, &hashed_plaintext)?;
+        match &budget_request {
+            Some(request) if !request.is_expired() && !request.has_attempt_budget() => {
+                return Err(Error::RateLimited(ApiError::RateLimited {
+                    retry_after: web::rate_limit::reset_request_retry_after(),
+                }));
+            }
+            _ => {}
+        }
 
         // MAC the provided alphanumeric code for lookup, bound to this user/project.
         let reset_code_mac =
@@ -2257,20 +2296,40 @@ impl AppState {
         let reset_request = self
             .db
             .get_password_reset_request_by_user_id_and_code(user.uuid, reset_code_mac.to_vec())?;
-        let failure = match reset_request {
-            Some(request) if request.is_expired() => Error::PasswordResetExpired,
+        let failure = match &reset_request {
+            Some(request) if request.is_expired() => {
+                // Expired requests keep their spent budget but charge
+                // nothing: the expiry itself has already ended guessing.
+                Error::PasswordResetExpired
+            }
             Some(request) => {
                 if hashed_plaintext
                     .as_bytes()
                     .ct_eq(request.hashed_secret.as_bytes())
                     .into()
                 {
-                    return Ok((user, request));
+                    // A correct code with the matching secret proves the
+                    // request owner: never charge the budget.
+                    return Ok((user, request.clone()));
                 }
+                // Correct code, wrong secret for this request: refused
+                // without charging, so an attacker who guesses the code
+                // cannot burn the owner's budget.
                 Error::InvalidPasswordResetSecret
             }
             None => Error::InvalidPasswordResetRequest,
         };
+        // A wrong code against the request this secret belongs to: charge
+        // the durable per-secret budget before reporting the failure. Once
+        // the budget is spent, the charge itself fails closed, which maps to
+        // the generic rate-limited response.
+        self.db
+            .charge_password_reset_attempt_for_secret(user.uuid, &hashed_plaintext)
+            .map_err(|_| {
+                Error::RateLimited(ApiError::RateLimited {
+                    retry_after: web::rate_limit::reset_request_retry_after(),
+                })
+            })?;
         attempts.check(attempt_key).map_err(Error::RateLimited)?;
         Err(failure)
     }
@@ -2494,25 +2553,39 @@ impl AppState {
                         }
                     };
 
-                    self.db
-                        .create_platform_password_reset_request(new_request)?;
-
-                    // Send the actual email in the background
-                    let app_state = self.clone();
-                    let user_email = email.clone();
-                    let code = alphanumeric_code.clone();
-                    spawn(async move {
-                        if let Err(e) = send_platform_password_reset_email(
-                            &app_state,
-                            app_state.resend_api_key.clone(),
-                            user_email,
-                            code,
-                        )
-                        .await
-                        {
-                            error!("Failed to send platform password reset email: {:?}", e);
+                    // The durable per-account email budget decides whether a
+                    // new request (and so a new email) may exist at all.
+                    match self
+                        .db
+                        .create_platform_password_reset_request_within_email_budget(new_request)
+                    {
+                        Ok(Some(_)) => {
+                            // Send the actual email in the background
+                            let app_state = self.clone();
+                            let user_email = email.clone();
+                            let code = alphanumeric_code.clone();
+                            spawn(async move {
+                                if let Err(e) = send_platform_password_reset_email(
+                                    &app_state,
+                                    app_state.resend_api_key.clone(),
+                                    user_email,
+                                    code,
+                                )
+                                .await
+                                {
+                                    error!("Failed to send platform password reset email: {:?}", e);
+                                }
+                            });
                         }
-                    });
+                        Ok(None) => {
+                            debug!(
+                                "Platform password reset email cap reached for existing account"
+                            );
+                        }
+                        Err(e) => {
+                            return Err(Error::DatabaseError(e));
+                        }
+                    }
                 }
             }
             Ok(None) => {
@@ -2567,6 +2640,17 @@ impl AppState {
                 encrypted_code,
             )?;
 
+        // The durable budget closes the request once its attempts are spent,
+        // even to the correct code: check it before the code is examined,
+        // mirroring the user-side proof and the process-local limiter.
+        if let Some(ref request) = reset_request {
+            if !request.is_expired() && !request.has_attempt_budget() {
+                return Err(Error::RateLimited(ApiError::RateLimited {
+                    retry_after: web::rate_limit::reset_request_retry_after(),
+                }));
+            }
+        }
+
         if let Some(reset_request) = reset_request {
             if reset_request.is_expired() {
                 warn!(
@@ -2618,6 +2702,9 @@ impl AppState {
 
                 Ok(())
             } else {
+                // Correct code, wrong secret for this request: refused
+                // without charging, so a code guess cannot burn the owner's
+                // durable budget.
                 warn!(
                     "Password verification failed for platform user {}. Hashes do not match.",
                     platform_user.uuid
@@ -2625,6 +2712,21 @@ impl AppState {
                 Err(Error::InvalidPasswordResetSecret)
             }
         } else {
+            // No live request for this code: a wrong code against the request
+            // this secret belongs to, so charge the durable per-request
+            // budget before reporting the failure. The platform lookup
+            // filters active requests by code; the secret was proven to
+            // belong to at least one active request above.
+            self.db
+                .charge_platform_password_reset_attempt_for_secret(
+                    platform_user.uuid,
+                    &hashed_plaintext,
+                )
+                .map_err(|_| {
+                    Error::RateLimited(ApiError::RateLimited {
+                        retry_after: web::rate_limit::reset_request_retry_after(),
+                    })
+                })?;
             Err(Error::InvalidPasswordResetRequest)
         }
     }

@@ -3447,4 +3447,294 @@ mod password_reset_limits {
 
         delete_platform_user(&app_state, &user);
     }
+
+    /// The durable guess budget coordinates separate processes: two app
+    /// states over one database share the per-request counter, so a burst
+    /// split across replicas cannot exceed it, and the exhausted request
+    /// stays closed to whichever process receives the next attempt.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    #[ignore = "requires AEAD_TAMPER_TEST_DATABASE_URL pointing at disposable migrated local Postgres"]
+    async fn db_reset_guess_budget_is_shared_across_separate_app_states() {
+        let database_url =
+            std::env::var("AEAD_TAMPER_TEST_DATABASE_URL").expect("disposable migrated Postgres");
+        let first = Arc::new(build_local_test_app_state(database_url.clone()).await);
+        let second = Arc::new(build_local_test_app_state(database_url).await);
+        let project = first_active_project(&first);
+        let user = create_user(&first, &project, "shared-guess").await;
+        let email = user.email.clone().expect("test user has an email");
+        let new_password = test_credential("shared-guess-new");
+
+        let secret = "shared-guess-secret".to_string();
+        let code = first
+            .create_password_reset_request(
+                email.clone(),
+                generate_reset_hash(secret.clone()),
+                project.id,
+            )
+            .await
+            .unwrap();
+
+        // Alternate the process (app state) per wrong guess: the durable
+        // counter, not any process-local bucket, must hold the budget.
+        for attempt in 0..5 {
+            let app_state = if attempt % 2 == 0 { &first } else { &second };
+            let result = app_state
+                .confirm_password_reset(
+                    email.clone(),
+                    wrong_code(&code),
+                    secret.clone(),
+                    new_password.to_string(),
+                    project.id,
+                )
+                .await;
+            assert!(matches!(result, Err(Error::InvalidPasswordResetRequest)));
+        }
+
+        // Both processes see the request as closed, even to the right code.
+        for app_state in [&first, &second] {
+            let result = app_state
+                .confirm_password_reset(
+                    email.clone(),
+                    code.clone(),
+                    secret.clone(),
+                    new_password.to_string(),
+                    project.id,
+                )
+                .await;
+            assert!(
+                matches!(
+                    result,
+                    Err(Error::RateLimited(ApiError::RateLimited { .. }))
+                ),
+                "an exhausted request must stay closed on every process"
+            );
+        }
+        assert!(!password_opens_account(&first, &project, &user, new_password).await);
+
+        first.db.delete_user(&user).unwrap();
+    }
+
+    /// Concurrent wrong guesses over separate pooled connections cannot
+    /// push the durable counter past its cap: the guarded charge fails
+    /// closed exactly at the boundary.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+    #[ignore = "requires AEAD_TAMPER_TEST_DATABASE_URL pointing at disposable migrated local Postgres"]
+    async fn db_concurrent_wrong_guesses_cannot_exceed_the_request_budget() {
+        let database_url =
+            std::env::var("AEAD_TAMPER_TEST_DATABASE_URL").expect("disposable migrated Postgres");
+        let app_state = Arc::new(build_local_test_app_state(database_url).await);
+        let project = first_active_project(&app_state);
+        let user = create_user(&app_state, &project, "concurrent-guess").await;
+        let email = user.email.clone().expect("test user has an email");
+        let new_password = test_credential("concurrent-guess-new");
+
+        let secret = "concurrent-guess-secret".to_string();
+        let code = app_state
+            .create_password_reset_request(
+                email.clone(),
+                generate_reset_hash(secret.clone()),
+                project.id,
+            )
+            .await
+            .unwrap();
+        let request_id = {
+            use crate::models::schema::password_reset_requests;
+            let conn = &mut app_state
+                .db
+                .get_pool()
+                .get()
+                .expect("test database connection should be available");
+            password_reset_requests::table
+                .filter(password_reset_requests::user_id.eq(user.uuid))
+                .filter(
+                    password_reset_requests::hashed_secret.eq(generate_reset_hash(secret.clone())),
+                )
+                .order(password_reset_requests::id.desc())
+                .select(password_reset_requests::id)
+                .first::<i32>(conn)
+                .expect("the just-created request should load")
+        };
+
+        // Far more parallel wrong guesses than the budget allows. The proof
+        // check is synchronous Diesel work, so plain OS threads overlap the
+        // separate pooled connections.
+        let attempts = 20;
+        std::thread::scope(|scope| {
+            let state = &app_state;
+            for _ in 0..attempts {
+                let email = email.clone();
+                let code = code.clone();
+                let secret = secret.clone();
+                scope.spawn(move || {
+                    let outcome = state
+                        .verify_password_reset_proof(email, wrong_code(&code), secret, project.id)
+                        .expect_err("every concurrent guess must fail");
+                    assert!(
+                        matches!(
+                            outcome,
+                            Error::InvalidPasswordResetRequest
+                                | Error::RateLimited(ApiError::RateLimited { .. })
+                        ),
+                        "a wrong guess is refused or rate-limited, never accepted: {outcome:?}"
+                    );
+                });
+            }
+        });
+
+        let stored = {
+            use crate::models::schema::password_reset_requests;
+            let conn = &mut app_state
+                .db
+                .get_pool()
+                .get()
+                .expect("test database connection should be available");
+            password_reset_requests::table
+                .find(request_id)
+                .select(password_reset_requests::failed_attempts)
+                .first::<i32>(conn)
+                .expect("the request row should load")
+        };
+        assert!(
+            stored <= crate::models::password_reset::PASSWORD_RESET_MAX_FAILED_ATTEMPTS,
+            "the durable counter must never exceed its cap, got {stored}"
+        );
+
+        // Whatever the interleaving, the request is now closed: the next
+        // attempt with the correct code is refused.
+        let result = app_state
+            .confirm_password_reset(
+                email.clone(),
+                code.clone(),
+                secret.clone(),
+                new_password.to_string(),
+                project.id,
+            )
+            .await;
+        assert!(matches!(
+            result,
+            Err(Error::RateLimited(ApiError::RateLimited { .. }))
+                | Err(Error::InvalidPasswordResetRequest)
+        ));
+        assert!(!password_opens_account(&app_state, &project, &user, new_password).await);
+
+        app_state.db.delete_user(&user).unwrap();
+    }
+
+    /// Concurrent reset initiation over separate pooled connections cannot
+    /// create more request rows than the rolling-hour email cap allows.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+    #[ignore = "requires AEAD_TAMPER_TEST_DATABASE_URL pointing at disposable migrated local Postgres"]
+    async fn db_concurrent_reset_initiation_cannot_exceed_the_email_cap() {
+        let database_url =
+            std::env::var("AEAD_TAMPER_TEST_DATABASE_URL").expect("disposable migrated Postgres");
+        let app_state = Arc::new(build_local_test_app_state(database_url).await);
+        let project = first_active_project(&app_state);
+        let user = create_user(&app_state, &project, "concurrent-cap").await;
+        let email = user.email.clone().expect("test user has an email");
+
+        // Far more parallel initiations than the cap allows, each with its
+        // own secret, all through the async app-state creation path. Each
+        // worker owns a minimal runtime, so the initiations truly overlap.
+        let initiations = 12;
+        std::thread::scope(|scope| {
+            let state = &app_state;
+            for attempt in 0..initiations {
+                let email = email.clone();
+                scope.spawn(move || {
+                    let runtime = tokio::runtime::Builder::new_current_thread()
+                        .enable_all()
+                        .build()
+                        .expect("initiation worker runtime should start");
+                    runtime.block_on(async move {
+                        let _ = state
+                            .create_password_reset_request(
+                                email,
+                                generate_reset_hash(format!("concurrent-cap-{attempt}")),
+                                project.id,
+                            )
+                            .await;
+                    });
+                });
+            }
+        });
+
+        let created = unconsumed_reset_requests(&app_state, &user);
+        assert!(
+            created <= crate::models::password_reset::PASSWORD_RESET_REQUESTS_PER_HOUR,
+            "the durable email cap bounds concurrent creation, got {created}"
+        );
+
+        app_state.db.delete_user(&user).unwrap();
+    }
+
+    /// The rolling email window frees budget only when an hour has passed:
+    /// rows outside the window do not count, even while they remain
+    /// unconsumed. Uses direct model calls so the clock can be moved by
+    /// backdating rows, without touching deployed clock behavior.
+    #[tokio::test]
+    #[ignore = "requires AEAD_TAMPER_TEST_DATABASE_URL pointing at disposable migrated local Postgres"]
+    async fn db_reset_email_cap_counts_only_rows_inside_the_rolling_hour() {
+        let database_url =
+            std::env::var("AEAD_TAMPER_TEST_DATABASE_URL").expect("disposable migrated Postgres");
+        let app_state = Arc::new(build_local_test_app_state(database_url).await);
+        let project = first_active_project(&app_state);
+        let user = create_user(&app_state, &project, "window").await;
+        let email = user.email.clone().expect("test user has an email");
+
+        // Create up to the cap, then backdate every row outside the window.
+        for attempt in 0..5 {
+            let _ = app_state
+                .create_password_reset_request(
+                    email.clone(),
+                    generate_reset_hash(format!("window-{attempt}")),
+                    project.id,
+                )
+                .await
+                .unwrap();
+        }
+        let conn = &mut app_state
+            .db
+            .get_pool()
+            .get()
+            .expect("test database connection should be available");
+        diesel::update(crate::models::schema::password_reset_requests::table)
+            .filter(crate::models::schema::password_reset_requests::user_id.eq(user.uuid))
+            .set(
+                crate::models::schema::password_reset_requests::created_at
+                    .eq(chrono::Utc::now() - chrono::Duration::seconds(61 * 60)),
+            )
+            .execute(conn)
+            .expect("test rows should backdate");
+
+        // The rolling window sees none of the backdated rows: the budget is
+        // whole again, and a new request (and email) is allowed.
+        let _ = app_state
+            .create_password_reset_request(
+                email.clone(),
+                generate_reset_hash("window-fresh".to_string()),
+                project.id,
+            )
+            .await
+            .unwrap();
+        let created = {
+            use crate::models::schema::password_reset_requests;
+            let conn = &mut app_state
+                .db
+                .get_pool()
+                .get()
+                .expect("test database connection should be available");
+            password_reset_requests::table
+                .filter(password_reset_requests::user_id.eq(user.uuid))
+                .filter(
+                    password_reset_requests::created_at
+                        .gt(chrono::Utc::now() - chrono::Duration::seconds(60 * 60)),
+                )
+                .count()
+                .get_result::<i64>(conn)
+                .expect("recent rows should be countable")
+        };
+        assert_eq!(created, 1, "only the fresh row is inside the window");
+
+        app_state.db.delete_user(&user).unwrap();
+    }
 }

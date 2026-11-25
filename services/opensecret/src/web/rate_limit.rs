@@ -261,6 +261,13 @@ pub(crate) struct RateLimits {
     pub(crate) platform_password_reset_attempt: Arc<Limiter>,
 }
 
+/// `Retry-After` reported when a reset request's durable guess budget is
+/// exhausted: one request lifetime, because the per-request budget never
+/// refills while that request lives.
+pub(crate) fn reset_request_retry_after() -> std::time::Duration {
+    PASSWORD_RESET_REQUEST_LIFETIME
+}
+
 impl RateLimits {
     pub(crate) fn from_env() -> Result<Self, String> {
         let rpm = setting("INFERENCE_RATE_LIMIT_RPM", DEFAULT_INFERENCE_RPM, 1_000)?;

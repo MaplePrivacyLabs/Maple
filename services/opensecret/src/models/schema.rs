@@ -315,6 +315,7 @@ diesel::table! {
         expiration_time -> Timestamptz,
         created_at -> Timestamptz,
         is_reset -> Bool,
+        failed_attempts -> Int4,
     }
 }
 
@@ -348,6 +349,7 @@ diesel::table! {
         created_at -> Timestamptz,
         updated_at -> Timestamptz,
         is_reset -> Bool,
+        failed_attempts -> Int4,
     }
 }
 

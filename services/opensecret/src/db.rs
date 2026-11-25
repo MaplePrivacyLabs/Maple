@@ -239,6 +239,28 @@ pub trait DBConnection {
         &self,
         new_request: NewPasswordResetRequest,
     ) -> Result<PasswordResetRequest, DBError>;
+    /// Creates the request only while the account still has durable email
+    /// budget in the rolling hour. `Ok(None)` means the account is capped:
+    /// no request row and no reset email may be created.
+    fn create_password_reset_request_within_email_budget(
+        &self,
+        new_request: NewPasswordResetRequest,
+    ) -> Result<Option<PasswordResetRequest>, DBError>;
+    /// Atomically charges one failed email-code guess to the durable budget
+    /// of the account's unconsumed requests created with the secret. Fails
+    /// closed once every matching request's budget is exhausted.
+    fn charge_password_reset_attempt_for_secret(
+        &self,
+        user_id: Uuid,
+        hashed_secret: &str,
+    ) -> Result<(), DBError>;
+    /// The newest unconsumed request for the account created with the
+    /// secret: the request a completion through this secret would select.
+    fn get_password_reset_request_by_user_id_and_secret(
+        &self,
+        user_id: Uuid,
+        hashed_secret: &str,
+    ) -> Result<Option<PasswordResetRequest>, DBError>;
     fn get_password_reset_request_by_user_id_and_code(
         &self,
         user_id: Uuid,
@@ -552,7 +574,20 @@ pub trait DBConnection {
         &self,
         new_request: NewPlatformPasswordResetRequest,
     ) -> Result<PlatformPasswordResetRequest, DBError>;
-
+    /// Platform mirror of
+    /// [`DBConnection::create_password_reset_request_within_email_budget`].
+    fn create_platform_password_reset_request_within_email_budget(
+        &self,
+        new_request: NewPlatformPasswordResetRequest,
+    ) -> Result<Option<PlatformPasswordResetRequest>, DBError>;
+    /// Charges one failed guess to the durable budget of the account's active
+    /// request(s) created with `hashed_secret`. Fails closed once every
+    /// matching request's budget is exhausted.
+    fn charge_platform_password_reset_attempt_for_secret(
+        &self,
+        user_id: Uuid,
+        hashed_secret: &str,
+    ) -> Result<(), DBError>;
     fn get_platform_password_reset_request_by_user_id_and_code(
         &self,
         user_id: Uuid,
@@ -1112,6 +1147,56 @@ impl DBConnection for PostgresConnection {
         let result = new_request.insert(conn).map_err(DBError::from);
         if let Err(ref e) = result {
             error!("Failed to create password reset request: {:?}", e);
+        }
+        result
+    }
+
+    fn create_password_reset_request_within_email_budget(
+        &self,
+        new_request: NewPasswordResetRequest,
+    ) -> Result<Option<PasswordResetRequest>, DBError> {
+        let conn = &mut self.db.get().map_err(|_| DBError::ConnectionError)?;
+        let result = new_request
+            .insert_within_email_budget(conn)
+            .map_err(DBError::from);
+        if let Err(ref e) = result {
+            error!("Failed to create password reset request: {:?}", e);
+        }
+        result
+    }
+
+    fn charge_password_reset_attempt_for_secret(
+        &self,
+        user_id: Uuid,
+        hashed_secret: &str,
+    ) -> Result<(), DBError> {
+        let conn = &mut self.db.get().map_err(|_| DBError::ConnectionError)?;
+        match PasswordResetRequest::charge_failed_attempt_for_secret(conn, user_id, hashed_secret) {
+            Ok(()) => Ok(()),
+            Err(PasswordResetError::AttemptBudgetExhausted) => {
+                Err(DBError::PasswordResetRequestNotFound)
+            }
+            Err(e) => {
+                error!("Failed to charge password reset attempt: {:?}", e);
+                Err(DBError::from(e))
+            }
+        }
+    }
+
+    fn get_password_reset_request_by_user_id_and_secret(
+        &self,
+        user_id: Uuid,
+        hashed_secret: &str,
+    ) -> Result<Option<PasswordResetRequest>, DBError> {
+        let conn = &mut self.db.get().map_err(|_| DBError::ConnectionError)?;
+        let result = PasswordResetRequest::newest_unconsumed_for_user_id_and_secret(
+            conn,
+            user_id,
+            hashed_secret,
+        )
+        .map_err(DBError::from);
+        if let Err(ref e) = result {
+            error!("Failed to look up password reset request: {:?}", e);
         }
         result
     }
@@ -2342,6 +2427,42 @@ impl DBConnection for PostgresConnection {
             error!("Failed to create platform password reset request: {:?}", e);
         }
         result
+    }
+
+    fn create_platform_password_reset_request_within_email_budget(
+        &self,
+        new_request: NewPlatformPasswordResetRequest,
+    ) -> Result<Option<PlatformPasswordResetRequest>, DBError> {
+        let conn = &mut self.db.get().map_err(|_| DBError::ConnectionError)?;
+        let result = new_request
+            .insert_within_email_budget(conn)
+            .map_err(DBError::from);
+        if let Err(ref e) = result {
+            error!("Failed to create platform password reset request: {:?}", e);
+        }
+        result
+    }
+
+    fn charge_platform_password_reset_attempt_for_secret(
+        &self,
+        user_id: Uuid,
+        hashed_secret: &str,
+    ) -> Result<(), DBError> {
+        let conn = &mut self.db.get().map_err(|_| DBError::ConnectionError)?;
+        match PlatformPasswordResetRequest::charge_failed_attempt_for_secret(
+            conn,
+            user_id,
+            hashed_secret,
+        ) {
+            Ok(()) => Ok(()),
+            Err(PlatformPasswordResetError::AttemptBudgetExhausted) => {
+                Err(DBError::PlatformPasswordResetRequestNotFound)
+            }
+            Err(e) => {
+                error!("Failed to charge platform password reset attempt: {:?}", e);
+                Err(DBError::from(e))
+            }
+        }
     }
 
     fn get_platform_password_reset_request_by_user_id_and_code(
