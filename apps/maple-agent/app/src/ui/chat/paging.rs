@@ -20,6 +20,9 @@ pub(super) struct TranscriptPages {
     pub after: bool,
     pub epoch: Option<i64>,
     pub loading: bool,
+    /// The row count older history was last requested for near the top.
+    /// Leaving the top rearms it, so a failure is not retried every frame.
+    pub top_load: Option<usize>,
     pub live_has_more: bool,
     pub generation: u64,
     pub expanding: HashSet<String>,
@@ -155,7 +158,11 @@ impl ChatScreen {
     }
 
     pub(super) fn load_history_page(&mut self, older: bool, cx: &mut Context<Self>) {
-        if self.pages.loading || (older && !self.pages.before) || (!older && !self.pages.after) {
+        if self.pages.loading
+            || (older && !self.pages.before)
+            || (!older && !self.pages.after)
+            || (older && self.list_state.is_scrollbar_dragging())
+        {
             return;
         }
         let Some(task) = self.selected_session.clone() else {
@@ -196,41 +203,7 @@ impl ChatScreen {
                     return;
                 }
                 match result {
-                    Ok(page) => {
-                        if this.pages.epoch != Some(page.rows_epoch) {
-                            this.reload_timeline(&target, cx);
-                            return;
-                        }
-                        let anchor = this.scroll_anchor();
-                        let mut items = Vec::with_capacity(page.rows.len());
-                        for row in page.rows {
-                            let key =
-                                format!("stored:{}:{}:{}", target, row.rows_epoch, row.row_seq);
-                            if let Some(summary) = row.summary.clone() {
-                                this.tool_summaries.insert(key, summary.into());
-                            }
-                            items.push(normalize(crate::backend::persisted_item(&target, row)));
-                        }
-                        if older {
-                            this.pages.before = page.next.is_some();
-                        } else {
-                            this.pages.after = page.next.is_some();
-                        }
-                        let known: HashSet<_> =
-                            this.timeline.iter().map(|item| item.id.as_str()).collect();
-                        items.retain(|item| !known.contains(item.id.as_str()));
-                        if older {
-                            items.append(&mut this.timeline);
-                            this.timeline = items;
-                        } else {
-                            this.timeline.extend(items);
-                        }
-                        this.bound_transcript_window(!older);
-                        this.rebuild_window(anchor);
-                        this.warm_markdown(cx);
-                        this.load_attachment_images(cx);
-                        cx.notify();
-                    }
+                    Ok(page) => this.apply_history_page(older, &target, page, cx),
                     Err(error) => {
                         if matches!(&error, UiFailure::Host(failure) if matches!(failure.code.as_str(), "paging-changed" | "storage-epoch"))
                             || error.raw_message().is_some_and(|raw| raw.contains("epoch") || raw.contains("changed")) {
@@ -243,6 +216,54 @@ impl ChatScreen {
                 }
             },
         );
+    }
+
+    /// Apply a reply from the currently selected task and page generation.
+    fn apply_history_page(
+        &mut self,
+        older: bool,
+        target: &str,
+        page: maple_agent::store::HistoryPage,
+        cx: &mut Context<Self>,
+    ) {
+        // A reset clears GPUI's frozen drag height while the scrollbar
+        // still holds its original thumb coordinates. Drop the reply and
+        // rearm prefetch instead; mouse-up renders and fetches it again.
+        if older && self.list_state.is_scrollbar_dragging() {
+            self.pages.top_load = None;
+            return;
+        }
+        if self.pages.epoch != Some(page.rows_epoch) {
+            self.reload_timeline(target, cx);
+            return;
+        }
+        let anchor = self.scroll_anchor();
+        let mut items = Vec::with_capacity(page.rows.len());
+        for row in page.rows {
+            let key = format!("stored:{}:{}:{}", target, row.rows_epoch, row.row_seq);
+            if let Some(summary) = row.summary.clone() {
+                self.tool_summaries.insert(key, summary.into());
+            }
+            items.push(normalize(crate::backend::persisted_item(target, row)));
+        }
+        if older {
+            self.pages.before = page.next.is_some();
+        } else {
+            self.pages.after = page.next.is_some();
+        }
+        let known: HashSet<_> = self.timeline.iter().map(|item| item.id.as_str()).collect();
+        items.retain(|item| !known.contains(item.id.as_str()));
+        if older {
+            items.append(&mut self.timeline);
+            self.timeline = items;
+        } else {
+            self.timeline.extend(items);
+        }
+        self.bound_transcript_window(!older);
+        self.rebuild_window(anchor);
+        self.warm_markdown(cx);
+        self.load_attachment_images(cx);
+        cx.notify();
     }
 
     pub(super) fn scroll_anchor(&self) -> Option<(String, ListOffset)> {
@@ -498,6 +519,71 @@ mod tests {
             }),
             ..message(text)
         }
+    }
+
+    fn history_page(row_seq: i64, next: Option<&str>) -> maple_agent::store::HistoryPage {
+        maple_agent::store::HistoryPage {
+            rows: vec![maple_agent::store::TimelineRow {
+                rows_epoch: 0,
+                row_seq,
+                update_seq: row_seq,
+                item: message("Older"),
+                summary: None,
+                summary_truncated: None,
+            }],
+            next: next.map(str::to_string),
+            rows_epoch: 0,
+        }
+    }
+
+    #[gpui::test]
+    fn an_older_page_keeps_the_anchor_when_it_prepends(cx: &mut gpui::TestAppContext) {
+        let chat = chat_with_task(cx);
+        chat.update(cx, |chat, cx| {
+            chat.replace_timeline(vec![stored(100, "Current")]);
+            chat.pages.epoch = Some(0);
+            chat.pages.before = true;
+            chat.list_state.scroll_to(ListOffset {
+                item_ix: 0,
+                offset_in_item: gpui::px(23.),
+            });
+            let anchored = chat.timeline[0].id.clone();
+
+            chat.apply_history_page(true, "task", history_page(99, None), cx);
+
+            assert_eq!(chat.timeline.len(), 2);
+            assert_eq!(chat.timeline[1].id, anchored);
+            assert!(!chat.pages.before);
+            let offset = chat.list_state.logical_scroll_top();
+            assert_eq!(offset.item_ix, 1);
+            assert_eq!(offset.offset_in_item, gpui::px(23.));
+        });
+    }
+
+    #[gpui::test]
+    fn an_older_page_landing_mid_drag_is_retried_after_release(cx: &mut gpui::TestAppContext) {
+        let chat = chat_with_task(cx);
+        chat.update(cx, |chat, cx| {
+            chat.replace_timeline(vec![stored(100, "Current")]);
+            chat.pages.epoch = Some(0);
+            chat.pages.before = true;
+            chat.pages.top_load = Some(1);
+            chat.list_state.scrollbar_drag_started();
+
+            chat.apply_history_page(true, "task", history_page(99, Some("more")), cx);
+
+            assert_eq!(chat.timeline.len(), 1, "the drag's list is untouched");
+            assert!(chat.pages.before);
+            assert_eq!(chat.pages.top_load, None);
+            assert!(chat.list_state.is_scrollbar_dragging());
+
+            chat.list_state.scrollbar_drag_ended();
+            chat.load_history_page(true, cx);
+            assert!(
+                chat.pages.loading,
+                "mouse-up allows the replacement request"
+            );
+        });
     }
 
     /// The running total must match a fresh sum over the loaded rows.

@@ -12117,6 +12117,11 @@ mod state_tests {
         cx.update(|_window, app| chat.read(app).list_state.is_following_tail())
     }
 
+    fn redraw_chat(chat: &Entity<ChatScreen>, cx: &mut gpui::VisualTestContext) {
+        chat.update(cx, |_, cx| cx.notify());
+        cx.run_until_parked();
+    }
+
     /// In the 1200 px test window the transcript and the composer share
     /// the middle 900 px column. A wheel that nothing under the pointer
     /// takes scrolls the transcript exactly as far as a wheel over the
@@ -12219,6 +12224,88 @@ mod state_tests {
             0,
             "the thumb dragged to the top reaches the first row"
         );
+    }
+
+    /// Reaching the top during a scrollbar drag waits for mouse-up, then
+    /// loads older history without leaving a button above the transcript.
+    #[gpui::test]
+    fn test_scrollbar_drag_defers_older_history_until_release(cx: &mut TestAppContext) {
+        let (chat, cx) = chat_window(cx, |chat, _cx| {
+            chat.sidebar_collapsed = true;
+            let rows = long_timeline()
+                .into_iter()
+                .enumerate()
+                .map(|(seq, mut item)| {
+                    item.persisted = Some(maple_agent::agent::AgentPersistedRowIdentity {
+                        task_id: "s1".to_string(),
+                        rows_epoch: 1,
+                        row_seq: seq as i64 + 100,
+                        update_seq: 0,
+                    });
+                    item
+                })
+                .collect();
+            chat.replace_timeline(rows);
+            chat.pages.before = true;
+        });
+        redraw_chat(&chat, cx);
+        chat.update(cx, |chat, _| {
+            assert!(!chat.pages.loading && chat.pages.top_load.is_none());
+            assert!(chat.notice.is_none());
+        });
+        assert!(cx.debug_bounds("history-older").is_none());
+
+        // A scrollbar drag moves the list without a wheel event.
+        chat.update(cx, |chat, _| {
+            chat.list_state.scrollbar_drag_started();
+            chat.list_state.scroll_to(gpui::ListOffset {
+                item_ix: 0,
+                offset_in_item: px(0.),
+            });
+        });
+        redraw_chat(&chat, cx);
+        chat.update(cx, |chat, _| {
+            assert!(!chat.pages.loading && chat.pages.top_load.is_none());
+            assert!(chat.notice.is_none());
+        });
+
+        // The scrollbar's mouse-up releases the drag and notifies the view.
+        chat.update(cx, |chat, _| chat.list_state.scrollbar_drag_ended());
+        redraw_chat(&chat, cx);
+        redraw_chat(&chat, cx);
+        chat.update(cx, |chat, _| {
+            // Still in flight, or already refused by the test backend.
+            assert!(
+                chat.pages.loading || chat.notice.is_some(),
+                "releasing the drag asks for the older page"
+            );
+        });
+    }
+
+    /// A short loaded page is already at the top and cannot scroll to ask.
+    #[gpui::test]
+    fn test_unscrollable_transcript_loads_older_history(cx: &mut TestAppContext) {
+        let (chat, cx) = chat_window(cx, |chat, _cx| {
+            chat.sidebar_collapsed = true;
+            let mut row = item("m0", "message", Some("Latest loaded message"));
+            row.persisted = Some(maple_agent::agent::AgentPersistedRowIdentity {
+                task_id: "s1".to_string(),
+                rows_epoch: 1,
+                row_seq: 100,
+                update_seq: 0,
+            });
+            chat.replace_timeline(vec![row]);
+            chat.pages.before = true;
+        });
+        redraw_chat(&chat, cx);
+        redraw_chat(&chat, cx);
+        chat.update(cx, |chat, _| {
+            assert!(
+                chat.pages.loading || chat.notice.is_some(),
+                "an unscrollable page asks for older history"
+            );
+        });
+        assert!(cx.debug_bounds("history-older").is_none());
     }
 
     /// At the bottom the list's scroll top names no row. A wheel beside
