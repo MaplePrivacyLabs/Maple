@@ -31,6 +31,8 @@ settings-reduce-motion = Reduce motion
 settings-reduce-motion-description = Hold spinners and pulsing dots still and skip reveal animations.
 settings-tool-summaries = Summarize tool calls
 settings-tool-summaries-description = Completed tool calls with long output get a one-line summary on their cards.
+settings-steer-active-run-messages = Steer messages into active runs
+settings-steer-active-run-messages-description = While a task is working, Enter and Send steer new messages into the current turn instead of queueing them for the next turn.
 settings-composer-vim = Vim mode in composer
 settings-composer-vim-description = Use Normal, Insert, and Visual editing modes in the main chat composer. Other text fields stay unchanged.
 settings-application-vim = Vim navigation across the app
@@ -1518,6 +1520,7 @@ chat-shrink-composer = Shrink composer
 chat-expand-composer = Expand composer
 chat-stop-run = Stop the run
 chat-queue-next-turn = Queue for next turn
+chat-steer-current-run = Steer into current run
 chat-send = Send
 chat-model = Model
 # The model panel's sections and the badge on a popular model.

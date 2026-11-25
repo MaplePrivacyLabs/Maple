@@ -31,6 +31,8 @@ settings-reduce-motion = Bewegung reduzieren
 settings-reduce-motion-description = Ladeanzeigen und pulsierende Punkte anhalten und Einblendanimationen überspringen.
 settings-tool-summaries = Werkzeugaufrufe zusammenfassen
 settings-tool-summaries-description = Abgeschlossene Werkzeugaufrufe mit langer Ausgabe erhalten eine einzeilige Zusammenfassung auf ihren Karten.
+settings-steer-active-run-messages = Nachrichten in aktive Durchläufe steuern
+settings-steer-active-run-messages-description = Während eine Aufgabe arbeitet, neue Nachrichten mit Eingabetaste oder Senden in den aktuellen Durchlauf steuern, statt sie für den nächsten Durchlauf einzureihen.
 settings-composer-vim = Vim-Modus im Eingabefeld
 settings-composer-vim-description = Normal-, Einfüge- und visuellen Modus im Haupteingabefeld des Chats verwenden. Andere Textfelder bleiben unverändert.
 settings-application-vim = Vim-Navigation in der gesamten App
@@ -1518,6 +1520,7 @@ chat-shrink-composer = Eingabefeld verkleinern
 chat-expand-composer = Eingabefeld vergrößern
 chat-stop-run = Ausführung stoppen
 chat-queue-next-turn = Für nächsten Durchlauf einreihen
+chat-steer-current-run = In aktuellen Durchlauf steuern
 chat-send = Senden
 chat-model = Modell
 # The model panel's sections and the badge on a popular model.

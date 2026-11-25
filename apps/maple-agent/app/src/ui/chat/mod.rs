@@ -564,6 +564,8 @@ pub struct ChatScreen {
     composer: Option<Entity<TextInput>>,
     /// Persisted opt-in for modal editing in this composer only.
     composer_vim_enabled: bool,
+    /// Whether new messages steer an active run rather than wait in its queue.
+    steer_active_run_messages: bool,
     /// Independent, persisted application-level Vim navigation profile.
     application_vim_enabled: bool,
     /// Stable-ID semantic selection and count state for application Vim.
@@ -1562,6 +1564,7 @@ impl ChatScreen {
             context_limit: 0,
             composer: None,
             composer_vim_enabled: settings.composer_vim_enabled,
+            steer_active_run_messages: settings.steer_active_run_messages,
             application_vim_enabled: settings.application_vim_enabled,
             application_vim: ApplicationVimState::default(),
             application_focus: None,
@@ -3503,6 +3506,7 @@ impl ChatScreen {
         self.apply_notification_settings(settings);
         self.summaries_enabled = settings.tool_summaries;
         self.composer_vim_enabled = settings.composer_vim_enabled;
+        self.steer_active_run_messages = settings.steer_active_run_messages;
         if let Some(composer) = self.composer.clone() {
             composer.update(cx, |input, cx| {
                 input.set_vim_enabled(settings.composer_vim_enabled, cx)
@@ -5456,7 +5460,11 @@ impl ChatScreen {
             model,
             context_limit,
             vision_capable,
-            steer: steer && (run_active || queue_id.is_some()),
+            // Only new messages follow the viewing computer's default. A
+            // queue edit keeps its place unless steering was explicit. The
+            // selected local or remote backend forwards this same request.
+            steer: (steer || (run_active && queue_id.is_none() && self.steer_active_run_messages))
+                && (run_active || queue_id.is_some()),
             queue_id,
             attachments: Vec::new(),
         };

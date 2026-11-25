@@ -87,6 +87,9 @@ pub struct AppSettings {
     /// Whether completed tool calls get a one-line model summary.
     #[serde(default = "default_tool_summaries")]
     pub tool_summaries: bool,
+    /// Send new messages into an active run instead of queueing them.
+    #[serde(default)]
+    pub steer_active_run_messages: bool,
     /// Enable modal Vim editing only in the main chat composer.
     #[serde(default)]
     pub composer_vim_enabled: bool,
@@ -296,6 +299,7 @@ impl Default for AppSettings {
             tool_details: default_tool_details(),
             new_task_permission_mode: None,
             tool_summaries: default_tool_summaries(),
+            steer_active_run_messages: false,
             composer_vim_enabled: false,
             application_vim_enabled: false,
             shortcut_overrides: std::collections::BTreeMap::new(),
@@ -1271,6 +1275,28 @@ mod tests {
             .remove("composer_vim_enabled");
         let settings: AppSettings = serde_json::from_value(json).expect("deserialize old file");
         assert!(!settings.composer_vim_enabled);
+    }
+
+    #[test]
+    fn active_run_steering_defaults_to_queue_and_round_trips_through_the_host() {
+        let settings: AppSettings = serde_json::from_value(serde_json::json!({})).unwrap();
+        assert!(!settings.steer_active_run_messages);
+
+        let root = tempfile::tempdir().unwrap();
+        let store =
+            maple_agent::store::Store::open(maple_agent::store::StorePaths::new(root.path()))
+                .unwrap();
+        apply_host_patch(
+            &store,
+            None,
+            &serde_json::json!({"steer_active_run_messages": true}),
+        )
+        .unwrap();
+        assert!(
+            load_host_settings(&store, None)
+                .unwrap()
+                .steer_active_run_messages
+        );
     }
 
     #[test]

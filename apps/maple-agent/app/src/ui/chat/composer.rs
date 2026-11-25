@@ -1438,7 +1438,7 @@ impl ChatScreen {
         let can_send = !disabled && attachments_ready && (has_text || has_attachments);
         // One control. Stop only while a run is active and nothing is
         // waiting to send. Text, or an file that is still being prepared,
-        // turns it back into Send, which queues behind the run.
+        // turns it back into Send, which follows the active-run default.
         let drafting = has_text || has_attachments;
         let show_stop = running && !self.booting && !pending_create && !drafting;
         let usage_tray = self
@@ -1756,7 +1756,11 @@ impl ChatScreen {
                         let button_label: SharedString = if show_stop {
                             tr("chat-stop-run")
                         } else if running && drafting {
-                            tr("chat-queue-next-turn")
+                            if self.steer_active_run_messages && self.queue_edit.is_none() {
+                                tr("chat-steer-current-run")
+                            } else {
+                                tr("chat-queue-next-turn")
+                            }
                         } else {
                             tr("chat-send")
                         };
