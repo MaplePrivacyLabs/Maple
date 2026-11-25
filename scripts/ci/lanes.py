@@ -197,13 +197,9 @@ WINDOWS_PACKAGE = (
 PROXY_CONTAINER = ("proxy/Dockerfile", ".dockerignore", "proxy/Cargo.lock") + PROXY_RUNTIME + RUST_SDK
 SDK_CRATE = (
     'crate="$(mktemp -d)" && ./scripts/ci/build-sdk-publish.sh rust "$crate"'
-    ' && if [[ -f "$crate/package.crate" ]]; then'
-    ' python3 -I scripts/ci/sdk_crates_upload.py --directory "$crate" --validate-only --version'
+    ' && python3 -I scripts/ci/sdk_crates_upload.py --directory "$crate" --validate-only --version'
     ' "$(python3 -I -c \'import pathlib, tomllib; print(tomllib.loads('
     'pathlib.Path("sdk/rust/Cargo.toml").read_text())["package"]["version"])\')"'
-    ' ; elif [[ -f "$crate/git-only-dependencies" ]]; then'
-    ' printf "%s\\n" "Crate upload validation is skipped while the manifest has Git-only dependencies."'
-    ' ; else printf "%s\\n" "Rust SDK validation produced no crate archive." >&2; exit 1; fi'
 )
 
 

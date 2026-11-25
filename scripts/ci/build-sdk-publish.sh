@@ -64,27 +64,6 @@ for sdk_variable in "${!VITE_@}"; do unset "${sdk_variable}"; done
 export NPM_CONFIG_USERCONFIG="${build_dir}/npm-userconfig"
 export NPM_CONFIG_GLOBALCONFIG="${build_dir}/npm-globalconfig"
 
-git_only_dependencies=no
-if [[ "${sdk_kind}" == rust ]]; then
-  git_only_dependencies="$(python3 -I - "${repo_root}/sdk/rust/Cargo.toml" <<'PY'
-import sys
-import tomllib
-
-with open(sys.argv[1], "rb") as manifest_file:
-    manifest = tomllib.load(manifest_file)
-tables = [manifest, *manifest.get("target", {}).values()]
-for table in tables:
-    for kind in ("dependencies", "dev-dependencies", "build-dependencies"):
-        for dependency in table.get(kind, {}).values():
-            if isinstance(dependency, dict) and "git" in dependency and "version" not in dependency:
-                print("yes")
-                raise SystemExit(0)
-print("no")
-PY
-)"
-fi
-export MAPLE_SDK_GIT_ONLY_DEPENDENCIES="${git_only_dependencies}"
-
 cd "${repo_root}"
 # Each crate builds in its own pinned shell.
 package_flake=./sdk
@@ -145,33 +124,17 @@ nix develop --no-update-lock-file "${package_flake}" -c bash -euo pipefail -c '
       cargo clippy --locked --all-targets --all-features -- -D warnings
       cargo test --locked --all-features "${test_scope[@]}"
       RUSTDOCFLAGS="-D warnings" cargo doc --locked --no-deps --all-features
-      has_git_only_dependencies="${MAPLE_SDK_GIT_ONLY_DEPENDENCIES}"
-      should_skip_packaging=no
-      if [[ "${sdk_kind}" == rust && "${has_git_only_dependencies}" == yes ]]; then
-        should_skip_packaging=yes
-      fi
-      if [[ "${should_skip_packaging}" == yes ]]; then
-        message="Crate packaging is skipped while sdk/rust/Cargo.toml has Git-only dependencies; registry-versioned dependencies restore it."
-        printf "%s\\n" "${message}"
-        printf "%s\\n" "${message}" > "${output_dir}/git-only-dependencies"
-      else
-        # Cargo also extracts and compiles this exact package before succeeding.
-        # The proxy crate resolves maple-sdk from crates.io here, so a proxy that
-        # needs a newer SDK fails until that SDK version is published.
-        cargo package --locked --all-features
-        package_version="$(cargo metadata --locked --no-deps --format-version 1 |
-          jq -er --arg name "${crate_name}" '\''.packages | map(select(.name == $name)) |
-            if length == 1 then .[0].version else error("Expected one crate") end'\'')"
-        cp "${CARGO_TARGET_DIR}/package/${crate_name}-${package_version}.crate" \
-          "${output_dir}/package.crate"
-      fi
+      # Cargo also extracts and compiles this exact package before succeeding.
+      # The proxy crate resolves maple-sdk from crates.io here, so a proxy that
+      # needs a newer SDK fails until that SDK version is published.
+      cargo package --locked --all-features
+      package_version="$(cargo metadata --locked --no-deps --format-version 1 |
+        jq -er --arg name "${crate_name}" '\''.packages | map(select(.name == $name)) |
+          if length == 1 then .[0].version else error("Expected one crate") end'\'')"
+      cp "${CARGO_TARGET_DIR}/package/${crate_name}-${package_version}.crate" \
+        "${output_dir}/package.crate"
       ;;
   esac
 ' build-sdk-publish "${sdk_kind}" "${build_dir}" "${repo_root}" "${output_dir}"
 
-if [[ -f "${output_dir}/package.crate" || "${sdk_kind}" == npm ]]; then
-  echo "Validated ${sdk_kind} package written to ${output_dir}."
-elif [[ ! -f "${output_dir}/git-only-dependencies" ]]; then
-  echo "SDK validation produced neither a package nor an explained package skip." >&2
-  exit 1
-fi
+echo "Validated ${sdk_kind} package written to ${output_dir}."
