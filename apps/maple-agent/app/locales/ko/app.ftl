@@ -31,6 +31,8 @@ settings-reduce-motion = 동작 줄이기
 settings-reduce-motion-description = 스피너와 깜박이는 점을 멈추고 표시 애니메이션을 생략해요.
 settings-tool-summaries = 도구 호출 요약
 settings-tool-summaries-description = 출력이 긴 완료된 도구 호출은 카드에 한 줄 요약이 표시돼요.
+settings-steer-active-run-messages = 실행 중인 턴에 메시지 바로 전달
+settings-steer-active-run-messages-description = 작업이 진행 중일 때 새 메시지를 다음 턴 대기열에 넣지 않고 현재 턴에 바로 전달해요.
 settings-composer-vim = 메시지 입력창에서 Vim 모드 사용
 settings-composer-vim-description = 기본 채팅 메시지 입력창에서 Normal, Insert, Visual 편집 모드를 사용해요. 다른 텍스트 필드는 바뀌지 않아요.
 settings-application-vim = 앱 전체에서 Vim 탐색 사용
@@ -1467,6 +1469,7 @@ chat-shrink-composer = 메시지 입력창 축소
 chat-expand-composer = 메시지 입력창 확대
 chat-stop-run = 실행 중지
 chat-queue-next-turn = 다음 턴 대기열에 추가
+chat-steer-current-run = 현재 턴에 바로 전달
 chat-send = 보내기
 chat-model = 모델
 # The model panel's sections and the badge on a popular model.

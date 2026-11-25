@@ -134,12 +134,14 @@ agent runtime; its desktop Agent page points users to Maple Work.
   are settings.
 - The composer spell checks as you type; right-click a word for
   suggestions or to add it to your dictionary.
-- Message queue: Enter during a run queues the message for the next turn,
-  Ctrl+Enter (Cmd+Enter) steers it into the current turn. The composer has
-  one button. It is Send, and it becomes Stop while a run is active and the
-  field is empty. Typing or attaching an image turns it back into Send, and
-  that click queues. Queued messages can be sent now, edited in the composer
-  (the message keeps its place in the queue), or removed.
+- Message queue: Enter during a run queues the message for the next turn by
+  default. Settings → General → Steer messages into active runs makes Enter
+  and Send steer new messages instead; this viewing-computer preference also
+  applies to remote tasks. Ctrl+Enter (Cmd+Enter) always steers. The composer
+  has one button. It is Send, and it becomes Stop while a run is active and
+  the field is empty. Typing or attaching an image turns it back into Send.
+  Queued messages can be sent now, edited in the composer (ordinary submission
+  keeps the message's place in the queue), or removed.
 - Sidebar search filters tasks and projects by name; Escape clears it.
 - Up and Down in an empty composer recall prompts sent in this window.
 - Optional composer-only Vim editing provides Normal, Insert, and characterwise

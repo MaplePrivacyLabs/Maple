@@ -1563,6 +1563,14 @@ impl SettingsScreen {
         self.edit_setting(move |settings| settings.tool_summaries = next, cx);
     }
 
+    fn toggle_steer_active_run_messages(&mut self, cx: &mut Context<Self>) {
+        let next = !self.settings.steer_active_run_messages;
+        self.edit_setting(
+            move |settings| settings.steer_active_run_messages = next,
+            cx,
+        );
+    }
+
     fn toggle_composer_vim(&mut self, cx: &mut Context<Self>) {
         let next = !self.settings.composer_vim_enabled;
         self.edit_setting(move |settings| settings.composer_vim_enabled = next, cx);

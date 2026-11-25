@@ -16,6 +16,18 @@ impl SettingsScreen {
                 )
                 .into_any_element(),
             ),
+            self.application_target(
+                || SettingsTarget::General(GeneralTarget::SteerActiveRunMessages),
+                localized_toggle_row(
+                    "steer-active-run-messages",
+                    &tr("settings-steer-active-run-messages"),
+                    &tr("settings-steer-active-run-messages-description"),
+                    self.settings.steer_active_run_messages,
+                    cx.listener(|this, _event, _window, cx| {
+                        this.toggle_steer_active_run_messages(cx);
+                    }),
+                ),
+            ),
         ];
         let notifications_rows = vec![
             self.application_target(

@@ -361,6 +361,7 @@ chat-status-failed 3aa7979f86ebefa0
 chat-status-running 5e43dba3cfc269c8
 chat-status-stopped 2adaa7a3d7affb04
 chat-status-waiting 9734b0e528982b88
+chat-steer-current-run 08305435ba1930b1
 chat-stop 1ef05f0684d0533b
 chat-stop-recording 9b266308b8bc857c
 chat-stop-run 7233bc9296bca9c5
@@ -1861,6 +1862,8 @@ settings-speech-speed 7abfaab28291aba5
 settings-speech-speed-description 108a3287d8633d34
 settings-speech-voice a1bd6f42451aab37
 settings-speech-voice-description 6e6cba09626879d8
+settings-steer-active-run-messages 11d0a16e3c2b4c7a
+settings-steer-active-run-messages-description 0bf4d597e6510b9d
 settings-text-size aa4d8e4805ea9511
 settings-text-size-description 5cd2782d7f3991c4
 settings-theme-label-dark aa6ad56172aedfb3

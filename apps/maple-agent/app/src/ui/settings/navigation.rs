@@ -33,6 +33,7 @@ pub(super) enum SettingsRegion {
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(super) enum GeneralTarget {
     Language,
+    SteerActiveRunMessages,
     Notifications,
     PasswordNotificationDetails,
     ComposerVim,
@@ -196,6 +197,7 @@ impl SettingsScreen {
         match self.section {
             Section::General => [
                 GeneralTarget::Language,
+                GeneralTarget::SteerActiveRunMessages,
                 GeneralTarget::Notifications,
                 GeneralTarget::PasswordNotificationDetails,
                 GeneralTarget::ComposerVim,
@@ -553,6 +555,7 @@ impl SettingsScreen {
     fn activate_general_target(&mut self, target: GeneralTarget, cx: &mut Context<Self>) {
         match target {
             GeneralTarget::Language => self.toggle_setting_menu(SettingMenu::Language, cx),
+            GeneralTarget::SteerActiveRunMessages => self.toggle_steer_active_run_messages(cx),
             GeneralTarget::Notifications => self.toggle_desktop_notifications(cx),
             GeneralTarget::PasswordNotificationDetails => {
                 self.toggle_password_notification_details(cx);
@@ -1258,6 +1261,13 @@ mod tests {
                 assert_eq!(
                     this.visible_application_targets().first(),
                     Some(&SettingsTarget::General(GeneralTarget::Language))
+                );
+                this.move_application_selection(1, 1, window, cx);
+                assert_eq!(
+                    this.application_vim.target,
+                    Some(SettingsTarget::General(
+                        GeneralTarget::SteerActiveRunMessages
+                    ))
                 );
                 this.move_application_selection(1, 1, window, cx);
                 assert_eq!(

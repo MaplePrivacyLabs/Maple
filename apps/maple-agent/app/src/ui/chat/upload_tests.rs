@@ -322,6 +322,51 @@ fn slow_upload_keeps_stop_queue_and_steer_operational(cx: &mut TestAppContext) {
 }
 
 #[gpui::test]
+fn steer_default_changes_only_new_active_run_messages(cx: &mut TestAppContext) {
+    let host = UploadHost::new();
+    let (chat, cx) = chat_window(&host, cx);
+    chat.update(cx, |chat, _| chat.steer_active_run_messages = true);
+
+    type_followup(&chat, cx, "steer by default", false);
+    wait_for(cx, "default steering admission", |_| {
+        host.requests("send_message").len() == 1
+    });
+    let steering = host.requests("send_message")[0].clone();
+    assert_eq!(steering.params[1]["text"], "steer by default");
+    assert_eq!(steering.params[1]["steer"], true);
+    assert_eq!(steering.params[1]["queueId"], Value::Null);
+    host.reply(&steering, Ok(json!("run-1")));
+    wait_for(cx, "default steering acknowledgement", |cx| {
+        chat.update(cx, |chat, _| !chat.send_pending())
+    });
+
+    // The preference is only for new messages. Ordinary submission of an
+    // existing queue edit retains its place, exactly as it does in Queue mode.
+    chat.update(cx, |chat, cx| {
+        chat.queue_edit = Some(QueueEdit {
+            queue_id: "q1".into(),
+            draft: "draft before editing".into(),
+        });
+        chat.composer
+            .clone()
+            .unwrap()
+            .update(cx, |input, cx| input.set_text("edited queued message", cx));
+        chat.send_inner(cx);
+    });
+    wait_for(cx, "queue edit admission", |_| {
+        host.requests("send_message").len() == 2
+    });
+    let edited = host.requests("send_message")[1].clone();
+    assert_eq!(edited.params[1]["text"], "edited queued message");
+    assert_eq!(edited.params[1]["steer"], false);
+    assert_eq!(edited.params[1]["queueId"], "q1");
+    host.reply(&edited, Ok(json!("run-1")));
+    wait_for(cx, "queue edit acknowledgement", |cx| {
+        chat.update(cx, |chat, _| !chat.send_pending())
+    });
+}
+
+#[gpui::test]
 fn uploaded_prompt_waits_for_unknown_text_receipt_without_replaying_text(cx: &mut TestAppContext) {
     let host = UploadHost::new();
     let (chat, cx) = chat_window(&host, cx);
