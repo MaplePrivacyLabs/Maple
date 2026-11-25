@@ -57,7 +57,8 @@ OIDC_JOBS = frozenset({
     ("desktop-build.yml", "build-macos"), ("desktop-build.yml", "build-linux"), ("desktop-build.yml", "build-windows"),
     ("dev-credential-requester-image.yml", "build"), ("ios-dev-testflight.yml", "build-ios-dev"),
     ("mobile-build.yml", "build-ios"), ("opensecret-eif-release.yml", "build"),
-    ("opensecret-release-statement-dev.yml", "sign"),  # assumes the Dev signer role
+    ("opensecret-release-statement-dev.yml", "sign"),
+    ("opensecret-release-statement-prod.yml", "sign"),  # assumes the Production signer role
     ("ci.yml", "os-eif"), ("opensecret-eif.yml", "eif-trusted"),
     *(("release.yml", job) for job in ("build-tauri", "build-windows", "build-android", "build-ios", "build-web",
                                        "publish-proxy-release-artifacts", "update-latest-json",
@@ -83,7 +84,7 @@ CONSUMERS = {
     ("ios-dev-testflight.yml", "submit-ios-dev-testflight"): "apple-signing",
     ("mobile-build.yml", "build-ios"): "apple-signing",
     ("mobile-build.yml", "submit-ios-testflight"): "apple-signing",
-    ("opensecret-eif-release.yml", "sign"): "pcr-signing",
+    ("opensecret-release-statement-prod.yml", "sign"): "pcr-signing-prod",
     ("opensecret-release-statement-dev.yml", "sign"): "pcr-signing-dev",
     ("pages-publish.yml", "preview"): "pages-preview",
     ("pages-publish.yml", "production"): "pages-production",
@@ -626,87 +627,36 @@ class ContractTests(unittest.TestCase):
     def test_c5_eif_release_is_manual_reviewed_and_never_tags(self):
         config = workflows()["opensecret-eif-release.yml"]
         self.assertEqual(set(config["on"]), {"workflow_dispatch"})
-        self.assertIs(config["on"]["workflow_dispatch"]["inputs"]["dry_run"]["default"], True)
+        self.assertEqual(set(config["jobs"]), {"build"})
         self.assertNotRegex(json.dumps(config), r"gh release|git tag|refs/tags|releases/|latest\.json")
-        build, sign = config["jobs"]["build"], config["jobs"]["sign"]
+        build = config["jobs"]["build"]
         self.assertEqual(build["if"], "github.ref == 'refs/heads/master'")
         self.assertEqual(build["permissions"], {"contents": "read", "id-token": "write", "attestations": "write"})
         self.assertNotIn("environment", build)
         self.assertFalse(re.search(r"\bsecrets\b|github\.token|\bGH_TOKEN\b", json.dumps(build)))
-        self.assertEqual(sign["needs"], "build")
-        # Only prod is signed here; the Dev release statement workflow signs dev.
-        for mode, dry_run, needed in itertools.product(("dev", "prod"), (True, False), ("true", "false")):
-            context = {"inputs.environment": mode, "inputs.dry_run": dry_run,
-                       "needs.build.outputs.approval_needed": needed}
-            self.assertEqual(evaluate(expression(sign), context),
-                             mode == "prod" and dry_run is False and needed == "true", context)
-        self.assertEqual(sign["permissions"], {"contents": "write"})
-        self.assertNotRegex(json.dumps(sign), r"id-token|flakehub-cache")
-        key = [step for step in sign["steps"] if "outputs.SIGNING_PRIVATE_KEY" in json.dumps(step)]
-        self.assertEqual(len(key), 1)  # the signing key reaches exactly one step
-        self.assertEqual(key[0]["env"], {"SIGNING_PRIVATE_KEY": "${{ steps.signing-key.outputs.SIGNING_PRIVATE_KEY }}"})
 
-    def test_c5_dev_release_statement_is_one_gated_job_with_a_fixed_target(self):
-        config = workflows()["opensecret-release-statement-dev.yml"]
-        self.assertEqual(set(config["on"]), {"workflow_dispatch"})  # no workflow_call or other caller
-        self.assertEqual(set(config["on"]["workflow_dispatch"]["inputs"]), {"build_run_id"})
-        self.assertEqual(set(config["jobs"]), {"sign"})
-        sign = config["jobs"]["sign"]
-        self.assertEqual(environment(sign), "pcr-signing-dev")
-        for repo, ref in itertools.product(("MaplePrivacyLabs/Maple", "fork/Maple"),
-                                           ("refs/heads/master", "refs/heads/feature", "refs/tags/master")):
-            self.assertEqual(evaluate(expression(sign), {"github.repository": repo, "github.ref": ref}),
-                             repo == "MaplePrivacyLabs/Maple" and ref == "refs/heads/master")
-        self.assertEqual(sign["permissions"], {"contents": "write", "actions": "read", "attestations": "read",
-                                               "id-token": "write"})
-        # The target is literal workflow text: no input, variable or secret selects it.
-        for name in ("SIGNING_KEY_ARN", "SIGNER_ROLE_ARN", "SIGNING_PUBLIC_KEY"):
-            self.assertNotIn("${{", sign["env"][name])
-        self.assertEqual(sign["env"]["BUILD_RUN_ID"], "${{ inputs.build_run_id }}")
-        self.assertNotIn("inputs.", json.dumps([step.get("run", "") for step in sign["steps"]]))
+    def test_c5_release_statement_workflows_differ_only_by_target(self):
+        def normalize(value, mode):
+            if isinstance(value, dict):
+                result = {key: normalize(item, mode) for key, item in value.items()}
+                for name in ("SIGNING_KEY_ARN", "SIGNER_ROLE_ARN"):
+                    if name in result:
+                        result[name] = "FIXED_IDENTITY"
+                return result
+            if isinstance(value, list):
+                return [normalize(item, mode) for item in value]
+            if not isinstance(value, str):
+                return value
+            opposite_words = r"\b(?:prod|Production)\b"
+            if mode == "prod":
+                opposite_words = r"\b(?:dev|Dev)\b"
+            self.assertNotRegex(value, opposite_words)
+            value = re.sub(r"\b(?:dev|prod)\b", "mode", value)
+            return re.sub(r"\b(?:Dev|Production)\b", "Environment", value)
 
-    def test_c5_dev_release_statement_verifies_before_it_signs_publishes_or_pushes(self):
-        steps = workflows()["opensecret-release-statement-dev.yml"]["jobs"]["sign"]["steps"]
-
-        def position(predicate):
-            found = [index for index, step in enumerate(steps) if predicate(step)]
-            self.assertEqual(len(found), 1)
-            return found[0]
-
-        def producer(command):
-            return position(lambda step: f"opensecret_release_statement.py {command} dev" in step.get("run", ""))
-
-        preflight = producer("preflight")
-        prepare = producer("prepare")
-        sign_statement = producer("sign")
-        publish = producer("publish")
-        sign_legacy = position(lambda step: "ci_sign_pcr.sh dev" in step.get("run", ""))
-        retain = position(lambda step: step.get("uses", "").startswith("actions/upload-artifact@"))
-        push_branch = position(lambda step: "publish_opensecret_approval.sh dev" in step.get("run", ""))
-        credentials = [index for index, step in enumerate(steps) if "secrets." in json.dumps(step)]
-        # Nothing holding a credential or signing runs before the identity check and the
-        # verified build; the bundle is verified and retained before it is published,
-        # and the legacy branch is pushed only after publication succeeded.
-        self.assertLess(preflight, prepare)
-        self.assertTrue(all(prepare < index for index in credentials + [sign_legacy, sign_statement]))
-        self.assertLess(sign_statement, retain)
-        self.assertLess(retain, publish)
-        self.assertLess(publish, push_branch)
-
-    def test_c5_dev_release_statement_gives_each_credential_to_one_step(self):
-        steps = workflows()["opensecret-release-statement-dev.yml"]["jobs"]["sign"]["steps"]
-        sign_legacy, = (step for step in steps if "ci_sign_pcr.sh dev" in step.get("run", ""))
-        publish, = (step for step in steps if "opensecret_release_statement.py publish dev" in step.get("run", ""))
-        push_branch, = (step for step in steps if "publish_opensecret_approval.sh dev" in step.get("run", ""))
-        key = [step for step in steps if "outputs.SIGNING_PRIVATE_KEY" in json.dumps(step)]
-        self.assertEqual(key, [sign_legacy])  # the legacy key reaches exactly one step
-        self.assertEqual(sign_legacy["env"]["EXPECTED_EIF_SHA256"], "${{ steps.candidate.outputs.eif_sha256 }}")
-        publisher = [step for step in steps if "outputs.AWS_SECRET_ACCESS_KEY" in json.dumps(step)]
-        self.assertEqual(publisher, [publish])  # the bucket credential reaches only the publisher
-        for step in steps:
-            if step.get("uses", "").startswith("bitwarden/sm-action@"):
-                self.assertIs(step["with"]["set_env"], False)
-        self.assertEqual(push_branch["env"]["EXPECTED_SOURCE_SHA"], "${{ steps.candidate.outputs.source_sha }}")
+        dev = workflows()["opensecret-release-statement-dev.yml"]
+        prod = workflows()["opensecret-release-statement-prod.yml"]
+        self.assertEqual(normalize(dev, "dev"), normalize(prod, "prod"))
 
     def test_c6_protected_environments_have_fixed_consumers(self):
         self.assertEqual({(name, job_id): environment(job) for name, job_id, job in jobs() if environment(job)},
@@ -738,6 +688,85 @@ class ContractTests(unittest.TestCase):
                 if "/" not in title and not re.search(r"\.ya?ml$", title) and title not in titles:
                     dangling.append(f"{path}: {title}")
         self.assertEqual(dangling, [])
+
+
+class ReleaseStatementContractTests(unittest.TestCase):
+    mode = "dev"
+    signing_environment = "pcr-signing-dev"
+
+    def test_release_statement_is_one_gated_job_with_a_fixed_target(self):
+        config = workflows()[f"opensecret-release-statement-{self.mode}.yml"]
+        self.assertEqual(set(config["on"]), {"workflow_dispatch"})  # no workflow_call or other caller
+        self.assertEqual(set(config["on"]["workflow_dispatch"]["inputs"]), {"build_run_id"})
+        self.assertEqual(set(config["jobs"]), {"sign"})
+        sign = config["jobs"]["sign"]
+        self.assertEqual(environment(sign), self.signing_environment)
+        for repo, ref in itertools.product(("MaplePrivacyLabs/Maple", "fork/Maple"),
+                                           ("refs/heads/master", "refs/heads/feature", "refs/tags/master")):
+            self.assertEqual(evaluate(expression(sign), {"github.repository": repo, "github.ref": ref}),
+                             repo == "MaplePrivacyLabs/Maple" and ref == "refs/heads/master")
+        self.assertEqual(sign["permissions"], {"contents": "write", "actions": "read", "attestations": "read",
+                                               "id-token": "write"})
+        # The target is literal workflow text: no input, variable or secret selects it.
+        for name in ("SIGNING_KEY_ARN", "SIGNER_ROLE_ARN", "SIGNING_PUBLIC_KEY"):
+            self.assertNotIn("${{", sign["env"][name])
+        self.assertEqual(sign["env"]["BUILD_RUN_ID"], "${{ inputs.build_run_id }}")
+        self.assertNotIn("inputs.", json.dumps([step.get("run", "") for step in sign["steps"]]))
+
+    def test_release_statement_verifies_before_it_signs_publishes_or_pushes(self):
+        steps = workflows()[f"opensecret-release-statement-{self.mode}.yml"]["jobs"]["sign"]["steps"]
+
+        def position(predicate):
+            found = [index for index, step in enumerate(steps) if predicate(step)]
+            self.assertEqual(len(found), 1)
+            return found[0]
+
+        def producer(command):
+            return position(lambda step: f"opensecret_release_statement.py {command} {self.mode}" in step.get("run", ""))
+
+        preflight = producer("preflight")
+        prepare = producer("prepare")
+        sign_statement = producer("sign")
+        publish = producer("publish")
+        sign_legacy = position(lambda step: f"ci_sign_pcr.sh {self.mode}" in step.get("run", ""))
+        retain = position(lambda step: step.get("uses", "").startswith("actions/upload-artifact@"))
+        push_branch = position(lambda step: f"publish_opensecret_approval.sh {self.mode}" in step.get("run", ""))
+        credentials = [index for index, step in enumerate(steps) if "secrets." in json.dumps(step)]
+        publisher = position(lambda step: step.get("id") == "publisher")
+        self.assertLess(publisher, sign_legacy)
+        self.assertLess(publisher, sign_statement)
+        self.assertEqual(steps[preflight]["env"], {
+            "ATTESTATIONS_R2_ACCOUNT_ID": "${{ vars.ATTESTATIONS_R2_ACCOUNT_ID }}",
+            "ATTESTATIONS_R2_BUCKET": "${{ vars.ATTESTATIONS_R2_BUCKET }}",
+        })
+        # Nothing holding a credential or signing runs before the identity check and the
+        # verified build; the bundle is verified and retained before it is published,
+        # and the legacy branch is pushed only after publication succeeded.
+        self.assertLess(preflight, prepare)
+        self.assertTrue(all(prepare < index for index in credentials + [sign_legacy, sign_statement]))
+        self.assertLess(sign_statement, retain)
+        self.assertLess(retain, publish)
+        self.assertLess(publish, push_branch)
+
+    def test_release_statement_gives_each_credential_to_one_step(self):
+        steps = workflows()[f"opensecret-release-statement-{self.mode}.yml"]["jobs"]["sign"]["steps"]
+        sign_legacy, = (step for step in steps if f"ci_sign_pcr.sh {self.mode}" in step.get("run", ""))
+        publish, = (step for step in steps if f"opensecret_release_statement.py publish {self.mode}" in step.get("run", ""))
+        push_branch, = (step for step in steps if f"publish_opensecret_approval.sh {self.mode}" in step.get("run", ""))
+        key = [step for step in steps if "outputs.SIGNING_PRIVATE_KEY" in json.dumps(step)]
+        self.assertEqual(key, [sign_legacy])  # the legacy key reaches exactly one step
+        self.assertEqual(sign_legacy["env"]["EXPECTED_EIF_SHA256"], "${{ steps.candidate.outputs.eif_sha256 }}")
+        publisher = [step for step in steps if "outputs.AWS_SECRET_ACCESS_KEY" in json.dumps(step)]
+        self.assertEqual(publisher, [publish])  # the bucket credential reaches only the publisher
+        for step in steps:
+            if step.get("uses", "").startswith("bitwarden/sm-action@"):
+                self.assertIs(step["with"]["set_env"], False)
+        self.assertEqual(push_branch["env"]["EXPECTED_SOURCE_SHA"], "${{ steps.candidate.outputs.source_sha }}")
+
+
+class ProductionReleaseStatementContractTests(ReleaseStatementContractTests):
+    mode = "prod"
+    signing_environment = "pcr-signing-prod"
 
 
 if __name__ == "__main__":

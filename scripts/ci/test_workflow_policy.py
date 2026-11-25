@@ -18,7 +18,7 @@ WORKFLOWS = ROOT / ".github/workflows"
 SACRED = frozenset({
     "release.yml", "pages-publish.yml", "proxy-publish.yml", "updates-publish.yml",
     "sdk-publish-npm.yml", "sdk-publish-rust.yml", "auth-pages-publish.yml",
-    "opensecret-eif-release.yml", "opensecret-release-statement-dev.yml",
+    "opensecret-eif-release.yml", "opensecret-release-statement-dev.yml", "opensecret-release-statement-prod.yml",
 })
 LISTENERS = frozenset({
     "auth-pages-dev-publish.yml", "pages-publish.yml", "proxy-publish.yml", "updates-publish.yml",
@@ -59,10 +59,10 @@ ENVIRONMENTS = {
     "pages-production": CLOUDFLARE,
     "auth-pages-development": CLOUDFLARE,
     "auth-pages-production": CLOUDFLARE,
-    "pcr-signing": frozenset({"OPENSECRET_PCR_SIGNING_BWS_ACCESS_TOKEN"}),
-    # Same secret name as pcr-signing, but this environment's own value: a Dev-only
-    # machine token for the legacy signing key and the Dev publisher credential.
+    # Each environment scopes its own machine token to the legacy signing key
+    # and its own publisher credential.
     "pcr-signing-dev": frozenset({"OPENSECRET_PCR_SIGNING_BWS_ACCESS_TOKEN"}),
+    "pcr-signing-prod": frozenset({"OPENSECRET_PCR_SIGNING_BWS_ACCESS_TOKEN"}),
     "sdk-npm": frozenset({"NPM_BOOTSTRAP_TOKEN"}),
     "sdk-crates": frozenset({"CRATES_BOOTSTRAP_TOKEN"}),
 }

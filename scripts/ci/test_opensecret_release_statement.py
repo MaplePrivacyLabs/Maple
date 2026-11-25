@@ -13,6 +13,7 @@ import http.server
 import io
 import json
 import os
+import shutil
 from pathlib import Path
 import subprocess
 import sys
@@ -634,10 +635,10 @@ def install_fake(path, source, **paths):
 
 
 @contextlib.contextmanager
-def workspace():
+def workspace(*, mode="dev"):
     """A Workspace whose patches of the producer and the process environment end with it."""
     with tempfile.TemporaryDirectory() as temporary, contextlib.ExitStack() as patches:
-        work = Workspace(Path(temporary).resolve())
+        work = Workspace(Path(temporary).resolve(), mode=mode)
         for patch in work.patches():
             patches.enter_context(patch)
         yield work
@@ -646,7 +647,9 @@ def workspace():
 class Workspace:
     """A master checkout, the dev build's evidence as GitHub serves it, and fakes for gh, Cosign and aws."""
 
-    def __init__(self, root):
+    def __init__(self, root, *, mode="dev"):
+        self.mode = mode
+        self.public_key = f"scripts/ci/opensecret-release/{mode}-signing-key.pem"
         self.root = root
         self.run_id = 4242
         self.candidate = root / "candidate"
@@ -664,8 +667,15 @@ class Workspace:
         self.commit("build")
         self.source_sha = git("rev-parse", "HEAD", cwd=self.repo)
         (self.repo / "later").write_text("later master change\n")
-        key = self.repo / DEV_PUBLIC_KEY
+        key = self.repo / self.public_key
         key.parent.mkdir(parents=True)
+        for mode in ("dev", "prod"):
+            relative = f".github/workflows/opensecret-release-statement-{mode}.yml"
+            workflow = self.repo / relative
+            workflow.parent.mkdir(parents=True, exist_ok=True)
+            shutil.copyfile(ROOT / relative, workflow)
+        if self.mode == "prod":
+            shutil.copyfile(ROOT / DEV_PUBLIC_KEY, self.repo / DEV_PUBLIC_KEY)
         key.write_text(pem(REVIEWED_DER))
         self.commit("later")
 
@@ -680,7 +690,7 @@ class Workspace:
             "pcr.json": json.dumps(VALID_MEASUREMENTS).encode(),
         }
         self.handoff = {
-            "environment": "dev",
+            "environment": self.mode,
             "source_sha": self.source_sha,
             "measurements": VALID_MEASUREMENTS,
             "eif_sha256": sha256_hex(self.files["image.eif"]),
@@ -700,7 +710,7 @@ class Workspace:
         }
         self.artifact = {
             "id": 99,
-            "name": f"opensecret-eif-dev-{self.source_sha[:12]}",
+            "name": f"opensecret-eif-{self.mode}-{self.source_sha[:12]}",
             "expired": False,
             "size_in_bytes": 4096,
             "workflow_run": {"id": self.run_id, "head_sha": self.source_sha},
@@ -725,12 +735,15 @@ class Workspace:
 
     def patches(self):
         """The job's environment, this checkout as ROOT and the fake Cosign as the pinned release."""
+        signer_role = f"arn:aws:iam::{ACCOUNT}:role/maple-pcr-signer-{self.mode}"
         environ = {
             "PATH": f"{self.bin}:{os.environ['PATH']}", "HOME": str(self.root), "TMPDIR": str(self.root),
-            "SIGNING_KEY_ARN": KEY_ARN, "SIGNER_ROLE_ARN": ROLE_ARN, "SIGNING_PUBLIC_KEY": DEV_PUBLIC_KEY,
+            "PYTHONDONTWRITEBYTECODE": "1",
+            "SIGNING_KEY_ARN": KEY_ARN, "SIGNER_ROLE_ARN": signer_role,
+            "SIGNING_PUBLIC_KEY": self.public_key,
             "GITHUB_RUN_ID": "777", "GITHUB_OUTPUT": str(self.root / "github-output"),
             "GITHUB_STEP_SUMMARY": str(self.root / "summary.md"),
-            "ATTESTATIONS_R2_ACCOUNT_ID": R2_ACCOUNT, "ATTESTATIONS_R2_BUCKET": "maple-attestations-dev",
+            "ATTESTATIONS_R2_ACCOUNT_ID": R2_ACCOUNT, "ATTESTATIONS_R2_BUCKET": f"maple-attestations-{self.mode}",
             "AWS_ACCESS_KEY_ID": "fixture-access-key", "AWS_SECRET_ACCESS_KEY": "fixture-secret-key",
             # Inherited credentials that must never reach a tool.
             "AWS_SESSION_TOKEN": "inherited-session-token", "AWS_PROFILE": "inherited-profile",
@@ -754,7 +767,7 @@ class Workspace:
     def built_artifact(self, files=None):
         """The files build_opensecret_eif.sh writes for this build. A build script failure fails the test."""
         files = files or self.files
-        output = release_build_candidate(Path(tempfile.mkdtemp(dir=self.root)), mode="dev",
+        output = release_build_candidate(Path(tempfile.mkdtemp(dir=self.root)), mode=self.mode,
                                          source_sha=self.handoff["source_sha"], image=files["image.eif"],
                                          pcr=files["pcr.json"])
         return {name: (output / name).read_bytes() for name in (*release.FILES, "SHA256SUMS")}
@@ -791,7 +804,7 @@ class Workspace:
     def prepare(self):
         if not (self.state / "gh.json").exists():
             self.stage()
-        return release.prepare("dev", str(self.run_id), self.candidate, self.release)
+        return release.prepare(self.mode, str(self.run_id), self.candidate, self.release)
 
     def statement(self):
         return (self.release / "statement.json").read_bytes()
@@ -807,11 +820,79 @@ class Workspace:
         (self.state / "cosign.json").write_text(json.dumps(values))
 
 
+class PreflightTests(unittest.TestCase):
+    def test_production_refuses_the_four_copied_dev_identity_fills(self):
+        dev = workflows()["opensecret-release-statement-dev.yml"]["jobs"]["sign"]["env"]
+        dev_key = (ROOT / dev["SIGNING_PUBLIC_KEY"]).read_text()
+        prod_role_in_dev_account = dev["SIGNER_ROLE_ARN"].replace("-dev", "-prod")
+        cases = (
+            (dev["SIGNING_KEY_ARN"], prod_role_in_dev_account, pem(OTHER_DER), None),
+            (KEY_ARN, ROLE_ARN.replace("-dev", "-prod"), dev_key, None),
+            (dev["SIGNING_KEY_ARN"], prod_role_in_dev_account, dev_key, None),
+            (dev["SIGNING_KEY_ARN"], prod_role_in_dev_account, None, DEV_PUBLIC_KEY),
+        )
+        for key_arn, role_arn, key_text, key_path in cases:
+            with self.subTest(key=key_arn, public_key=key_path, copies_key=key_text == dev_key):
+                with workspace(mode="prod") as work:
+                    if key_text is not None:
+                        (work.repo / work.public_key).write_text(key_text)
+                        work.commit("configured public key")
+                    identity = {"SIGNING_KEY_ARN": key_arn, "SIGNER_ROLE_ARN": role_arn}
+                    if key_path is not None:
+                        identity["SIGNING_PUBLIC_KEY"] = key_path
+                    with mock.patch.dict(os.environ, identity):
+                        with self.assertRaisesRegex(release.EvidenceError, "other environment"):
+                            release.preflight("prod")
+                    self.assertEqual(work.log("cosign"), [])
+                    release.github_oidc_token.assert_not_called()
+
+    def test_preflight_refuses_invalid_public_storage_before_any_signing(self):
+        for mode in ("dev", "prod"):
+            opposite = "prod" if mode == "dev" else "dev"
+            cases = (
+                {"ATTESTATIONS_R2_BUCKET": ""},
+                {"ATTESTATIONS_R2_BUCKET": f"maple-attestations-{opposite}"},
+                {"ATTESTATIONS_R2_ACCOUNT_ID": ""},
+                {"ATTESTATIONS_R2_ACCOUNT_ID": "not-an-account-id"},
+            )
+            for values in cases:
+                with self.subTest(mode=mode, values=values), workspace(mode=mode) as work:
+                    with mock.patch.dict(os.environ, values):
+                        with self.assertRaises(release.EvidenceError):
+                            release.preflight(mode)
+                    self.assertEqual(work.log("cosign"), [])
+                    release.github_oidc_token.assert_not_called()
+
+    def test_complete_distinct_identities_and_matching_storage_pass(self):
+        for mode in ("dev", "prod"):
+            with self.subTest(mode=mode), workspace(mode=mode):
+                release.preflight(mode)
+
+
 class PrepareTests(unittest.TestCase):
     def assert_refused(self, work, message=""):
         with self.assertRaisesRegex(release.EvidenceError, message):
             work.prepare()
         self.assertFalse((work.release / "statement.json").exists())
+
+    def test_each_environment_accepts_only_its_real_producer_output(self):
+        for mode, opposite in (("dev", "prod"), ("prod", "dev")):
+            with self.subTest(mode=mode), workspace(mode=mode) as work:
+                work.stage()
+                with self.assertRaisesRegex(release.EvidenceError, "Expected exactly one"):
+                    release.prepare(opposite, str(work.run_id), work.candidate, work.release)
+                # Relabeling the archive does not change the attested handoff.
+                work.artifact["name"] = f"opensecret-eif-{opposite}-{work.source_sha[:12]}"
+                work.stage()
+                with self.assertRaisesRegex(release.EvidenceError, "Candidate was built for"):
+                    release.prepare(opposite, str(work.run_id), work.candidate, work.release)
+
+    def test_production_preflight_refuses_the_workflows_placeholders(self):
+        config = workflows()["opensecret-release-statement-prod.yml"]
+        identity = config["jobs"]["sign"]["env"]
+        with mock.patch.dict(os.environ, identity, clear=True):
+            with self.assertRaisesRegex(release.EvidenceError, "placeholder"):
+                release.preflight("prod")
 
     def test_candidate_is_exactly_the_build_scripts_output(self):
         with workspace() as work:
@@ -824,6 +905,25 @@ class PrepareTests(unittest.TestCase):
             self.assertEqual(sorted(path.name for path in work.candidate.iterdir()),
                              ["SHA256SUMS", "handoff.json", "image.eif", "pcr.json"])
             self.assertFalse((work.release / "artifact.zip").exists())
+
+    def test_real_size_candidate_passes_checksum_and_handoff_checks(self):
+        eif_bytes = 234_000_000
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            image = root / "large-image.eif"
+            with image.open("wb") as output:
+                output.truncate(eif_bytes)
+            source_sha = "d" * 40
+            for mode in ("dev", "prod"):
+                build = root / mode
+                build.mkdir()
+                candidate = release_build_candidate(build, mode=mode, source_sha=source_sha,
+                                                    image=image, pcr=json.dumps(VALID_MEASUREMENTS).encode())
+                digests = release.check_checksums(candidate)
+                run = {"head_sha": source_sha}
+                measurements = release.validate_handoff(candidate, run, mode, digests["image.eif"])
+                self.assertEqual(measurements["PCR0"], VALID_MEASUREMENTS["PCR0"])
+                self.assertEqual((candidate / "image.eif").stat().st_size, eif_bytes)
 
     def test_verified_master_build_becomes_the_exact_statement(self):
         with workspace() as work:
@@ -1392,14 +1492,14 @@ class SignTests(unittest.TestCase):
 
     def test_a_foreign_repository_cannot_vouch_for_an_edited_key_before_any_credential(self):
         foreign = foreign_repository(self.work.root, {DEV_PUBLIC_KEY: OTHER_DER})
-        (self.work.repo / DEV_PUBLIC_KEY).write_text(pem(OTHER_DER))
+        (self.work.repo / self.work.public_key).write_text(pem(OTHER_DER))
         self.work.signed_bundle()
         for name, selectors in git_selectors(foreign).items():
             with self.subTest(selectors=name), mock.patch.dict(os.environ, selectors):
                 self.assert_refused_before_any_credential()
 
     def test_a_public_key_edited_after_checkout_is_refused_before_any_credential(self):
-        (self.work.repo / DEV_PUBLIC_KEY).write_text(pem(OTHER_DER))
+        (self.work.repo / self.work.public_key).write_text(pem(OTHER_DER))
         self.work.signed_bundle()
         self.assert_refused_before_any_credential()
 
@@ -1461,12 +1561,13 @@ class Host(http.server.BaseHTTPRequestHandler):
     """
 
     storage: Path
+    bucket = "maple-attestations-dev"
     overrides: dict = {}
     origins: list
 
     def do_GET(self):  # noqa: N802 - http.server API
         self.origins.append(self.headers.get("Origin"))
-        path = self.storage / "maple-attestations-dev" / self.path.lstrip("/")
+        path = self.storage / self.bucket / self.path.lstrip("/")
         if not path.is_file():
             self.send_response(404)
             self.end_headers()
@@ -1487,13 +1588,22 @@ class Host(http.server.BaseHTTPRequestHandler):
 
 
 class PublishTests(unittest.TestCase):
+    mode = "dev"
+
     def setUp(self):
-        self.work = self.enterContext(workspace())
+        self.work = self.enterContext(workspace(mode=self.mode))
         self.work.prepare()
         self.work.signed_bundle()
         self.cosign = self.work.bin / "cosign"
-        release.sign("dev", self.work.candidate, self.work.release, self.cosign)
-        self.handler = type("FixtureHost", (Host,), {"storage": self.work.storage, "overrides": {}, "origins": []})
+        release.sign(self.mode, self.work.candidate, self.work.release, self.cosign)
+        class FixtureHost(Host):
+            pass
+
+        self.handler = FixtureHost
+        self.handler.storage = self.work.storage
+        self.handler.overrides = {}
+        self.handler.origins = []
+        self.handler.bucket = f"maple-attestations-{self.mode}"
         server = http.server.ThreadingHTTPServer(("127.0.0.1", 0), self.handler)
         thread = threading.Thread(target=server.serve_forever, daemon=True)
         thread.start()
@@ -1502,10 +1612,10 @@ class PublishTests(unittest.TestCase):
         self.addCleanup(server.shutdown)
         self.base_url = f"http://127.0.0.1:{server.server_address[1]}"
         self.key = f"{'a' * 96}.json"
-        self.bucket = self.work.storage / "maple-attestations-dev"
+        self.bucket = self.work.storage / f"maple-attestations-{self.mode}"
 
     def publish(self):
-        return release.publish("dev", self.work.candidate, self.work.release, self.cosign, base_url=self.base_url)
+        return release.publish(self.mode, self.work.candidate, self.work.release, self.cosign, base_url=self.base_url)
 
     def test_uploads_one_object_and_confirms_the_public_bytes(self):
         self.publish()
@@ -1517,7 +1627,7 @@ class PublishTests(unittest.TestCase):
         self.assertEqual(len(upload), 1)
         options = dict(zip(upload[0]["args"][2::2], upload[0]["args"][3::2]))
         self.assertEqual(options["--endpoint-url"], f"https://{R2_ACCOUNT}.r2.cloudflarestorage.com")
-        self.assertEqual((options["--bucket"], options["--key"]), ("maple-attestations-dev", self.key))
+        self.assertEqual((options["--bucket"], options["--key"]), (f"maple-attestations-{self.mode}", self.key))
         # Only the bucket credential reaches the upload; no inherited session or profile.
         self.assertIn("AWS_ACCESS_KEY_ID", upload[0]["env"])
         self.assertFalse({"AWS_SESSION_TOKEN", "AWS_PROFILE", "AWS_ROLE_ARN"} & set(upload[0]["env"]))
@@ -1526,7 +1636,7 @@ class PublishTests(unittest.TestCase):
         receipt = json.loads((self.work.release / "publication.json").read_text())
         self.assertEqual(receipt["url"], f"{self.base_url}/{self.key}")
         self.assertEqual(receipt["bundleSha256"], hashlib.sha256(bundle).hexdigest())
-        self.assertEqual(receipt["environment"], "development")
+        self.assertEqual(receipt["environment"], release.target_for(self.mode).environment)
         verified = [call["args"][2] for call in self.work.log("cosign") if call["args"][0] == "verify-blob-attestation"]
         self.assertIn(str(self.work.release / "public.bundle.json"), verified)
 
@@ -1567,9 +1677,12 @@ class PublishTests(unittest.TestCase):
                 self.assert_not_published("was not confirmed")
         self.assertEqual(len(self.handler.origins), len(cases) * release.READBACK_ATTEMPTS)
 
-    def test_publisher_is_bound_to_the_dev_bucket_and_needs_its_credential(self):
+    def test_publisher_is_bound_to_its_bucket_and_needs_its_credential(self):
+        opposite = "prod"
+        if self.mode == "prod":
+            opposite = "dev"
         cases = {
-            "prod bucket": {"ATTESTATIONS_R2_BUCKET": "maple-attestations-prod"},
+            "opposite bucket": {"ATTESTATIONS_R2_BUCKET": f"maple-attestations-{opposite}"},
             "bad account": {"ATTESTATIONS_R2_ACCOUNT_ID": "not-an-account"},
             "no credential": {"AWS_SECRET_ACCESS_KEY": ""},
         }
@@ -1579,7 +1692,7 @@ class PublishTests(unittest.TestCase):
         self.assertEqual(self.work.log("aws"), [])
 
     def test_a_public_key_edited_after_signing_is_never_uploaded(self):
-        (self.work.repo / DEV_PUBLIC_KEY).write_text(pem(OTHER_DER))
+        (self.work.repo / self.work.public_key).write_text(pem(OTHER_DER))
         self.assert_not_published("differs from its committed content")
         self.assertEqual(self.work.log("aws"), [])
 
@@ -1589,6 +1702,10 @@ class PublishTests(unittest.TestCase):
         (self.work.release / "bundle.json").write_bytes(encode(bundle))
         self.assert_not_published("differs from the prepared statement")
         self.assertEqual(self.work.log("aws"), [])
+
+
+class ProductionPublishTests(PublishTests):
+    mode = "prod"
 
 
 if __name__ == "__main__":

@@ -71,7 +71,7 @@ Build first without credentials, review measurements, then resolve only the
 existing signing key around the signer. Deployment consumes the resulting
 reviewed immutable artifact; it must not rebuild or sign implicitly.
 
-After an approval branch from the `OpenSecret EIF release` or
+After an approval branch from the `OpenSecret Production release statement` or
 `OpenSecret Dev release statement` workflow has merged, or after running the
 operator `update-pcr-*` recipes locally, run the following
 from `services/opensecret/`:
@@ -82,6 +82,11 @@ OPENSECRET_DEV_POSTGRES=0 OPENSECRET_DEV_ENV=0 OPENSECRET_DEV_CONTAINERS=0 \
   python3 scripts/pcr_compatibility.py check . \
   --baseline-dir /absolute/path/to/services/opensecret/at/the/previous/master
 ```
+
+CI signs the artifact measurements directly. If EIF inputs differ between its
+source and the signing checkout, approval adds only a missing history entry and
+leaves the current snapshot alone; see
+[release statements](release-statements.md).
 
 The `update-pcr-dev` and `update-pcr-prod` recipes copy measurements and
 append a verified signature. This additional check verifies all four files, every PCR0 signature
