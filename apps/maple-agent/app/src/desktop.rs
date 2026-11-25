@@ -103,7 +103,11 @@ struct PendingTaskAction {
 
 enum ConnectionAttempt {
     Idle,
-    Connecting(u64),
+    Connecting {
+        id: u64,
+        /// Automatic retries keep the last failure visible instead of flashing a spinner.
+        previous_error: Option<String>,
+    },
     Failed {
         message: String,
         retry_at: std::time::Instant,
@@ -114,16 +118,45 @@ impl RemoteComputer {
         self.chat.is_none()
             && match &self.attempt {
                 ConnectionAttempt::Idle => true,
-                ConnectionAttempt::Connecting(_) => false,
+                ConnectionAttempt::Connecting { .. } => false,
                 ConnectionAttempt::Failed { message, retry_at } => {
                     !crate::remote::wire::is_protocol_incompatibility_refusal(message)
                         && now >= *retry_at
                 }
             }
     }
+
+    fn begin_connect(&mut self, id: u64, background: bool) {
+        let previous_error = if background {
+            match &self.attempt {
+                ConnectionAttempt::Failed { message, .. } => Some(message.clone()),
+                _ => None,
+            }
+        } else {
+            None
+        };
+        self.attempt = ConnectionAttempt::Connecting { id, previous_error };
+    }
+
+    /// An explicit click reveals an automatic check already in flight.
+    fn reveal_connection(&mut self) -> bool {
+        match &mut self.attempt {
+            ConnectionAttempt::Connecting { previous_error, .. } => previous_error.take().is_some(),
+            _ => false,
+        }
+    }
+
+    fn pending(&self, key: String) -> Computer {
+        Computer::pending(key, self.name.clone(), self.error())
+    }
+
     fn error(&self) -> Option<String> {
         match &self.attempt {
-            ConnectionAttempt::Failed { message, .. } => Some(
+            ConnectionAttempt::Connecting {
+                previous_error: Some(message),
+                ..
+            }
+            | ConnectionAttempt::Failed { message, .. } => Some(
                 if crate::remote::wire::is_protocol_incompatibility_refusal(message) {
                     tr("native-remote-update-required").to_string()
                 } else {
@@ -1616,7 +1649,7 @@ impl MapleApp {
             .map(|(key, _)| key.clone())
             .collect::<Vec<_>>();
         for peer in ready {
-            self.connect_computer(peer, cx);
+            self.connect_computer(peer, true, cx);
         }
         for chat in self.local_chat.iter().chain(
             self.remote_computers
@@ -1644,7 +1677,7 @@ impl MapleApp {
                 Some(chat) => chat
                     .read(cx)
                     .computer_snapshot(computer.name.clone().into(), cx),
-                None => Computer::pending(key.clone(), computer.name.clone(), computer.error()),
+                None => computer.pending(key.clone()),
             });
         }
         let computers = Arc::new(computers);
@@ -1949,7 +1982,7 @@ impl MapleApp {
             self.requested_navigation = None;
             cx.notify();
         } else if let Some(peer) = request.computer {
-            self.connect_computer(peer, cx);
+            self.connect_computer(peer, false, cx);
         }
     }
 
@@ -1972,7 +2005,7 @@ impl MapleApp {
         cx.notify();
     }
 
-    fn connect_computer(&mut self, peer: String, cx: &mut Context<Self>) {
+    fn connect_computer(&mut self, peer: String, background: bool, cx: &mut Context<Self>) {
         let Some(user_id) = self.user_id.clone() else {
             return;
         };
@@ -1981,12 +2014,15 @@ impl MapleApp {
         };
         // Explicit navigation may retry after either computer was upgraded.
         // Only background discovery uses should_connect's incompatibility gate.
-        if matches!(computer.attempt, ConnectionAttempt::Connecting(_)) {
+        if matches!(computer.attempt, ConnectionAttempt::Connecting { .. }) {
+            if !background && computer.reveal_connection() {
+                self.sync_computers(cx);
+            }
             return;
         }
         self.next_connection_attempt += 1;
         let attempt = self.next_connection_attempt;
-        computer.attempt = ConnectionAttempt::Connecting(attempt);
+        computer.begin_connect(attempt, background);
         let backend = self.backend.clone();
         let target = peer.clone();
         self.sync_computers(cx);
@@ -2000,7 +2036,7 @@ impl MapleApp {
                 }
                 // Unpairing/re-pairing or signing out discards an old attempt.
                 // A late completion never resurrects that computer or its view.
-                if !app.remote_computers.get(&peer).is_some_and(|computer| matches!(computer.attempt, ConnectionAttempt::Connecting(id) if id == attempt)) {
+                if !app.remote_computers.get(&peer).is_some_and(|computer| matches!(computer.attempt, ConnectionAttempt::Connecting { id, .. } if id == attempt)) {
                     return;
                 }
                 match result {
@@ -5176,7 +5212,7 @@ mod tests {
             attempt: super::ConnectionAttempt::Idle,
         };
         assert!(computer.should_connect(now));
-        computer.attempt = super::ConnectionAttempt::Connecting(1);
+        computer.begin_connect(1, false);
         assert!(!computer.should_connect(now));
         computer.attempt = super::ConnectionAttempt::Failed {
             message: "Offline".into(),
@@ -5191,6 +5227,32 @@ mod tests {
             attempt: super::ConnectionAttempt::Idle,
         };
         assert!(other.should_connect(now));
+    }
+
+    #[test]
+    fn automatic_retry_keeps_offline_status_until_clicked() {
+        let mut computer = super::RemoteComputer {
+            name: "Office".into(),
+            grant: [0; 16],
+            chat: None,
+            attempt: super::ConnectionAttempt::Failed {
+                message: "Offline".into(),
+                retry_at: std::time::Instant::now(),
+            },
+        };
+        let before = computer.pending("east".into());
+        assert!(!before.loading);
+
+        computer.begin_connect(1, true);
+        let checking = computer.pending("east".into());
+        assert_eq!(checking.error, before.error);
+        assert_eq!(checking.loading, before.loading);
+
+        assert!(computer.reveal_connection());
+        let clicked = computer.pending("east".into());
+        assert!(clicked.loading);
+        assert_eq!(clicked.error, None);
+        assert!(!computer.reveal_connection());
     }
 
     #[test]
@@ -5268,7 +5330,10 @@ mod tests {
             assert_eq!(app.next_connection_attempt, 1);
             assert!(matches!(
                 app.remote_computers["east"].attempt,
-                ConnectionAttempt::Connecting(1)
+                ConnectionAttempt::Connecting {
+                    id: 1,
+                    previous_error: None
+                }
             ));
             assert!(app.requested_navigation.is_some());
             assert_eq!(app.remote_computers["east"].grant, [1; 16]);
