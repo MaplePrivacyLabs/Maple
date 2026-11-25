@@ -716,10 +716,24 @@ dependencies = [
  "cfg-if",
  "cpufeatures 0.2.17",
  "curve25519-dalek-derive",
- "fiat-crypto",
+ "fiat-crypto 0.2.9",
  "rustc_version",
  "subtle",
  "zeroize",
+]
+
+[[package]]
+name = "curve25519-dalek"
+version = "5.0.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "b5eed333089e2e1c1ac8c6c0398e5e2497b4c9926ca6d0365ed1e099afa5bc23"
+dependencies = [
+ "cfg-if",
+ "cpufeatures 0.3.1",
+ "curve25519-dalek-derive",
+ "fiat-crypto 0.3.0",
+ "rustc_version",
+ "subtle",
 ]
 
 [[package]]
@@ -1010,6 +1024,12 @@ name = "fiat-crypto"
 version = "0.2.9"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "28dea519a9695b9977216879a3ebfddf92f1c08c05d984f8996aecd6ecdc811d"
+
+[[package]]
+name = "fiat-crypto"
+version = "0.3.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "64cd1e32ddd350061ae6edb1b082d7c54915b5c672c389143b9a63403a109f24"
 
 [[package]]
 name = "find-msvc-tools"
@@ -1843,6 +1863,7 @@ dependencies = [
  "hex",
  "hkdf 0.12.4",
  "http",
+ "maple-sigstore-verify",
  "p256",
  "percent-encoding",
  "pin-project",
@@ -1854,7 +1875,6 @@ dependencies = [
  "sha2",
  "sigstore-trust-root",
  "sigstore-types",
- "sigstore-verify",
  "subtle",
  "thiserror 2.0.18",
  "tokio",
@@ -1864,6 +1884,52 @@ dependencies = [
  "x509-parser",
  "yasna",
  "zeroize",
+]
+
+[[package]]
+name = "maple-sigstore-rekor"
+version = "0.17.0-maple.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "78d27104139b240be5e858a1c0cbd03ca6c6c90e11fb7ee9cb8e2c97ccd37352"
+dependencies = [
+ "base64 0.23.1",
+ "hex",
+ "jiff",
+ "serde",
+ "serde_json",
+ "sigstore-merkle",
+ "sigstore-types",
+ "thiserror 2.0.18",
+]
+
+[[package]]
+name = "maple-sigstore-verify"
+version = "0.17.0-maple.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "a1fab11431dda7a4038a6f5fcce3736ab95522531a153a01f4981eec6019c857"
+dependencies = [
+ "base64 0.23.1",
+ "const-oid 0.9.6",
+ "futures-io",
+ "hex",
+ "jiff",
+ "maple-sigstore-rekor",
+ "rustls-pki-types",
+ "rustls-webpki",
+ "serde",
+ "serde_json",
+ "serde_json_canonicalizer",
+ "sigstore-bundle",
+ "sigstore-crypto",
+ "sigstore-merkle",
+ "sigstore-trust-root",
+ "sigstore-tsa",
+ "sigstore-types",
+ "thiserror 2.0.18",
+ "tls_codec",
+ "tracing",
+ "url",
+ "x509-cert",
 ]
 
 [[package]]
@@ -2910,8 +2976,9 @@ dependencies = [
 
 [[package]]
 name = "sigstore-bundle"
-version = "0.16.0"
-source = "git+https://github.com/MaplePrivacyLabs/sigstore-rust.git?rev=47e17243e38f6aaa472008c2187b43e143b14211#47e17243e38f6aaa472008c2187b43e143b14211"
+version = "0.17.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "2ecfbb7645777e68567ddfc81a07d57071c36246ff57cd52613224e34ed82e65"
 dependencies = [
  "jiff",
  "sigstore-types",
@@ -2920,11 +2987,13 @@ dependencies = [
 
 [[package]]
 name = "sigstore-crypto"
-version = "0.16.0"
-source = "git+https://github.com/MaplePrivacyLabs/sigstore-rust.git?rev=47e17243e38f6aaa472008c2187b43e143b14211#47e17243e38f6aaa472008c2187b43e143b14211"
+version = "0.17.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "3b3876f3dcd98b7ce983e017e3c2dea6392fefdc2f076d61df4a045e38f53054"
 dependencies = [
  "aws-lc-rs",
  "const-oid 0.9.6",
+ "curve25519-dalek 5.0.0",
  "der 0.7.10",
  "futures-io",
  "jiff",
@@ -2937,8 +3006,9 @@ dependencies = [
 
 [[package]]
 name = "sigstore-merkle"
-version = "0.16.0"
-source = "git+https://github.com/MaplePrivacyLabs/sigstore-rust.git?rev=47e17243e38f6aaa472008c2187b43e143b14211#47e17243e38f6aaa472008c2187b43e143b14211"
+version = "0.17.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "966b4f6e66a447826e8afef42fccd645032aee1a152c4751f2651335221d091d"
 dependencies = [
  "sigstore-crypto",
  "sigstore-types",
@@ -2946,24 +3016,10 @@ dependencies = [
 ]
 
 [[package]]
-name = "sigstore-rekor"
-version = "0.16.0"
-source = "git+https://github.com/MaplePrivacyLabs/sigstore-rust.git?rev=47e17243e38f6aaa472008c2187b43e143b14211#47e17243e38f6aaa472008c2187b43e143b14211"
-dependencies = [
- "base64 0.23.1",
- "hex",
- "jiff",
- "serde",
- "serde_json",
- "sigstore-merkle",
- "sigstore-types",
- "thiserror 2.0.18",
-]
-
-[[package]]
 name = "sigstore-trust-root"
-version = "0.16.0"
-source = "git+https://github.com/MaplePrivacyLabs/sigstore-rust.git?rev=47e17243e38f6aaa472008c2187b43e143b14211#47e17243e38f6aaa472008c2187b43e143b14211"
+version = "0.17.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "2be7d164a8d5137fce8915e76d2b5d67d1db0e2308ad4555f0a9921bc5479b67"
 dependencies = [
  "directories",
  "jiff",
@@ -2978,8 +3034,9 @@ dependencies = [
 
 [[package]]
 name = "sigstore-tsa"
-version = "0.16.0"
-source = "git+https://github.com/MaplePrivacyLabs/sigstore-rust.git?rev=47e17243e38f6aaa472008c2187b43e143b14211#47e17243e38f6aaa472008c2187b43e143b14211"
+version = "0.17.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "071266fa194f8ebc5fecbfac40fd6bed4373f8af229b55bf79253f1789869544"
 dependencies = [
  "cms",
  "const-oid 0.9.6",
@@ -2997,8 +3054,9 @@ dependencies = [
 
 [[package]]
 name = "sigstore-tuf"
-version = "0.16.0"
-source = "git+https://github.com/MaplePrivacyLabs/sigstore-rust.git?rev=47e17243e38f6aaa472008c2187b43e143b14211#47e17243e38f6aaa472008c2187b43e143b14211"
+version = "0.17.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "55fcdb90054c5ab76f4122d72406127780dbb595adab417382efb7721ebf5990"
 dependencies = [
  "glob",
  "hex",
@@ -3016,8 +3074,9 @@ dependencies = [
 
 [[package]]
 name = "sigstore-types"
-version = "0.16.0"
-source = "git+https://github.com/MaplePrivacyLabs/sigstore-rust.git?rev=47e17243e38f6aaa472008c2187b43e143b14211#47e17243e38f6aaa472008c2187b43e143b14211"
+version = "0.17.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "4b7f9226a4d3c1c187ccdc874536a0e581e009427837659519148f57869bb9be"
 dependencies = [
  "base64 0.23.1",
  "hex",
@@ -3026,35 +3085,6 @@ dependencies = [
  "serde",
  "serde_json",
  "thiserror 2.0.18",
-]
-
-[[package]]
-name = "sigstore-verify"
-version = "0.16.0"
-source = "git+https://github.com/MaplePrivacyLabs/sigstore-rust.git?rev=47e17243e38f6aaa472008c2187b43e143b14211#47e17243e38f6aaa472008c2187b43e143b14211"
-dependencies = [
- "base64 0.23.1",
- "const-oid 0.9.6",
- "futures-io",
- "hex",
- "jiff",
- "rustls-pki-types",
- "rustls-webpki",
- "serde",
- "serde_json",
- "serde_json_canonicalizer",
- "sigstore-bundle",
- "sigstore-crypto",
- "sigstore-merkle",
- "sigstore-rekor",
- "sigstore-trust-root",
- "sigstore-tsa",
- "sigstore-types",
- "thiserror 2.0.18",
- "tls_codec",
- "tracing",
- "url",
- "x509-cert",
 ]
 
 [[package]]
@@ -4144,7 +4174,7 @@ version = "2.0.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "c7e468321c81fb07fa7f4c636c3972b9100f0346e5b6a9f2bd0603a52f7ed277"
 dependencies = [
- "curve25519-dalek",
+ "curve25519-dalek 4.1.3",
  "rand_core 0.6.4",
  "serde",
  "zeroize",

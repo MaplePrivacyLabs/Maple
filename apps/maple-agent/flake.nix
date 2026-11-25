@@ -142,8 +142,6 @@
                 "zed-font-kit-0.14.1-zed" = "sha256-KXygi0olNQi5yM8eaJVykNDtbPMDjT+cWPBF8UrtXR4=";
                 "zed-scap-0.0.8-zed" = "sha256-BihiQHlal/eRsktyf0GI3aSWsUCW7WcICMsC2Xvb7kw=";
                 "cua-driver-sdk-0.38.0" = "sha256-nXvjGhAxEB5rTOC9oCbWiULttOijpszAjuuC/R3WfWI=";
-                # One fixed source covers every sigstore crate at this locked revision.
-                "sigstore-types-0.16.0" = "sha256-VRwS3NJgIAt1zFhsq6yBniAdfrvuMRBpRfhjFn6vs+Y=";
               };
             };
 
