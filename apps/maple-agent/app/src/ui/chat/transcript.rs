@@ -72,7 +72,9 @@ impl ChatScreen {
             window.request_animation_frame();
         }
         let switch_reveal = self.row_motion.switch_progress(now, reduced);
-        let show_jump = count > 0 && !following;
+        let show_jump = self.pages.has_missed_live()
+            || (self.pages.snapshot_partial && !self.is_run_active())
+            || (count > 0 && !following);
         let tool_details = self.tool_details;
         let entity = cx.entity().downgrade();
         let selection = self.selection.clone();
@@ -299,27 +301,6 @@ impl ChatScreen {
             .when(show_jump, |container| {
                 container.child(self.render_jump_to_latest(cx))
             })
-            .when(self.pages.live_has_more, |container| {
-                container.child(
-                    div()
-                        .mx_6()
-                        .mb_2()
-                        .flex()
-                        .items_center()
-                        .gap_2()
-                        .text_xs()
-                        .text_color(gpui::rgb(theme::text_muted()))
-                        .child(tr("chat-activity-outside"))
-                        .child(
-                            widgets::secondary_button("live-reload-latest")
-                                .text_xs()
-                                .child(gpui::text!(tr("chat-reload-latest")))
-                                .on_click(
-                                    cx.listener(|chat, _, _, cx| chat.reload_paged_latest(cx)),
-                                ),
-                        ),
-                )
-            })
             .when_some(self.runtime_error.clone(), |container, error| {
                 container.child(widgets::banner(widgets::Tone::Error, error).mx_6().mb_2())
             })
@@ -383,16 +364,29 @@ impl ChatScreen {
                     .border_1()
                     .border_color(gpui::rgb(theme::border()))
                     .text_xs()
-                    .on_click(cx.listener(|this, _event, _window, cx| {
-                        if this.pages.after {
-                            this.reload_paged_latest(cx);
-                        } else {
-                            this.list_state.scroll_to_end();
-                        }
-                        cx.notify();
-                    }))
-                    .child(icon("chevron-down", px(12.), theme::text_secondary()))
-                    .child(gpui::text!(tr("chat-jump-latest"))),
+                    .when(!self.reload_pending, |button| {
+                        button.on_click(cx.listener(|this, _event, _window, cx| {
+                            if this.pages.after
+                                || this.pages.has_missed_live()
+                                || (this.pages.snapshot_partial && !this.is_run_active())
+                            {
+                                this.reload_paged_latest(cx);
+                            } else {
+                                this.list_state.scroll_to_end();
+                            }
+                            cx.notify();
+                        }))
+                    })
+                    .child(if self.reload_pending {
+                        spinner("jump-to-latest", px(12.), theme::text_secondary())
+                    } else {
+                        icon("chevron-down", px(12.), theme::text_secondary()).into_any_element()
+                    })
+                    .child(gpui::text!(if self.reload_pending {
+                        tr("chat-history-loading")
+                    } else {
+                        tr("chat-jump-latest")
+                    })),
                 "jump-to-latest-reveal",
             ))
     }

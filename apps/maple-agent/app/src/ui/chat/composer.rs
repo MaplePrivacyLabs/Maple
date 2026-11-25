@@ -1336,7 +1336,7 @@ impl ChatScreen {
     /// refusal itself came while they did: then the credits did not pay.
     fn usage_limit_reached(&self) -> bool {
         !self.pages.after
-            && !self.pages.live_has_more
+            && !self.pages.has_live_gap()
             && !self.is_run_active()
             && !self.has_send_feedback()
             && self.timeline.last().is_some_and(|row| {

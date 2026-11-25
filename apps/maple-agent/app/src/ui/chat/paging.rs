@@ -1,7 +1,7 @@
 //! Bounded transcript windows. View/cache keys use durable or live occurrence
 //! identity; repeated timestamp merge keys remain distinct rows.
 
-use super::ChatScreen;
+use super::{ChatScreen, LOAD_RETRIES, LoadMode};
 use crate::backend::{HistoryAnchorRequest, RowRangeRequest};
 use crate::ui::i18n::UiText;
 use crate::ui::task::Failure as UiFailure;
@@ -23,7 +23,12 @@ pub(super) struct TranscriptPages {
     /// The row count older history was last requested for near the top.
     /// Leaving the top rearms it, so a failure is not retried every frame.
     pub top_load: Option<usize>,
-    pub live_has_more: bool,
+    /// The host had to omit or shorten some of the live overlay in its page.
+    pub snapshot_partial: bool,
+    /// Highest host revision skipped because the UI held an older window.
+    pub missed_live_revision: Option<u64>,
+    /// A skipped occurrence without a host revision needs a quiescent open.
+    pub missed_live_without_revision: bool,
     pub generation: u64,
     pub expanding: HashSet<String>,
     pub weights: RowWeights,
@@ -102,6 +107,54 @@ impl RowWeights {
 }
 
 impl TranscriptPages {
+    pub(super) fn has_missed_live(&self) -> bool {
+        self.missed_live_revision.is_some() || self.missed_live_without_revision
+    }
+
+    pub(super) fn has_live_gap(&self) -> bool {
+        self.snapshot_partial || self.has_missed_live()
+    }
+
+    pub(super) fn note_missed_live(&mut self, revision: u64) {
+        if revision == 0 {
+            self.missed_live_without_revision = true;
+        } else {
+            self.missed_live_revision = Some(
+                self.missed_live_revision
+                    .map_or(revision, |previous| previous.max(revision)),
+            );
+        }
+    }
+
+    /// Reconcile one bounded open with occurrences deferred by the history gate.
+    /// A partial page cannot prove that a deferred occurrence was recovered.
+    pub(super) fn reconcile_snapshot(
+        &mut self,
+        timeline_revision: u64,
+        snapshot_partial: bool,
+        local_events_changed: bool,
+    ) {
+        if !snapshot_partial {
+            if self
+                .missed_live_revision
+                .is_some_and(|missed| missed <= timeline_revision)
+            {
+                self.missed_live_revision = None;
+            }
+            if !local_events_changed {
+                self.missed_live_without_revision = false;
+            }
+        }
+        self.snapshot_partial = snapshot_partial;
+    }
+
+    /// Host revisions start over after recovery; buffered events re-mark any gap.
+    pub(super) fn reset_live_recovery(&mut self) {
+        self.snapshot_partial = false;
+        self.missed_live_revision = None;
+        self.missed_live_without_revision = false;
+    }
+
     pub(super) fn reset_for_navigation(&mut self) {
         *self = Self {
             generation: self.generation.wrapping_add(1),
@@ -237,7 +290,8 @@ impl ChatScreen {
             self.reload_timeline(target, cx);
             return;
         }
-        let anchor = self.scroll_anchor();
+        let following_tail = self.list_state.is_following_tail();
+        let anchor = self.history_page_anchor(older, following_tail);
         let mut items = Vec::with_capacity(page.rows.len());
         for row in page.rows {
             let key = format!("stored:{}:{}:{}", target, row.rows_epoch, row.row_seq);
@@ -251,6 +305,8 @@ impl ChatScreen {
         } else {
             self.pages.after = page.next.is_some();
         }
+        let recover_at_tail =
+            !older && !self.pages.after && self.pages.has_missed_live() && following_tail;
         let known: HashSet<_> = self.timeline.iter().map(|item| item.id.as_str()).collect();
         items.retain(|item| !known.contains(item.id.as_str()));
         if older {
@@ -263,7 +319,25 @@ impl ChatScreen {
         self.rebuild_window(anchor);
         self.warm_markdown(cx);
         self.load_attachment_images(cx);
+        if recover_at_tail {
+            self.recover_paged_latest(cx);
+        }
         cx.notify();
+    }
+
+    /// Keep a following reader at the live boundary of a forward page.
+    /// Restoring its old anchor would stop following and defer our own
+    /// automatic catch-up; a paused reader still keeps their row anchor.
+    pub(super) fn history_page_anchor(
+        &self,
+        older: bool,
+        following_tail: bool,
+    ) -> Option<(String, ListOffset)> {
+        if !older && following_tail {
+            None
+        } else {
+            self.scroll_anchor()
+        }
     }
 
     pub(super) fn scroll_anchor(&self) -> Option<(String, ListOffset)> {
@@ -462,9 +536,22 @@ impl ChatScreen {
         );
     }
 
+    /// Explicit Jump-to-latest recovery may replace the reader's window.
     pub(super) fn reload_paged_latest(&mut self, cx: &mut Context<Self>) {
+        self.load_paged_latest(LoadMode::Reload, cx);
+    }
+
+    /// Automatic catch-up always yields to a reader who changed position.
+    pub(super) fn recover_paged_latest(&mut self, cx: &mut Context<Self>) {
+        self.load_paged_latest(LoadMode::Recover, cx);
+    }
+
+    fn load_paged_latest(&mut self, mode: LoadMode, cx: &mut Context<Self>) {
+        if self.reload_pending {
+            return;
+        }
         if let Some(task) = self.selected_session.clone() {
-            self.reload_timeline(&task, cx);
+            self.load_session(&task, mode, LOAD_RETRIES, cx);
         }
     }
 }
@@ -660,18 +747,66 @@ mod tests {
             after: true,
             epoch: Some(12),
             loading: true,
-            live_has_more: true,
+            snapshot_partial: true,
+            missed_live_revision: Some(100),
+            missed_live_without_revision: true,
             ..TranscriptPages::default()
         };
         let previous_request = pages.generation;
         pages.reset_for_navigation();
-        assert!(!pages.before && !pages.after && !pages.loading && !pages.live_has_more);
+        assert!(!pages.before && !pages.after && !pages.loading);
+        assert!(!pages.has_live_gap());
         assert_eq!(pages.epoch, None);
         pages.loading = true;
         assert!(!pages.finish_loading(previous_request));
         assert!(pages.loading, "stale completion cleared the new request");
         assert!(pages.finish_loading(pages.generation));
         assert!(!pages.loading);
+    }
+
+    #[test]
+    fn a_snapshot_must_cover_a_deferred_revision_to_clear_it() {
+        let mut pages = TranscriptPages::default();
+        pages.note_missed_live(100);
+
+        // An open that began before the gated event cannot clear its marker,
+        // even when its returned live page itself is complete.
+        pages.reconcile_snapshot(99, false, true);
+        assert_eq!(pages.missed_live_revision, Some(100));
+        assert!(pages.has_live_gap());
+
+        pages.reconcile_snapshot(100, false, false);
+        assert!(!pages.has_live_gap());
+    }
+
+    #[test]
+    fn a_partial_snapshot_retains_the_gap_without_requesting_another_load() {
+        let mut pages = TranscriptPages::default();
+        pages.note_missed_live(100);
+        pages.reconcile_snapshot(100, true, false);
+
+        assert!(pages.snapshot_partial);
+        assert!(pages.has_missed_live());
+
+        // Run completion can provide a quiescent complete page later.
+        pages.reconcile_snapshot(100, false, false);
+        assert!(!pages.has_live_gap());
+    }
+
+    #[test]
+    fn an_unrevisioned_occurrence_waits_for_a_quiescent_complete_snapshot() {
+        let mut pages = TranscriptPages::default();
+        pages.note_missed_live(0);
+
+        pages.reconcile_snapshot(100, false, true);
+        assert!(pages.missed_live_without_revision);
+        pages.reconcile_snapshot(100, false, false);
+        assert!(!pages.has_live_gap());
+
+        pages.note_missed_live(100);
+        pages.reconcile_snapshot(100, false, false);
+        pages.reset_live_recovery();
+        assert!(!pages.has_live_gap());
     }
 
     #[gpui::test]
@@ -721,7 +856,7 @@ mod tests {
                 chat.timeline[0].text.as_deref(),
                 Some("Visible first message")
             );
-            assert!(!chat.pages.after && !chat.pages.live_has_more);
+            assert!(!chat.pages.after && !chat.pages.has_live_gap());
         });
     }
 }
