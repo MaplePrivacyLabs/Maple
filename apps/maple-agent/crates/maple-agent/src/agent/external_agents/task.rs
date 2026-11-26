@@ -4,7 +4,7 @@
 
 use serde_json::Value;
 
-use super::PROVIDERS;
+use super::catalog;
 #[cfg(test)]
 use crate::agent::store::TaskKind;
 use crate::agent::store::TaskRow;
@@ -40,13 +40,14 @@ pub(super) fn set_chosen_providers(row: &mut TaskRow, providers: Vec<String>) {
 /// the task.
 pub(in crate::agent) fn task_providers(settings_on: &[String], row: &TaskRow) -> Vec<String> {
     let chosen = chosen_providers(row);
-    PROVIDERS
+    catalog::entries()
         .iter()
+        .map(|entry| entry.id.as_str())
         .filter(|provider| {
-            settings_on.iter().any(|on| on == *provider)
-                && chosen.iter().any(|chosen| chosen == *provider)
+            settings_on.iter().any(|on| on == provider)
+                && chosen.iter().any(|chosen| chosen == provider)
         })
-        .map(|provider| provider.to_string())
+        .map(str::to_string)
         .collect()
 }
 
@@ -86,7 +87,7 @@ impl AgentRuntimeHandle {
         if runtime.runs.is_running(session_id) {
             return Err("Stop the running agent before changing MCP servers".to_string());
         }
-        if !PROVIDERS.contains(&provider) {
+        if catalog::entry(provider).is_none() {
             return Err("Unknown external agent integration".to_string());
         }
         let store = self.store()?;

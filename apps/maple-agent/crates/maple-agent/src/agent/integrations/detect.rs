@@ -1,6 +1,7 @@
-//! What Maple finds out about the Codex and Claude Code command lines on
-//! this device: where they are, their version, and whether they are signed
-//! in. Nothing here changes an installation.
+//! What Maple finds out about the external agents' command lines on this
+//! device: where they are, their version, and whether they are signed in.
+//! Each agent's catalog entry says what to look for. Nothing here changes an
+//! installation.
 
 use std::ffi::OsString;
 use std::path::{Path, PathBuf};
@@ -10,14 +11,8 @@ use std::time::Duration;
 use serde::Deserialize;
 
 use crate::agent::bounded_process::read_bounded_stdout;
+use crate::agent::external_agents::catalog::{CatalogEntry, SignInProbe};
 
-pub(in crate::agent) const CODEX_SIGN_IN_HINT: &str =
-    "Codex is not signed in. Run `codex login` in a terminal, then try again.";
-pub(in crate::agent) const CLAUDE_SIGN_IN_HINT: &str =
-    "Claude Code is not signed in. Run `claude auth login` in a terminal, then try again.";
-
-/// The oldest Codex whose app-server speaks the methods Maple uses.
-const CODEX_MIN_VERSION: (u64, u64, u64) = (0, 143, 0);
 /// How long one probe may run.
 const PROBE_TIMEOUT: Duration = Duration::from_secs(3);
 /// How long ending a probe may take.
@@ -36,9 +31,13 @@ pub(in crate::agent) struct CliDetection {
     pub(in crate::agent) problem: Option<String>,
 }
 
-/// Find `codex`, read its version, and see whether a sign-in exists.
-pub(in crate::agent) async fn detect_codex(search_path: Option<&str>) -> CliDetection {
-    let Some(executable) = find_executable("codex", search_path) else {
+/// Find the agent's command, read its version, and see whether it is
+/// signed in.
+pub(in crate::agent) async fn detect(
+    entry: &CatalogEntry,
+    search_path: Option<&str>,
+) -> CliDetection {
+    let Some(executable) = find_executable(&entry.executable, search_path) else {
         return CliDetection::default();
     };
     let version = match probe_version(&executable, search_path).await {
@@ -46,54 +45,43 @@ pub(in crate::agent) async fn detect_codex(search_path: Option<&str>) -> CliDete
         Err(error) => {
             return CliDetection {
                 executable: Some(executable),
-                problem: Some(format!("Maple could not run `codex --version`: {error}")),
+                problem: Some(entry.text.version_failed.replace("{error}", &error)),
                 ..CliDetection::default()
             };
         }
     };
-    let (major, minor, patch) = CODEX_MIN_VERSION;
-    let problem = match parse_version(&version) {
-        Some(parsed) if parsed < CODEX_MIN_VERSION => Some(format!(
-            "Codex {version} is older than the {major}.{minor}.{patch} that Maple needs. Update Codex."
-        )),
-        Some(_) => None,
-        None => Some(format!(
-            "Maple could not read the Codex version from `{version}`"
-        )),
+    let problem = entry
+        .minimum_version
+        .as_deref()
+        .and_then(|minimum| version_problem(&entry.name, &version, minimum));
+    let signed_in = match entry.sign_in_probe {
+        SignInProbe::CodexAuthFile => Some(codex_auth_file_exists()),
+        SignInProbe::ClaudeAuthStatus => probe_claude_auth(&executable, search_path).await,
     };
     CliDetection {
         executable: Some(executable),
         version: Some(version),
-        signed_in: Some(codex_auth_file_exists()),
+        signed_in,
         problem,
     }
 }
 
-/// Find `claude`, read its version, and ask it whether it is signed in.
-pub(in crate::agent) async fn detect_claude(search_path: Option<&str>) -> CliDetection {
-    let Some(executable) = find_executable("claude", search_path) else {
-        return CliDetection::default();
-    };
-    match probe_version(&executable, search_path).await {
-        Ok(version) => CliDetection {
-            signed_in: probe_claude_auth(&executable, search_path).await,
-            executable: Some(executable),
-            version: Some(version),
-            problem: None,
-        },
-        Err(_) => CliDetection {
-            executable: Some(executable),
-            problem: Some(
-                "Maple could not run `claude --version`. Check the Claude Code installation."
-                    .to_string(),
-            ),
-            ..CliDetection::default()
-        },
+/// Why `version` will not do when `minimum` is the oldest that will.
+fn version_problem(name: &str, version: &str, minimum: &str) -> Option<String> {
+    let (major, minor, patch) = parse_version(minimum)?;
+    match parse_version(version) {
+        Some(parsed) if parsed < (major, minor, patch) => Some(format!(
+            "{name} {version} is older than the {major}.{minor}.{patch} that Maple needs. Update {name}."
+        )),
+        Some(_) => None,
+        None => Some(format!(
+            "Maple could not read the {name} version from `{version}`"
+        )),
     }
 }
 
 /// `codex-cli 0.153.4` and plain `0.153.4` both read as (0, 153, 4).
-pub(super) fn parse_version(text: &str) -> Option<(u64, u64, u64)> {
+pub(in crate::agent) fn parse_version(text: &str) -> Option<(u64, u64, u64)> {
     text.split_whitespace().rev().find_map(|token| {
         let core = token.trim_start_matches('v').split(['-', '+']).next()?;
         let mut parts = core.split('.');

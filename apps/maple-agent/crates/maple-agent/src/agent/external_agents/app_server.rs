@@ -1,12 +1,17 @@
-//! Codex app-server transport and the shared external-agent client interface.
+//! The Codex app-server client, and the client interface the external-agent
+//! host drives every transport through.
 //!
 //! One reader task owns the child's stdout. It resolves responses to the
-//! requests this client sent, and hands notifications and server-initiated
-//! requests to the owner through one channel. The owner answers a server
-//! request with [`AppServerClient::respond`].
+//! requests this client sent, and hands the owner Codex's notifications and
+//! requests, in Maple's terms, through one channel. The owner answers a
+//! request with [`AgentClient::reply`].
 
+use super::super::AgentPermissionDecision;
+use super::codex;
+use super::driver::{AgentReply, DriverMessage, OpenedThread, TurnRequest};
 use serde_json::{Value, json};
 use std::collections::HashMap;
+use std::path::Path;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex as StdMutex};
 use tokio::io::AsyncWriteExt;
@@ -17,37 +22,13 @@ use tokio_util::sync::CancellationToken;
 
 /// One protocol line. A file change can carry a whole diff.
 const MAX_LINE_BYTES: usize = 4 * 1024 * 1024;
-/// Server messages waiting for the owner. The owner never blocks on a
-/// message for long: approvals run on their own tasks.
+/// Messages waiting for the owner. The owner never blocks on a message for
+/// long: requests run on their own tasks.
 const SERVER_MESSAGE_CAPACITY: usize = 256;
 
-/// Operations supported by Maple's external-agent host.
-#[derive(Clone, Copy, Debug)]
-pub(super) enum RequestMethod {
-    Initialize,
-    ThreadStart,
-    ThreadResume,
-    TurnStart,
-    TurnSteer,
-    TurnInterrupt,
-}
-
-impl RequestMethod {
-    fn codex_method(self) -> &'static str {
-        match self {
-            Self::Initialize => "initialize",
-            Self::ThreadStart => "thread/start",
-            Self::ThreadResume => "thread/resume",
-            Self::TurnStart => "turn/start",
-            Self::TurnSteer => "turn/steer",
-            Self::TurnInterrupt => "turn/interrupt",
-        }
-    }
-}
-
-/// A message the server initiated.
+/// A message the app-server initiated, as it arrived.
 #[derive(Debug)]
-pub(super) enum ServerMessage {
+enum ServerMessage {
     Notification {
         method: String,
         params: Value,
@@ -60,8 +41,23 @@ pub(super) enum ServerMessage {
     },
 }
 
-/// Both transports expose Maple's existing activity and permission messages.
-/// Claude translates these in Rust; its child speaks Claude's native protocol.
+impl ServerMessage {
+    /// The message in Maple's terms.
+    fn decode(self) -> DriverMessage {
+        match self {
+            Self::Notification { method, params } => {
+                DriverMessage::Event(codex::parse_notification(&method, &params))
+            }
+            Self::Request { id, method, params } => DriverMessage::Request {
+                id,
+                request: codex::agent_request(&method, &params),
+            },
+        }
+    }
+}
+
+/// A connected agent process, whichever transport speaks to it. The host
+/// drives every agent through these operations and nothing else.
 pub(super) enum AgentClient {
     Codex(Arc<AppServerClient>),
     Claude(Arc<super::claude::Client>),
@@ -75,36 +71,117 @@ impl AgentClient {
         }
     }
 
-    pub(super) async fn request(
+    /// The handshake.
+    pub(super) async fn initialize(&self) -> Result<(), String> {
+        match self {
+            Self::Codex(client) => {
+                client
+                    .request("initialize", codex::initialize_params())
+                    .await?;
+                client.notify("initialized", json!({})).await
+            }
+            Self::Claude(client) => client.initialize().await,
+        }
+    }
+
+    /// Reopen `existing`, or open a new thread in `cwd`.
+    pub(super) async fn open_thread(
         &self,
-        method: RequestMethod,
-        params: Value,
-    ) -> Result<Value, String> {
+        existing: Option<&str>,
+        cwd: &Path,
+        model: Option<&str>,
+    ) -> Result<OpenedThread, String> {
         match self {
-            Self::Codex(client) => client.request(method.codex_method(), params).await,
-            Self::Claude(client) => client.request(method, params).await,
+            Self::Codex(client) => match existing {
+                Some(thread_id) => {
+                    client
+                        .request("thread/resume", codex::thread_resume_params(thread_id))
+                        .await?;
+                    Ok(OpenedThread {
+                        thread_id: thread_id.to_string(),
+                        confirmed: true,
+                    })
+                }
+                None => {
+                    let response = client
+                        .request("thread/start", codex::thread_start_params(cwd, model))
+                        .await?;
+                    let thread_id = codex::thread_id_from_response(&response)
+                        .ok_or_else(|| "The agent did not report a thread ID".to_string())?;
+                    Ok(OpenedThread {
+                        thread_id,
+                        confirmed: true,
+                    })
+                }
+            },
+            Self::Claude(client) => client.open_thread(),
         }
     }
 
-    pub(super) async fn initialized(&self) -> Result<(), String> {
+    pub(super) async fn start_turn(&self, request: &TurnRequest<'_>) -> Result<(), String> {
         match self {
-            Self::Codex(client) => client.notify("initialized", json!({})).await,
-            Self::Claude(_) => Ok(()),
+            Self::Codex(client) => client
+                .request("turn/start", codex::turn_start_params(request))
+                .await
+                .map(drop),
+            Self::Claude(client) => client.start_turn(request.prompt).await,
         }
     }
 
-    pub(super) async fn respond(&self, id: Value, result: Value) -> Result<(), String> {
+    /// Add input to the turn in progress.
+    pub(super) async fn steer(
+        &self,
+        thread_id: &str,
+        turn_id: &str,
+        text: &str,
+    ) -> Result<(), String> {
         match self {
-            Self::Codex(client) => client.respond(id, result).await,
-            Self::Claude(client) => client.respond(id, result).await,
+            Self::Codex(client) => client
+                .request(
+                    "turn/steer",
+                    codex::turn_steer_params(thread_id, turn_id, text),
+                )
+                .await
+                .map(drop),
+            Self::Claude(_) => Err("Claude does not support steering an active turn".into()),
         }
     }
 
-    pub(super) async fn respond_error(&self, id: Value, message: &str) {
+    pub(super) async fn interrupt(&self, thread_id: &str, turn_id: &str) -> Result<(), String> {
+        match self {
+            Self::Codex(client) => client
+                .request(
+                    "turn/interrupt",
+                    codex::turn_interrupt_params(thread_id, turn_id),
+                )
+                .await
+                .map(drop),
+            Self::Claude(client) => client.interrupt().await,
+        }
+    }
+
+    /// Answer a request the agent made.
+    pub(super) async fn reply(&self, id: Value, reply: AgentReply) -> Result<(), String> {
+        match self {
+            Self::Codex(client) => {
+                let result = match reply {
+                    AgentReply::Decision(decision) => codex::approval_response(decision),
+                    AgentReply::Answers(answer) => codex::user_input_response(&answer),
+                };
+                client.respond(id, result).await
+            }
+            Self::Claude(client) => client.reply(id, reply).await,
+        }
+    }
+
+    /// Refuse a request Maple does not serve.
+    pub(super) async fn refuse(&self, id: Value, message: &str) {
         match self {
             Self::Codex(client) => client.respond_error(id, message).await,
             Self::Claude(client) => {
-                let _ = client.respond(id, json!({"decision": "cancel"})).await;
+                let _ = client
+                    .reply(id, AgentReply::Decision(AgentPermissionDecision::Cancel))
+                    .await;
             }
         }
     }
@@ -130,7 +207,7 @@ impl AppServerClient {
         stdout: ChildStdout,
     ) -> (
         Arc<Self>,
-        mpsc::Receiver<ServerMessage>,
+        mpsc::Receiver<DriverMessage>,
         tokio::task::JoinHandle<()>,
     ) {
         let (sender, receiver) = mpsc::channel(SERVER_MESSAGE_CAPACITY);
@@ -219,7 +296,7 @@ async fn read_server_messages(
     stdout: ChildStdout,
     pending: PendingResponses,
     closed: CancellationToken,
-    sender: mpsc::Sender<ServerMessage>,
+    sender: mpsc::Sender<DriverMessage>,
 ) {
     use futures_util::StreamExt;
 
@@ -253,7 +330,7 @@ async fn read_server_messages(
                 }
             }
             Classified::Server(message) => {
-                if sender.send(message).await.is_err() {
+                if sender.send(message.decode()).await.is_err() {
                     break;
                 }
             }

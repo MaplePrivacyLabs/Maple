@@ -13,7 +13,14 @@ fn paths(root: &std::path::Path) -> AgentPathLayout {
 }
 
 fn detections(codex: CliDetection, claude: CliDetection, cua: CuaDetection) -> Detections {
-    Detections { cua, codex, claude }
+    Detections {
+        cua,
+        agents: HashMap::from([("codex".to_string(), codex), ("claude".to_string(), claude)]),
+    }
+}
+
+fn agent(id: &str) -> &'static CatalogEntry {
+    catalog::entry(id).unwrap()
 }
 
 fn nothing_installed() -> Detections {
@@ -164,13 +171,14 @@ fn codex_is_switched_on_only_when_it_can_run_and_off_always() {
 fn claude_reports_its_sign_in_without_it_gating_availability() {
     for (signed_in, detail) in [
         (Some(true), "Signed in."),
-        (Some(false), detect::CLAUDE_SIGN_IN_HINT),
+        (Some(false), agent("claude").text.sign_in_hint.as_str()),
         (
             None,
             "Could not check sign-in. Run `claude auth status` in a terminal.",
         ),
     ] {
-        let card = ExternalAgent::Claude.card(
+        let card = agent_card(
+            agent("claude"),
             &CliDetection {
                 executable: Some(PathBuf::from("claude")),
                 signed_in,
@@ -384,14 +392,14 @@ mod probes {
     async fn codex_is_detected_by_its_version() {
         let temporary = tempfile::tempdir().unwrap();
         let path = fake_cli(temporary.path(), "codex", "echo 'codex-cli 0.150.0'");
-        let found = detect::detect_codex(Some(&path)).await;
+        let found = detect::detect(agent("codex"), Some(&path)).await;
         assert_eq!(found.executable, Some(temporary.path().join("codex")));
         assert_eq!(found.version.as_deref(), Some("codex-cli 0.150.0"));
         assert_eq!(found.problem, None);
         assert!(found.signed_in.is_some());
 
         let path = fake_cli(temporary.path(), "codex", "echo 'codex-cli 0.100.0'");
-        let found = detect::detect_codex(Some(&path)).await;
+        let found = detect::detect(agent("codex"), Some(&path)).await;
         assert!(
             found
                 .problem
@@ -402,7 +410,7 @@ mod probes {
         );
 
         let path = fake_cli(temporary.path(), "codex", "exit 3");
-        let found = detect::detect_codex(Some(&path)).await;
+        let found = detect::detect(agent("codex"), Some(&path)).await;
         assert!(
             found.problem.as_deref().unwrap().contains("it exited with"),
             "{found:?}"
@@ -419,7 +427,7 @@ mod probes {
             &format!("(sleep 5; touch '{}') &\nsleep 30", marker.display()),
         );
         let started = std::time::Instant::now();
-        let found = detect::detect_codex(Some(&path)).await;
+        let found = detect::detect(agent("codex"), Some(&path)).await;
         assert!(started.elapsed() < std::time::Duration::from_secs(10));
         assert!(
             found
@@ -449,7 +457,7 @@ mod probes {
                      echo '{{\"loggedIn\": {status}, \"email\": \"someone@example.com\"}}'; exit {exit}"
                 ),
             );
-            let found = detect::detect_claude(Some(&path)).await;
+            let found = detect::detect(agent("claude"), Some(&path)).await;
             assert_eq!(found.version.as_deref(), Some("2.0.14 (Claude Code)"));
             assert_eq!(found.signed_in, signed_in, "{status} {exit}");
             assert_eq!(found.problem, None);

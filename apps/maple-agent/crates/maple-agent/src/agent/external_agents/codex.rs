@@ -6,12 +6,17 @@
 //! the CLI is the integration catalog's (`integrations::detect`).
 
 use super::super::tools::parse_user_questions;
-use super::super::{AgentPermissionDecision, AgentQuestion, AgentQuestionOption};
-use serde_json::{Value, json};
+use super::super::{AgentPermissionDecision, AgentQuestion};
+use super::driver::{
+    AgentEvent, AgentItem, AgentRequest, AsyncQuestion, FileChangeEntry, TurnOutcome, TurnRequest,
+    card_answers, command_line, parse_todo,
+};
+use serde_json::{Map, Value, json};
 use std::path::Path;
 
-pub(crate) const PROVIDER_ID: &str = "codex";
-pub(crate) const PROVIDER_NAME: &str = "Codex";
+/// What Codex says Maple is asked to approve.
+const COMMAND_TOOL: &str = "codex_command";
+const FILE_CHANGE_TOOL: &str = "codex_file_change";
 /// The name the handshake reports. It is the reserved non-originating
 /// client name that Paseo uses, so Codex attributes the requests to the
 /// user's own client rather than to a third-party product.
@@ -64,14 +69,6 @@ pub(super) fn thread_resume_params(thread_id: &str) -> Value {
     json!({ "threadId": thread_id })
 }
 
-pub(super) struct TurnRequest<'a> {
-    pub(super) thread_id: &'a str,
-    pub(super) prompt: &'a str,
-    pub(super) cwd: &'a Path,
-    pub(super) model: Option<&'a str>,
-    pub(super) effort: Option<&'a str>,
-}
-
 pub(super) fn turn_start_params(request: &TurnRequest<'_>) -> Value {
     let mut params = json!({
         "threadId": request.thread_id,
@@ -104,92 +101,19 @@ pub(super) fn thread_id_from_response(response: &Value) -> Option<String> {
 }
 
 /// One Codex notification, reduced to what Maple shows.
-#[derive(Debug, Clone, PartialEq)]
-pub(super) enum CodexEvent {
-    ThreadStarted {
-        thread_id: String,
-    },
-    TurnStarted {
-        turn_id: Option<String>,
-    },
-    TurnCompleted {
-        status: String,
-        error: Option<String>,
-    },
-    AgentMessageDelta {
-        item_id: String,
-        delta: String,
-    },
-    ItemStarted(CodexItem),
-    ItemCompleted(CodexItem),
-    Other,
-}
-
-#[derive(Debug, Clone, PartialEq)]
-pub(super) enum CodexItem {
-    AgentMessage {
-        id: String,
-        text: String,
-    },
-    CommandExecution {
-        id: String,
-        command: String,
-        exit_code: Option<i64>,
-        status: Option<String>,
-    },
-    FileChange {
-        id: String,
-        changes: Vec<FileChangeEntry>,
-        status: Option<String>,
-    },
-    TodoList {
-        id: String,
-        items: Vec<TodoEntry>,
-    },
-    /// In the default collaboration mode Codex asks the user without
-    /// blocking: the question rides an agent message, the turn ends, and
-    /// the answer comes back as the next turn's input.
-    AsyncQuestion {
-        id: String,
-        questions: Vec<AsyncQuestion>,
-    },
-    Other {
-        id: String,
-        kind: String,
-    },
-}
-
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub(super) struct AsyncQuestion {
-    pub(super) title: String,
-    pub(super) options: Vec<String>,
-}
-
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub(super) struct FileChangeEntry {
-    pub(super) path: String,
-    pub(super) kind: String,
-}
-
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub(super) struct TodoEntry {
-    pub(super) text: String,
-    pub(super) completed: bool,
-}
-
-pub(super) fn parse_notification(method: &str, params: &Value) -> CodexEvent {
+pub(super) fn parse_notification(method: &str, params: &Value) -> AgentEvent {
     match method {
         "thread/started" => match params
             .get("thread")
             .and_then(|thread| thread.get("id"))
             .and_then(Value::as_str)
         {
-            Some(thread_id) => CodexEvent::ThreadStarted {
+            Some(thread_id) => AgentEvent::ThreadStarted {
                 thread_id: thread_id.to_string(),
             },
-            None => CodexEvent::Other,
+            None => AgentEvent::Other,
         },
-        "turn/started" => CodexEvent::TurnStarted {
+        "turn/started" => AgentEvent::TurnStarted {
             turn_id: params
                 .get("turn")
                 .and_then(|turn| turn.get("id"))
@@ -198,12 +122,17 @@ pub(super) fn parse_notification(method: &str, params: &Value) -> CodexEvent {
         },
         "turn/completed" => {
             let turn = params.get("turn").cloned().unwrap_or(Value::Null);
-            CodexEvent::TurnCompleted {
-                status: turn
-                    .get("status")
-                    .and_then(Value::as_str)
-                    .unwrap_or("completed")
-                    .to_string(),
+            let outcome = match turn
+                .get("status")
+                .and_then(Value::as_str)
+                .unwrap_or("completed")
+            {
+                "completed" => TurnOutcome::Completed,
+                "interrupted" | "cancelled" | "canceled" => TurnOutcome::Cancelled,
+                _ => TurnOutcome::Failed,
+            };
+            AgentEvent::TurnCompleted {
+                outcome,
                 error: turn
                     .get("error")
                     .and_then(|error| error.get("message"))
@@ -223,21 +152,21 @@ pub(super) fn parse_notification(method: &str, params: &Value) -> CodexEvent {
                 .and_then(Value::as_str)
                 .unwrap_or_default()
                 .to_string();
-            CodexEvent::AgentMessageDelta { item_id, delta }
+            AgentEvent::AgentMessageDelta { item_id, delta }
         }
         "item/started" => match params.get("item").map(parse_item) {
-            Some(item) => CodexEvent::ItemStarted(item),
-            None => CodexEvent::Other,
+            Some(item) => AgentEvent::ItemStarted(item),
+            None => AgentEvent::Other,
         },
         "item/completed" => match params.get("item").map(parse_item) {
-            Some(item) => CodexEvent::ItemCompleted(item),
-            None => CodexEvent::Other,
+            Some(item) => AgentEvent::ItemCompleted(item),
+            None => AgentEvent::Other,
         },
-        _ => CodexEvent::Other,
+        _ => AgentEvent::Other,
     }
 }
 
-fn parse_item(item: &Value) -> CodexItem {
+fn parse_item(item: &Value) -> AgentItem {
     let id = item
         .get("id")
         .and_then(Value::as_str)
@@ -259,9 +188,9 @@ fn parse_item(item: &Value) -> CodexItem {
             if item.get("delivery").and_then(Value::as_str) == Some("async")
                 && !questions.is_empty()
             {
-                return CodexItem::AsyncQuestion { id, questions };
+                return AgentItem::AsyncQuestion { id, questions };
             }
-            CodexItem::AgentMessage {
+            AgentItem::AgentMessage {
                 id,
                 text: item
                     .get("text")
@@ -270,7 +199,7 @@ fn parse_item(item: &Value) -> CodexItem {
                     .to_string(),
             }
         }
-        "commandexecution" => CodexItem::CommandExecution {
+        "commandexecution" => AgentItem::CommandExecution {
             id,
             command: command_line(item.get("command")),
             exit_code: item
@@ -282,7 +211,7 @@ fn parse_item(item: &Value) -> CodexItem {
                 .and_then(Value::as_str)
                 .map(str::to_string),
         },
-        "filechange" => CodexItem::FileChange {
+        "filechange" => AgentItem::FileChange {
             id,
             changes: parse_file_changes(item.get("changes")),
             status: item
@@ -290,7 +219,7 @@ fn parse_item(item: &Value) -> CodexItem {
                 .and_then(Value::as_str)
                 .map(str::to_string),
         },
-        "todolist" | "plan" => CodexItem::TodoList {
+        "todolist" | "plan" => AgentItem::TodoList {
             id,
             items: item
                 .get("items")
@@ -299,7 +228,7 @@ fn parse_item(item: &Value) -> CodexItem {
                 .map(|items| items.iter().filter_map(parse_todo).collect())
                 .unwrap_or_default(),
         },
-        _ => CodexItem::Other {
+        _ => AgentItem::Other {
             id,
             kind: kind.to_string(),
         },
@@ -313,18 +242,6 @@ fn normalize_item_type(kind: &str) -> String {
         .filter(|character| *character != '_')
         .flat_map(char::to_lowercase)
         .collect()
-}
-
-fn command_line(command: Option<&Value>) -> String {
-    match command {
-        Some(Value::String(text)) => text.clone(),
-        Some(Value::Array(parts)) => parts
-            .iter()
-            .filter_map(Value::as_str)
-            .collect::<Vec<_>>()
-            .join(" "),
-        _ => String::new(),
-    }
 }
 
 /// Codex has sent `changes` both as a list of `{path, kind}` entries and as
@@ -395,65 +312,6 @@ fn parse_async_question(question: &Value) -> Option<AsyncQuestion> {
     })
 }
 
-/// The questions Maple shows for an async question, in the shape its
-/// question card already understands.
-pub(super) fn async_question_prompts(questions: &[AsyncQuestion]) -> Vec<AgentQuestion> {
-    questions
-        .iter()
-        .enumerate()
-        .map(|(index, question)| AgentQuestion {
-            multi_select: false,
-            id: format!("q{index}"),
-            header: format!("Question {}", index + 1),
-            question: question.title.clone(),
-            options: question
-                .options
-                .iter()
-                .map(|label| AgentQuestionOption {
-                    label: label.clone(),
-                    description: String::new(),
-                })
-                .collect(),
-            permission: None,
-        })
-        .collect()
-}
-
-/// The user's answers as the next turn's input, or `None` when every
-/// question was dismissed. `answer` is the card's response JSON.
-pub(super) fn async_answer_prompt(questions: &[AsyncQuestion], answer: &str) -> Option<String> {
-    let parsed = serde_json::from_str::<Value>(answer).ok()?;
-    let answers = parsed.get("answers")?;
-    let mut lines = Vec::new();
-    for (index, question) in questions.iter().enumerate() {
-        let values = answers
-            .get(format!("q{index}"))
-            .and_then(|entry| entry.get("answers"))
-            .and_then(Value::as_array)
-            .map(|values| {
-                values
-                    .iter()
-                    .filter_map(Value::as_str)
-                    .map(str::trim)
-                    .filter(|value| !value.is_empty())
-                    .collect::<Vec<_>>()
-                    .join(", ")
-            })
-            .unwrap_or_default();
-        if values.is_empty() {
-            continue;
-        }
-        lines.push(format!("{}\n{values}", question.title));
-    }
-    if lines.is_empty() {
-        return None;
-    }
-    Some(format!(
-        "Answers to your questions:\n\n{}",
-        lines.join("\n\n")
-    ))
-}
-
 pub(super) fn turn_steer_params(thread_id: &str, turn_id: &str, text: &str) -> Value {
     json!({
         "threadId": thread_id,
@@ -462,26 +320,9 @@ pub(super) fn turn_steer_params(thread_id: &str, turn_id: &str, text: &str) -> V
     })
 }
 
-fn parse_todo(todo: &Value) -> Option<TodoEntry> {
-    let text = ["text", "step", "content"]
-        .into_iter()
-        .find_map(|key| todo.get(key).and_then(Value::as_str))?
-        .to_string();
-    let completed = todo
-        .get("completed")
-        .and_then(Value::as_bool)
-        .unwrap_or_else(|| {
-            matches!(
-                todo.get("status").and_then(Value::as_str),
-                Some("completed" | "done")
-            )
-        });
-    Some(TodoEntry { text, completed })
-}
-
 /// A request Codex makes of its client mid-turn.
 #[derive(Debug, Clone, PartialEq)]
-pub(super) enum CodexServerRequest {
+enum CodexServerRequest {
     CommandApproval {
         item_id: String,
         command: String,
@@ -500,7 +341,7 @@ pub(super) enum CodexServerRequest {
     },
 }
 
-pub(super) fn parse_server_request(method: &str, params: &Value) -> CodexServerRequest {
+fn parse_server_request(method: &str, params: &Value) -> CodexServerRequest {
     let item_id = params
         .get("itemId")
         .and_then(Value::as_str)
@@ -539,6 +380,48 @@ pub(super) fn parse_server_request(method: &str, params: &Value) -> CodexServerR
     }
 }
 
+/// A request Codex makes, in Maple's terms: an approval says what Codex
+/// wants to do the way Maple's permission request carries it.
+pub(super) fn agent_request(method: &str, params: &Value) -> AgentRequest {
+    match parse_server_request(method, params) {
+        CodexServerRequest::CommandApproval {
+            item_id,
+            command,
+            cwd,
+            reason,
+        } => {
+            let mut arguments = Map::new();
+            arguments.insert("command".to_string(), json!(command));
+            if let Some(cwd) = cwd {
+                arguments.insert("cwd".to_string(), json!(cwd));
+            }
+            if let Some(reason) = &reason {
+                arguments.insert("reason".to_string(), json!(reason));
+            }
+            AgentRequest::Approval {
+                item_id,
+                tool_name: COMMAND_TOOL.to_string(),
+                arguments,
+                prompt: Some(format!("Codex wants to run: {command}")),
+            }
+        }
+        CodexServerRequest::FileChangeApproval { item_id, reason } => {
+            let mut arguments = Map::new();
+            if let Some(reason) = &reason {
+                arguments.insert("reason".to_string(), json!(reason));
+            }
+            AgentRequest::Approval {
+                item_id,
+                tool_name: FILE_CHANGE_TOOL.to_string(),
+                arguments,
+                prompt: Some("Codex wants to change files in the project".to_string()),
+            }
+        }
+        CodexServerRequest::UserInput { questions } => AgentRequest::UserInput { questions },
+        CodexServerRequest::Unknown { method } => AgentRequest::Unknown { method },
+    }
+}
+
 /// The answer to an approval request. Maple never grants `acceptForSession`:
 /// every acceptance is one-shot.
 pub(super) fn approval_response(decision: AgentPermissionDecision) -> Value {
@@ -552,17 +435,14 @@ pub(super) fn approval_response(decision: AgentPermissionDecision) -> Value {
 /// The answer to a question. The question card composes Codex's own
 /// response shape, so an answer that already is one passes through.
 pub(super) fn user_input_response(answer: &str) -> Value {
-    if let Ok(value) = serde_json::from_str::<Value>(answer)
-        && value.get("answers").is_some()
-    {
-        return value;
-    }
-    json!({ "answers": {} })
+    card_answers(answer)
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    use crate::agent::external_agents::driver::TodoEntry;
 
     #[test]
     fn turn_start_carries_prompt_and_overrides_but_no_policy() {
@@ -604,7 +484,7 @@ mod tests {
         );
         assert_eq!(
             started,
-            CodexEvent::ItemStarted(CodexItem::CommandExecution {
+            AgentEvent::ItemStarted(AgentItem::CommandExecution {
                 id: "c1".into(),
                 command: "cargo test".into(),
                 exit_code: None,
@@ -617,7 +497,7 @@ mod tests {
         );
         assert_eq!(
             completed,
-            CodexEvent::ItemCompleted(CodexItem::CommandExecution {
+            AgentEvent::ItemCompleted(AgentItem::CommandExecution {
                 id: "c1".into(),
                 command: "cargo test".into(),
                 exit_code: Some(1),
@@ -631,7 +511,7 @@ mod tests {
         );
         assert_eq!(
             file,
-            CodexEvent::ItemCompleted(CodexItem::FileChange {
+            AgentEvent::ItemCompleted(AgentItem::FileChange {
                 id: "f1".into(),
                 changes: vec![
                     FileChangeEntry {
@@ -652,7 +532,7 @@ mod tests {
         );
         assert_eq!(
             todo,
-            CodexEvent::ItemCompleted(CodexItem::TodoList {
+            AgentEvent::ItemCompleted(AgentItem::TodoList {
                 id: "p1".into(),
                 items: vec![
                     TodoEntry {
@@ -671,7 +551,7 @@ mod tests {
                 "item/agentMessage/delta",
                 &json!({"itemId": "m", "delta": "hi"})
             ),
-            CodexEvent::AgentMessageDelta {
+            AgentEvent::AgentMessageDelta {
                 item_id: "m".into(),
                 delta: "hi".into()
             }
@@ -681,15 +561,65 @@ mod tests {
                 "turn/completed",
                 &json!({"turn": {"status": "failed", "error": {"message": "boom"}}})
             ),
-            CodexEvent::TurnCompleted {
-                status: "failed".into(),
+            AgentEvent::TurnCompleted {
+                outcome: TurnOutcome::Failed,
                 error: Some("boom".into())
             }
         );
         assert_eq!(
             parse_notification("thread/tokenUsage/updated", &json!({})),
-            CodexEvent::Other
+            AgentEvent::Other
         );
+    }
+
+    #[test]
+    fn turn_statuses_become_outcomes() {
+        for (status, outcome) in [
+            (json!("completed"), TurnOutcome::Completed),
+            (json!("interrupted"), TurnOutcome::Cancelled),
+            (json!("canceled"), TurnOutcome::Cancelled),
+            (json!("failed"), TurnOutcome::Failed),
+            (Value::Null, TurnOutcome::Completed),
+        ] {
+            let mut turn = json!({});
+            if !status.is_null() {
+                turn["status"] = status;
+            }
+            assert_eq!(
+                parse_notification("turn/completed", &json!({ "turn": turn })),
+                AgentEvent::TurnCompleted {
+                    outcome,
+                    error: None
+                }
+            );
+        }
+    }
+
+    #[test]
+    fn approvals_carry_codex_terms() {
+        assert_eq!(
+            agent_request(
+                "item/commandExecution/requestApproval",
+                &json!({"itemId": "i1", "command": ["rm", "-rf", "build"], "cwd": "/p"})
+            ),
+            AgentRequest::Approval {
+                item_id: "i1".into(),
+                tool_name: "codex_command".into(),
+                arguments: json!({"command": "rm -rf build", "cwd": "/p"})
+                    .as_object()
+                    .cloned()
+                    .unwrap(),
+                prompt: Some("Codex wants to run: rm -rf build".into()),
+            }
+        );
+        assert!(matches!(
+            agent_request("item/fileChange/requestApproval", &json!({"itemId": "i2"})),
+            AgentRequest::Approval { tool_name, prompt: Some(_), .. } if tool_name == "codex_file_change"
+        ));
+        assert!(matches!(
+            agent_request("mcpServer/elicitation/request", &json!({})),
+            AgentRequest::Unknown { method } if method == "mcpServer/elicitation/request"
+        ));
     }
 
     #[test]
@@ -699,16 +629,16 @@ mod tests {
             &json!({"item": {"id": "aq", "type": "agentMessage", "text": "Tabs or spaces?", "delivery": "async",
                 "questions": [{"title": "Tabs or spaces?", "options": ["Tabs", "Spaces"]}, {"title": "Why?", "options": null}]}}),
         );
-        let CodexEvent::ItemCompleted(CodexItem::AsyncQuestion { id, questions }) = event else {
+        let AgentEvent::ItemCompleted(AgentItem::AsyncQuestion { id, questions }) = event else {
             panic!("expected an async question");
         };
         assert_eq!(id, "aq");
         assert_eq!(questions.len(), 2);
-        let prompts = async_question_prompts(&questions);
+        let prompts = super::super::driver::async_question_prompts(&questions);
         assert_eq!(prompts[0].id, "q0");
         assert_eq!(prompts[0].options[1].label, "Spaces");
         assert!(prompts[1].options.is_empty());
-        let prompt = async_answer_prompt(
+        let prompt = super::super::driver::async_answer_prompt(
             &questions,
             r#"{"answers":{"q0":{"answers":["Spaces"]},"q1":{"answers":["habit"]}}}"#,
         )
@@ -717,15 +647,17 @@ mod tests {
             prompt,
             "Answers to your questions:\n\nTabs or spaces?\nSpaces\n\nWhy?\nhabit"
         );
-        assert!(async_answer_prompt(&questions, "").is_none());
-        assert!(async_answer_prompt(&questions, r#"{"answers":{}}"#).is_none());
+        assert!(super::super::driver::async_answer_prompt(&questions, "").is_none());
+        assert!(
+            super::super::driver::async_answer_prompt(&questions, r#"{"answers":{}}"#).is_none()
+        );
         // A plain message keeps being a message.
         assert!(matches!(
             parse_notification(
                 "item/completed",
                 &json!({"item": {"id": "m", "type": "agentMessage", "text": "hi"}})
             ),
-            CodexEvent::ItemCompleted(CodexItem::AgentMessage { .. })
+            AgentEvent::ItemCompleted(AgentItem::AgentMessage { .. })
         ));
     }
 
@@ -737,7 +669,7 @@ mod tests {
                 "changes": {"src/c.rs": {"kind": {"type": "delete"}}, "d.rs": {"type": "add"}}}}),
         );
         match mapped {
-            CodexEvent::ItemCompleted(CodexItem::FileChange { changes, .. }) => {
+            AgentEvent::ItemCompleted(AgentItem::FileChange { changes, .. }) => {
                 let mut paths = changes
                     .iter()
                     .map(|change| (change.path.as_str(), change.kind.as_str()))

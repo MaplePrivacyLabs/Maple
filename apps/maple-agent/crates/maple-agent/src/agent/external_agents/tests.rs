@@ -200,7 +200,7 @@ fn wait_for<T>(mut probe: impl FnMut() -> Option<T>) -> impl Future<Output = T> 
 async fn live_revision_changes_on_finish_and_is_retained_without_a_live_row() {
     let harness = Harness::new("background");
     let agent = Arc::new(ExternalAgent::new(
-        "codex".into(),
+        catalog::entry("codex").unwrap(),
         "agent".into(),
         "task".into(),
         "work".into(),
@@ -696,7 +696,7 @@ async fn registry_rejects_unknown_providers_bad_cwd_and_too_many_agents() {
             session.agents.insert(
                 agent_id.clone(),
                 Arc::new(ExternalAgent::new(
-                    "codex".into(),
+                    catalog::entry("codex").unwrap(),
                     agent_id,
                     "session-5".into(),
                     "idle".into(),
@@ -871,8 +871,11 @@ async fn claude_detection_distinguishes_sign_in_from_probe_failures() {
         ("auth-timeout", None),
     ] {
         let harness = Harness::new(mode);
-        let detection =
-            crate::agent::integrations::detect_claude(Some(&harness.fixtures.search_path())).await;
+        let detection = crate::agent::integrations::detect(
+            catalog::entry("claude").unwrap(),
+            Some(&harness.fixtures.search_path()),
+        )
+        .await;
         assert_eq!(detection.signed_in, expected, "{mode}");
         assert!(detection.version.is_some(), "{mode}");
         assert!(detection.problem.is_none(), "{mode}");

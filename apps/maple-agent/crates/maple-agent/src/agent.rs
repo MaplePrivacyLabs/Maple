@@ -59,7 +59,7 @@ pub use config::{
     ensure_maple_workspace, include_default_maple_workspace, maple_project_container_path,
     maple_workspace_directory, startup_project_root,
 };
-pub use integrations::begin_integration_setup;
+pub use integrations::{begin_integration_setup, external_agent_icon};
 pub use permissions::permission_answer_allows;
 pub(crate) use projects::owner_project_display_name;
 pub use provider::{CatalogEntry, USAGE_LIMIT_MESSAGE, catalog_thinking_state};
