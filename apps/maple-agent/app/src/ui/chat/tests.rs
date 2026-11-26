@@ -12108,6 +12108,189 @@ mod state_tests {
         }
     }
 
+    fn reply_with_pictures(id: &str, text: &str, pictures: &[(&str, &str)]) -> AgentTimelineItem {
+        let mut reply = item(id, "message", Some(text));
+        reply.input = Some(serde_json::json!({
+            maple_agent::store::MARKDOWN_IMAGES_KEY: pictures.iter().map(|(source, id)| {
+                serde_json::json!({
+                    "source": source,
+                    "id": id,
+                    "name": "picture.png",
+                    "mimeType": "image/png",
+                    "size": 1024,
+                })
+            }).collect::<Vec<_>>()
+        }));
+        reply
+    }
+
+    #[gpui::test]
+    fn reply_pictures_keep_their_shape_at_every_width(cx: &mut TestAppContext) {
+        cx.update(|cx| cx.set_reduce_motion(true));
+        let wide = sized_image(1200, 600);
+        let tall = sized_image(400, 1600);
+        let small = sized_image(64, 32);
+        let (chat, cx) = chat_window(cx, move |this, cx| {
+            this.sidebar_collapsed = true;
+            this.selected_session = Some("s1".into());
+            this.replace_timeline(vec![
+                reply_with_pictures(
+                    "pictures",
+                    "Before\n\n![The wide chart](out/wide.png)\n\n![tall](tall.png)\n\n\
+                     ![small](small.png)\n\n![not copied](missing.png)\n\n\
+                     | ![in a table](out/wide.png) |\n|---|",
+                    &[
+                        ("out/wide.png", "wide"),
+                        ("tall.png", "tall"),
+                        ("small.png", "small"),
+                    ],
+                ),
+                item("no-list", "message", Some("![No list](out/wide.png)")),
+            ]);
+            this.attachment_viewport = 0..this.timeline.len();
+            for (id, picture, size) in [
+                ("wide", wide, (1200, 600)),
+                ("tall", tall, (400, 1600)),
+                ("small", small, (64, 32)),
+            ] {
+                this.insert_picture(
+                    id,
+                    picture,
+                    crate::ui::chat::attachments::PictureShape {
+                        size: Some(size),
+                        animation_pixels: 0,
+                    },
+                    cx,
+                );
+            }
+        });
+        let ratio = |bounds: gpui::Bounds<gpui::Pixels>| {
+            f32::from(bounds.size.width) / f32::from(bounds.size.height)
+        };
+        for width in [1200., 520.] {
+            cx.simulate_resize(gpui::size(px(width), px(900.)));
+            cx.run_until_parked();
+            let row = cx.debug_bounds("timeline-row-pictures").expect("reply row");
+            let picture = cx
+                .debug_bounds("markdown-image-wide")
+                .expect("a listed picture draws");
+            assert!(picture.size.width <= px(720.), "{picture:?}");
+            assert!(picture.right() <= row.right(), "{picture:?} left {row:?}");
+            assert!((ratio(picture) - 2.).abs() < 0.02, "{picture:?}");
+            let tall = cx.debug_bounds("markdown-image-tall").expect("portrait");
+            assert!(tall.size.height <= px(480.5), "{tall:?}");
+            assert!((ratio(tall) - 0.25).abs() < 0.02, "{tall:?}");
+            let small = cx.debug_bounds("markdown-image-small").expect("small");
+            assert!(small.size.width <= px(64.5), "never enlarged: {small:?}");
+        }
+        cx.simulate_resize(gpui::size(px(1200.), px(900.)));
+        cx.run_until_parked();
+        let tall = cx.debug_bounds("markdown-image-tall").expect("portrait");
+        assert!((tall.size.height - px(480.)).abs() < px(0.5), "{tall:?}");
+        // The table's image and a row without a list keep their text.
+        chat.update(cx, |this, _| {
+            assert_eq!(
+                this.timeline
+                    .iter()
+                    .flat_map(crate::ui::chat::transcript::picture_ids)
+                    .count(),
+                3
+            );
+        });
+    }
+
+    #[gpui::test]
+    fn a_streamed_reply_takes_the_picture_list_of_its_saved_row(cx: &mut TestAppContext) {
+        use crate::ui::chat::paging::wants_reply_pictures;
+        use maple_agent::agent::{AgentLiveRowIdentity, AgentPersistedRowIdentity};
+        cx.update(|cx| cx.set_reduce_motion(true));
+        let mut streamed = item("streamed", "message", Some("Done:\n\n![shot](shot.png)"));
+        streamed.live = Some(AgentLiveRowIdentity {
+            run_id: "run".into(),
+            occurrence: 1,
+        });
+        assert!(!wants_reply_pictures(&streamed), "not saved yet");
+        streamed.persisted = Some(AgentPersistedRowIdentity {
+            task_id: "s1".into(),
+            rows_epoch: 1,
+            row_seq: 2,
+            update_seq: 2,
+        });
+        assert!(wants_reply_pictures(&streamed));
+        let mut from_history = streamed.clone();
+        from_history.live = None;
+        assert!(
+            !wants_reply_pictures(&from_history),
+            "pages carry their list"
+        );
+        let mut no_picture = streamed.clone();
+        no_picture.text = Some("Done.".into());
+        assert!(!wants_reply_pictures(&no_picture));
+        let mut from_user = streamed.clone();
+        from_user.role = Some("user".into());
+        assert!(!wants_reply_pictures(&from_user));
+
+        let saved = reply_with_pictures("saved", "", &[("shot.png", "shot")])
+            .input
+            .unwrap();
+        let (chat, cx) = chat_window(cx, move |this, cx| {
+            this.sidebar_collapsed = true;
+            this.replace_timeline(vec![streamed]);
+            this.attachment_viewport = 0..1;
+            this.insert_picture(
+                "shot",
+                sized_image(800, 400),
+                crate::ui::chat::attachments::PictureShape {
+                    size: Some((800, 400)),
+                    animation_pixels: 0,
+                },
+                cx,
+            );
+        });
+        cx.run_until_parked();
+        assert!(
+            cx.debug_bounds("markdown-image-shot").is_none(),
+            "without its list the reply shows the text"
+        );
+        chat.update(cx, |this, cx| {
+            // Rows are keyed by their view identity, not the item id.
+            let key = this.timeline[0].id.clone();
+            // Another task's row never takes the list.
+            this.apply_reply_pictures(&key, "s2", saved.clone(), cx);
+            assert!(this.timeline[0].input.is_none());
+            this.apply_reply_pictures(&key, "s1", saved, cx);
+        });
+        cx.run_until_parked();
+        assert!(cx.debug_bounds("markdown-image-shot").is_some());
+    }
+
+    #[gpui::test]
+    fn dropped_pictures_are_released_on_the_next_render(cx: &mut TestAppContext) {
+        cx.update(|cx| cx.set_reduce_motion(true));
+        let (chat, cx) = chat_window(cx, |this, cx| {
+            this.sidebar_collapsed = true;
+            this.replace_timeline(vec![reply_with_pictures(
+                "pictures",
+                "![a](a.png)",
+                &[("a.png", "a")],
+            )]);
+            this.attachment_viewport = 0..1;
+            this.insert_attachment_image("a", sized_image(40, 20), cx);
+        });
+        cx.run_until_parked();
+        chat.update(cx, |this, cx| {
+            // A newer copy replaces the cached one; the old one is released.
+            this.insert_attachment_image("a", sized_image(40, 20), cx);
+            assert_eq!(this.released_pictures.len(), 1);
+            this.release_all_pictures();
+            assert_eq!(this.released_pictures.len(), 2);
+            assert!(this.attachment_images.is_empty());
+            cx.notify();
+        });
+        cx.run_until_parked();
+        chat.update(cx, |this, _| assert!(this.released_pictures.is_empty()));
+    }
+
     #[gpui::test]
     fn message_thumbnail_opens_a_fitted_image_and_dismisses_without_clicking_through(
         cx: &mut TestAppContext,

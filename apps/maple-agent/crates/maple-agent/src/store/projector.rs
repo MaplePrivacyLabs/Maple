@@ -26,7 +26,7 @@ mod stored;
 use stored::StoredItem;
 
 /// Bump whenever the shared timeline builders or their merge rules change.
-pub(crate) const TIMELINE_FORMAT: i64 = 5;
+pub(crate) const TIMELINE_FORMAT: i64 = 6;
 const CHUNK_ENTRIES: usize = 1_000;
 const CHUNK_ROWS: usize = 1_000;
 const CHUNK_BYTES: usize = 1024 * 1024;
@@ -91,9 +91,14 @@ pub(super) fn prepare_stored_entry(
     entry: &SessionEntry,
     seq: i64,
     image_sizes: &[usize],
+    pictures: &[super::MarkdownImage],
 ) -> StoreResult<PreparedProjection> {
     let mut rows = operations(entry, |_| Ok(None))?;
     apply_image_sizes(entry, &mut rows, image_sizes)?;
+    super::attachments::markdown_images::apply_markdown_images(
+        rows.iter_mut().map(|row| &mut row.item),
+        pictures,
+    );
     prepare_operations(entry, seq, rows)
 }
 
@@ -263,6 +268,13 @@ fn operations_tx(
         let sizes = super::attachments::entry_image_sizes_tx(tx, task, entry)?;
         apply_image_sizes(entry, &mut rows, &sizes)?;
     }
+    // A rebuild finds the pictures a reply was saved with; it never copies.
+    let pictures =
+        super::attachments::markdown_images::entry_markdown_images_tx(tx, task.0, entry)?;
+    super::attachments::markdown_images::apply_markdown_images(
+        rows.iter_mut().map(|row| &mut row.item),
+        &pictures,
+    );
     Ok(rows)
 }
 

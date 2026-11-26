@@ -286,6 +286,9 @@ pub(super) struct PreparedEntryImages {
     account: AccountId,
     task_uuid: String,
     attachments: Vec<String>,
+    /// Copies of the pictures a reply names in Markdown. Pinned with the
+    /// entry, but not image blocks: `has_images` and salvage ignore them.
+    markdown: Vec<String>,
 }
 pub(super) struct PreparedEntriesImages {
     pub(super) entries: Vec<PreparedEntryImages>,
@@ -298,7 +301,19 @@ impl PreparedEntryImages {
         if active_task(tx, self.account, &self.task_uuid)? != task_id {
             return Err(StoreError::NotFound);
         }
-        pin_tx(tx, task_id, &self.attachments)
+        pin_tx(tx, task_id, &self.attachments)?;
+        // A picture copy must never fail the reply's save: pin what is ready.
+        let ready: Vec<String> = self
+            .markdown
+            .iter()
+            .filter(|id| lookup_ready(tx, task_id, id).is_ok())
+            .cloned()
+            .collect();
+        pin_tx(tx, task_id, &ready)
+    }
+    /// Copy the pictures a new reply names; see `markdown_images`.
+    pub(super) fn import_markdown(&mut self, store: &Store) {
+        self.markdown = store.import_markdown_images(self.account, &self.task_uuid, &self.entry);
     }
 }
 
@@ -842,6 +857,7 @@ impl Store {
                 account,
                 task_uuid: task_uuid.to_owned(),
                 attachments: ids,
+                markdown: Vec::new(),
             });
         }
         Ok(PreparedEntriesImages { entries: prepared })
@@ -1492,6 +1508,9 @@ fn visit_images(
     }
     Ok(())
 }
+
+#[path = "markdown_images.rs"]
+pub(super) mod markdown_images;
 
 #[cfg(test)]
 #[path = "attachment_tests.rs"]

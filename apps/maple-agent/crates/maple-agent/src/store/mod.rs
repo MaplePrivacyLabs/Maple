@@ -53,6 +53,10 @@ pub use attachments::{
     AttachmentUploadWriter, ImageUpload, MAX_ATTACHMENT_BYTES, MAX_ATTACHMENT_RANGE_BYTES,
     MAX_ATTACHMENTS, MAX_UPLOAD_IMAGE_BYTES, PreparedAttachmentUpload, StoredAttachment,
     UNAVAILABLE_IMAGE_SOURCE,
+    markdown_images::{
+        MARKDOWN_IMAGES_KEY, MAX_MARKDOWN_IMAGES, MarkdownImage, REPLY_PICTURES_GUIDANCE,
+        image_destinations,
+    },
 };
 pub use error::{DamageReason, RefusalReason, StoreError, StoreResult};
 pub use gc::{CollectionProgress, CollectionStage, DeletedTask};
