@@ -6,14 +6,18 @@
 //! session; closing it revokes only that connection, so the next run binds
 //! the same session again while other tasks keep sharing the runtime.
 //!
+//! The SDK lets a connection lapse after a fixed idle time and lifetime. A
+//! run can outlast both, so the binding replaces its connection whenever
+//! either limit is near, and once more when the SDK reports it lapsed anyway.
+//!
 //! Everything below the permission helpers is platform-neutral. Only the
 //! pre-flight permissions differ: macOS grants Accessibility and Screen
 //! Recording to the process up front, while portal-based desktops grant
 //! capability per session at first use.
 
 use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::{Arc, Mutex, OnceLock};
-use std::time::Duration;
+use std::sync::{Arc, Mutex, MutexGuard, OnceLock};
+use std::time::{Duration, Instant};
 
 use async_trait::async_trait;
 use cua_driver_sdk::{
@@ -36,8 +40,9 @@ use super::projection::{
 };
 use super::{TOOL_PREFIX, missing_permission_message};
 
-// These match Cua Driver's reviewed standard-session policy. The trusted
-// session is renewed whenever Maple binds the task for another run.
+// These match Cua Driver's reviewed standard-session policy. They bound one
+// connection, not the task: a binding replaces its connection before either
+// runs out, so neither ever ends computer use in a run.
 const SESSION_TTL_SECONDS: u64 = 8 * 60 * 60;
 const SESSION_IDLE_TTL_SECONDS: u64 = 30 * 60;
 
@@ -350,10 +355,63 @@ async fn tool_catalog(driver: &CuaDriver) -> Result<Arc<Vec<CatalogTool>>, Strin
         .map(Arc::clone)
 }
 
-/// A task's trusted connection to its CUA session, and the tools it offers.
-pub(super) struct Binding {
+fn lock<T>(mutex: &Mutex<T>) -> MutexGuard<'_, T> {
+    mutex
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner())
+}
+
+/// How long the SDK keeps one trusted connection: its lifetime, and how long
+/// it may go unused.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct Lease {
+    ttl_seconds: u64,
+    idle_ttl_seconds: u64,
+}
+
+impl Lease {
+    const STANDARD: Self = Self {
+        ttl_seconds: SESSION_TTL_SECONDS,
+        idle_ttl_seconds: SESSION_IDLE_TTL_SECONDS,
+    };
+
+    /// Whether a connection this old and this long unused is close enough to
+    /// either limit to replace before the next call. The margin, a sixth of
+    /// the idle time (five minutes on the standard lease), absorbs the gap
+    /// between Maple's clock and the SDK's.
+    fn due(self, age: Duration, unused: Duration) -> bool {
+        let idle_ttl = Duration::from_secs(self.idle_ttl_seconds);
+        let margin = idle_ttl / 6;
+        unused + margin >= idle_ttl || age + margin >= Duration::from_secs(self.ttl_seconds)
+    }
+}
+
+/// The binding's current trusted connection, and Maple's reading of the two
+/// clocks the SDK keeps for it. Both readings are never fresher than the
+/// SDK's own, so a renewal comes early rather than late.
+struct Connection {
     session: Arc<CuaDriverSession>,
+    /// Taken before the SDK made the connection.
+    opened: Instant,
+    /// When the latest successful call began. The SDK counts a call as use
+    /// once it admits it, which is no earlier.
+    used: Instant,
+}
+
+/// A task's trusted connection to its CUA session, and the tools it offers.
+///
+/// The connection is replaced, never the binding: a run keeps the same tools
+/// while the binding renews what lies under them. Only the task's own
+/// identity is ever reconnected, so a renewal grants nothing the run did not
+/// already have.
+pub(super) struct Binding {
+    driver: Arc<CuaDriver>,
+    identity: SessionIdentity,
+    lease: Lease,
     pub(super) catalog: Arc<Vec<CatalogTool>>,
+    connection: Mutex<Connection>,
+    /// One renewal at a time; a call that waited uses the one just made.
+    renewing: tokio::sync::Mutex<()>,
     /// The task was unbound: its tools, which stay with the session, fail.
     closed: AtomicBool,
 }
@@ -376,45 +434,33 @@ impl Binding {
                 .await
                 .map_err(|error| format!("Embedded CUA runtime start-up failed: {error}"))??;
             let catalog = tool_catalog(&driver).await?;
-            let session = tokio::task::spawn_blocking(move || {
-                driver.create_trusted_session_for_transport(
-                    trusted_session_options(
-                        identity.public_session,
-                        SESSION_TTL_SECONDS,
-                        SESSION_IDLE_TTL_SECONDS,
-                    ),
-                    &identity.transport_session,
-                )
-            })
-            .await
-            .map_err(|error| format!("Embedded CUA task session start-up failed: {error}"))?
-            .map_err(|error| format!("Failed to create embedded CUA task session: {error}"))?;
-            Ok::<_, String>((catalog, session))
+            Self::open_on(driver, catalog, identity, Lease::STANDARD).await
         };
-        let (catalog, session) = tokio::time::timeout(RUNTIME_STARTUP_TIMEOUT, prepare)
+        tokio::time::timeout(RUNTIME_STARTUP_TIMEOUT, prepare)
             .await
-            .map_err(|_| {
-                "Computer use did not finish starting. Check that Maple still holds its screen and input permissions."
-                    .to_string()
-            })??;
+            .map_err(|_| STARTUP_TIMEOUT_MESSAGE.to_string())?
+    }
 
-        // Maple, rather than the model, owns this lifecycle boundary. Besides
-        // creating a first-use session, this explicitly revives a task whose CUA
-        // idle TTL elapsed between runs while preserving its stable owner.
-        let started = session
-            .call_tool("start_session".to_string(), "{}".to_string())
-            .await
-            .map_err(|error| format!("Failed to start embedded CUA task session: {error}"))?;
-        if started.is_error {
-            session.close();
-            return Err(format!(
-                "Failed to start embedded CUA task session: {}",
-                started.text
-            ));
-        }
+    /// Bind on a given runtime and lease, without the permission check.
+    async fn open_on(
+        driver: Arc<CuaDriver>,
+        catalog: Arc<Vec<CatalogTool>>,
+        identity: SessionIdentity,
+        lease: Lease,
+    ) -> Result<Self, String> {
+        let opened = Instant::now();
+        let session = connect(&driver, &identity, lease).await?;
         Ok(Self {
-            session,
+            driver,
+            identity,
+            lease,
             catalog,
+            connection: Mutex::new(Connection {
+                session,
+                opened,
+                used: opened,
+            }),
+            renewing: tokio::sync::Mutex::new(()),
             closed: AtomicBool::new(false),
         })
     }
@@ -422,8 +468,85 @@ impl Binding {
     /// Revoke this connection. The task's CUA session stays for the next
     /// binding, and the runtime for every task.
     pub(super) fn close(&self) {
+        // Set before taking the connection, so a renewal that finishes after
+        // this either sees it or has its new connection closed here.
         self.closed.store(true, Ordering::Release);
-        self.session.close();
+        lock(&self.connection).session.close();
+    }
+
+    fn not_connected() -> String {
+        format!("{CUA_NAME} is not connected to this task.")
+    }
+
+    /// The connection to call on, renewed first when a limit is near.
+    async fn current(&self) -> Result<Arc<CuaDriverSession>, String> {
+        let (session, due) = {
+            let connection = lock(&self.connection);
+            let now = Instant::now();
+            (
+                Arc::clone(&connection.session),
+                self.lease.due(
+                    now.saturating_duration_since(connection.opened),
+                    now.saturating_duration_since(connection.used),
+                ),
+            )
+        };
+        if due {
+            self.renew(&session).await
+        } else {
+            Ok(session)
+        }
+    }
+
+    fn is_current(&self, session: &Arc<CuaDriverSession>) -> bool {
+        Arc::ptr_eq(&lock(&self.connection).session, session)
+    }
+
+    /// Record a successful call that began at `began` on `session`.
+    fn mark_used(&self, session: &Arc<CuaDriverSession>, began: Instant) {
+        let mut connection = lock(&self.connection);
+        if Arc::ptr_eq(&connection.session, session) && began > connection.used {
+            connection.used = began;
+        }
+    }
+
+    /// Replace `stale` with a new connection to the same CUA session. A call
+    /// that finds another call already replaced it uses that one.
+    async fn renew(&self, stale: &Arc<CuaDriverSession>) -> Result<Arc<CuaDriverSession>, String> {
+        let _renewing = self.renewing.lock().await;
+        if self.closed.load(Ordering::Acquire) {
+            return Err(Self::not_connected());
+        }
+        {
+            let connection = lock(&self.connection);
+            if !Arc::ptr_eq(&connection.session, stale) {
+                return Ok(Arc::clone(&connection.session));
+            }
+        }
+        // The SDK refuses a second connection to a session that still holds
+        // a live one, so release this one first.
+        stale.close();
+        let opened = Instant::now();
+        let session = tokio::time::timeout(
+            RUNTIME_STARTUP_TIMEOUT,
+            connect(&self.driver, &self.identity, self.lease),
+        )
+        .await
+        .map_err(|_| STARTUP_TIMEOUT_MESSAGE.to_string())?
+        .map_err(|error| format!("{CUA_NAME} could not reconnect to this task: {error}"))?;
+        let mut connection = lock(&self.connection);
+        if self.closed.load(Ordering::Acquire) {
+            drop(connection);
+            session.close();
+            return Err(Self::not_connected());
+        }
+        *connection = Connection {
+            session: Arc::clone(&session),
+            opened,
+            used: opened,
+        };
+        log::info!("Built-in CUA renewed its connection");
+        Ok(session)
     }
 
     /// Call one of the catalog's tools; the SDK's canonical result JSON.
@@ -433,47 +556,153 @@ impl Binding {
         arguments: Map<String, Value>,
         cancel: &CancellationToken,
     ) -> Result<String, String> {
+        self.call_result(name, arguments, cancel)
+            .await
+            .map(|result| result.raw_json)
+    }
+
+    async fn call_result(
+        &self,
+        name: &str,
+        arguments: Map<String, Value>,
+        cancel: &CancellationToken,
+    ) -> Result<cua_driver_sdk::ToolResult, String> {
         if self.closed.load(Ordering::Acquire) {
-            return Err(format!("{CUA_NAME} is not connected to this task."));
+            return Err(Self::not_connected());
         }
         if cancel.is_cancelled() {
             return Err("Cancelled".to_string());
         }
         let arguments = serde_json::to_string(&bound_arguments(arguments))
             .map_err(|_| "Embedded CUA arguments are not valid JSON".to_string())?;
-        let call = self.session.call_tool(name.to_string(), arguments);
-        tokio::pin!(call);
-        // Dropping the SDK future cancels cooperative asynchronous work. This
-        // is necessarily best-effort: an OS action that already reached the
-        // target application cannot be rolled back.
-        let result = tokio::select! {
-            biased;
-            () = cancel.cancelled() => return Err("Cancelled".to_string()),
-            result = &mut call => result,
-        };
-        // Never log the result: screenshots and accessibility content are
-        // the user's private data.
-        result.map(|result| result.raw_json).map_err(driver_error)
+        let mut session = self.current().await?;
+        let mut retried = false;
+        loop {
+            let began = Instant::now();
+            let result = {
+                let call = session.call_tool(name.to_string(), arguments.clone());
+                tokio::pin!(call);
+                // Dropping the SDK future cancels cooperative asynchronous
+                // work. This is necessarily best-effort: an OS action that
+                // already reached the target application cannot be rolled back.
+                tokio::select! {
+                    biased;
+                    () = cancel.cancelled() => return Err("Cancelled".to_string()),
+                    result = &mut call => result,
+                }
+            };
+            // The connection lapsed under the call, or a renewal closed it
+            // while the call was on its way. Either way the SDK refused the
+            // call before acting, so it is made once more on a new one.
+            let lapsed = match &result {
+                Ok(result) => connection_lapsed(result),
+                Err(cua_driver_sdk::DriverError::Shutdown) => {
+                    self.closed.load(Ordering::Acquire) || !self.is_current(&session)
+                }
+                Err(_) => false,
+            };
+            if lapsed && !retried {
+                retried = true;
+                session = self.renew(&session).await?;
+                continue;
+            }
+            // Never log the result: screenshots and accessibility content
+            // are the user's private data.
+            let result = result.map_err(driver_error)?;
+            if !result.is_error {
+                self.mark_used(&session, began);
+            }
+            return Ok(result);
+        }
     }
 }
 
 impl Drop for Binding {
     fn drop(&mut self) {
         // Idempotent and synchronous for an embedded session.
-        self.session.close();
+        lock(&self.connection).session.close();
     }
 }
 
-fn trusted_session_options(
-    public_session: String,
-    ttl_seconds: u64,
-    idle_ttl_seconds: u64,
-) -> TrustedSessionOptions {
+const STARTUP_TIMEOUT_MESSAGE: &str = "Computer use did not finish starting. Check that Maple still holds its screen and input permissions.";
+
+/// Make a trusted connection to the task's CUA session and start it. That
+/// creates the session on first use and revives it when the SDK reclaimed
+/// it while unused; a live session is kept as it is, snapshots included.
+async fn connect(
+    driver: &Arc<CuaDriver>,
+    identity: &SessionIdentity,
+    lease: Lease,
+) -> Result<Arc<CuaDriverSession>, String> {
+    let driver = Arc::clone(driver);
+    let identity = identity.clone();
+    // Native session set-up is synchronous, so keep it off the async workers.
+    let session = tokio::task::spawn_blocking(move || {
+        driver.create_trusted_session_for_transport(
+            trusted_session_options(identity.public_session, lease),
+            &identity.transport_session,
+        )
+    })
+    .await
+    .map_err(|error| format!("Embedded CUA task session start-up failed: {error}"))?
+    .map_err(|error| format!("Failed to create embedded CUA task session: {error}"))?;
+
+    // Maple, rather than the model, owns this lifecycle boundary.
+    let started = session
+        .call_tool("start_session".to_string(), "{}".to_string())
+        .await
+        .map_err(|error| format!("Failed to start embedded CUA task session: {error}"))?;
+    if started.is_error {
+        session.close();
+        return Err(format!(
+            "Failed to start embedded CUA task session: {}",
+            started.text
+        ));
+    }
+    Ok(session)
+}
+
+/// The SDK's refusals for a connection that ran out (`permission_denied`
+/// with one of these messages) as opposed to anything about the call. They
+/// come from `cua-driver-core`'s admission check (the prefixed message) and
+/// its dispatch commit, and both run before any action.
+const LAPSED_MESSAGES: [&str; 4] = [
+    "Permission denied: authorization context expired",
+    "authorization context expired",
+    "authorization context idle timeout exceeded",
+    "authorization context has been revoked",
+];
+
+/// Whether the SDK refused a call because its connection lapsed. A lapsed
+/// connection reads as revoked once any task binds, because binding sweeps
+/// lapsed connections out; until then it reads as expired.
+fn connection_lapsed(result: &cua_driver_sdk::ToolResult) -> bool {
+    if !result.is_error {
+        return false;
+    }
+    match result.error_code.as_deref() {
+        Some("authorization_revoked") => true,
+        Some("permission_denied") => result
+            .structured_json
+            .as_deref()
+            .and_then(|json| serde_json::from_str::<Value>(json).ok())
+            .and_then(|value| {
+                value
+                    .pointer("/refusal/message")
+                    .and_then(Value::as_str)
+                    .map(|message| LAPSED_MESSAGES.contains(&message))
+            })
+            .unwrap_or(false),
+        _ => false,
+    }
+}
+
+fn trusted_session_options(public_session: String, lease: Lease) -> TrustedSessionOptions {
     TrustedSessionOptions {
         public_session,
         mode: SessionPermissionMode::Standard,
-        ttl_seconds,
-        idle_ttl_seconds,
+        ttl_seconds: lease.ttl_seconds,
+        idle_ttl_seconds: lease.idle_ttl_seconds,
         capability_manifest_path: None,
         bounded_manifest_path: None,
     }
@@ -617,7 +846,15 @@ mod tests {
     async fn a_stable_transport_reconnects_and_revives_only_its_task_session() {
         let driver = CuaDriver::create_configured(driver_options(60, 30)).unwrap();
         let identity = session_identity("test-account", "test-task").unwrap();
-        let options = || trusted_session_options(identity.public_session.clone(), 60, 30);
+        let options = || {
+            trusted_session_options(
+                identity.public_session.clone(),
+                Lease {
+                    ttl_seconds: 60,
+                    idle_ttl_seconds: 30,
+                },
+            )
+        };
 
         let first = driver
             .create_trusted_session_for_transport(options(), &identity.transport_session)
@@ -678,6 +915,100 @@ mod tests {
         assert_eq!(structured["revived"], true);
 
         replacement.close();
+        driver.shutdown().await.unwrap();
+    }
+
+    #[test]
+    fn a_connection_is_renewed_before_either_sdk_limit() {
+        let lease = Lease::STANDARD;
+        let minutes = |count: u64| Duration::from_secs(count * 60);
+        assert!(!lease.due(Duration::ZERO, Duration::ZERO));
+        // Five minutes ahead of the half-hour idle limit.
+        assert!(!lease.due(minutes(60), minutes(24)));
+        assert!(lease.due(minutes(60), minutes(25)));
+        // Five minutes ahead of the eight-hour lifetime, however busy.
+        assert!(!lease.due(minutes(474), Duration::ZERO));
+        assert!(lease.due(minutes(475), Duration::ZERO));
+    }
+
+    /// The SDK's own runtime with a one-second idle limit in place of the
+    /// standard half hour: a run keeps computer use however long it leaves
+    /// it unused, and only an unbound task loses it.
+    #[tokio::test]
+    async fn a_binding_keeps_computer_use_past_the_sdk_limits() {
+        let lease = Lease {
+            ttl_seconds: 60,
+            idle_ttl_seconds: 1,
+        };
+        let past_idle_limit = Duration::from_millis(1_100);
+        let driver =
+            CuaDriver::create_configured(driver_options(lease.ttl_seconds, lease.idle_ttl_seconds))
+                .unwrap();
+        let open = |task: &'static str| {
+            Binding::open_on(
+                Arc::clone(&driver),
+                Arc::new(Vec::new()),
+                session_identity("test-account", task).unwrap(),
+                lease,
+            )
+        };
+        let binding = open("renewing-task").await.unwrap();
+        let cancel = CancellationToken::new();
+        let call = || binding.call_result("health_report", Map::new(), &cancel);
+        let current = || Arc::clone(&lock(&binding.connection).session);
+
+        let first = call().await.unwrap();
+        assert!(!connection_lapsed(&first), "{}", first.text);
+
+        // Unused past the idle limit, the connection is refused, and the
+        // binding replaces it before the next call.
+        tokio::time::sleep(past_idle_limit).await;
+        let stale = current();
+        let refused = stale
+            .call_tool("health_report".to_string(), "{}".to_string())
+            .await
+            .unwrap();
+        assert!(connection_lapsed(&refused), "{}", refused.text);
+        let renewed = call().await.unwrap();
+        assert!(!connection_lapsed(&renewed), "{}", renewed.text);
+        assert!(!binding.is_current(&stale));
+
+        // Should Maple's clock miss a lapse, the refusal renews instead:
+        // expired, and revoked once another task binds in the meantime.
+        for (other_task_binds, code) in [
+            (false, "permission_denied"),
+            (true, "authorization_revoked"),
+        ] {
+            tokio::time::sleep(past_idle_limit).await;
+            let stale = {
+                let mut connection = lock(&binding.connection);
+                connection.opened = Instant::now();
+                connection.used = Instant::now();
+                Arc::clone(&connection.session)
+            };
+            if other_task_binds {
+                open("other-task").await.unwrap().close();
+            }
+            let refused = stale
+                .call_tool("health_report".to_string(), "{}".to_string())
+                .await
+                .unwrap();
+            assert_eq!(
+                refused.error_code.as_deref(),
+                Some(code),
+                "{}",
+                refused.text
+            );
+            assert!(connection_lapsed(&refused), "{}", refused.text);
+            let renewed = call().await.unwrap();
+            assert!(!connection_lapsed(&renewed), "{}", renewed.text);
+            assert!(!binding.is_current(&stale));
+        }
+
+        // An unbound task never reconnects.
+        binding.close();
+        assert_eq!(call().await.unwrap_err(), Binding::not_connected());
+        drop(binding);
         driver.shutdown().await.unwrap();
     }
 }
