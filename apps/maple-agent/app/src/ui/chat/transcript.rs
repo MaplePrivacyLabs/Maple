@@ -2924,6 +2924,7 @@ mod motion_tests {
 
     fn item(id: &str, item_type: &str, text: Option<&str>) -> AgentTimelineItem {
         AgentTimelineItem {
+            call_id: None,
             label: None,
             persisted: None,
             live: None,

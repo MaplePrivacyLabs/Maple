@@ -483,6 +483,7 @@ fn card_question(call: &ToolCall, reason: AgentPermissionReason) -> AgentQuestio
             reason,
             tool: call.tool_name.clone(),
             action,
+            call_id: Some(call.tool_call_id.clone()),
         }),
     }
 }
@@ -513,11 +514,10 @@ fn clip_middle(text: &str) -> String {
     )
 }
 
-/// Whether the card's answer lets the call run, or what to tell the model
-/// when it does not. The card answers with JSON and other interfaces with
-/// plain text; only the allow label itself allows.
-fn read_answer(answer: &str) -> Result<(), String> {
-    let values: Vec<String> = serde_json::from_str::<Value>(answer)
+/// What an answer to the card says: the card answers with JSON and other
+/// interfaces with plain text.
+fn answer_values(answer: &str) -> Vec<String> {
+    serde_json::from_str::<Value>(answer)
         .ok()
         .and_then(|value| {
             let answers = value.pointer(&format!("/answers/{CARD_QUESTION_ID}/answers"))?;
@@ -529,10 +529,23 @@ fn read_answer(answer: &str) -> Result<(), String> {
                     .collect()
             })
         })
-        .unwrap_or_else(|| vec![answer.trim().to_string()]);
-    if values.first().map(String::as_str) == Some(ALLOW_ONCE) {
+        .unwrap_or_else(|| vec![answer.trim().to_string()])
+}
+
+/// Whether an answer to a permission request lets the call run. Only the
+/// allow label itself allows. Interfaces use this to show what was decided,
+/// so they never read an answer differently from the gate.
+pub fn permission_answer_allows(answer: &str) -> bool {
+    answer_values(answer).first().map(String::as_str) == Some(ALLOW_ONCE)
+}
+
+/// Whether the card's answer lets the call run, or what to tell the model
+/// when it does not.
+fn read_answer(answer: &str) -> Result<(), String> {
+    if permission_answer_allows(answer) {
         return Ok(());
     }
+    let values = answer_values(answer);
     let note = values
         .iter()
         .map(|value| {

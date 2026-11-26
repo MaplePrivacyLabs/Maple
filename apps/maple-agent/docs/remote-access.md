@@ -293,7 +293,8 @@ Changing a task's [permission mode](permissions.md) requires
 earlier hosts have no modes, so a controller refuses the change itself and asks
 for the remote computer to be updated; their tasks keep the mode they have.
 Answering a permission request needs no capability, since it is an ordinary
-question. A controller rechecks account and grant authority after this
+question. The call id a request names is an optional field: a controller marks
+no step for a host that leaves it out. A controller rechecks account and grant authority after this
 discovery, as it does for folders.
 Listing and switching tools in Settings → Tools requires `tool_switches_v1`.
 Agent 0.0.21 and earlier cannot decode either call, so a controller refuses

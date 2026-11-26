@@ -572,6 +572,9 @@ fn bounded_item(
         let title = text(&item.title);
         let text_content = text(&item.text);
         let mut bounded = AgentTimelineItem {
+            // A permission request names the row by this id. One too long
+            // to carry whole is left out, so the row is never mismarked.
+            call_id: item.call_id.clone().filter(|id| id.len() <= 128),
             label: item.label.clone(),
             persisted: item.persisted.clone(),
             live: item.live.clone(),
@@ -896,5 +899,22 @@ mod tests {
         assert!(wire_bytes(&items) <= 4096);
         assert!(items[0].truncated.unwrap() > 2_000_000);
         assert!(items[0].text.as_ref().unwrap().len() < 4096);
+    }
+
+    /// A tool row cut down to fit keeps the call id a permission request
+    /// names it by, unless the id itself is too long to carry.
+    #[test]
+    fn a_bounded_tool_row_keeps_its_call_id() {
+        let mut item = timeline::user_item(7, &[pi_ai::Content::text("large")], "replace");
+        item.item_type = "tool".into();
+        item.call_id = Some("functions.bash:0".into());
+        item.input = Some(serde_json::json!({"command": "x".repeat(100_000)}));
+        let (items, _) = bounded_tail(std::slice::from_ref(&item), 10, 4096);
+        assert!(items[0].truncated.is_some());
+        assert_eq!(items[0].call_id.as_deref(), Some("functions.bash:0"));
+
+        item.call_id = Some("c".repeat(129));
+        let (items, _) = bounded_tail(&[item], 10, 4096);
+        assert_eq!(items[0].call_id, None);
     }
 }

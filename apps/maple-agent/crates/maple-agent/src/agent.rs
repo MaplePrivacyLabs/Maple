@@ -60,6 +60,7 @@ pub use config::{
     maple_workspace_directory, startup_project_root,
 };
 pub use integrations::begin_integration_setup;
+pub use permissions::permission_answer_allows;
 pub(crate) use projects::owner_project_display_name;
 pub use provider::{CatalogEntry, USAGE_LIMIT_MESSAGE, catalog_thinking_state};
 pub use questions::QuestionResponder;

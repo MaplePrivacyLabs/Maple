@@ -2192,6 +2192,7 @@ mod resize_tests {
             chat.replace_timeline(
                 (0..rows)
                     .map(|index| AgentTimelineItem {
+                        call_id: None,
                         label: None,
                         persisted: None,
                         live: None,
@@ -2565,6 +2566,7 @@ mod resize_tests {
 
         let message = |chat: &mut ChatScreen| {
             chat.replace_timeline(vec![AgentTimelineItem {
+                call_id: None,
                 label: None,
                 persisted: None,
                 live: None,
