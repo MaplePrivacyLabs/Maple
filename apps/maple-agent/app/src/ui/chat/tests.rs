@@ -1271,6 +1271,7 @@ mod state_tests {
 
     fn item(id: &str, item_type: &str, text: Option<&str>) -> AgentTimelineItem {
         AgentTimelineItem {
+            call_id: None,
             label: None,
             persisted: None,
             live: None,
@@ -2303,7 +2304,9 @@ mod state_tests {
         });
     }
 
-    fn permission_event(request_id: &str) -> AgentServiceEvent {
+    /// A permission request about the call with id `call`. `None` is a
+    /// request from a host that names no call.
+    fn permission_event(request_id: &str, call: Option<&str>) -> AgentServiceEvent {
         AgentServiceEvent::Question {
             session_id: "s1".to_string(),
             request_id: request_id.to_string(),
@@ -2319,6 +2322,7 @@ mod state_tests {
                     })
                     .to_vec(),
                 permission: Some(maple_agent::agent::AgentPermissionPrompt {
+                    call_id: call.map(str::to_owned),
                     reason: maple_agent::agent::AgentPermissionReason::SendsOut,
                     tool: "bash".to_string(),
                     action: "git push".to_string(),
@@ -2335,7 +2339,7 @@ mod state_tests {
         let screen = screen(cx);
         screen.update(cx, |this, cx| {
             this.selected_session = Some("s1".into());
-            this.handle_service_event(permission_event("pending"), cx);
+            this.handle_service_event(permission_event("pending", None), cx);
             this.toggle_question_option(0, 1, cx);
             assert_eq!(this.pending_questions.len(), 1);
             assert!(this.step_permissions.is_empty());
@@ -2435,6 +2439,7 @@ mod state_tests {
             this.selected_session = Some("s1".into());
             let tool = AgentTimelineItem {
                 id: "push".into(),
+                call_id: Some("functions.bash:0".into()),
                 item_type: "tool".into(),
                 status: Some("running".into()),
                 label: Some(maple_agent::agent::AgentTimelineLabel {
@@ -2446,7 +2451,7 @@ mod state_tests {
                 ..item("push", "tool", None)
             };
             this.replace_timeline(vec![user_item("user", "push it"), tool]);
-            this.handle_service_event(permission_event("typed"), cx);
+            this.handle_service_event(permission_event("typed", Some("functions.bash:0")), cx);
             let input = this.pending_question_input.clone().expect("answer field");
             input.update(cx, |input, cx| input.set_text("Allow once", cx));
             let answer = this.composed_question_answer(cx);
@@ -2542,7 +2547,7 @@ mod state_tests {
         let screen = screen(cx);
         screen.update(cx, |this, cx| {
             this.selected_session = Some("s1".to_string());
-            this.handle_service_event(permission_event("p1"), cx);
+            this.handle_service_event(permission_event("p1", None), cx);
             this.focus_question_option(0, 0, cx);
             this.focus_question_option(0, 1, cx);
             assert_eq!(this.pending_questions.len(), 1, "moving answers nothing");
@@ -2553,16 +2558,17 @@ mod state_tests {
         });
     }
 
-    /// A permission request is about the call still running, and that
-    /// call keeps what the user answered.
+    /// A permission request marks the call it names while that call still
+    /// runs, and that call keeps what the user answered.
     #[gpui::test]
     fn test_a_call_keeps_what_the_user_said_to_its_permission_request(cx: &mut TestAppContext) {
         cx.executor().allow_parking();
         let screen = screen(cx);
         screen.update(cx, |this, cx| {
             this.selected_session = Some("s1".to_string());
-            let call = |id: &str, status: &str, command: &str| AgentTimelineItem {
+            let call = |id: &str, call_id: &str, status: &str, command: &str| AgentTimelineItem {
                 status: Some(status.to_string()),
+                call_id: Some(call_id.to_string()),
                 label: Some(maple_agent::agent::AgentTimelineLabel {
                     kind: "tool".to_string(),
                     name: Some("bash".to_string()),
@@ -2575,41 +2581,61 @@ mod state_tests {
             // before any is asked about.
             this.replace_timeline(vec![
                 user_item("u1", "Push it"),
-                call("read", "completed", "cat notes.txt"),
-                call("push", "running", "git push"),
-                call("list", "running", "ls"),
+                call("read", "functions.bash:0", "completed", "cat notes.txt"),
+                call("push", "functions.bash:1", "running", "git push"),
+                call("list", "functions.bash:2", "running", "ls"),
             ]);
             assert_eq!(this.waiting_step(), None, "nothing waits before a request");
 
-            this.handle_service_event(permission_event("p1"), cx);
+            this.handle_service_event(permission_event("p1", Some("functions.bash:1")), cx);
             assert_eq!(
                 this.waiting_step(),
                 Some(2),
-                "the request is about the call that would do what it says, not the newest"
+                "the request marks the call it names, not the newest"
             );
             this.toggle_question_option(0, 0, cx);
             this.finish_question_answer("p1".into(), Some(("push".into(), true)), Ok(true), cx);
             assert_eq!(this.step_permissions.get("push"), Some(&true));
 
-            // The same command again is the next call's; it is refused,
+            // Some providers number calls per reply, so a later reply can
+            // reuse an id: the newest row with it is the call that waits,
             // and the earlier answer stays.
-            this.apply_incoming_item("s1", call("again", "running", "git push"), cx);
-            this.handle_service_event(permission_event("p2"), cx);
+            this.apply_incoming_item(
+                "s1",
+                call("again", "functions.bash:1", "running", "git push"),
+                cx,
+            );
+            this.handle_service_event(permission_event("p2", Some("functions.bash:1")), cx);
             assert_eq!(this.waiting_step(), Some(4));
             this.toggle_question_option(0, 1, cx);
             this.finish_question_answer("p2".into(), Some(("again".into(), false)), Ok(true), cx);
             assert_eq!(this.step_permissions.get("again"), Some(&false));
             assert_eq!(this.step_permissions.get("push"), Some(&true));
 
-            // Two calls the request could mean: neither is marked, and
-            // neither keeps the answer.
-            this.apply_incoming_item("s1", call("third", "running", "git push"), cx);
-            this.apply_incoming_item("s1", call("fourth", "running", "git push"), cx);
-            this.handle_service_event(permission_event("p3"), cx);
+            // Two calls that would run the same command: the id decides.
+            this.apply_incoming_item(
+                "s1",
+                call("third", "functions.bash:3", "running", "git push"),
+                cx,
+            );
+            this.apply_incoming_item(
+                "s1",
+                call("fourth", "functions.bash:4", "running", "git push"),
+                cx,
+            );
+            this.handle_service_event(permission_event("p3", Some("functions.bash:3")), cx);
+            assert_eq!(this.waiting_step(), Some(5));
+            let permission = this.permission_answer_intent("Allow once");
+            assert_eq!(permission, Some(("third".into(), true)));
+            this.finish_question_answer("p3".into(), permission, Ok(true), cx);
+            assert_eq!(this.step_permissions.get("third"), Some(&true));
+            assert!(!this.step_permissions.contains_key("fourth"));
+
+            // A host from before call ids names no call: no row is marked,
+            // and no row keeps the answer.
+            this.handle_service_event(permission_event("p4", None), cx);
             assert_eq!(this.waiting_step(), None);
-            this.toggle_question_option(0, 0, cx);
-            this.finish_question_answer("p3".into(), None, Ok(true), cx);
-            assert_eq!(this.step_permissions.len(), 2);
+            assert_eq!(this.permission_answer_intent("Allow once"), None);
         });
     }
 
@@ -2618,7 +2644,7 @@ mod state_tests {
     #[gpui::test]
     fn test_a_permission_card_and_its_notification_follow_the_language(_cx: &mut TestAppContext) {
         let _locale = crate::ui::i18n::TestLocalizationGuard::enable();
-        let AgentServiceEvent::Question { questions, .. } = permission_event("p3") else {
+        let AgentServiceEvent::Question { questions, .. } = permission_event("p3", None) else {
             unreachable!()
         };
         let entry = &questions[0];
@@ -2665,11 +2691,17 @@ mod state_tests {
         let screen = screen(cx);
         screen.update(cx, |this, cx| {
             this.selected_session = Some("s1".to_string());
-            this.handle_service_event(permission_event("p2"), cx);
+            this.handle_service_event(permission_event("p2", None), cx);
             this.select_question_option(0, 0, cx);
             let answer = this.composed_question_answer(cx);
             let parsed: serde_json::Value = serde_json::from_str(&answer).unwrap();
             assert_eq!(parsed["answers"]["permission"]["answers"][0], "Allow once");
+            // The host's gate reads the card's answer as allowing, as the
+            // card itself records it.
+            assert!(maple_agent::agent::permission_answer_allows(&answer));
+            this.select_question_option(0, 1, cx);
+            let answer = this.composed_question_answer(cx);
+            assert!(!maple_agent::agent::permission_answer_allows(&answer));
         });
     }
 

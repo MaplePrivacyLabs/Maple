@@ -353,6 +353,7 @@ mod tests {
 
     fn call(status: &str, input: serde_json::Value) -> AgentTimelineItem {
         AgentTimelineItem {
+            call_id: None,
             label: Some(maple_agent::agent::AgentTimelineLabel {
                 kind: "tool".into(),
                 name: Some(

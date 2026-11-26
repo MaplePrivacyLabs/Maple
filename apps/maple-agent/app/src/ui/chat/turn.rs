@@ -955,32 +955,22 @@ impl ChatScreen {
             .find_map(|entry| entry.permission.as_ref())
     }
 
-    /// The tool call the permission request on screen is about. The
-    /// request names its tool and what the call would do, not the call,
-    /// and every call of a reply is on screen as running before any is
-    /// asked about. So the call is the turn's one unanswered call with
-    /// that tool and that action. Where two could be meant, none is
-    /// marked: a wrong step would keep an answer that was not its own.
+    /// The tool call the permission request on screen is about: the row
+    /// with the call id the request names, while that call still runs and
+    /// has no answer. Some providers number calls per reply, so an id can
+    /// repeat within a task; the newest row with it is the call waiting. A
+    /// request from a host that names no call marks no row, since a wrong
+    /// one would keep an answer that was not its own.
     pub(super) fn waiting_step(&self) -> Option<usize> {
-        let prompt = self.current_permission()?;
-        let mut meant = self
-            .timeline
+        let call = self.current_permission()?.call_id.as_deref()?;
+        self.timeline
             .iter()
-            .enumerate()
-            .rev()
-            .take_while(|(_, item)| !starts_turn(item))
-            .filter(|(_, item)| {
-                is_tool(item)
-                    && step::StepState::of(item.status.as_deref()) == step::StepState::Running
+            .rposition(|item| is_tool(item) && item.call_id.as_deref() == Some(call))
+            .filter(|&index| {
+                let item = &self.timeline[index];
+                step::StepState::of(item.status.as_deref()) == step::StepState::Running
                     && !self.step_permissions.contains_key(&item.id)
-                    && item.label.as_ref().and_then(|label| label.name.as_deref())
-                        == Some(prompt.tool.as_str())
-                    // An input with no command, path, url or query has
-                    // nothing to compare; the tool alone decides.
-                    && call_action(item).is_none_or(|action| same_action(&prompt.action, action))
-            });
-        let (index, _) = meant.next()?;
-        meant.next().is_none().then_some(index)
+            })
     }
 
     /// The user answered a permission request: the call it was about keeps
@@ -1038,42 +1028,13 @@ impl ChatScreen {
     }
 }
 
-/// What a call would do, as a permission request words it: the first of
-/// these fields its input has.
-fn call_action(item: &AgentTimelineItem) -> Option<&str> {
-    let input = item.input.as_ref()?;
-    ["command", "path", "url", "query"]
-        .into_iter()
-        .find_map(|field| input.get(field)?.as_str())
-}
-
-/// Whether the action a request shows is the call's. The request cuts the
-/// middle out of a long one and says so on a line of its own.
-fn same_action(shown: &str, full: &str) -> bool {
-    const SHOWN: usize = 1_500;
-    if shown == full {
-        return true;
-    }
-    let length = full.chars().count();
-    if length <= SHOWN {
-        return false;
-    }
-    let kept = SHOWN / 2;
-    let start: String = full.chars().take(kept).collect();
-    let end: String = full.chars().skip(length - kept).collect();
-    shown
-        == format!(
-            "{start}\n[{} characters not shown]\n{end}",
-            length - 2 * kept
-        )
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
 
     fn item(item_type: &str, role: Option<&str>) -> AgentTimelineItem {
         AgentTimelineItem {
+            call_id: None,
             label: None,
             persisted: None,
             live: None,
@@ -1131,26 +1092,6 @@ mod tests {
             step::state(call.status.as_deref(), Some(step::Asked::Allowed)),
             step::StepState::Failed
         );
-    }
-
-    #[test]
-    fn clipped_permission_actions_use_the_hosts_unicode_character_budget() {
-        let full = format!("{}é{}", "a".repeat(750), "b".repeat(750));
-        let shown = format!(
-            "{}\n[1 characters not shown]\n{}",
-            "a".repeat(750),
-            "b".repeat(750)
-        );
-        assert!(same_action(&shown, &full));
-        assert!(!same_action("different command", &full));
-
-        let long = "x".repeat(2000);
-        let shown = format!(
-            "{}\n[500 characters not shown]\n{}",
-            "x".repeat(750),
-            "x".repeat(750)
-        );
-        assert!(same_action(&shown, &long));
     }
 
     #[test]

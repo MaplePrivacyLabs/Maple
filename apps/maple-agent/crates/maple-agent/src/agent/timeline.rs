@@ -341,6 +341,9 @@ pub(crate) fn merge_item(previous: &mut AgentTimelineItem, incoming: AgentTimeli
         previous.text = incoming.text;
     }
     previous.item_type = incoming.item_type;
+    if incoming.call_id.is_some() {
+        previous.call_id = incoming.call_id;
+    }
     if incoming.role.is_some() {
         previous.role = incoming.role;
     }
@@ -371,6 +374,7 @@ pub(crate) fn user_item(
         None => (text, None),
     };
     AgentTimelineItem {
+        call_id: None,
         label: None,
         persisted: None,
         live: None,
@@ -430,6 +434,7 @@ pub(crate) fn reply_items(reply: &AssistantMessage) -> Vec<AgentTimelineItem> {
 
 fn thinking_item(timestamp: Timestamp, text: String, merge: &str) -> AgentTimelineItem {
     AgentTimelineItem {
+        call_id: None,
         label: Some(label("thinking")),
         persisted: None,
         live: None,
@@ -450,6 +455,7 @@ fn thinking_item(timestamp: Timestamp, text: String, merge: &str) -> AgentTimeli
 
 fn text_item(timestamp: Timestamp, text: String, merge: &str) -> AgentTimelineItem {
     AgentTimelineItem {
+        call_id: None,
         label: None,
         persisted: None,
         live: None,
@@ -479,6 +485,7 @@ fn tool_call_item(reply_timestamp: Timestamp, call: &ToolCall, status: &str) -> 
         truncated: None,
         revision: 0,
         id: tool_row_id(reply_timestamp, &call.id),
+        call_id: Some(call.id.clone()),
         item_type: "tool".to_string(),
         role: Some("assistant".to_string()),
         title: Some(
@@ -502,6 +509,7 @@ pub(crate) fn tool_result_item(
     timestamp: Timestamp,
 ) -> AgentTimelineItem {
     AgentTimelineItem {
+        call_id: None,
         label: None,
         persisted: None,
         live: None,
@@ -532,6 +540,7 @@ fn reply_error_item(reply: &AssistantMessage) -> AgentTimelineItem {
         .unwrap_or_else(|| "The model's reply failed".to_string());
     let (title, text, kind) = error_row_copy(&message);
     AgentTimelineItem {
+        call_id: None,
         label: Some(error_label(kind, &message)),
         persisted: None,
         live: None,
@@ -598,6 +607,7 @@ pub(crate) fn notice_item(
     timestamp: Timestamp,
 ) -> AgentTimelineItem {
     AgentTimelineItem {
+        call_id: None,
         label: None,
         persisted: None,
         live: None,
@@ -621,6 +631,7 @@ pub(crate) fn error_item(message: String) -> AgentTimelineItem {
     let now = pi_ai::now_ms();
     let (title, text, kind) = error_row_copy(&message);
     AgentTimelineItem {
+        call_id: None,
         label: Some(error_label(kind, &message)),
         persisted: None,
         live: None,
@@ -729,6 +740,7 @@ impl LiveTimeline {
                     truncated: None,
                     revision: 0,
                     id: id.clone(),
+                    call_id: Some(tool_call_id.clone()),
                     item_type: "tool".to_string(),
                     role: Some("assistant".to_string()),
                     title: Some(
@@ -821,6 +833,7 @@ impl LiveTimeline {
                     truncated: None,
                     revision: 0,
                     id: row,
+                    call_id: Some(id.clone()),
                     item_type: "tool".to_string(),
                     role: Some("assistant".to_string()),
                     title: Some(format_tool_title(name)),

@@ -5850,6 +5850,7 @@ impl ChatScreen {
         cx: &mut Context<Self>,
     ) {
         let item = AgentTimelineItem {
+            call_id: None,
             label: None,
             persisted: None,
             live: None,
@@ -6051,39 +6052,14 @@ impl ChatScreen {
     /// Capture the call and what the encoded answer means to the host before
     /// sending. Neither is committed until `Ok(true)` comes back.
     fn permission_answer_intent(&self, answer: &str) -> Option<(String, bool)> {
-        let question = self.current_question()?;
-        let entry = question
-            .questions
-            .iter()
-            .find(|entry| entry.permission.is_some())?;
         let call = self
             .waiting_step()
             .and_then(|step| self.timeline.get(step))?
             .id
             .clone();
-        // Derive this from what crosses the host boundary, not from which
-        // option index was picked: a typed "Allow once" also allows.
-        let values = serde_json::from_str::<serde_json::Value>(answer)
-            .ok()
-            .and_then(|value| {
-                value
-                    .get("answers")?
-                    .get(&entry.id)?
-                    .get("answers")?
-                    .as_array()
-                    .map(|values| {
-                        values
-                            .iter()
-                            .filter_map(serde_json::Value::as_str)
-                            .map(str::to_owned)
-                            .collect::<Vec<_>>()
-                    })
-            })
-            .unwrap_or_else(|| vec![answer.trim().to_owned()]);
-        Some((
-            call,
-            values.first().map(String::as_str) == Some("Allow once"),
-        ))
+        // Read the answer as the host's gate reads it, not from which option
+        // index was picked: a typed "Allow once" also allows.
+        Some((call, maple_agent::agent::permission_answer_allows(answer)))
     }
 
     /// Complete one answer's RPC. Keep a rejected or failed submission
@@ -6518,6 +6494,7 @@ impl ChatScreen {
                     live: incoming_live,
                     truncated: incoming_truncated,
                     revision: incoming_revision,
+                    call_id: incoming_call_id,
                     created_ms: incoming_created,
                     item_type: incoming_type,
                     role: incoming_role,
@@ -6541,6 +6518,7 @@ impl ChatScreen {
                 }
                 existing.persisted = incoming_persisted.or_else(|| existing.persisted.take());
                 existing.live = incoming_live.or_else(|| existing.live.take());
+                existing.call_id = incoming_call_id.or_else(|| existing.call_id.take());
                 existing.truncated = incoming_truncated;
                 // The virtualized list caches item heights; tell it this
                 // one changed. A remeasure keeps the previous height as a

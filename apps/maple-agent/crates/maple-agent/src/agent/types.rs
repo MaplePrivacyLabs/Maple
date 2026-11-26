@@ -403,6 +403,11 @@ pub struct AgentPermissionPrompt {
     pub tool: String,
     /// The command, path or arguments, as much as the card shows.
     pub action: String,
+    /// The model's id for the call, which its transcript row carries as
+    /// `AgentTimelineItem::call_id`. A host from before this field sends
+    /// none, and the request then marks no row.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub call_id: Option<String>,
 }
 
 /// Why a tool call needs the user. The interface words it in its language.
@@ -1073,6 +1078,11 @@ pub struct AgentTimelineItem {
     #[serde(default)]
     pub revision: u64,
     pub id: String,
+    /// For a tool row: the model's id for the call it shows, which a
+    /// permission request about the call names. Rows stored before this
+    /// field have none.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub call_id: Option<String>,
     pub item_type: String,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub role: Option<String>,

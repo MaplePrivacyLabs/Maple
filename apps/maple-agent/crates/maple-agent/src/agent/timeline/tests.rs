@@ -178,6 +178,11 @@ async fn live_rows_are_the_rows_a_reload_shows() {
         tool.output.as_ref().unwrap()["text"],
         "contents of src/main.rs"
     );
+    // The row keeps the model's id for the call through its result, live
+    // and stored, so a permission request about the call can name it.
+    let call = tool.call_id.as_deref().expect("a tool row names its call");
+    assert!(tool.id.ends_with(call), "{} for {call}", tool.id);
+    assert_eq!(live[3].call_id, tool.call_id);
     assert_eq!(stored[4].text.as_deref(), Some("It prints hello."));
 }
 

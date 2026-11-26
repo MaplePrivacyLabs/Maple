@@ -72,6 +72,10 @@ Allow once runs that one call. Deny, or a note typed instead, goes back to the
 model as a blocked call, with the note. Maple keeps no list of approved calls,
 so an identical call is judged again.
 
+A request names its call by the model's id for it, which the call's transcript
+row also carries, so the transcript marks the step that waits and keeps the
+answer on that step. A request from a host without the id marks no step.
+
 External agents are outside this: Codex and Claude Code keep their own sandbox
 and approval systems. Starting one is an ordinary tool call and is judged like
 any other. See [external agents](external-agents.md).

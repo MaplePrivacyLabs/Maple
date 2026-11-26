@@ -449,6 +449,7 @@ mod tests {
 
     fn item() -> AgentTimelineItem {
         AgentTimelineItem {
+            call_id: None,
             label: None,
             persisted: None,
             live: None,

@@ -223,6 +223,37 @@ fn only_the_allow_label_allows() {
     // Words near the label do not count, in either kind of answer.
     assert!(read_answer("allow").is_err());
     assert!(read_answer("Allow once, but not really").is_err());
+    // Interfaces read an answer as the gate does.
+    for answer in [
+        card(json!(["Allow once"])),
+        card(json!(["Allow once", "Additional note: go on"])),
+        "Allow once".to_string(),
+        card(json!(["Deny"])),
+        card(json!(["run the tests first"])),
+        "allow".to_string(),
+        String::new(),
+    ] {
+        assert_eq!(
+            permission_answer_allows(&answer),
+            read_answer(&answer).is_ok(),
+            "{answer}"
+        );
+    }
+}
+
+/// A prompt from a host before call ids decodes with none, and a prompt
+/// without one leaves the field out for an interface that does not know it.
+#[test]
+fn a_prompt_without_a_call_id_reads_and_writes_as_before() {
+    let earlier = json!({"reason": "sendsOut", "tool": "bash", "action": "git push"});
+    let prompt: AgentPermissionPrompt = serde_json::from_value(earlier.clone()).unwrap();
+    assert_eq!(prompt.call_id, None);
+    assert_eq!(serde_json::to_value(&prompt).unwrap(), earlier);
+    let named = AgentPermissionPrompt {
+        call_id: Some("call".into()),
+        ..prompt
+    };
+    assert_eq!(serde_json::to_value(&named).unwrap()["callId"], "call");
 }
 
 #[test]
@@ -390,6 +421,8 @@ async fn the_user_decides_what_the_classifier_does_not_clear() {
         assert_eq!(prompt.reason, AgentPermissionReason::RewritesHistory);
         assert_eq!(prompt.action, "git push -f");
         assert_eq!(prompt.tool, "bash");
+        // The interface marks the call by this id, which its row carries.
+        assert_eq!(prompt.call_id.as_deref(), Some("call"));
     }
 
     let (denying, _, _) = gate(AUTO, hazard(), CARD_DENY);

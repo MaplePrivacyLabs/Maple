@@ -2291,6 +2291,7 @@ fn activity_row_item(
         _ => "completed",
     };
     AgentTimelineItem {
+        call_id: None,
         label: None,
         persisted: None,
         live: None,
