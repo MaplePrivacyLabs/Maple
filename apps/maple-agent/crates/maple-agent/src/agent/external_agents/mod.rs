@@ -542,7 +542,7 @@ impl ExternalAgentRegistry {
     }
 
     fn require_provider(provider: &str) -> Result<&'static CatalogEntry, String> {
-        catalog::entry(provider).ok_or_else(|| {
+        catalog::entry(provider.trim()).ok_or_else(|| {
             format!(
                 "Unknown agent provider '{}'. Call {LIST_AGENT_PROVIDERS_TOOL} to see what is installed.",
                 provider.trim()
@@ -1216,6 +1216,7 @@ impl ExternalAgent {
             call.login_path.as_deref(),
             &self.session_id,
         )?;
+        self.entry.apply_environment(&mut command);
         if call.cancel_token.is_cancelled() {
             return Err("Agent run was cancelled before command launch".to_string());
         }
@@ -2060,9 +2061,6 @@ fn agent_command(
         command.env("PATH", path);
     }
     command.env("AGENT_SESSION_ID", session_id);
-    for name in catalog::STRIPPED_ENVIRONMENT {
-        command.env_remove(name);
-    }
     command
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())

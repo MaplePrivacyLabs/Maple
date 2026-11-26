@@ -40,7 +40,7 @@ pub(in crate::agent) async fn detect(
     let Some(executable) = find_executable(&entry.executable, search_path) else {
         return CliDetection::default();
     };
-    let version = match probe_version(&executable, search_path).await {
+    let version = match probe_version(entry, &executable, search_path).await {
         Ok(version) => version,
         Err(error) => {
             return CliDetection {
@@ -56,7 +56,7 @@ pub(in crate::agent) async fn detect(
         .and_then(|minimum| version_problem(&entry.name, &version, minimum));
     let signed_in = match entry.sign_in_probe {
         SignInProbe::CodexAuthFile => Some(codex_auth_file_exists()),
-        SignInProbe::ClaudeAuthStatus => probe_claude_auth(&executable, search_path).await,
+        SignInProbe::ClaudeAuthStatus => probe_claude_auth(entry, &executable, search_path).await,
     };
     CliDetection {
         executable: Some(executable),
@@ -151,9 +151,19 @@ pub(super) fn executable_candidates(name: &str) -> Vec<String> {
 }
 
 /// `executable --version`, trimmed.
-async fn probe_version(executable: &Path, search_path: Option<&str>) -> Result<String, String> {
-    let (status, output) =
-        probe(executable, &["--version"], search_path, MAX_VERSION_BYTES).await?;
+async fn probe_version(
+    entry: &CatalogEntry,
+    executable: &Path,
+    search_path: Option<&str>,
+) -> Result<String, String> {
+    let (status, output) = probe(
+        entry,
+        executable,
+        &["--version"],
+        search_path,
+        MAX_VERSION_BYTES,
+    )
+    .await?;
     if !status.success() {
         return Err(format!("it exited with {status}"));
     }
@@ -168,13 +178,18 @@ async fn probe_version(executable: &Path, search_path: Option<&str>) -> Result<S
 /// `claude auth status --json`: signed in when it says so and exits 0, not
 /// signed in when it says so and exits 1, unknown otherwise. Only the
 /// boolean is read; account details are never kept or logged.
-async fn probe_claude_auth(executable: &Path, search_path: Option<&str>) -> Option<bool> {
+async fn probe_claude_auth(
+    entry: &CatalogEntry,
+    executable: &Path,
+    search_path: Option<&str>,
+) -> Option<bool> {
     #[derive(Deserialize)]
     struct AuthStatus {
         #[serde(rename = "loggedIn")]
         logged_in: bool,
     }
     let (status, output) = probe(
+        entry,
         executable,
         &["auth", "status", "--json"],
         search_path,
@@ -191,10 +206,11 @@ async fn probe_claude_auth(executable: &Path, search_path: Option<&str>) -> Opti
 }
 
 /// Run `executable` with `args` and no input, reading at most `max_bytes`
-/// of its output, for up to [`PROBE_TIMEOUT`]. A command found on
-/// `search_path` runs with it as its PATH, so a script finds its
-/// interpreter there too.
+/// of its output, for up to [`PROBE_TIMEOUT`], in the agent's environment as
+/// it runs to work. A command found on `search_path` runs with it as its
+/// PATH, so a script finds its interpreter there too.
 async fn probe(
+    entry: &CatalogEntry,
     executable: &Path,
     args: &[&str],
     search_path: Option<&str>,
@@ -210,6 +226,7 @@ async fn probe(
     if let Some(path) = search_path {
         command.env("PATH", path);
     }
+    entry.apply_environment(&mut command);
     run_contained(command, max_bytes).await
 }
 

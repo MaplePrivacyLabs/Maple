@@ -22,7 +22,7 @@ static ENTRIES: LazyLock<Vec<CatalogEntry>> = LazyLock::new(|| {
 /// Environment variables no agent inherits: they would tell an agent that
 /// it runs inside another agent's session when Maple itself was started
 /// from one.
-pub(super) const STRIPPED_ENVIRONMENT: [&str; 4] = [
+const STRIPPED_ENVIRONMENT: [&str; 4] = [
     "CLAUDECODE",
     "CLAUDE_CODE_ENTRYPOINT",
     "CLAUDE_CODE_SSE_PORT",
@@ -161,8 +161,20 @@ pub(crate) fn entries() -> &'static [CatalogEntry] {
 }
 
 /// The agent with this id.
+impl CatalogEntry {
+    /// Give a command that runs this agent, to work or only to answer a
+    /// probe, the agent's environment: without the variables of another
+    /// agent's session Maple may itself run inside.
+    pub(in crate::agent) fn apply_environment(&self, command: &mut tokio::process::Command) {
+        for name in STRIPPED_ENVIRONMENT {
+            command.env_remove(name);
+        }
+    }
+}
+
+/// The entry with exactly this id. Entry points that take an id from a
+/// person or a model trim it first; stored ids are compared as they are.
 pub(crate) fn entry(id: &str) -> Option<&'static CatalogEntry> {
-    let id = id.trim();
     entries().iter().find(|entry| entry.id == id)
 }
 
@@ -203,12 +215,35 @@ mod tests {
             }
         }
         assert_eq!(
-            entry(" claude ").map(|entry| entry.name.as_str()),
+            entry("claude").map(|entry| entry.name.as_str()),
             Some("Claude Code")
         );
+        // Ids match exactly: a padded stored id is not an agent.
+        assert!(entry(" claude ").is_none());
         assert!(entry("cua-driver").is_none());
         assert_eq!(example_names(), "Codex or Claude Code");
         assert_eq!(example_ids(), "\"codex\" or \"claude\"");
+    }
+
+    #[test]
+    fn an_agents_command_drops_another_agents_session_variables() {
+        let mut command = tokio::process::Command::new("agent");
+        command.env("CLAUDECODE", "1").env("KEEP", "1");
+        entry("codex").unwrap().apply_environment(&mut command);
+        let envs: Vec<(String, Option<String>)> = command
+            .as_std()
+            .get_envs()
+            .map(|(name, value)| {
+                (
+                    name.to_string_lossy().into_owned(),
+                    value.map(|value| value.to_string_lossy().into_owned()),
+                )
+            })
+            .collect();
+        for name in STRIPPED_ENVIRONMENT {
+            assert!(envs.contains(&(name.to_string(), None)), "{envs:?}");
+        }
+        assert!(envs.contains(&("KEEP".to_string(), Some("1".to_string()))));
     }
 
     #[test]
