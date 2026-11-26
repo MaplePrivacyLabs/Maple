@@ -114,6 +114,8 @@ const INTERRUPT_SETTLE_TIMEOUT: Duration = Duration::from_secs(5);
 const INTERRUPT_REQUEST_TIMEOUT: Duration = Duration::from_secs(2);
 /// How long an agent process has to start and answer its handshake.
 const LAUNCH_TIMEOUT: Duration = Duration::from_secs(30);
+/// How long a forced kill waits for an agent's state.
+const KILL_LOCK_TIMEOUT: Duration = Duration::from_millis(500);
 
 /// What one external agent has done, bounded so it fits a transcript row
 /// and a persisted notice.
@@ -789,13 +791,14 @@ impl ExternalAgentRegistry {
                 },
             )
             .await;
-        // An agent that never got to work, as when its command is missing,
-        // does not keep one of the task's places.
-        if result.is_err()
-            && agent.never_ran().await
-            && let Some(session) = self.sessions.lock().await.get_mut(&call.session_id)
-        {
-            session.agents.remove(&agent.agent_id);
+        // An agent that never got to work, as when its command is missing or
+        // it refused the model asked for, does not keep one of the task's
+        // places, nor a process nobody can reach.
+        if result.is_err() && agent.never_ran().await {
+            if let Some(session) = self.sessions.lock().await.get_mut(&call.session_id) {
+                session.agents.remove(&agent.agent_id);
+            }
+            agent.shutdown().await;
         }
         result
     }
@@ -947,6 +950,9 @@ impl ExternalAgentRegistry {
             .await
             .is_err()
         {
+            // The agents' own tasks hold them, so nothing is dropped by
+            // giving up on the shutdown: kill what is left here.
+            futures_util::future::join_all(agents.iter().map(|agent| agent.kill_now())).await;
             log::warn!(
                 "External agents did not shut down in time; their process groups were killed"
             );
@@ -1197,16 +1203,32 @@ impl ExternalAgent {
             result = tokio::time::timeout(self.entry.startup_timeout().unwrap_or(LAUNCH_TIMEOUT), self.ensure_process(call, input.model.as_deref(), input.effort.as_deref())) =>
                 result.unwrap_or_else(|_| Err("The external agent did not initialize in time.".to_string())),
         }?;
-        let (client, thread_id, number, end_rx) = {
-            let mut state = self.state.lock().await;
+        let (client, thread_id) = {
+            let state = self.state.lock().await;
             if state.turn.is_some() {
                 return Err(self.busy());
             }
             let Some(process) = state.process.as_ref() else {
                 return Err("The agent process is not running.".to_string());
             };
-            let client = Arc::clone(&process.client);
-            let thread_id = process.thread_id.clone();
+            (Arc::clone(&process.client), process.thread_id.clone())
+        };
+        let request = TurnRequest {
+            thread_id: &thread_id,
+            prompt: &input.prompt,
+            cwd: &self.cwd,
+            model: input.model.as_deref(),
+            effort: input.effort.as_deref(),
+            mode: call.permissions.mode.get(),
+        };
+        // A model or effort the agent refuses starts no turn: the agent's
+        // last turn stands as it was.
+        client.configure_turn(&request).await?;
+        let (number, end_rx) = {
+            let mut state = self.state.lock().await;
+            if state.turn.is_some() {
+                return Err(self.busy());
+            }
             let (end_tx, end_rx) = oneshot::channel();
             state.messages.clear();
             state.activity.begin_turn();
@@ -1227,20 +1249,12 @@ impl ExternalAgent {
                 ended: CancellationToken::new(),
             });
             state.last_row_revision = super::runs::next_timeline_revision();
-            (client, thread_id, number, end_rx)
+            (number, end_rx)
         };
         log::info!("External agent {} turn starts", self.agent_id);
         self.emit_subagent_started(input.background);
         self.emit_row(true).await;
 
-        let request = TurnRequest {
-            thread_id: &thread_id,
-            prompt: &input.prompt,
-            cwd: &self.cwd,
-            model: input.model.as_deref(),
-            effort: input.effort.as_deref(),
-            mode: call.permissions.mode.get(),
-        };
         if let Err(error) = client.start_turn(&request).await {
             self.finish_turn(TurnOutcome::Failed, Some(error.clone()))
                 .await;
@@ -1904,6 +1918,26 @@ impl ExternalAgent {
         }
         if !settled {
             self.finish_turn(TurnOutcome::Cancelled, None).await;
+        }
+    }
+
+    /// Kill the agent's process group now, when its shutdown ran out of time.
+    async fn kill_now(&self) {
+        self.cancel.cancel();
+        let Ok(mut state) = tokio::time::timeout(KILL_LOCK_TIMEOUT, self.state.lock()).await else {
+            log::warn!(
+                "External agent {} could not be reached to kill it",
+                self.agent_id
+            );
+            return;
+        };
+        if let Some(mut process) = state.process.take() {
+            process.reader.abort();
+            process.events.abort();
+            if let Some(pid) = process.child.child.id() {
+                pi_coding_agent::tools::kill_process_tree(pid);
+            }
+            let _ = process.child.child.start_kill();
         }
     }
 

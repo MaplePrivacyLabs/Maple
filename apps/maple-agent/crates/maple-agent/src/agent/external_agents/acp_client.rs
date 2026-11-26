@@ -242,12 +242,10 @@ impl Client {
         })
     }
 
-    /// Apply the turn's model and effort, then send its prompt. The prompt's
-    /// reply ends the turn: the reader reports it to the host in the order
-    /// the agent sent it, after the turn's last update and before anything
-    /// the agent sends later. The prompt is written before this returns, so a
-    /// cancel cannot reach the agent ahead of it.
-    pub(super) async fn prompt(&self, request: &TurnRequest<'_>) -> Result<(), String> {
+    /// Apply the task's mode and the turn's model and effort, refusing a value
+    /// the agent does not offer. Runs before the turn starts, so a refused
+    /// value starts no turn.
+    pub(super) async fn configure(&self, request: &TurnRequest<'_>) -> Result<(), String> {
         let mode = self
             .entry
             .mode(request.mode)
@@ -255,7 +253,15 @@ impl Client {
         self.choose("mode", "permission mode", mode).await?;
         self.choose("model", "model", request.model).await?;
         self.choose("thought_level", "effort level", request.effort)
-            .await?;
+            .await
+    }
+
+    /// Send the turn's prompt, once [`Self::configure`] has applied its
+    /// options. The prompt's reply ends the turn: the reader reports it to the host in the order
+    /// the agent sent it, after the turn's last update and before anything
+    /// the agent sends later. The prompt is written before this returns, so a
+    /// cancel cannot reach the agent ahead of it.
+    pub(super) async fn prompt(&self, request: &TurnRequest<'_>) -> Result<(), String> {
         let (session, prompt) = {
             let mut state = lock(&self.state);
             state.prompt += 1;

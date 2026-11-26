@@ -141,6 +141,26 @@ async fn an_acp_agent_works_a_turn_with_the_chosen_model_and_effort() {
         "Grok Build has no model 'fixture-huge'. It offers: fixture-default, fixture-fast."
     );
     assert_eq!(sent(&harness.log(), "session/prompt").len(), 1);
+    // No turn started: the agent's last turn stands as it was.
+    let status = harness
+        .registry
+        .status(
+            &harness.call("acp-1", "status"),
+            AgentRefParams {
+                provider: "grok".into(),
+                agent_id: "grok-1".into(),
+            },
+        )
+        .await;
+    let activity = activity_of(&status);
+    assert_eq!(activity["turns"], 1);
+    assert!(
+        activity["text"]
+            .as_str()
+            .unwrap()
+            .contains("Done: Fix the parser"),
+        "{activity}"
+    );
     harness.registry.shutdown_all(Duration::from_secs(5)).await;
 }
 
@@ -292,6 +312,70 @@ async fn a_prompt_reaches_the_agent_before_a_stop_that_follows_it() {
     let cancel = position("session/cancel").expect("no cancel");
     assert!(prompt < cancel, "{log}");
     harness.registry.shutdown_all(Duration::from_secs(5)).await;
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_refused_model_starts_no_turn_and_leaves_nothing_behind() {
+    let harness = Harness::new("acp-refused-model");
+    harness.install_fixture("grok", "acp");
+    let refused = harness
+        .registry
+        .start(
+            harness.call("acp-15", "row-1"),
+            AgentStartParams {
+                model: Some("fixture-huge".into()),
+                ..acp_start("grok", "Fix it")
+            },
+        )
+        .await;
+    assert_eq!(
+        result_text(&refused),
+        "Grok Build has no model 'fixture-huge'. It offers: fixture-default, fixture-fast."
+    );
+    // The agent keeps no place in the task, and its process is gone.
+    let pid = harness.fixture_pid().await;
+    wait_for(|| (!process_alive(pid)).then_some(())).await;
+    let status = harness
+        .registry
+        .status(
+            &harness.call("acp-15", "status"),
+            AgentRefParams {
+                provider: "grok".into(),
+                agent_id: "grok-1".into(),
+            },
+        )
+        .await;
+    assert!(
+        result_text(&status).starts_with("No external agent"),
+        "{}",
+        result_text(&status)
+    );
+    assert!(sent(&harness.log(), "session/prompt").is_empty());
+    harness.registry.shutdown_all(Duration::from_secs(5)).await;
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_shutdown_that_runs_out_of_time_still_kills_the_agent() {
+    let harness = Harness::new("acp-shutdown-timeout");
+    harness.install_fixture("grok", "acp-slow");
+    harness
+        .registry
+        .start(
+            harness.call("acp-16", "row-1"),
+            AgentStartParams {
+                background: true,
+                ..acp_start("grok", "Long job")
+            },
+        )
+        .await
+        .unwrap();
+    let pid = harness.fixture_pid().await;
+    // Too little time for the agent to end its turn on its own.
+    harness
+        .registry
+        .shutdown_all(Duration::from_millis(1))
+        .await;
+    wait_for(|| (!process_alive(pid)).then_some(())).await;
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]

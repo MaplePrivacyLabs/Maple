@@ -166,6 +166,15 @@ impl AgentClient {
         }
     }
 
+    /// Apply what the turn asks for that the agent can refuse, before the
+    /// turn starts. Codex and Claude Code take their options with the turn.
+    pub(super) async fn configure_turn(&self, request: &TurnRequest<'_>) -> Result<(), String> {
+        match self {
+            Self::Acp(client) => client.configure(request).await,
+            Self::Codex(_) | Self::Claude(_) => Ok(()),
+        }
+    }
+
     pub(super) async fn start_turn(&self, request: &TurnRequest<'_>) -> Result<(), String> {
         match self {
             Self::Codex(client) => client
