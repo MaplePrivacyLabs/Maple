@@ -285,8 +285,8 @@ settings-advanced-remove-password = Remove password…
 settings-advanced-erase-local-data = Erase local data…
 settings-advanced-erase-dialog-title = Erase local data?
 settings-advanced-while-maple-is-locked-your-other-computers-can-t-reach-this-one-a = While Maple is locked, your other computers can't reach this one. After a restart, open Maple and unlock it to turn remote access back on.
-settings-advanced-claude-code-keeps-its-own-copy-of-the-work-maple-hands-it-in-its = Claude Code keeps its own copy of the work Maple hands it, in its own folder, and Maple's password doesn't encrypt it.
-settings-advanced-codex-keeps-its-own-copy-of-the-work-maple-hands-it-in-its-own-fo = Codex keeps its own copy of the work Maple hands it, in its own folder, and Maple's password doesn't encrypt it.
+# $agent is an external coding agent's name, such as Codex or Grok Build, not translated.
+settings-advanced-agent-keeps-its-own-copy-of-the-work-maple-hands-it = { $agent } keeps its own copy of the work Maple hands it, in its own folder, and Maple's password doesn't encrypt it.
 settings-advanced-encryption-enabled-on-this-computer = Encryption enabled on this computer.
 settings-advanced-your-unlock-password-was-changed = Your unlock password was changed.
 settings-advanced-your-unlock-password-was-removed = Your unlock password was removed.

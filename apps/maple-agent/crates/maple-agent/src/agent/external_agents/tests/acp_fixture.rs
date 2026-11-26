@@ -183,10 +183,16 @@ fn run() {
                     .unwrap_or_default()
                     .to_string();
                 let stop = match mode.as_str() {
-                    "acp-approve" | "acp-approve-repeated" | "acp-switch-mode" => {
+                    "acp-approve"
+                    | "acp-approve-repeated"
+                    | "acp-switch-mode"
+                    | "acp-approve-command" => {
                         let request = json!("permission-1");
                         let tool = if mode == "acp-switch-mode" {
                             json!({ "toolCallId": "m1", "kind": "switch_mode", "title": "Switch to auto" })
+                        } else if mode == "acp-approve-command" {
+                            json!({ "toolCallId": "c9", "kind": "execute", "title": "Run `rm -rf build`",
+                                "rawInput": { "command": "rm -rf build" } })
                         } else {
                             json!({ "toolCallId": "e1", "kind": "edit", "title": "Edit `src/lib.rs`",
                                 "rawInput": { "file_path": "src/lib.rs" } })

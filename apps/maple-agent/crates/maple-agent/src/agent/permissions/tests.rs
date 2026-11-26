@@ -630,4 +630,11 @@ async fn in_auto_what_the_agents_own_review_asks_about_goes_to_the_user() {
     );
     assert_eq!(agent_request(&hazard).await, Err(Refusal::Declined(None)));
     assert_eq!(shown_reason(&sink), AgentPermissionReason::SendsOut);
+
+    // The card shows either way, so it waits on one short try for its reason,
+    // with no fallback model; without one it says Maple is not sure.
+    let (failing, classifier, sink) = gate(AUTO, vec![Reply::Fails], CARD_ALLOW);
+    assert_eq!(agent_request(&failing).await, Ok(()));
+    assert_eq!(classifier.asked.lock().unwrap().len(), 1);
+    assert_eq!(shown_reason(&sink), AgentPermissionReason::Uncertain);
 }

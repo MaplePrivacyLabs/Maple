@@ -232,7 +232,7 @@ fn declarations() -> [(Action, Tool, String); 5] {
                 format!(
                     "Hand a self-contained piece of work to an external coding agent (an installed harness such as {names}) that runs in the project with its own context and its own account. \
 The new agent knows nothing about this conversation: write a complete briefing with the task, relevant files, current state, what was tried, decisions made, acceptance criteria, and constraints. \
-It runs under its own sandbox and approval settings, and Maple accepts its approval requests. \
+Some agents run under their own sandbox and approval settings, and Maple accepts their approval requests; others follow this task's permission mode, so the user or Maple may refuse what they ask, and the result lists what was not allowed. {LIST_AGENT_PROVIDERS_TOOL} says which. \
 Blocking by default: the call returns the agent's result. With background=true the call returns at once and Maple tells you when the agent finishes; do not poll. \
 When the agent asks a question, the call returns with status waiting and the question; answer it with {AGENT_SEND_TOOL}, deciding yourself when you can and asking the user only when the answer is theirs to give. \
 Call {LIST_AGENT_PROVIDERS_TOOL} first when unsure what is installed."

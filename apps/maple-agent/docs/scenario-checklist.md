@@ -7,7 +7,7 @@ result recorded in the table at the end.
 
 Setup: a signed-in account on a local or development stack, a project folder
 with a few files, the built-in computer-use backend set up (macOS, Linux or Windows),
-Codex and Claude Code installed and signed in on the machine, and one custom
+Codex, Claude Code, Grok Build and Antigravity installed and signed in on the machine, and one custom
 stdio MCP server configured in Settings > Integrations.
 
 ## Tasks

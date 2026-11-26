@@ -817,15 +817,12 @@ impl SettingsScreen {
                 .iter()
                 .filter(|integration| integration.enabled_for_new_tasks)
             {
-                let copy = match integration.id.as_str() {
-                    "claude" => Some(tr(
-                        "settings-advanced-claude-code-keeps-its-own-copy-of-the-work-maple-hands-it-in-its",
-                    )),
-                    "codex" => Some(tr(
-                        "settings-advanced-codex-keeps-its-own-copy-of-the-work-maple-hands-it-in-its-own-fo",
-                    )),
-                    _ => None,
-                };
+                let copy = integration.is_external_agent().then(|| {
+                    tr_args(
+                        "settings-advanced-agent-keeps-its-own-copy-of-the-work-maple-hands-it",
+                        [("agent", integration.name.clone().into())],
+                    )
+                });
                 if let Some(copy) = copy {
                     notes.push(div().text_sm().child(copy));
                 }

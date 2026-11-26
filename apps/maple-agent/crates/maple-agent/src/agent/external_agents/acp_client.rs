@@ -369,8 +369,8 @@ impl Client {
         Ok(())
     }
 
-    /// Stop the turn. Requests the agent left waiting are answered first,
-    /// as ACP asks of a client that cancels.
+    /// Stop the turn: send `session/cancel`, then answer whatever the agent
+    /// still waits on as cancelled, as ACP asks of a client that cancels.
     pub(super) async fn cancel(&self) -> Result<(), String> {
         let (session, waiting) = {
             let mut state = lock(&self.state);

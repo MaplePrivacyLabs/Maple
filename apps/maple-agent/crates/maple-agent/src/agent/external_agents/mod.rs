@@ -46,7 +46,7 @@ use std::time::{Duration, Instant};
 use pi_agent_core::AgentToolResult;
 use pi_coding_agent::Delivery;
 use pi_coding_agent::extensions::{CustomMessageDraft, ExtensionContext};
-use serde::{Deserialize, Serialize};
+use serde::Deserialize;
 use serde_json::{Value, json};
 use tokio::sync::{Mutex, Notify, mpsc, oneshot};
 use tokio_util::sync::CancellationToken;
@@ -57,6 +57,9 @@ use super::runtime::AgentRuntime;
 use super::timeline::{
     MAPLE_NOTICE_ENTRY, MAX_AGENT_SESSION_TITLE_CHARS, bounded_timeline_text, notice_item,
     stored_tool_row_id,
+};
+pub(crate) use super::types::{
+    ActivityCommand, ActivityFileChange, ActivityQuestion, ActivityTodo, ExternalAgentActivity,
 };
 use super::{
     AgentEventDispatcher, AgentPermissionDecision, AgentPermissionMode, AgentPermissionRequest,
@@ -85,7 +88,7 @@ pub(crate) const EXTERNAL_AGENT_TOOLS: [&str; 5] = [
 ];
 /// The key under which a tool result and a persisted notice carry the
 /// activity payload the transcript renders.
-pub const ACTIVITY_KEY: &str = "mapleExternalAgent";
+pub const ACTIVITY_KEY: &str = super::types::EXTERNAL_AGENT_ACTIVITY_KEY;
 /// The custom entry type of an agent turn's end, which puts its activity
 /// back onto the row of the tool call that started the turn.
 pub(crate) const TURN_END_ENTRY: &str = "maple.external-agent";
@@ -117,56 +120,6 @@ const LAUNCH_TIMEOUT: Duration = Duration::from_secs(30);
 /// How long a forced kill waits for an agent's state.
 const KILL_LOCK_TIMEOUT: Duration = Duration::from_millis(500);
 
-/// What one external agent has done, bounded so it fits a transcript row
-/// and a persisted notice.
-#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase")]
-pub struct ExternalAgentActivity {
-    pub provider: String,
-    pub agent_id: String,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub thread_id: Option<String>,
-    /// `running`, `waiting` (on the caller's answer), `completed`,
-    /// `failed`, `cancelled`, or `idle`.
-    pub status: String,
-    /// The agent's messages in the current turn, tail-kept.
-    pub text: String,
-    /// Questions the agent asked that wait for the caller's answer.
-    #[serde(default, skip_serializing_if = "Vec::is_empty")]
-    pub questions: Vec<ActivityQuestion>,
-    #[serde(default)]
-    pub commands: Vec<ActivityCommand>,
-    #[serde(default)]
-    pub file_changes: Vec<ActivityFileChange>,
-    #[serde(default)]
-    pub todos: Vec<ActivityTodo>,
-    #[serde(default)]
-    pub turns: u32,
-    #[serde(default)]
-    pub elapsed_ms: u64,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub error: Option<String>,
-    /// What the agent is waiting on the user for, while it waits.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub pending_permission: Option<String>,
-    /// What the agent asked to do this turn and was not allowed, and why.
-    #[serde(default, skip_serializing_if = "Vec::is_empty")]
-    pub declined: Vec<String>,
-}
-
-/// A question an agent asked, as its caller answers it.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase")]
-pub struct ActivityQuestion {
-    pub id: String,
-    pub question: String,
-    /// The labels of its options; any answer is taken when there are none.
-    #[serde(default, skip_serializing_if = "Vec::is_empty")]
-    pub options: Vec<String>,
-    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
-    pub multi_select: bool,
-}
-
 impl From<&AgentQuestion> for ActivityQuestion {
     fn from(question: &AgentQuestion) -> Self {
         Self {
@@ -180,31 +133,6 @@ impl From<&AgentQuestion> for ActivityQuestion {
             multi_select: question.multi_select,
         }
     }
-}
-
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase")]
-pub struct ActivityCommand {
-    pub id: String,
-    pub command: String,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub exit_code: Option<i64>,
-    /// `running`, `completed`, or `failed`.
-    pub status: String,
-}
-
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase")]
-pub struct ActivityFileChange {
-    pub path: String,
-    pub kind: String,
-}
-
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase")]
-pub struct ActivityTodo {
-    pub text: String,
-    pub completed: bool,
 }
 
 impl ExternalAgentActivity {
@@ -728,8 +656,13 @@ impl ExternalAgentRegistry {
                         Some(false) => entry.text.sign_in_hint.as_str(),
                         None => "Sign-in state unknown.",
                     };
+                    let approvals = if entry.mode(AgentPermissionMode::ReadOnly).is_some() {
+                        "What it asks to do follows this task's permission mode."
+                    } else {
+                        "It runs under its own approval settings, and Maple accepts its requests."
+                    };
                     format!(
-                        "{} {}. {sign_in} {}; optional `model` and `effort` arguments override its defaults.",
+                        "{} {}. {sign_in} {}; optional `model` and `effort` arguments override its defaults. {approvals}",
                         entry.name,
                         detection.version.as_deref().unwrap_or("unknown version"),
                         entry.summary,
@@ -1694,7 +1627,7 @@ impl ExternalAgent {
                     arguments,
                     prompt,
                 };
-                AgentReply::Decision(self.request_permission(request).await)
+                AgentReply::Decision(self.request_permission(&item_id, request).await)
             }
             AgentRequest::ModeChange { .. } => {
                 // Maple sets the agent's mode from the task's; the caller
@@ -1788,13 +1721,16 @@ impl ExternalAgent {
         }
     }
 
-    /// Answer one approval request from the agent. Maple accepts every
-    /// request at once, as its "Allow all" policy always did; a request that
-    /// arrives after the agent or its turn has ended is cancelled instead.
-    /// Answer what the agent asks to do. An agent Maple sets the mode of
-    /// has it judged by the task's permission gate, which may ask the user;
-    /// any other is accepted once, as it runs in its own approval mode.
-    async fn request_permission(&self, request: AgentPermissionRequest) -> AgentPermissionDecision {
+    /// Answer what the agent asks to do, its action `item_id`. An agent Maple
+    /// sets the mode of has it judged by the task's permission gate, which
+    /// may ask the user; any other is accepted once, as it runs in its own
+    /// approval mode. A request that arrives after the agent or its turn has
+    /// ended is cancelled.
+    async fn request_permission(
+        &self,
+        item_id: &str,
+        request: AgentPermissionRequest,
+    ) -> AgentPermissionDecision {
         let ended = self.turn_ended().await;
         if self.cancel.is_cancelled() || ended.is_cancelled() {
             return AgentPermissionDecision::Cancel;
@@ -1836,6 +1772,15 @@ impl ExternalAgent {
         {
             let mut state = self.state.lock().await;
             state.activity.declined.extend(declined);
+            // A command that was not allowed did not run, whether or not
+            // the agent says so.
+            if verdict.is_err() {
+                for command in &mut state.activity.commands {
+                    if command.id == item_id && command.status == "running" {
+                        command.status = "failed".to_string();
+                    }
+                }
+            }
         }
         self.set_pending_permission(None).await;
         log::info!(

@@ -44,6 +44,9 @@ pub(super) const CLASSIFIER_MODEL: &str = "decision-small";
 pub(super) const FALLBACK_CLASSIFIER_MODEL: &str = SYSTEM_ONE_MODEL_ID;
 const CLASSIFIER_TIMEOUT_MS: u64 = 4_000;
 const FALLBACK_CLASSIFIER_TIMEOUT_MS: u64 = 10_000;
+/// How long the classifier has to name the reason for a card Maple shows
+/// whatever it says, as for what an agent's own auto review passed on.
+const REASON_TIMEOUT_MS: u64 = 2_000;
 
 /// Auto runs what doesn't look dangerous: the no-hazard answer must reach
 /// this. The hazards count together, so a call split between two of them
@@ -422,12 +425,20 @@ pub(super) async fn classify(
     models: &ModelRegistry,
     mode: AgentPermissionMode,
     context: &ClassifierContext,
+    reason_only: bool,
     cancel: &CancellationToken,
 ) -> Option<Verdict> {
-    for (id, timeout_ms) in [
-        (CLASSIFIER_MODEL, CLASSIFIER_TIMEOUT_MS),
-        (FALLBACK_CLASSIFIER_MODEL, FALLBACK_CLASSIFIER_TIMEOUT_MS),
-    ] {
+    // A card Maple shows anyway only waits on the reason it names, so that
+    // gets one short try.
+    let attempts: &[(&str, u64)] = if reason_only {
+        &[(CLASSIFIER_MODEL, REASON_TIMEOUT_MS)]
+    } else {
+        &[
+            (CLASSIFIER_MODEL, CLASSIFIER_TIMEOUT_MS),
+            (FALLBACK_CLASSIFIER_MODEL, FALLBACK_CLASSIFIER_TIMEOUT_MS),
+        ]
+    };
+    for &(id, timeout_ms) in attempts {
         let Some(model) = models.find_classifier(MAPLE_PROVIDER, id) else {
             log::warn!("Permission classifier {id} is not registered");
             continue;
@@ -669,10 +680,13 @@ impl PermissionGate {
     ) -> Result<(), Refusal> {
         let reason = match classifier_context(tool, description, input, cwd) {
             None => AgentPermissionReason::TooLong,
-            Some(context) => match classify(&self.models, mode, &context, cancel).await {
+            Some(context) => match classify(&self.models, mode, &context, reviewed, cancel).await {
                 Some(Verdict::Allow) if !reviewed => return Ok(()),
                 Some(Verdict::Allow) => AgentPermissionReason::Uncertain,
                 Some(Verdict::Ask(reason)) => reason,
+                // Another review passed it on; Maple only could not say why
+                // it might not be safe.
+                None if reviewed => AgentPermissionReason::Uncertain,
                 None => AgentPermissionReason::Unavailable,
             },
         };

@@ -10,8 +10,11 @@ metadata:
 
 Maple can start an external coding agent ({agents}) inside this project.
 The agent runs with its own context and its own account. It does not see
-this conversation. It runs under its own sandbox and approval settings, and
-Maple accepts its approval requests. Its questions come to you: answer them
+this conversation. Some agents run under their own sandbox and approval
+settings, and Maple accepts their approval requests; others follow this
+task's permission mode, so the user or Maple may refuse what they ask, and
+the result lists what was not allowed. `list_agent_providers` says which.
+Its questions come to you: answer them
 with `agent_send`, and ask the user only when the answer is theirs to give.
 
 ## Steps

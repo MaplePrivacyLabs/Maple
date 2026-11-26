@@ -379,6 +379,30 @@ async fn a_shutdown_that_runs_out_of_time_still_kills_the_agent() {
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_command_that_was_not_allowed_does_not_stay_running() {
+    let harness = Harness::new("acp-approve-command");
+    harness.install_fixture("grok", "acp-approve-command");
+    harness.gate.mode.set(READ_ONLY);
+    answer_cards(
+        &harness,
+        r#"{"answers":{"permission":{"answers":["Deny"]}}}"#,
+    );
+    let result = harness
+        .registry
+        .start(
+            harness.call("acp-17", "row-1"),
+            acp_start("grok", "Clean up"),
+        )
+        .await;
+    // The agent ends its turn without saying the command failed.
+    assert!(result_text(&result).contains("Chose: reject-once"));
+    let activity = activity_of(&result);
+    assert_eq!(activity["commands"][0]["command"], "rm -rf build");
+    assert_eq!(activity["commands"][0]["status"], "failed");
+    harness.registry.shutdown_all(Duration::from_secs(5)).await;
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn a_signed_out_acp_agent_says_how_to_sign_in() {
     let harness = Harness::new("acp-signed-out");
     harness.install_fixture("agy", "acp-signed-out");

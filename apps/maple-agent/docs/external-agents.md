@@ -2,7 +2,8 @@
 
 A Maple task can hand work to an external coding agent that is installed on
 the same computer. Supported providers are Codex (`codex`), Claude Code
-(`claude`), Grok Build (`grok`) and Antigravity (`agy`). All use the same
+(`claude`), Grok Build (`grok`) and Antigravity (`antigravity`, its command
+is `agy`). All use the same
 delegation tools and task controls.
 
 ## What the task sees

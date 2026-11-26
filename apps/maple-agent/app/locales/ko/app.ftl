@@ -285,8 +285,8 @@ settings-advanced-remove-password = 비밀번호 제거…
 settings-advanced-erase-local-data = 로컬 데이터 지우기…
 settings-advanced-erase-dialog-title = 로컬 데이터를 지울까요?
 settings-advanced-while-maple-is-locked-your-other-computers-can-t-reach-this-one-a = Maple이 잠겨 있는 동안에는 다른 컴퓨터에서 이 컴퓨터에 접근할 수 없어요. 다시 시작한 후 Maple을 열고 잠금을 해제하면 원격 접근이 다시 켜져요.
-settings-advanced-claude-code-keeps-its-own-copy-of-the-work-maple-hands-it-in-its = Claude Code는 Maple이 넘겨준 작업의 사본을 자체 폴더에 따로 보관하며, Maple의 비밀번호로는 암호화되지 않아요.
-settings-advanced-codex-keeps-its-own-copy-of-the-work-maple-hands-it-in-its-own-fo = Codex는 Maple이 넘겨준 작업의 사본을 자체 폴더에 따로 보관하며, Maple의 비밀번호로는 암호화되지 않아요.
+# $agent is an external coding agent's name, such as Codex or Grok Build, not translated.
+settings-advanced-agent-keeps-its-own-copy-of-the-work-maple-hands-it = { $agent }은(는) Maple이 넘겨준 작업의 사본을 자체 폴더에 따로 보관하며, Maple의 비밀번호로는 암호화되지 않아요.
 settings-advanced-encryption-enabled-on-this-computer = 이 컴퓨터에서 암호화를 켰어요.
 settings-advanced-your-unlock-password-was-changed = 잠금 해제 비밀번호를 변경했어요.
 settings-advanced-your-unlock-password-was-removed = 잠금 해제 비밀번호를 제거했어요.
