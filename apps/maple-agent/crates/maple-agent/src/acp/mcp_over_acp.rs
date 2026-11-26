@@ -12,11 +12,7 @@ use super::transport::AcpOutboundTracker;
 use crate::agent::mcp::acp_channel::{self, AcpMcpChannel};
 use crate::agent::{AgentMcpServer, AgentMcpTransport};
 
-use agent_client_protocol::schema::v1::{
-    ConnectMcpRequest, ConnectMcpResponse, DisconnectMcpRequest, McpConnectionId,
-    MessageMcpNotification, MessageMcpRequest, MessageMcpResponse,
-};
-use agent_client_protocol::{Client, ConnectionTo, JsonRpcRequest};
+use agent_client_protocol::{Client, ConnectionTo, UntypedMessage};
 use serde_json::{Map, Value};
 use std::sync::Arc;
 use std::time::Duration;
@@ -26,6 +22,69 @@ use tokio_util::sync::CancellationToken;
 /// use the transport's own longer timeout; this bounds connect, the
 /// notifications, and a disconnect.
 const CHANNEL_OPERATION_TIMEOUT: Duration = Duration::from_secs(ACP_SESSION_MCP_TIMEOUT_SECONDS);
+
+/// The four messages of the connection-based MCP-over-ACP binding, as
+/// untyped JSON-RPC. T3 Code serves this binding and decodes nothing else, so
+/// these stay byte for byte what Maple has always sent: absent params are
+/// omitted and nothing carries `_meta`. `wire_tests` pins them.
+pub(super) mod wire {
+    use agent_client_protocol::schema::v1::{
+        ConnectMcpRequest, DisconnectMcpRequest, McpConnectionId, MessageMcpNotification,
+        MessageMcpRequest,
+    };
+    use agent_client_protocol::{JsonRpcMessage, UntypedMessage};
+    use serde_json::{Map, Value};
+
+    fn untyped<M: JsonRpcMessage + serde::Serialize>(
+        message: &M,
+    ) -> Result<UntypedMessage, String> {
+        UntypedMessage::new(message.method(), message)
+            .map_err(|error| format!("the MCP-over-ACP message could not be encoded: {error}"))
+    }
+
+    /// `mcp/connect`: open a connection to the client's server `server_id`.
+    pub(in crate::acp) fn connect(server_id: &str) -> Result<UntypedMessage, String> {
+        untyped(&ConnectMcpRequest::new(server_id.to_string()))
+    }
+
+    /// `mcp/message` as a request: one inner MCP request on a connection.
+    pub(in crate::acp) fn request(
+        connection: &str,
+        method: &str,
+        params: Option<Map<String, Value>>,
+    ) -> Result<UntypedMessage, String> {
+        untyped(
+            &MessageMcpRequest::new(McpConnectionId::new(connection), method.to_string())
+                .params(params),
+        )
+    }
+
+    /// `mcp/message` as a notification: one inner MCP notification.
+    pub(in crate::acp) fn notification(
+        connection: &str,
+        method: &str,
+        params: Option<Map<String, Value>>,
+    ) -> Result<UntypedMessage, String> {
+        untyped(
+            &MessageMcpNotification::new(McpConnectionId::new(connection), method.to_string())
+                .params(params),
+        )
+    }
+
+    /// `mcp/disconnect`: close a connection.
+    pub(in crate::acp) fn disconnect(connection: &str) -> Result<UntypedMessage, String> {
+        untyped(&DisconnectMcpRequest::new(McpConnectionId::new(connection)))
+    }
+
+    /// The connection id in `mcp/connect`'s answer.
+    pub(in crate::acp) fn connection_id(answer: &Value) -> Result<String, String> {
+        answer
+            .get("connectionId")
+            .and_then(Value::as_str)
+            .map(str::to_string)
+            .ok_or_else(|| "the ACP client's mcp/connect answer has no connectionId".to_string())
+    }
+}
 
 /// An `{"type":"acp"}` MCP server the ACP client declared for a session, as
 /// [`super::session::prepare_session_mcp`] read it.
@@ -110,12 +169,8 @@ struct SessionAcpMcpChannel {
 impl SessionAcpMcpChannel {
     /// Send one request and wait for its response, holding the connection's
     /// outbound reservation until it arrives.
-    async fn request<Req>(&self, request: Req, timeout: Duration) -> Result<Req::Response, String>
-    where
-        Req: JsonRpcRequest + serde::Serialize,
-        Req::Response: Send,
-    {
-        let encoded_bytes = serde_json::to_vec(&request)
+    async fn request(&self, request: UntypedMessage, timeout: Duration) -> Result<Value, String> {
+        let encoded_bytes = serde_json::to_vec(request.params())
             .map_err(|error| format!("the MCP-over-ACP request could not be encoded: {error}"))?
             .len();
         let reservation = self
@@ -144,11 +199,8 @@ impl SessionAcpMcpChannel {
     /// Send one notification. Its reservation is released once the line is
     /// queued: only session updates hold theirs until the caller's reader
     /// keeps up, and an MCP notification is small and bounded per message.
-    async fn send_notification_line(
-        &self,
-        notification: MessageMcpNotification,
-    ) -> Result<(), String> {
-        let encoded_bytes = serde_json::to_vec(&notification)
+    async fn send_notification_line(&self, notification: UntypedMessage) -> Result<(), String> {
+        let encoded_bytes = serde_json::to_vec(notification.params())
             .map_err(|error| {
                 format!("the MCP-over-ACP notification could not be encoded: {error}")
             })?
@@ -167,14 +219,11 @@ impl SessionAcpMcpChannel {
 #[async_trait::async_trait]
 impl AcpMcpChannel for SessionAcpMcpChannel {
     async fn connect(&self) -> Result<String, String> {
-        let response: ConnectMcpResponse = self
-            .request(
-                ConnectMcpRequest::new(self.server_id.clone()),
-                CHANNEL_OPERATION_TIMEOUT,
-            )
+        let answer = self
+            .request(wire::connect(&self.server_id)?, CHANNEL_OPERATION_TIMEOUT)
             .await
             .map_err(|error| format!("connecting over ACP failed: {error}"))?;
-        Ok(response.connection_id.0.to_string())
+        wire::connection_id(&answer)
     }
 
     async fn message(
@@ -183,13 +232,12 @@ impl AcpMcpChannel for SessionAcpMcpChannel {
         method: &str,
         params: Option<Map<String, Value>>,
     ) -> Result<Value, String> {
-        let request = MessageMcpRequest::new(McpConnectionId::new(connection), method.to_string())
-            .params(params);
-        let response: MessageMcpResponse = self
-            .request(request, acp_channel::CHANNEL_REQUEST_TIMEOUT)
-            .await?;
-        serde_json::from_str(response.0.get())
-            .map_err(|error| format!("the MCP server's answer could not be read: {error}"))
+        // The answer is the inner MCP result as the client's server gave it.
+        self.request(
+            wire::request(connection, method, params)?,
+            acp_channel::CHANNEL_REQUEST_TIMEOUT,
+        )
+        .await
     }
 
     async fn notify(
@@ -198,20 +246,19 @@ impl AcpMcpChannel for SessionAcpMcpChannel {
         method: &str,
         params: Option<Map<String, Value>>,
     ) -> Result<(), String> {
-        let notification =
-            MessageMcpNotification::new(McpConnectionId::new(connection), method.to_string())
-                .params(params);
-        self.send_notification_line(notification).await
+        self.send_notification_line(wire::notification(connection, method, params)?)
+            .await
     }
 
     async fn disconnect(&self, connection: &str) {
-        if let Err(error) = self
-            .request(
-                DisconnectMcpRequest::new(McpConnectionId::new(connection)),
-                CHANNEL_OPERATION_TIMEOUT,
-            )
-            .await
-        {
+        let request = match wire::disconnect(connection) {
+            Ok(request) => request,
+            Err(error) => {
+                log::debug!("MCP-over-ACP disconnect failed: {error}");
+                return;
+            }
+        };
+        if let Err(error) = self.request(request, CHANNEL_OPERATION_TIMEOUT).await {
             log::debug!("MCP-over-ACP disconnect failed: {error}");
         }
     }

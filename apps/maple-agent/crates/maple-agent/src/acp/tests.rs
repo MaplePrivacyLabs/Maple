@@ -33,6 +33,8 @@ struct StdioAcpClient {
     updates: Vec<Value>,
     /// The agent's requests seen so far, by method.
     requests: Vec<String>,
+    /// Every frame the agent sent, in order, as it arrived.
+    frames: Vec<Value>,
     answer: Answer,
 }
 
@@ -77,6 +79,7 @@ impl StdioAcpClient {
         );
         let message: Value =
             serde_json::from_str(line.trim()).expect("every frame should be valid JSON");
+        self.frames.push(message.clone());
         match message.get("method").and_then(Value::as_str) {
             Some("session/update") => self.updates.push(message["params"].clone()),
             Some(method) => {
@@ -662,6 +665,7 @@ fn connect_with_context(
             next_id: 0,
             updates: Vec::new(),
             requests: Vec::new(),
+            frames: Vec::new(),
             answer,
         },
         serving,
@@ -2605,3 +2609,6 @@ async fn shared_updates_during_long_prompts_preserve_shared_session_delivery() {
 
 #[path = "observer_tests.rs"]
 mod observer;
+
+#[path = "wire_tests.rs"]
+mod wire;

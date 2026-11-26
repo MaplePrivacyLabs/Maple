@@ -1,0 +1,58 @@
+[
+  {
+    "method": "_session/steering",
+    "error": {
+      "code": -32002,
+      "message": "Resource not found",
+      "data": {
+        "uri": "no-such-session"
+      }
+    }
+  },
+  {
+    "method": "session/set_config_option",
+    "error": {
+      "code": -32002,
+      "message": "Resource not found",
+      "data": "ACP session is not owned by this connection"
+    }
+  },
+  {
+    "method": "session/set_config_option",
+    "error": {
+      "code": -32602,
+      "message": "Invalid params",
+      "data": "Unknown Maple model"
+    }
+  },
+  {
+    "method": "session/set_mode",
+    "error": {
+      "code": -32602,
+      "message": "Invalid params",
+      "data": "Maple ACP has no session modes ('no-such-mode' cannot be selected): every tool call runs without asking"
+    }
+  },
+  {
+    "method": "session/load",
+    "error": {
+      "code": -32603,
+      "message": "Internal error",
+      "data": "The local store request is invalid"
+    }
+  },
+  {
+    "method": "session/close",
+    "error": {
+      "code": -32601,
+      "message": "Method not found"
+    }
+  },
+  {
+    "method": "no/such-method",
+    "error": {
+      "code": -32601,
+      "message": "Method not found"
+    }
+  }
+]

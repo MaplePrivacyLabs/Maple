@@ -1,0 +1,361 @@
+[
+  {
+    "jsonrpc": "2.0",
+    "id": 0,
+    "result": {
+      "protocolVersion": 1,
+      "agentCapabilities": {
+        "loadSession": true,
+        "promptCapabilities": {
+          "image": true,
+          "audio": false,
+          "embeddedContext": false
+        },
+        "mcpCapabilities": {
+          "http": true,
+          "sse": false,
+          "acp": true
+        },
+        "sessionCapabilities": {
+          "list": {},
+          "delete": {}
+        },
+        "auth": {}
+      },
+      "authMethods": [],
+      "agentInfo": {
+        "name": "maple",
+        "version": "<version>"
+      },
+      "_meta": {
+        "steering": {
+          "supported": true
+        }
+      }
+    }
+  },
+  {
+    "jsonrpc": "2.0",
+    "method": "session/update",
+    "params": {
+      "sessionId": "<id-0>",
+      "update": {
+        "sessionUpdate": "available_commands_update",
+        "availableCommands": [
+          {
+            "name": "compact",
+            "description": "Summarize the conversation to free context"
+          }
+        ]
+      }
+    }
+  },
+  {
+    "jsonrpc": "2.0",
+    "id": 1,
+    "result": {
+      "sessionId": "<id-0>",
+      "configOptions": [
+        {
+          "id": "model",
+          "name": "Model",
+          "category": "model",
+          "type": "select",
+          "currentValue": "glm-5-3",
+          "options": [
+            {
+              "value": "glm-5-3",
+              "name": "glm-5-3"
+            },
+            {
+              "value": "kimi-k3",
+              "name": "kimi-k3"
+            }
+          ]
+        }
+      ],
+      "models": {
+        "currentModelId": "glm-5-3",
+        "availableModels": [
+          {
+            "modelId": "glm-5-3",
+            "name": "glm-5-3",
+            "_meta": {
+              "supportsReasoningEffort": false
+            }
+          },
+          {
+            "modelId": "kimi-k3",
+            "name": "kimi-k3",
+            "_meta": {
+              "supportsReasoningEffort": false
+            }
+          }
+        ]
+      }
+    }
+  },
+  {
+    "jsonrpc": "2.0",
+    "method": "session/update",
+    "params": {
+      "sessionId": "<id-0>",
+      "update": {
+        "sessionUpdate": "session_info_update",
+        "title": "Hello"
+      }
+    }
+  },
+  {
+    "jsonrpc": "2.0",
+    "method": "session/update",
+    "params": {
+      "sessionId": "<id-0>",
+      "update": {
+        "sessionUpdate": "agent_message_chunk",
+        "content": {
+          "type": "text",
+          "text": "Hell"
+        },
+        "messageId": "maple-live:<id-1>:2"
+      }
+    }
+  },
+  {
+    "jsonrpc": "2.0",
+    "method": "session/update",
+    "params": {
+      "sessionId": "<id-0>",
+      "update": {
+        "sessionUpdate": "agent_message_chunk",
+        "content": {
+          "type": "text",
+          "text": "o ba"
+        },
+        "messageId": "maple-live:<id-1>:2"
+      }
+    }
+  },
+  {
+    "jsonrpc": "2.0",
+    "method": "session/update",
+    "params": {
+      "sessionId": "<id-0>",
+      "update": {
+        "sessionUpdate": "agent_message_chunk",
+        "content": {
+          "type": "text",
+          "text": "ck."
+        },
+        "messageId": "maple-live:<id-1>:2"
+      }
+    }
+  },
+  {
+    "jsonrpc": "2.0",
+    "id": 2,
+    "result": {
+      "stopReason": "end_turn",
+      "usage": {
+        "totalTokens": "<count>",
+        "inputTokens": "<count>",
+        "outputTokens": "<count>",
+        "cachedReadTokens": "<count>",
+        "cachedWriteTokens": "<count>"
+      }
+    }
+  },
+  {
+    "jsonrpc": "2.0",
+    "method": "session/update",
+    "params": {
+      "sessionId": "<id-0>",
+      "update": {
+        "sessionUpdate": "config_option_update",
+        "configOptions": [
+          {
+            "id": "model",
+            "name": "Model",
+            "category": "model",
+            "type": "select",
+            "currentValue": "kimi-k3",
+            "options": [
+              {
+                "value": "glm-5-3",
+                "name": "glm-5-3"
+              },
+              {
+                "value": "kimi-k3",
+                "name": "kimi-k3"
+              }
+            ]
+          }
+        ]
+      }
+    }
+  },
+  {
+    "jsonrpc": "2.0",
+    "id": 3,
+    "result": {
+      "configOptions": [
+        {
+          "id": "model",
+          "name": "Model",
+          "category": "model",
+          "type": "select",
+          "currentValue": "kimi-k3",
+          "options": [
+            {
+              "value": "glm-5-3",
+              "name": "glm-5-3"
+            },
+            {
+              "value": "kimi-k3",
+              "name": "kimi-k3"
+            }
+          ]
+        }
+      ]
+    }
+  },
+  {
+    "jsonrpc": "2.0",
+    "id": 4,
+    "result": {
+      "sessions": [
+        {
+          "sessionId": "<id-0>",
+          "cwd": "<project>",
+          "title": "Hello",
+          "updatedAt": "<time>"
+        }
+      ]
+    }
+  },
+  {
+    "jsonrpc": "2.0",
+    "id": 0,
+    "result": {
+      "protocolVersion": 1,
+      "agentCapabilities": {
+        "loadSession": true,
+        "promptCapabilities": {
+          "image": true,
+          "audio": false,
+          "embeddedContext": false
+        },
+        "mcpCapabilities": {
+          "http": true,
+          "sse": false,
+          "acp": true
+        },
+        "sessionCapabilities": {
+          "list": {},
+          "delete": {}
+        },
+        "auth": {}
+      },
+      "authMethods": [],
+      "agentInfo": {
+        "name": "maple",
+        "version": "<version>"
+      },
+      "_meta": {
+        "steering": {
+          "supported": true
+        }
+      }
+    }
+  },
+  {
+    "jsonrpc": "2.0",
+    "method": "session/update",
+    "params": {
+      "sessionId": "<id-0>",
+      "update": {
+        "sessionUpdate": "user_message_chunk",
+        "content": {
+          "type": "text",
+          "text": "Hello"
+        },
+        "messageId": "maple-row:<id-0>:0:1"
+      }
+    }
+  },
+  {
+    "jsonrpc": "2.0",
+    "method": "session/update",
+    "params": {
+      "sessionId": "<id-0>",
+      "update": {
+        "sessionUpdate": "agent_message_chunk",
+        "content": {
+          "type": "text",
+          "text": "Hello back."
+        },
+        "messageId": "maple-row:<id-0>:0:2"
+      }
+    }
+  },
+  {
+    "jsonrpc": "2.0",
+    "method": "session/update",
+    "params": {
+      "sessionId": "<id-0>",
+      "update": {
+        "sessionUpdate": "available_commands_update",
+        "availableCommands": [
+          {
+            "name": "compact",
+            "description": "Summarize the conversation to free context"
+          }
+        ]
+      }
+    }
+  },
+  {
+    "jsonrpc": "2.0",
+    "id": 1,
+    "result": {
+      "configOptions": [
+        {
+          "id": "model",
+          "name": "Model",
+          "category": "model",
+          "type": "select",
+          "currentValue": "kimi-k3",
+          "options": [
+            {
+              "value": "glm-5-3",
+              "name": "glm-5-3"
+            },
+            {
+              "value": "kimi-k3",
+              "name": "kimi-k3"
+            }
+          ]
+        }
+      ],
+      "models": {
+        "currentModelId": "kimi-k3",
+        "availableModels": [
+          {
+            "modelId": "glm-5-3",
+            "name": "glm-5-3",
+            "_meta": {
+              "supportsReasoningEffort": false
+            }
+          },
+          {
+            "modelId": "kimi-k3",
+            "name": "kimi-k3",
+            "_meta": {
+              "supportsReasoningEffort": false
+            }
+          }
+        ]
+      }
+    }
+  }
+]
