@@ -1053,7 +1053,7 @@ mod state_tests {
                 row_seq: 1,
                 update_seq: 1,
             });
-            assert!(this.apply_timeline_item("s1", old).is_none());
+            assert!(this.apply_timeline_item("s1", old).into_index().is_none());
             assert_eq!(this.timeline[0].id, key);
             assert!(this.timeline[0].persisted.is_none());
             assert_eq!(this.timeline_index.get(&key).map(|entry| entry.0), Some(0));
@@ -1061,9 +1061,7 @@ mod state_tests {
     }
 
     #[gpui::test]
-    fn missed_live_occurrence_keeps_reload_available_at_the_committed_tail(
-        cx: &mut TestAppContext,
-    ) {
+    fn missed_live_occurrence_survives_the_committed_tail_and_reloads(cx: &mut TestAppContext) {
         let chat = screen(cx);
         chat.update(cx, |this, cx| {
             this.replace_timeline(vec![item("history", "message", Some("older history"))]);
@@ -1074,20 +1072,200 @@ mod state_tests {
                 run_id: "run".into(),
                 occurrence: 42,
             });
+            live.input = Some(serde_json::json!({
+                "todos": [{"content": "Deferred plan", "status": "in_progress"}]
+            }));
             this.apply_incoming_item("s1", live, cx);
             assert_eq!(this.timeline.len(), 1);
-            assert!(this.pages.live_has_more);
-            // This is the final forward-page transition. It cannot prove a
-            // paused, uncommitted occurrence was recovered from durable rows.
+            assert!(this.pages.has_missed_live());
+            assert_eq!(this.timeline_revisions.get("s1"), Some(&1));
+            assert_eq!(this.plan.len(), 1, "a deferred row still updates its plan");
+            // Forward paging reaching durable rows cannot by itself prove
+            // that a paused, uncommitted occurrence was recovered.
             this.pages.after = false;
-            assert!(this.pages.live_has_more);
+            assert!(this.pages.has_missed_live());
             let reload = this.reload_generation;
             this.reload_paged_latest(cx);
             assert!(this.reload_generation > reload);
+            let in_flight = this.reload_generation;
+            this.reload_paged_latest(cx);
+            assert_eq!(this.reload_generation, in_flight, "reloads coalesce");
             assert!(
-                this.pages.live_has_more,
-                "only a successful bounded open clears the notice"
+                this.pages.has_missed_live(),
+                "starting an open does not claim the occurrence was recovered"
             );
+        });
+    }
+
+    #[gpui::test]
+    fn run_finish_preserves_a_reader_above_the_tail(cx: &mut TestAppContext) {
+        let chat = screen(cx);
+        chat.update(cx, |this, cx| {
+            this.replace_timeline(vec![item("history", "message", Some("older history"))]);
+            this.pages.snapshot_partial = true;
+            this.list_state.pause_following_tail();
+            this.active_runs.insert("s1".into(), "run-1".to_string());
+            let reload = this.reload_generation;
+            this.handle_run_event(
+                "s1",
+                "run-1",
+                maple_agent::agent::AgentRunEvent::Finished(
+                    maple_agent::agent::AgentRunTerminal::Completed,
+                ),
+                cx,
+            );
+            assert_eq!(this.reload_generation, reload);
+        });
+    }
+
+    #[gpui::test]
+    fn run_finish_recovers_a_live_gap_at_the_tail(cx: &mut TestAppContext) {
+        let chat = screen(cx);
+        chat.update(cx, |this, cx| {
+            this.replace_timeline(vec![item("history", "message", Some("older history"))]);
+            this.pages.snapshot_partial = true;
+            this.active_runs.insert("s1".into(), "run-1".to_string());
+            assert!(this.list_state.is_following_tail());
+            let reload = this.reload_generation;
+            this.handle_run_event(
+                "s1",
+                "run-1",
+                maple_agent::agent::AgentRunEvent::Finished(
+                    maple_agent::agent::AgentRunTerminal::Completed,
+                ),
+                cx,
+            );
+            assert!(this.reload_generation > reload);
+        });
+    }
+
+    #[gpui::test]
+    fn task_selection_releases_a_superseded_reload(cx: &mut TestAppContext) {
+        let chat = screen(cx);
+        chat.update(cx, |this, cx| {
+            this.sessions = vec![summary("s1", "First"), summary("s2", "Second")];
+            for task in ["s2", "s1"] {
+                this.reload_paged_latest(cx);
+                assert!(this.reload_pending);
+                this.select_session(task, cx);
+                assert!(
+                    !this.reload_pending,
+                    "selection must release the superseded request immediately"
+                );
+                let before = this.reload_generation;
+                this.reload_paged_latest(cx);
+                assert!(this.reload_generation > before);
+                assert!(this.reload_pending);
+
+                // A following selection is also protected when this request
+                // fails rather than returning a snapshot.
+                this.select_session(task, cx);
+                assert!(!this.reload_pending);
+            }
+        });
+        cx.run_until_parked();
+        chat.read_with(cx, |this, _cx| {
+            assert!(
+                !this.reload_pending,
+                "stale and failed replies cannot restore pending state"
+            );
+        });
+    }
+
+    #[gpui::test]
+    fn automatic_completion_preserves_a_reader_who_paused_in_flight(cx: &mut TestAppContext) {
+        let chat = screen(cx);
+        chat.update(cx, |this, cx| {
+            this.replace_timeline(vec![
+                item("older", "message", Some("Keep reading this")),
+                item("newer", "message", Some("Later text")),
+            ]);
+            this.list_state.scroll_to(gpui::ListOffset {
+                item_ix: 0,
+                offset_in_item: px(7.),
+            });
+            this.list_state.pause_following_tail();
+            this.pages.snapshot_partial = true;
+            this.pages.note_missed_live(100);
+            this.reload_pending = true;
+            let anchor = this.list_state.logical_scroll_top();
+
+            assert!(!this.finish_reload_view_transition("s1", LoadMode::Recover, cx));
+            assert!(!this.reload_pending);
+            assert_eq!(this.list_state.logical_scroll_top(), anchor);
+            assert_eq!(this.timeline[0].text.as_deref(), Some("Keep reading this"));
+            assert!(this.pages.has_live_gap(), "recovery remains available");
+
+            // Deferring the automatic open must not disable explicit Jump.
+            let before = this.reload_generation;
+            this.reload_paged_latest(cx);
+            assert!(this.reload_generation > before);
+        });
+    }
+
+    #[gpui::test]
+    fn forward_tail_rebuild_preserves_its_own_recovery(cx: &mut TestAppContext) {
+        let chat = screen(cx);
+        chat.update(cx, |this, cx| {
+            this.replace_timeline(vec![item("history", "message", Some("Older history"))]);
+            this.timeline.extend([
+                item("forward-1", "message", Some("Forward row")),
+                item("forward-2", "message", Some("Committed tail")),
+            ]);
+            this.pages.note_missed_live(100);
+            this.list_state.set_follow_mode(gpui::FollowMode::Tail);
+            let following_tail = this.list_state.is_following_tail();
+
+            assert!(following_tail);
+            let anchor = this.history_page_anchor(true);
+            this.rebuild_window(anchor);
+            assert!(
+                this.list_state.is_following_tail(),
+                "the page rebuild must not look like reader scrolling"
+            );
+            this.reload_pending = true;
+            assert!(this.finish_reload_view_transition("s1", LoadMode::Recover, cx));
+            assert!(!this.reload_pending);
+        });
+    }
+
+    #[gpui::test]
+    fn automatic_completion_also_defers_inside_history(cx: &mut TestAppContext) {
+        let chat = screen(cx);
+        chat.update(cx, |this, cx| {
+            this.replace_timeline(vec![item("history", "message", Some("Older history"))]);
+            this.pages.after = true;
+            this.pages.snapshot_partial = true;
+            this.reload_pending = true;
+            assert!(this.list_state.is_following_tail());
+
+            assert!(!this.finish_reload_view_transition("s1", LoadMode::Recover, cx));
+            assert!(!this.reload_pending);
+            assert_eq!(this.timeline[0].id, "history");
+            assert!(this.pages.has_live_gap());
+        });
+    }
+
+    #[gpui::test]
+    fn run_finish_preserves_the_bottom_of_a_historical_window(cx: &mut TestAppContext) {
+        let chat = screen(cx);
+        chat.update(cx, |this, cx| {
+            this.replace_timeline(vec![item("history", "message", Some("Older history"))]);
+            this.pages.after = true;
+            this.pages.note_missed_live(100);
+            assert!(this.list_state.is_following_tail());
+            this.active_runs.insert("s1".into(), "run-1".to_string());
+            let reload = this.reload_generation;
+            this.handle_run_event(
+                "s1",
+                "run-1",
+                maple_agent::agent::AgentRunEvent::Finished(
+                    maple_agent::agent::AgentRunTerminal::Completed,
+                ),
+                cx,
+            );
+            assert_eq!(this.reload_generation, reload);
+            assert!(this.pages.has_missed_live());
         });
     }
 
@@ -3087,7 +3265,7 @@ mod state_tests {
             silent.status = Some("completed".to_string());
             silent.input = Some(serde_json::json!({"q": 1}));
             silent.output = Some(serde_json::json!({"stdout": "  "}));
-            let index = this.apply_timeline_item("s1", silent).unwrap();
+            let index = this.apply_timeline_item("s1", silent).into_index().unwrap();
             this.maybe_summarize_tool(index, cx);
             assert!(this.summary_requests.contains("tool-2"));
             // Off in settings: nothing is asked.
@@ -3300,6 +3478,7 @@ mod state_tests {
             let long_thought = "x".repeat(600);
             let index = this
                 .apply_timeline_item("s1", item("th-1", "thinking", Some(&long_thought)))
+                .into_index()
                 .unwrap();
             // The newest item of an active run is still streaming.
             this.maybe_summarize_thinking(index, cx);
@@ -3323,6 +3502,7 @@ mod state_tests {
             for n in 0..5 {
                 let index = this
                     .apply_timeline_item("s1", long_tool(&format!("t{n}"), "completed"))
+                    .into_index()
                     .unwrap();
                 this.maybe_summarize_tool(index, cx);
             }
@@ -6058,15 +6238,18 @@ mod state_tests {
         let screen = screen(cx);
         screen.update(cx, |this, _cx| {
             assert_eq!(
-                this.apply_timeline_item("s1", item("a", "message", Some("1"))),
+                this.apply_timeline_item("s1", item("a", "message", Some("1")))
+                    .into_index(),
                 Some(0)
             );
             assert_eq!(
-                this.apply_timeline_item("s1", item("b", "message", Some("2"))),
+                this.apply_timeline_item("s1", item("b", "message", Some("2")))
+                    .into_index(),
                 Some(1)
             );
             assert_eq!(
-                this.apply_timeline_item("s1", item("a", "message", Some("3"))),
+                this.apply_timeline_item("s1", item("a", "message", Some("3")))
+                    .into_index(),
                 Some(0)
             );
             assert_eq!(this.timeline_index.get("a"), Some(&(0, 1)));
@@ -13702,16 +13885,27 @@ mod state_tests {
         // A window that does not hold the tail cannot tell what came last:
         // live rows past its budget, or a page back into history.
         chat.update(cx, |chat, cx| {
-            chat.pages.live_has_more = true;
+            chat.pages.snapshot_partial = true;
             cx.notify();
         });
         assert!(!offered(cx));
         chat.update(cx, |chat, cx| {
-            chat.pages.live_has_more = false;
+            chat.pages.snapshot_partial = false;
             chat.pages.after = true;
             cx.notify();
         });
         assert!(!offered(cx));
+        chat.update(cx, |chat, cx| {
+            chat.pages.after = false;
+            chat.pages.note_missed_live(100);
+            cx.notify();
+        });
+        assert!(!offered(cx));
+        chat.update(cx, |chat, cx| {
+            chat.pages.reset_live_recovery();
+            cx.notify();
+        });
+        assert!(offered(cx));
     }
 
     #[gpui::test]

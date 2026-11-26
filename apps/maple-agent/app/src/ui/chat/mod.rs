@@ -813,6 +813,8 @@ pub struct ChatScreen {
     /// Same guard for mid-run history reloads. Separate from the selection
     /// generation so a reload never cancels a task switch in flight.
     reload_generation: u64,
+    /// Coalesce latest-view recovery without superseding its own request.
+    reload_pending: bool,
     /// Per-session count of applied timeline events; a load whose snapshot
     /// predates newer events is discarded instead of clobbering them.
     timeline_revisions: HashMap<String, u64>,
@@ -941,8 +943,33 @@ pub struct ChatScreen {
 enum LoadMode {
     /// Make the session current (sidebar click, boot, or project selection).
     Select,
-    /// Swap the timeline only (mid-run history compaction).
+    /// Swap the timeline only (mid-run history compaction or explicit Jump).
     Reload,
+    /// Automatic catch-up; never override a reader's current position.
+    Recover,
+}
+
+impl LoadMode {
+    fn is_reload(self) -> bool {
+        matches!(self, Self::Reload | Self::Recover)
+    }
+}
+
+/// A timeline row was applied, ignored as stale/evicted, or deferred by history.
+enum TimelineItemOutcome {
+    Applied(usize),
+    Ignored,
+    DeferredLive,
+}
+
+impl TimelineItemOutcome {
+    #[cfg(test)]
+    fn into_index(self) -> Option<usize> {
+        match self {
+            Self::Applied(index) => Some(index),
+            Self::Ignored | Self::DeferredLive => None,
+        }
+    }
 }
 
 #[derive(Default)]
@@ -1669,6 +1696,7 @@ impl ChatScreen {
             watched_git_dir: None,
             selection_generation: 0,
             reload_generation: 0,
+            reload_pending: false,
             attachment_images: HashMap::new(),
             attachment_previews: HashMap::new(),
             attachment_requests: HashSet::new(),
@@ -2159,6 +2187,7 @@ impl ChatScreen {
         self.project_folder_dialog = None;
         self.selection_generation += 1;
         self.reload_generation += 1;
+        self.reload_pending = false;
     }
 
     /// Adopt a project as the visible task context. This changes only UI
@@ -3256,6 +3285,31 @@ impl ChatScreen {
         self.load_session(session_id, LoadMode::Reload, LOAD_RETRIES, cx);
     }
 
+    /// Finish the current reload before installing its transcript. Automatic
+    /// recovery defers to the reader and leaves its gap available to Jump.
+    fn finish_reload_view_transition(
+        &mut self,
+        session_id: &str,
+        mode: LoadMode,
+        cx: &mut Context<Self>,
+    ) -> bool {
+        if !mode.is_reload() {
+            return true;
+        }
+        self.reload_pending = false;
+        if !self.is_selected(session_id) {
+            cx.notify();
+            return false;
+        }
+        if matches!(mode, LoadMode::Recover)
+            && (self.pages.after || !self.list_state.is_following_tail())
+        {
+            cx.notify();
+            return false;
+        }
+        true
+    }
+
     /// Fetch a session snapshot and apply it. Events that land while the
     /// snapshot is in flight make it stale (the revision moved); the load
     /// is then repeated up to `retries` times and finally applied as is,
@@ -3268,16 +3322,22 @@ impl ChatScreen {
         cx: &mut Context<Self>,
     ) {
         // A selection supersedes any reload; a reload only supersedes
-        // earlier reloads.
+        // earlier reloads. Its stale callback must not leave recovery pending.
         self.reload_generation += 1;
+        if matches!(mode, LoadMode::Select) {
+            self.reload_pending = false;
+        }
         let generation = match mode {
             LoadMode::Select => {
                 self.project_folder_dialog = None;
                 self.selection_generation += 1;
                 self.selection_generation
             }
-            LoadMode::Reload => self.reload_generation,
+            LoadMode::Reload | LoadMode::Recover => self.reload_generation,
         };
+        if mode.is_reload() {
+            self.reload_pending = true;
+        }
         let revision = *self.timeline_revisions.get(session_id).unwrap_or(&0);
         if matches!(mode, LoadMode::Select) && !self.is_selected(session_id) {
             if self.loading_session.as_deref() != Some(session_id) {
@@ -3315,13 +3375,12 @@ impl ChatScreen {
                 // A newer selection (or reload) superseded this load.
                 let current_generation = match mode {
                     LoadMode::Select => this.selection_generation,
-                    LoadMode::Reload => this.reload_generation,
+                    LoadMode::Reload | LoadMode::Recover => this.reload_generation,
                 };
                 if current_generation != generation {
                     return;
                 }
-                // A reload swaps the transcript of the task on screen only.
-                if matches!(mode, LoadMode::Reload) && !this.is_selected(&session_id) {
+                if !this.finish_reload_view_transition(&session_id, mode, cx) {
                     return;
                 }
                 let mut detail = match result {
@@ -3339,7 +3398,8 @@ impl ChatScreen {
                     .timeline_revisions
                     .get(&detail.session.id)
                     .unwrap_or(&0);
-                if current != revision && retries > 0 {
+                let local_events_changed = current != revision;
+                if local_events_changed && retries > 0 {
                     this.load_session(&session_id, mode, retries - 1, cx);
                     return;
                 }
@@ -3366,7 +3426,8 @@ impl ChatScreen {
                     }
                 }
                 this.finish_loading(&session_id);
-                this.snapshot_revision = detail.timeline_revision;
+                let timeline_revision = detail.timeline_revision;
+                this.snapshot_revision = timeline_revision;
                 this.loading_timeline.clear();
                 // Stored summaries stand in for the model calls the
                 // timeline would otherwise request again.
@@ -3378,7 +3439,7 @@ impl ChatScreen {
                 let before = detail.before.is_some();
                 let epoch = detail.rows_epoch;
                 let plan = detail.plan;
-                let live_has_more = detail.live_has_more;
+                let snapshot_partial = detail.live_has_more;
                 match mode {
                     LoadMode::Select => {
                         // Another task's transcript fades in when it lands;
@@ -3403,7 +3464,7 @@ impl ChatScreen {
                         }
                         this.set_queue(detail.queue.items);
                     }
-                    LoadMode::Reload => {
+                    LoadMode::Reload | LoadMode::Recover => {
                         this.tool_summaries.extend(summaries);
                         this.replace_timeline(detail.timeline);
                         this.warm_markdown(cx);
@@ -3417,7 +3478,11 @@ impl ChatScreen {
                 this.pages.after = false;
                 this.pages.epoch = Some(epoch);
                 this.pages.loading = false;
-                this.pages.live_has_more = live_has_more;
+                this.pages.reconcile_snapshot(
+                    timeline_revision,
+                    snapshot_partial,
+                    local_events_changed,
+                );
                 if let Some(plan) = plan.and_then(|item| plan_entries(&item)) {
                     this.set_plan(plan);
                 }
@@ -5748,7 +5813,10 @@ impl ChatScreen {
         };
         if let Some(session) = self.selected_session.clone() {
             let id = item.id.clone();
-            if self.apply_timeline_item(&session, item).is_some() {
+            if matches!(
+                self.apply_timeline_item(&session, item),
+                TimelineItemOutcome::Applied(_)
+            ) {
                 // A failed send's message and status leave the slot under
                 // the transcript as its error arrives: the error opens from
                 // all of that space, so nothing above it jumps.
@@ -6248,8 +6316,12 @@ impl ChatScreen {
     /// message/thinking text on the item with the same id; otherwise merge
     /// fields, keeping the previous value when the incoming field is absent.
     ///
-    /// Returns the changed item's index, or None for an older snapshot event.
-    fn apply_timeline_item(&mut self, session_id: &str, item: AgentTimelineItem) -> Option<usize> {
+    /// Apply, ignore, or defer an incoming occurrence while history is open.
+    fn apply_timeline_item(
+        &mut self,
+        session_id: &str,
+        item: AgentTimelineItem,
+    ) -> TimelineItemOutcome {
         let item = paging::normalize(item);
         let alias_index = item.live.as_ref().and_then(|live| {
             self.timeline
@@ -6257,26 +6329,26 @@ impl ChatScreen {
                 .position(|row| row.live.as_ref() == Some(live))
         });
         if item.revision > 0 && item.revision <= self.snapshot_revision {
-            return None;
+            return TimelineItemOutcome::Ignored;
         }
         if self.pages.after && !self.timeline_index.contains_key(&item.id) && alias_index.is_none()
         {
-            // Forward history pages restore committed rows. A paused live row
-            // needs a fresh bounded open, so keep Reload latest available even
-            // after paging reaches the committed tail.
-            self.pages.live_has_more = true;
-            return None;
+            // Forward history restores committed rows. Track the deferred
+            // occurrence through later opens instead of losing it at the tail.
+            self.pages.note_missed_live(item.revision);
+            self.bump_timeline_revision(session_id);
+            return TimelineItemOutcome::DeferredLive;
         }
         if let Some(index) = alias_index
             && self.timeline[index].id != item.id
         {
             if item.revision > 0 && self.timeline[index].revision >= item.revision {
-                return None;
+                return TimelineItemOutcome::Ignored;
             }
             if let (Some(old), Some(new)) = (&self.timeline[index].persisted, &item.persisted)
                 && old.update_seq > new.update_seq
             {
-                return None;
+                return TimelineItemOutcome::Ignored;
             }
             let old = self.timeline[index].id.clone();
             self.local_error_text.remove(&old);
@@ -6291,16 +6363,16 @@ impl ChatScreen {
             && let (Some(old), Some(new)) = (&self.timeline[*index].persisted, &item.persisted)
             && old.update_seq > new.update_seq
         {
-            return None;
+            return TimelineItemOutcome::Ignored;
         }
         if item.revision > 0 {
             if let Some((index, _)) = self.timeline_index.get(&item.id)
                 && self.timeline[*index].revision >= item.revision
             {
-                return None;
+                return TimelineItemOutcome::Ignored;
             }
             if item.revision <= self.snapshot_revision {
-                return None;
+                return TimelineItemOutcome::Ignored;
             }
         }
         // A real row update replaces any view-only failure for the same row.
@@ -6395,7 +6467,10 @@ impl ChatScreen {
         if self.timeline.len() != count {
             self.rebuild_window(anchor);
         }
-        self.timeline_index.get(&id).map(|(index, _)| *index)
+        self.timeline_index
+            .get(&id)
+            .map(|(index, _)| TimelineItemOutcome::Applied(*index))
+            .unwrap_or(TimelineItemOutcome::Ignored)
     }
 
     /// Insert or replace a session row; returns whether anything changed.
@@ -6471,8 +6546,16 @@ impl ChatScreen {
         let new_row = !self.timeline_index.contains_key(&item.id);
         self.load_attachment_images_for(&item, cx);
         let plan = plan_entries(&item);
-        let Some(index) = self.apply_timeline_item(session_id, item) else {
-            return;
+        let index = match self.apply_timeline_item(session_id, item) {
+            TimelineItemOutcome::Applied(index) => index,
+            TimelineItemOutcome::Ignored => return,
+            TimelineItemOutcome::DeferredLive => {
+                // Deferring the transcript occurrence must not hide its plan.
+                if let Some(plan) = plan {
+                    self.update_live_plan(plan, cx);
+                }
+                return;
+            }
         };
         // The waiting row (or the sent message's status) leaves the slot
         // under the transcript as this row arrives: the row opens from that
@@ -6722,7 +6805,7 @@ impl ChatScreen {
                             this.pages.epoch = Some(epoch);
                             this.pages.after = false;
                             this.pages.loading = false;
-                            this.pages.live_has_more = live_has_more;
+                            this.pages.snapshot_partial = live_has_more;
                             if let Some(plan) = plan.and_then(|item| plan_entries(&item)) {
                                 this.set_plan(plan);
                             }
@@ -6796,6 +6879,7 @@ impl ChatScreen {
         });
         // Revisions are scoped to a host incarnation. Even a restarted host
         // with lower revision numbers must supersede the old partial rows.
+        self.pages.reset_live_recovery();
         self.snapshot_revision = 0;
         for item in &mut self.timeline {
             item.revision = 0;
@@ -7316,6 +7400,16 @@ impl ChatScreen {
                     cx,
                 );
                 self.refresh_sidebar_plan(cx);
+                // One quiet catch-up per finished run; partial output alone
+                // must never start a refresh loop while the run is active.
+                if owns_session
+                    && self.is_selected(session_id)
+                    && !self.pages.after
+                    && self.pages.has_live_gap()
+                    && self.list_state.is_following_tail()
+                {
+                    self.recover_paged_latest(cx);
+                }
             }
             AgentRunEvent::QueueChanged(snapshot) => {
                 if !self.is_selected(session_id) {

@@ -1,7 +1,6 @@
 # English each translation was last reviewed against. Written by `just translations-reviewed`.
 chat-absolute-path a2ba378ac24704c4
 chat-active 196d1c9462f99ad3
-chat-activity-outside dc914a2d8037659c
 chat-agent-task-cancelled e26bb0917a4c240b
 chat-agents-running 15f7861d7b1f2dc3
 chat-all-settings f521b783e34e05d0
@@ -109,6 +108,7 @@ chat-group-connection 09d63de97c6b2af9
 chat-group-list 5daca6e6c8b45508
 chat-group-project 4ba8a89f51963833
 chat-group-status f494c2b5fca99715
+chat-history-loading 1737c0bffae15abe
 chat-history-newer a83b2253a8cc1acc
 chat-host-received a8309854280b240e
 chat-host-reconnecting-detail 2a59c5a9aa782dea
@@ -266,7 +266,6 @@ chat-queue-next-turn af933f2f37669432
 chat-queue-remove 88aa4df45b3b6de1
 chat-queue-send-now a36a55f66a60511a
 chat-recent-projects c99c4880bde55214
-chat-reload-latest d85000ccceaff534
 chat-remote-computer 0c63b40a9d34efd4
 chat-remote-computer-settings 34705b763cab4fdb
 chat-remove 94c044581e04f303
