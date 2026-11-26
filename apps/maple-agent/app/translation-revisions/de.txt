@@ -109,9 +109,7 @@ chat-group-connection 09d63de97c6b2af9
 chat-group-list 5daca6e6c8b45508
 chat-group-project 4ba8a89f51963833
 chat-group-status f494c2b5fca99715
-chat-history-loading 1737c0bffae15abe
 chat-history-newer a83b2253a8cc1acc
-chat-history-older 7203b7f6a0e8f096
 chat-host-received a8309854280b240e
 chat-host-reconnecting-detail 2a59c5a9aa782dea
 chat-host-refreshing b9b36962bfae375e

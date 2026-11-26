@@ -44,6 +44,26 @@ impl ChatScreen {
             self.list_state
                 .reset_with_uniform_height(count, super::TRANSCRIPT_ROW_ESTIMATE);
         }
+        let following = self.list_state.is_following_tail();
+        // Load just before the reader reaches the top, however they got
+        // there (wheel, scrollbar, keys), or when the loaded rows all fit
+        // and cannot scroll to ask. Once per visit, so a failure does not
+        // retry on every frame.
+        let laid_out = self.list_state.viewport_bounds().size.height > px(0.);
+        let near_top = laid_out
+            && (self.list_state.max_offset_for_scrollbar().y <= px(0.)
+                || (!following && self.list_state.logical_scroll_top().item_ix < 5));
+        if !near_top {
+            self.pages.top_load = None;
+        } else if self.pages.before
+            && !self.pages.loading
+            && !self.list_state.is_scrollbar_dragging()
+            && count > 0
+            && self.pages.top_load != Some(count)
+        {
+            self.pages.top_load = Some(count);
+            self.load_history_page(true, cx);
+        }
         // Entrances read one clock for the whole frame and ask for the next
         // frame only while one is still running.
         let now = motion::now();
@@ -52,7 +72,7 @@ impl ChatScreen {
             window.request_animation_frame();
         }
         let switch_reveal = self.row_motion.switch_progress(now, reduced);
-        let show_jump = count > 0 && !self.list_state.is_following_tail();
+        let show_jump = count > 0 && !following;
         let tool_details = self.tool_details;
         let entity = cx.entity().downgrade();
         let selection = self.selection.clone();
@@ -235,20 +255,6 @@ impl ChatScreen {
                 }),
             )
             .children(self.render_transcript_menu(window, cx))
-            .when(self.pages.before, |container| {
-                container.child(
-                    widgets::secondary_button("history-older")
-                        .mx_6()
-                        .my_1()
-                        .text_xs()
-                        .child(gpui::text!(if self.pages.loading {
-                            tr("chat-history-loading")
-                        } else {
-                            tr("chat-history-older")
-                        }))
-                        .on_click(cx.listener(|chat, _, _, cx| chat.load_history_page(true, cx))),
-                )
-            })
             .child(
                 // The list element does not apply padding itself, so the
                 // gutter lives here. Same column width as the composer. On a
