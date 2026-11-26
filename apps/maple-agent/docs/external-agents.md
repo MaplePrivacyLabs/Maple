@@ -1,8 +1,9 @@
 # External agents
 
 A Maple task can hand work to an external coding agent that is installed on
-the same computer. Supported providers are Codex (`codex`) and Claude Code
-(`claude`). Both use the same delegation tools and task controls.
+the same computer. Supported providers are Codex (`codex`), Claude Code
+(`claude`), Grok Build (`grok`) and Antigravity (`agy`). All use the same
+delegation tools and task controls.
 
 ## What the task sees
 
@@ -33,7 +34,8 @@ The tools are:
 | `agent_status` | Read an agent's status, last message, changed files, and commands. |
 | `agent_cancel` | Stop an agent's current turn and its process. The thread stays on disk; the next `agent_send` resumes it in a fresh process. |
 
-All tools except `list_agent_providers` take `provider` (`"codex"` or `"claude"`). `agent_start` also takes optional
+All tools except `list_agent_providers` take `provider` (`"codex"`,
+`"claude"`, `"grok"` or `"antigravity"`). `agent_start` also takes optional
 `model`, `effort`, and `cwd`. `cwd` must be inside the project root.
 
 A result has Paseo's shape: a status line, the agent ID and thread ID, the
@@ -145,6 +147,51 @@ The `claude_native_*` runtime tests use a Rust CLI fixture, including a Rust
 sleeping child for descendant cleanup; they need no installed `sleep` program
 or Claude account.
 
+## How ACP agents are driven
+
+Grok Build and Antigravity speak the
+[Agent Client Protocol](https://agentclientprotocol.com) over stdio, and Maple
+drives them the way Paseo does, as a client at protocol version 1
+(`external_agents/acp_client.rs`). Their catalog entries say how each starts
+(`grok agent stdio`, `agy acp --disable-telemetry`), what goes in
+`initialize._meta` and `session/cancel._meta`, and how long start-up may
+take.
+
+The user installs the CLI, signs in and configures it beforehand, as for
+Codex and Claude Code. Maple never calls `authenticate`, never writes the
+agent's configuration, and reads none of its files. The one thing it sets is
+each entry's `environment`, which only switches off telemetry and
+self-updates for the process it starts (`GROK_TELEMETRY_ENABLED=false`,
+`GROK_TELEMETRY_TRACE_UPLOAD=false`, `GROK_DISABLE_AUTOUPDATER=1`,
+`AGY_CLI_DISABLE_AUTO_UPDATE=true`). Settings cannot tell whether these agents
+are signed in without starting them; a signed-out agent's first call returns
+the entry's sign-in hint.
+
+- `initialize` offers no file system and no terminal, so the agent uses its
+  own tools under its own configuration, and offers form elicitation.
+- `session/new` opens a session in the folder, with no MCP servers. A later
+  process reopens it with `session/resume`, or `session/load` with the
+  replay dropped.
+- A turn's `model` and `effort` are set with `session/set_config_option`,
+  the model first; a value the agent did not offer is refused before the
+  prompt, with the ones it offers.
+- The prompt goes as one text block, and its reply ends the turn:
+  `end_turn` completes, `cancelled` cancels, an error or an unusual stop
+  reason fails.
+- Session updates are read leniently and merged per tool call: `execute`
+  calls are commands, finished `edit`, `delete` and `move` calls are file
+  changes, and `plan` entries are the to-do list.
+- A permission request is accepted with its `allow_once` option. Options
+  that outlive the turn are never chosen; with no `allow_once`, the request
+  is cancelled. A request that offers several options of the same allow kind
+  is a choice, and goes to the caller as a question.
+- A form elicitation goes to the caller as questions (see
+  [Questions](#questions)). Grok asks only through its own
+  `_x.ai/ask_user_question`, which Maple refuses like every request it does
+  not know (`-32601`); Grok then writes the question in its reply.
+- Stop sends `session/cancel`, answers whatever the agent still waits on as
+  cancelled, and ends the process; the next `agent_send` resumes the session.
+
 ## Questions
 
 An agent's questions are for the model that started it. That model may answer
@@ -228,9 +275,11 @@ without `kind` continue to mean MCP.
 
 A transport owns its protocol: it turns its wire into the host's terms in
 `external_agents/driver.rs` (events, items, requests and replies) and serves
-the client operations in `app_server.rs` (initialize, open a thread, start,
-steer and interrupt a turn, reply). A new protocol is a `Transport` variant in
-the catalog module and its arm of `AgentClient`; the host does not change. Every desktop task's Pi session has
+the client operations in `app_server.rs` (initialize, open a thread, start
+and interrupt a turn, reply). A new protocol is a `Transport` variant in the
+catalog module and its arm of `AgentClient`; the host does not change. An
+agent that speaks ACP needs no new transport: its entry sets `transport` to
+`acp` and gives its `acp` settings and off switches. Every desktop task's Pi session has
 the five tools; each run declares them to the model only while the task may
 use a provider, and the tools reject calls for any other provider. Keep
 listing filtered by that same selection when more adapters are added.
@@ -241,8 +290,14 @@ background result reaching the model and the call's row, and agents ending
 with their task. Extend them with each adapter's admission behavior.
 
 The `claude_native_*` tests exercise the Rust transport against a deterministic
-fake CLI, without network requests. Both providers' fixtures re-execute the
+fake CLI, without network requests. `external_agents::tests::acp` drives a fake
+ACP agent the same way, and `acp_client::tests` read the message shapes Grok
+Build 1.0.92 and Antigravity 1.5.17 sent in recorded runs. The fixtures re-execute the
 Rust test binary through CLI shims on a private search PATH. They cover
 streamed activity, accepted approvals, questions, resumption,
 provider/session isolation, errors, and process-group cancellation. Live
-inference and platform packaging remain separate checks.
+inference and platform packaging remain separate checks: the ignored
+`external_agents::tests::acp_live` drives the installed ACP agents with real
+prompts on their own accounts (an edit and a command, a question, Stop and
+resume) when run by hand with `MAPLE_LIVE_ACP=grok,antigravity` and
+`--ignored --nocapture`.

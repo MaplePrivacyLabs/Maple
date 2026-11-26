@@ -3,13 +3,17 @@
 //! an agent is adding an entry. A difference between agents is a key here,
 //! or a named behaviour that a key selects; nothing tests an agent's id.
 
+use std::collections::BTreeMap;
 use std::sync::{Arc, LazyLock};
+use std::time::Duration;
 
 use serde::Deserialize;
+use serde_json::Value;
 use tokio::process::{ChildStdin, ChildStdout};
 use tokio::sync::mpsc;
 
-use super::app_server::{AgentClient, AppServerClient};
+use super::acp_client;
+use super::app_server::{AgentClient, RpcClient};
 use super::claude;
 use super::codex;
 use super::driver::DriverMessage;
@@ -49,7 +53,31 @@ pub(crate) struct CatalogEntry {
     #[serde(default)]
     pub(crate) minimum_version: Option<String>,
     pub(crate) sign_in_probe: SignInProbe,
+    /// Set for every start of the agent. Only switches that keep it from
+    /// sending telemetry or updating itself belong here, never its
+    /// configuration or sign-in.
+    #[serde(default)]
+    pub(crate) environment: BTreeMap<String, String>,
+    /// How an ACP agent is started and spoken to.
+    #[serde(default)]
+    pub(crate) acp: Option<AcpSettings>,
     pub(crate) text: EntryText,
+}
+
+/// What starting and speaking to one ACP agent takes.
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub(crate) struct AcpSettings {
+    /// The arguments that start its ACP server on stdio.
+    pub(crate) args: Vec<String>,
+    /// What `initialize` carries in `_meta`.
+    #[serde(default)]
+    pub(crate) initialize_meta: Option<Value>,
+    /// What `session/cancel` carries in `_meta`.
+    #[serde(default)]
+    pub(crate) cancel_meta: Option<Value>,
+    /// How long start-up and opening the session may take.
+    pub(crate) startup_seconds: u64,
 }
 
 /// What Maple says about an agent, word for word.
@@ -77,6 +105,8 @@ pub(crate) enum SignInProbe {
     CodexAuthFile,
     /// `claude auth status --json`.
     ClaudeAuthStatus,
+    /// Maple cannot tell without starting the agent.
+    None,
 }
 
 /// How Maple speaks to an agent's process.
@@ -87,6 +117,8 @@ pub(crate) enum Transport {
     CodexAppServer,
     /// Claude Code's stream-json control protocol, one process per turn.
     ClaudeStreamJson,
+    /// The Agent Client Protocol over stdio, one process per session.
+    Acp,
 }
 
 /// One process start: its arguments, and what the connection needs.
@@ -96,24 +128,24 @@ pub(super) struct Launch {
     session: Option<String>,
 }
 
-impl Transport {
+impl CatalogEntry {
     /// The arguments to start a process for `existing_thread`, or for a new
     /// thread.
     pub(super) fn launch(
-        self,
+        &self,
         existing_thread: Option<&str>,
         model: Option<&str>,
         effort: Option<&str>,
     ) -> Launch {
-        match self {
-            Self::CodexAppServer => Launch {
+        match self.transport {
+            Transport::CodexAppServer => Launch {
                 args: codex::app_server_args()
                     .iter()
                     .map(|arg| arg.to_string())
                     .collect(),
                 session: None,
             },
-            Self::ClaudeStreamJson => {
+            Transport::ClaudeStreamJson => {
                 let session = existing_thread
                     .map(str::to_string)
                     .unwrap_or_else(claude::new_session_id);
@@ -122,12 +154,20 @@ impl Transport {
                     session: Some(session),
                 }
             }
+            Transport::Acp => Launch {
+                args: self
+                    .acp
+                    .as_ref()
+                    .map(|acp| acp.args.clone())
+                    .unwrap_or_default(),
+                session: None,
+            },
         }
     }
 
     /// Speak to a started process over its pipes.
     pub(super) fn connect(
-        self,
+        &'static self,
         stdin: ChildStdin,
         stdout: ChildStdout,
         launch: Launch,
@@ -136,19 +176,33 @@ impl Transport {
         mpsc::Receiver<DriverMessage>,
         tokio::task::JoinHandle<()>,
     ) {
-        match self {
-            Self::CodexAppServer => {
-                let (client, receiver, reader) = AppServerClient::new(stdin, stdout);
+        match self.transport {
+            Transport::CodexAppServer => {
+                let (client, receiver, reader) = RpcClient::codex(stdin, stdout);
                 (Arc::new(AgentClient::Codex(client)), receiver, reader)
             }
-            Self::ClaudeStreamJson => {
+            Transport::ClaudeStreamJson => {
                 let session = launch.session.unwrap_or_else(claude::new_session_id);
                 let (client, receiver, reader) = claude::Client::new(stdin, stdout, session);
                 (Arc::new(AgentClient::Claude(client)), receiver, reader)
             }
+            Transport::Acp => {
+                let (client, receiver, reader) = acp_client::Client::new(self, stdin, stdout);
+                (Arc::new(AgentClient::Acp(client)), receiver, reader)
+            }
         }
     }
 
+    /// How long starting the agent and opening its thread may take, when
+    /// the entry says.
+    pub(super) fn startup_timeout(&self) -> Option<Duration> {
+        self.acp
+            .as_ref()
+            .map(|acp| Duration::from_secs(acp.startup_seconds))
+    }
+}
+
+impl Transport {
     /// Whether a process serves one turn and is reclaimed when it ends.
     pub(super) fn one_turn_per_process(self) -> bool {
         matches!(self, Self::ClaudeStreamJson)
@@ -163,11 +217,13 @@ pub(crate) fn entries() -> &'static [CatalogEntry] {
 impl CatalogEntry {
     /// Give a command that runs this agent, to work or only to answer a
     /// probe, the agent's environment: without the variables of another
-    /// agent's session Maple may itself run inside.
+    /// agent's session Maple may itself run inside, and with the entry's
+    /// own, which switch off telemetry and self-updates.
     pub(in crate::agent) fn apply_environment(&self, command: &mut tokio::process::Command) {
         for name in STRIPPED_ENVIRONMENT {
             command.env_remove(name);
         }
+        command.envs(&self.environment);
     }
 }
 
@@ -177,22 +233,28 @@ pub(crate) fn entry(id: &str) -> Option<&'static CatalogEntry> {
     entries().iter().find(|entry| entry.id == id)
 }
 
-/// The agents' names for text that gives examples: "Codex or Claude Code".
+/// The agents' names for text that gives examples: "Codex, Claude Code or
+/// Grok Build".
 pub(super) fn example_names() -> String {
-    entries()
-        .iter()
-        .map(|entry| entry.name.as_str())
-        .collect::<Vec<_>>()
-        .join(" or ")
+    either(entries().iter().map(|entry| entry.name.clone()))
 }
 
-/// The agents' ids for text that gives examples: `"codex" or "claude"`.
+/// The agents' ids for text that gives examples: `"codex", "claude" or
+/// "grok"`.
 pub(super) fn example_ids() -> String {
-    entries()
-        .iter()
-        .map(|entry| format!("\"{}\"", entry.id))
-        .collect::<Vec<_>>()
-        .join(" or ")
+    either(entries().iter().map(|entry| format!("\"{}\"", entry.id)))
+}
+
+/// `a, b or c`.
+fn either(items: impl Iterator<Item = String>) -> String {
+    let mut items = items.collect::<Vec<_>>();
+    let Some(last) = items.pop() else {
+        return String::new();
+    };
+    if items.is_empty() {
+        return last;
+    }
+    format!("{} or {last}", items.join(", "))
 }
 
 #[cfg(test)]
@@ -202,10 +264,23 @@ mod tests {
     #[test]
     fn the_catalog_reads_and_its_ids_are_unique() {
         let ids: Vec<&str> = entries().iter().map(|entry| entry.id.as_str()).collect();
-        assert_eq!(ids, ["codex", "claude"]);
+        assert_eq!(ids, ["codex", "claude", "grok", "antigravity"]);
         for entry in entries() {
             assert!(!entry.name.is_empty() && !entry.executable.is_empty());
             assert!(entry.icon.starts_with("icons/"), "{}", entry.icon);
+            // An ACP agent says how to start it; no other agent does.
+            assert_eq!(
+                entry.acp.is_some(),
+                entry.transport == Transport::Acp,
+                "{}",
+                entry.id
+            );
+            for name in entry.environment.keys() {
+                assert!(
+                    name.contains("TELEMETRY") || name.contains("UPDATE"),
+                    "{name} is not an off switch"
+                );
+            }
             if let Some(minimum) = &entry.minimum_version {
                 assert!(
                     crate::agent::integrations::parse_version(minimum).is_some(),
@@ -220,8 +295,14 @@ mod tests {
         // Ids match exactly: a padded stored id is not an agent.
         assert!(entry(" claude ").is_none());
         assert!(entry("cua-driver").is_none());
-        assert_eq!(example_names(), "Codex or Claude Code");
-        assert_eq!(example_ids(), "\"codex\" or \"claude\"");
+        assert_eq!(
+            example_names(),
+            "Codex, Claude Code, Grok Build or Antigravity"
+        );
+        assert_eq!(
+            example_ids(),
+            "\"codex\", \"claude\", \"grok\" or \"antigravity\""
+        );
     }
 
     #[test]
@@ -247,9 +328,12 @@ mod tests {
 
     #[test]
     fn transports_launch_as_before() {
-        let codex = Transport::CodexAppServer.launch(None, Some("m"), Some("high"));
+        let codex = entry("codex")
+            .unwrap()
+            .launch(None, Some("m"), Some("high"));
         assert_eq!(codex.args, ["app-server"]);
-        let fresh = Transport::ClaudeStreamJson.launch(None, Some("m"), Some("high"));
+        let claude = entry("claude").unwrap();
+        let fresh = claude.launch(None, Some("m"), Some("high"));
         let session = fresh.session.clone().unwrap();
         assert!(
             fresh
@@ -258,7 +342,7 @@ mod tests {
                 .any(|pair| pair == ["--session-id", session.as_str()])
         );
         assert!(fresh.args.windows(2).any(|pair| pair == ["--model", "m"]));
-        let resumed = Transport::ClaudeStreamJson.launch(Some("s1"), None, None);
+        let resumed = claude.launch(Some("s1"), None, None);
         assert!(
             resumed
                 .args
@@ -267,5 +351,18 @@ mod tests {
         );
         assert!(Transport::ClaudeStreamJson.one_turn_per_process());
         assert!(!Transport::CodexAppServer.one_turn_per_process());
+        assert!(!Transport::Acp.one_turn_per_process());
+        // ACP agents start as their entries say, whatever the thread.
+        let grok = entry("grok").unwrap();
+        assert_eq!(
+            grok.launch(Some("s1"), Some("m"), None).args,
+            ["agent", "stdio"]
+        );
+        assert_eq!(grok.startup_timeout(), Some(Duration::from_secs(20)));
+        assert_eq!(
+            entry("antigravity").unwrap().launch(None, None, None).args,
+            ["acp", "--disable-telemetry"]
+        );
+        assert_eq!(claude.startup_timeout(), None);
     }
 }

@@ -10,12 +10,14 @@
 //!
 //! Which agents exist, and how each is found, started and spoken to, is
 //! data in [`catalog`]. Codex uses its app-server; Claude Code its
-//! stream-json protocol, as Goose's Claude Code provider speaks it. Each
+//! stream-json protocol, as Goose's Claude Code provider speaks it; the
+//! rest speak the Agent Client Protocol, as Paseo drives them. Each
 //! transport turns its wire into [`driver`]'s terms, which is all the
 //! activity, permission, and lifecycle host speaks. A background turn's result reaches the task as a message the user
 //! does not see, behind its run or in a run of its own, and stays on the
 //! tool call's row through an entry in the task's session.
 
+mod acp_client;
 mod app_server;
 pub(in crate::agent) mod catalog;
 mod claude;
@@ -1166,7 +1168,7 @@ impl ExternalAgent {
             biased;
             _ = self.cancel.cancelled() => Err("This external agent has been shut down.".to_string()),
             _ = call.cancel_token.cancelled() => Err("The external agent launch was cancelled.".to_string()),
-            result = tokio::time::timeout(LAUNCH_TIMEOUT, self.ensure_process(call, input.model.as_deref(), input.effort.as_deref())) =>
+            result = tokio::time::timeout(self.entry.startup_timeout().unwrap_or(LAUNCH_TIMEOUT), self.ensure_process(call, input.model.as_deref(), input.effort.as_deref())) =>
                 result.unwrap_or_else(|_| Err("The external agent did not initialize in time.".to_string())),
         }?;
         let (client, thread_id, number, end_rx) = {
@@ -1361,8 +1363,7 @@ impl ExternalAgent {
         let search_path = call.login_path.as_deref();
         let executable = super::integrations::find_executable(&self.entry.executable, search_path)
             .ok_or_else(|| self.entry.text.launch_missing.clone())?;
-        let transport = self.entry.transport;
-        let launch = transport.launch(existing_thread.as_deref(), model, effort);
+        let launch = self.entry.launch(existing_thread.as_deref(), model, effort);
         let mut command = agent_command(
             &executable,
             &launch.args,
@@ -1389,7 +1390,7 @@ impl ExternalAgent {
             .stdout
             .take()
             .ok_or_else(|| "Failed to open the agent stdout".to_string())?;
-        let (client, receiver, reader) = transport.connect(stdin, stdout, launch);
+        let (client, receiver, reader) = self.entry.connect(stdin, stdout, launch);
         client.initialize().await?;
         let opened = client
             .open_thread(existing_thread.as_deref(), &self.cwd, model)
@@ -1817,6 +1818,15 @@ impl ExternalAgent {
             };
             state.activity.status = outcome.status().to_string();
             state.activity.pending_permission = None;
+            // A command a stopped or failed turn left running did not
+            // finish; some agents never say so.
+            if outcome != TurnOutcome::Completed {
+                for command in &mut state.activity.commands {
+                    if command.status == "running" {
+                        command.status = "failed".to_string();
+                    }
+                }
+            }
             // A question that held the turn went with it.
             if state.question.take().is_some() {
                 state.activity.questions.clear();

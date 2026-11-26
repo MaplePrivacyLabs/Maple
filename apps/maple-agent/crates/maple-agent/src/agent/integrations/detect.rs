@@ -57,6 +57,7 @@ pub(in crate::agent) async fn detect(
     let signed_in = match entry.sign_in_probe {
         SignInProbe::CodexAuthFile => Some(codex_auth_file_exists()),
         SignInProbe::ClaudeAuthStatus => probe_claude_auth(entry, &executable, search_path).await,
+        SignInProbe::None => None,
     };
     CliDetection {
         executable: Some(executable),

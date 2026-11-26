@@ -80,14 +80,17 @@ fn the_catalog_lists_cua_then_the_external_agents() {
     let cards =
         project_integrations(&paths(temporary.path()), "user", &nothing_installed()).unwrap();
     let ids: Vec<&str> = cards.iter().map(|card| card.id.as_str()).collect();
-    assert_eq!(ids, ["cua-driver", "codex", "claude"]);
+    assert_eq!(
+        ids,
+        ["cua-driver", "codex", "claude", "grok", "antigravity"]
+    );
     let cua = &cards[0];
     assert_eq!(cua.name, "Computer use");
     assert_eq!(cua.availability, AgentIntegrationAvailability::NotDetected);
     assert_eq!(cua.backend, None);
     assert!(!cua.enabled_for_new_tasks && !cua.setup_available);
     assert!(!cua.is_external_agent());
-    assert!(cards[1].is_external_agent() && cards[2].is_external_agent());
+    assert!(cards[1..].iter().all(|card| card.is_external_agent()));
     assert!(
         cards[1]
             .detail

@@ -1,6 +1,6 @@
 ---
 name: handoff
-description: Hand a self-contained piece of work to an external coding agent (Codex or Claude Code) that runs in this project with its own context. Use when the user asks to delegate, hand off, or have Codex or Claude Code implement something.
+description: Hand a self-contained piece of work to an external coding agent ({agents}) that runs in this project with its own context. Use when the user asks to delegate, hand off, or have another coding agent implement something.
 metadata:
   maple: external-agents
   argument-hint: "<what to hand off>"
@@ -8,11 +8,11 @@ metadata:
 
 # Hand work to an external agent
 
-Maple can start an external coding agent (Codex or Claude Code) inside this project.
+Maple can start an external coding agent ({agents}) inside this project.
 The agent runs with its own context and its own account. It does not see
-this conversation. It runs under its own sandbox and approval settings;
-Maple accepts its approval requests, and its questions still come to the
-user through Maple.
+this conversation. It runs under its own sandbox and approval settings, and
+Maple accepts its approval requests. Its questions come to you: answer them
+with `agent_send`, and ask the user only when the answer is theirs to give.
 
 ## Steps
 
@@ -30,8 +30,9 @@ user through Maple.
    - **Constraints**: what it must not touch or change.
 3. Call `agent_start` with `provider`, the briefing as `prompt`, and
    `background: true` unless the user is waiting on the result right now.
-4. Do not poll `agent_status`. Maple tells you when the agent finishes, in
-   this turn or the next. Continue with other work meanwhile.
+4. Do not poll `agent_status`. Maple tells you when the agent finishes or
+   asks a question, in this turn or the next. Continue with other work
+   meanwhile.
 5. When Maple reports the end, call `agent_status` once, read the changed
    files yourself, and verify the acceptance criteria before you rely on
    them. If more is needed, call `agent_send` with the same `agent_id` so

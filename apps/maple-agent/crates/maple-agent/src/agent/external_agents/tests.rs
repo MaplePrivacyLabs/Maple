@@ -20,6 +20,9 @@ use super::*;
 use crate::agent::AgentEventSink;
 use crate::agent::test_executable::write_executable;
 
+mod acp;
+mod acp_fixture;
+mod acp_live;
 mod claude_fixture;
 mod end_to_end;
 
@@ -83,6 +86,7 @@ impl Fixtures {
     fn install(&self, provider: &str, mode: &str) {
         let test = match provider {
             "codex" => "fake_codex_app_server",
+            "grok" | "agy" => "acp_fixture::run",
             "claude" => "claude_fixture::run",
             _ => panic!("unknown fixture provider"),
         };
