@@ -288,6 +288,14 @@ so the kill is what guarantees nothing keeps running.
   missing; run `codex login` in a terminal.
 - Windows compiles and runs the same code, with `codex.exe` preferred over
   the npm `codex.cmd` shim, but the desktop smoke has not been run there.
+- A command Grok moves to the background is reported done, and its turn
+  ends, while the command still runs. When the command finishes, Grok starts
+  a turn of its own: its text is added to the agent's activity as a separate
+  message, which `agent_status` shows, but the caller is not told. Paseo
+  behaves the same way. Antigravity keeps its turn open until its background
+  commands end.
+- A refused request ends Grok's whole turn, which reports as cancelled; the
+  result still lists what was not allowed.
 
 ## Adding a provider
 
@@ -336,7 +344,13 @@ streamed activity, accepted approvals, questions, resumption,
 provider/session isolation, errors, and process-group cancellation. Live
 inference and platform packaging remain separate checks: the ignored
 `external_agents::tests::acp_live` drives the installed ACP agents with real
-prompts on their own accounts (an edit and a command in read only with every
-card allowed, a question in full access, Stop, and resume in auto) when run
-by hand with `MAPLE_LIVE_ACP=grok,antigravity` and
-`--ignored --nocapture`.
+prompts on their own accounts when run by hand with
+`MAPLE_LIVE_ACP=grok,antigravity` and `--ignored --nocapture`:
+
+- an edit and a command in read only with every card allowed, a question in
+  full access, Stop, and resume in auto;
+- Stop during a long command, which must leave no command running;
+- a command left running in the background, printing what the caller saw;
+- an edit denied with a note, which must not happen and must reach the
+  caller;
+- both agents at once, and an unknown model refused with the agent's list.

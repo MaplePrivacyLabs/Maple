@@ -1811,10 +1811,9 @@ impl ExternalAgent {
         };
         {
             let mut state = self.state.lock().await;
-            state.activity.pending_permission = None;
             state.activity.declined.extend(declined);
         }
-        self.emit_row(true).await;
+        self.set_pending_permission(None).await;
         log::info!(
             "External agent {} approval for {}: {}",
             self.agent_id,
@@ -1831,9 +1830,16 @@ impl ExternalAgent {
         }
     }
 
+    /// Record the approval the agent waits for, or that it no longer waits,
+    /// on its transcript row and its line in the agents panel.
     async fn set_pending_permission(&self, pending: Option<String>) {
-        self.state.lock().await.activity.pending_permission = pending;
+        let label = {
+            let mut state = self.state.lock().await;
+            state.activity.pending_permission = pending;
+            latest_activity_label(&state.activity)
+        };
         self.emit_row(true).await;
+        self.emit_subagent_activity(label.unwrap_or_else(|| "Working".to_string()));
     }
 
     /// Ask the agent to stop its current turn. The thread stays open.

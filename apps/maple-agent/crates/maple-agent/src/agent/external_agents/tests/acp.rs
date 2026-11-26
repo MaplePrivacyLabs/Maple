@@ -145,6 +145,52 @@ async fn an_acp_agent_works_a_turn_with_the_chosen_model_and_effort() {
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn text_after_a_turn_ends_is_a_message_of_its_own() {
+    let harness = Harness::new("acp-wakes");
+    harness.install_fixture("grok", "acp-wakes");
+    let result = harness
+        .registry
+        .start(
+            harness.call("acp-9", "row-1"),
+            acp_start("grok", "Start it in the background"),
+        )
+        .await;
+    assert!(
+        result_text(&result).starts_with("Status: completed"),
+        "{}",
+        result_text(&result)
+    );
+    // The agent speaks again once the turn is over, as Grok does when a
+    // background command ends.
+    let deadline = Instant::now() + Duration::from_secs(10);
+    let text = loop {
+        let status = harness
+            .registry
+            .status(
+                &harness.call("acp-9", "status"),
+                AgentRefParams {
+                    provider: "grok".into(),
+                    agent_id: "grok-1".into(),
+                },
+            )
+            .await;
+        let text = activity_of(&status)["text"]
+            .as_str()
+            .unwrap_or_default()
+            .to_string();
+        if text.contains("The background command finished.") || Instant::now() > deadline {
+            break text;
+        }
+        tokio::time::sleep(Duration::from_millis(50)).await;
+    };
+    assert!(
+        text.ends_with(")\n\nThe background command finished."),
+        "{text}"
+    );
+    harness.registry.shutdown_all(Duration::from_secs(5)).await;
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn a_signed_out_acp_agent_says_how_to_sign_in() {
     let harness = Harness::new("acp-signed-out");
     harness.install_fixture("agy", "acp-signed-out");
@@ -208,6 +254,26 @@ async fn in_read_only_the_user_decides_what_an_acp_agent_asks_to_do() {
         // There is no classifier here; one that cannot answer never allows.
         assert_eq!(prompt.reason, AgentPermissionReason::Unavailable);
     }
+    // The agents panel says what the agent waits for, then that it works.
+    let panel: Vec<String> = harness
+        .sink
+        .events()
+        .into_iter()
+        .filter_map(|event| match event {
+            AgentServiceEvent::Run {
+                event: AgentRunEvent::SubagentActivity { tool, .. },
+                ..
+            } => Some(tool),
+            _ => None,
+        })
+        .collect();
+    let waiting = panel
+        .iter()
+        .position(|label| label == "Waiting for you to approve src/lib.rs");
+    assert!(
+        waiting.is_some_and(|at| panel[at + 1..].iter().any(|label| label == "Working")),
+        "{panel:?}"
+    );
     harness.registry.shutdown_all(Duration::from_secs(5)).await;
 }
 

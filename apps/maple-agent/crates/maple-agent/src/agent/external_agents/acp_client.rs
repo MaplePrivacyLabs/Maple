@@ -276,6 +276,7 @@ impl Client {
             .await;
         let rpc = Arc::clone(&self.rpc);
         let events = self.events.clone();
+        let state = Arc::clone(&self.state);
         let entry = self.entry;
         let params = json!({
             "sessionId": session,
@@ -283,6 +284,16 @@ impl Client {
         });
         tokio::spawn(async move {
             let reply = rpc.call("session/prompt", params).await;
+            {
+                // Text after the reply comes from a turn the agent started
+                // itself, such as Grok's when a background command ends: a
+                // message of its own, not more of this one.
+                let mut state = lock(&state);
+                if state.text_open {
+                    state.text_open = false;
+                    state.segment += 1;
+                }
+            }
             let (outcome, error) = turn_end(entry, reply);
             let _ = events
                 .send(DriverMessage::Event(AgentEvent::TurnCompleted {

@@ -229,6 +229,11 @@ fn run() {
                     }
                 };
                 agent.send(json!({ "id": id, "result": { "stopReason": stop } }));
+                if mode == "acp-wakes" {
+                    // As Grok does when a background command ends: a turn
+                    // of its own, with no prompt open.
+                    agent.say("The background command finished.");
+                }
             }
             _ => agent.send(
                 json!({ "id": id, "error": { "code": -32601, "message": "Method not found" } }),
