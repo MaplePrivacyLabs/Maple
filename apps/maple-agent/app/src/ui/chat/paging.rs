@@ -291,7 +291,6 @@ impl ChatScreen {
             return;
         }
         let following_tail = self.list_state.is_following_tail();
-        let anchor = self.history_page_anchor(older, following_tail);
         let mut items = Vec::with_capacity(page.rows.len());
         for row in page.rows {
             let key = format!("stored:{}:{}:{}", target, row.rows_epoch, row.row_seq);
@@ -307,6 +306,7 @@ impl ChatScreen {
         }
         let recover_at_tail =
             !older && !self.pages.after && self.pages.has_missed_live() && following_tail;
+        let anchor = self.history_page_anchor(recover_at_tail);
         let known: HashSet<_> = self.timeline.iter().map(|item| item.id.as_str()).collect();
         items.retain(|item| !known.contains(item.id.as_str()));
         if older {
@@ -325,15 +325,14 @@ impl ChatScreen {
         cx.notify();
     }
 
-    /// Keep a following reader at the live boundary of a forward page.
-    /// Restoring its old anchor would stop following and defer our own
-    /// automatic catch-up; a paused reader still keeps their row anchor.
+    /// Only automatic live-tail recovery should keep following a page
+    /// rebuild. A normal forward page must not skip the rows being read,
+    /// even at the temporary bottom of a partial history window.
     pub(super) fn history_page_anchor(
         &self,
-        older: bool,
-        following_tail: bool,
+        recover_at_tail: bool,
     ) -> Option<(String, ListOffset)> {
-        if !older && following_tail {
+        if recover_at_tail {
             None
         } else {
             self.scroll_anchor()
@@ -644,6 +643,46 @@ mod tests {
             let offset = chat.list_state.logical_scroll_top();
             assert_eq!(offset.item_ix, 1);
             assert_eq!(offset.offset_in_item, gpui::px(23.));
+        });
+    }
+
+    #[gpui::test]
+    fn forward_pages_keep_readers_at_their_next_row(cx: &mut gpui::TestAppContext) {
+        let chat = chat_with_task(cx);
+        chat.update(cx, |chat, cx| {
+            for missed_live in [false, true] {
+                chat.pages = TranscriptPages::default();
+                chat.replace_timeline(vec![stored(100, "Next row to read")]);
+                chat.pages.epoch = Some(0);
+                chat.pages.after = true;
+                if missed_live {
+                    chat.pages.note_missed_live(100);
+                }
+                // Set up the headless list with following and a real row
+                // anchor. Setting Tail on a loaded list instead uses an
+                // end-of-list sentinel, which is a different fixture.
+                chat.list_state.reset_with_uniform_height(0, gpui::px(40.));
+                chat.list_state.set_follow_mode(gpui::FollowMode::Tail);
+                chat.list_state.scroll_to(ListOffset {
+                    item_ix: 0,
+                    offset_in_item: gpui::px(23.),
+                });
+                assert!(chat.list_state.is_following_tail());
+                let anchor = chat.scroll_anchor().expect("the next row has a stable ID");
+
+                chat.apply_history_page(false, "task", history_page(101, Some("more")), cx);
+
+                assert!(chat.pages.after);
+                assert_eq!(chat.timeline.len(), 2);
+                assert_eq!(chat.timeline[0].text.as_deref(), Some("Next row to read"));
+                assert_eq!(
+                    chat.list_state.logical_scroll_top(),
+                    anchor.1,
+                    "the reader's row must not be skipped (missed live: {missed_live})"
+                );
+                assert!(!chat.list_state.is_following_tail());
+                assert!(!chat.reload_pending, "no recovery before the live tail");
+            }
         });
     }
 

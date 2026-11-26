@@ -1216,7 +1216,8 @@ mod state_tests {
             this.list_state.set_follow_mode(gpui::FollowMode::Tail);
             let following_tail = this.list_state.is_following_tail();
 
-            let anchor = this.history_page_anchor(false, following_tail);
+            assert!(following_tail);
+            let anchor = this.history_page_anchor(true);
             this.rebuild_window(anchor);
             assert!(
                 this.list_state.is_following_tail(),
