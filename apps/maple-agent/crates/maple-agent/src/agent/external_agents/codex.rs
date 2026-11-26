@@ -434,6 +434,7 @@ pub(super) fn user_input_response(answer: &str) -> Value {
 mod tests {
     use super::*;
 
+    use crate::agent::AgentPermissionMode;
     use crate::agent::external_agents::driver::TodoEntry;
 
     #[test]
@@ -444,6 +445,7 @@ mod tests {
             cwd: Path::new("/p/sub"),
             model: Some("gpt-5.4"),
             effort: Some("high"),
+            mode: AgentPermissionMode::ReadOnly,
         });
         assert_eq!(params["threadId"], "t1");
         assert_eq!(params["input"][0]["text"], "fix it");
@@ -463,6 +465,7 @@ mod tests {
             cwd: Path::new("/p"),
             model: None,
             effort: None,
+            mode: AgentPermissionMode::ReadOnly,
         });
         assert!(bare.get("model").is_none());
         assert!(bare.get("effort").is_none());

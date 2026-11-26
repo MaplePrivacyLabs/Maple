@@ -43,9 +43,11 @@ files changed and commands run, the agent's last message inside an
 `<agent-response>` block cut at 4,000 characters, and one line of guidance.
 
 Starting an agent is an ordinary tool call, judged by the task's
-[permission mode](permissions.md). The agent's own sandbox and approval
-settings decide what it may do; Maple accepts the approval requests it
-sends back.
+[permission mode](permissions.md). Codex and Claude Code keep their own
+sandbox and approval settings, and Maple accepts the approval requests they
+send back. An ACP agent runs in its own mode matching the task's, and what it
+asks to approve goes through the task's permission gate (see
+[Approvals](#approvals)).
 
 ## Skills
 
@@ -181,16 +183,52 @@ the entry's sign-in hint.
 - Session updates are read leniently and merged per tool call: `execute`
   calls are commands, finished `edit`, `delete` and `move` calls are file
   changes, and `plan` entries are the to-do list.
-- A permission request is accepted with its `allow_once` option. Options
-  that outlive the turn are never chosen; with no `allow_once`, the request
-  is cancelled. A request that offers several options of the same allow kind
-  is a choice, and goes to the caller as a question.
+- A permission request is judged by the task's gate (see
+  [Approvals](#approvals)): allowed with its `allow_once` option, refused
+  with `reject_once`. Options that outlive the turn are never chosen; with
+  neither option, the request is cancelled. A request that offers several
+  options of the same allow kind is a choice, and goes to the caller as a
+  question.
 - A form elicitation goes to the caller as questions (see
   [Questions](#questions)). Grok asks only through its own
   `_x.ai/ask_user_question`, which Maple refuses like every request it does
   not know (`-32601`); Grok then writes the question in its reply.
 - Stop sends `session/cancel`, answers whatever the agent still waits on as
   cancelled, and ends the process; the next `agent_send` resumes the session.
+
+### Approvals
+
+Each ACP entry's `acp.modes` names the agent's own mode for each of the
+task's, following Paseo:
+
+| Agent | Read only | Auto | Full access |
+| --- | --- | --- | --- |
+| Grok Build | `--permission-mode default` | `--permission-mode auto` | `--always-approve` |
+| Antigravity | `default` | `auto` | `auto` |
+
+Grok takes its mode only as launch arguments, before `agent stdio`; when the
+task's mode changes, the next turn starts a new process that resumes the
+session. Antigravity's is the session's `mode` option, set before each
+prompt. Maple never answers a request to change mode.
+
+What the agent still asks about goes to the task's gate, as the task's own
+calls do, with the tool named `<agent> <kind>` (such as `grok edit`) and the
+request's input; the agent's title for the action never reaches the
+classifier.
+
+- **Full access** allows it once.
+- **Auto** puts it to the user: the agent's own auto review already let
+  through what it judged safe. The classifier only names the reason on the
+  card.
+- **Read only** runs what the classifier finds clearly harmless and puts
+  the rest to the user.
+
+While the card waits, the agent's status says what it waits on. A refusal
+answers `reject_once`, and the agent's activity lists it under "Not
+allowed", with the user's note, so the model that called the agent knows. A
+request with no connected interface to ask is refused the same way. Agents
+without modes, Codex and Claude Code among them, have every request accepted
+once.
 
 ## Questions
 
@@ -298,6 +336,7 @@ streamed activity, accepted approvals, questions, resumption,
 provider/session isolation, errors, and process-group cancellation. Live
 inference and platform packaging remain separate checks: the ignored
 `external_agents::tests::acp_live` drives the installed ACP agents with real
-prompts on their own accounts (an edit and a command, a question, Stop and
-resume) when run by hand with `MAPLE_LIVE_ACP=grok,antigravity` and
+prompts on their own accounts (an edit and a command in read only with every
+card allowed, a question in full access, Stop, and resume in auto) when run
+by hand with `MAPLE_LIVE_ACP=grok,antigravity` and
 `--ignored --nocapture`.

@@ -76,9 +76,13 @@ A request names its call by the model's id for it, which the call's transcript
 row also carries, so the transcript marks the step that waits and keeps the
 answer on that step. A request from a host without the id marks no step.
 
-External agents are outside this: Codex and Claude Code keep their own sandbox
-and approval systems. Starting one is an ordinary tool call and is judged like
-any other. See [external agents](external-agents.md).
+Starting an external agent is an ordinary tool call and is judged like any
+other. Codex and Claude Code then keep their own sandbox and approval systems.
+An ACP agent such as Grok Build runs in its own mode matching the task's, and
+what it still asks to approve comes to this gate: full access allows it, Auto
+asks the user, since the agent's own auto review already passed it on, and
+Read only asks about what the classifier does not clear. See
+[external agents](external-agents.md#approvals).
 
 This is judgment, not a sandbox. A classifier can be wrong, and a command that
 looks harmless can do anything its script does. Computer use is the weakest case:

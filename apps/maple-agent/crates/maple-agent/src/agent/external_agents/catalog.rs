@@ -12,6 +12,7 @@ use serde_json::Value;
 use tokio::process::{ChildStdin, ChildStdout};
 use tokio::sync::mpsc;
 
+use super::super::AgentPermissionMode;
 use super::acp_client;
 use super::app_server::{AgentClient, RpcClient};
 use super::claude;
@@ -78,6 +79,32 @@ pub(crate) struct AcpSettings {
     pub(crate) cancel_meta: Option<Value>,
     /// How long start-up and opening the session may take.
     pub(crate) startup_seconds: u64,
+    /// The agent's own mode for each of the task's. An agent with modes has
+    /// what it asks to approve judged by the task's permission gate; one
+    /// without has every request accepted once.
+    #[serde(default)]
+    pub(crate) modes: Option<AcpModes>,
+}
+
+/// An ACP agent's own mode for each of the task's permission modes.
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub(crate) struct AcpModes {
+    pub(crate) read_only: AcpMode,
+    pub(crate) auto: AcpMode,
+    pub(crate) full_access: AcpMode,
+}
+
+/// How one of an agent's modes is set: arguments before its ACP arguments,
+/// which only a new process takes, or a value of the session's `mode`
+/// option, set before each prompt.
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub(crate) struct AcpMode {
+    #[serde(default)]
+    pub(crate) args: Vec<String>,
+    #[serde(default)]
+    pub(crate) option: Option<String>,
 }
 
 /// What Maple says about an agent, word for word.
@@ -129,13 +156,29 @@ pub(super) struct Launch {
 }
 
 impl CatalogEntry {
+    /// The agent's own mode for the task's `mode`, when Maple sets one.
+    pub(super) fn mode(&self, mode: AgentPermissionMode) -> Option<&AcpMode> {
+        let modes = self.acp.as_ref()?.modes.as_ref()?;
+        Some(match mode {
+            AgentPermissionMode::ReadOnly => &modes.read_only,
+            AgentPermissionMode::Auto => &modes.auto,
+            AgentPermissionMode::FullAccess => &modes.full_access,
+        })
+    }
+
+    /// The arguments that put a new process in the agent's mode for `mode`.
+    pub(super) fn mode_args(&self, mode: AgentPermissionMode) -> &[String] {
+        self.mode(mode).map_or(&[], |mode| mode.args.as_slice())
+    }
+
     /// The arguments to start a process for `existing_thread`, or for a new
-    /// thread.
+    /// thread, in the agent's mode for the task's `mode`.
     pub(super) fn launch(
         &self,
         existing_thread: Option<&str>,
         model: Option<&str>,
         effort: Option<&str>,
+        mode: AgentPermissionMode,
     ) -> Launch {
         match self.transport {
             Transport::CodexAppServer => Launch {
@@ -155,11 +198,13 @@ impl CatalogEntry {
                 }
             }
             Transport::Acp => Launch {
+                // The mode goes first: Grok reads its flags before `agent`.
                 args: self
-                    .acp
-                    .as_ref()
-                    .map(|acp| acp.args.clone())
-                    .unwrap_or_default(),
+                    .mode_args(mode)
+                    .iter()
+                    .chain(self.acp.iter().flat_map(|acp| &acp.args))
+                    .cloned()
+                    .collect(),
                 session: None,
             },
         }
@@ -305,6 +350,10 @@ mod tests {
         );
     }
 
+    const READ_ONLY: AgentPermissionMode = AgentPermissionMode::ReadOnly;
+    const AUTO: AgentPermissionMode = AgentPermissionMode::Auto;
+    const FULL_ACCESS: AgentPermissionMode = AgentPermissionMode::FullAccess;
+
     #[test]
     fn an_agents_command_drops_another_agents_session_variables() {
         let mut command = tokio::process::Command::new("agent");
@@ -330,10 +379,10 @@ mod tests {
     fn transports_launch_as_before() {
         let codex = entry("codex")
             .unwrap()
-            .launch(None, Some("m"), Some("high"));
+            .launch(None, Some("m"), Some("high"), READ_ONLY);
         assert_eq!(codex.args, ["app-server"]);
         let claude = entry("claude").unwrap();
-        let fresh = claude.launch(None, Some("m"), Some("high"));
+        let fresh = claude.launch(None, Some("m"), Some("high"), READ_ONLY);
         let session = fresh.session.clone().unwrap();
         assert!(
             fresh
@@ -342,7 +391,7 @@ mod tests {
                 .any(|pair| pair == ["--session-id", session.as_str()])
         );
         assert!(fresh.args.windows(2).any(|pair| pair == ["--model", "m"]));
-        let resumed = claude.launch(Some("s1"), None, None);
+        let resumed = claude.launch(Some("s1"), None, None, FULL_ACCESS);
         assert!(
             resumed
                 .args
@@ -352,17 +401,38 @@ mod tests {
         assert!(Transport::ClaudeStreamJson.one_turn_per_process());
         assert!(!Transport::CodexAppServer.one_turn_per_process());
         assert!(!Transport::Acp.one_turn_per_process());
-        // ACP agents start as their entries say, whatever the thread.
+        // ACP agents start as their entries say, whatever the thread, in
+        // the agent's mode for the task's.
         let grok = entry("grok").unwrap();
         assert_eq!(
-            grok.launch(Some("s1"), Some("m"), None).args,
-            ["agent", "stdio"]
+            grok.launch(Some("s1"), Some("m"), None, READ_ONLY).args,
+            ["--permission-mode", "default", "agent", "stdio"]
+        );
+        assert_eq!(
+            grok.launch(None, None, None, AUTO).args,
+            ["--permission-mode", "auto", "agent", "stdio"]
+        );
+        assert_eq!(
+            grok.launch(None, None, None, FULL_ACCESS).args,
+            ["--always-approve", "agent", "stdio"]
         );
         assert_eq!(grok.startup_timeout(), Some(Duration::from_secs(20)));
-        assert_eq!(
-            entry("antigravity").unwrap().launch(None, None, None).args,
-            ["acp", "--disable-telemetry"]
-        );
+        let antigravity = entry("antigravity").unwrap();
+        for mode in [READ_ONLY, AUTO, FULL_ACCESS] {
+            assert_eq!(
+                antigravity.launch(None, None, None, mode).args,
+                ["acp", "--disable-telemetry"]
+            );
+        }
+        let option = |mode| {
+            antigravity
+                .mode(mode)
+                .and_then(|mode| mode.option.as_deref())
+        };
+        assert_eq!(option(READ_ONLY), Some("default"));
+        assert_eq!(option(AUTO), Some("auto"));
+        assert_eq!(option(FULL_ACCESS), Some("auto"));
+        assert!(claude.mode(AUTO).is_none() && entry("codex").unwrap().mode(AUTO).is_none());
         assert_eq!(claude.startup_timeout(), None);
     }
 }

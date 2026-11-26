@@ -25,6 +25,7 @@ use super::driver::{
     AgentEvent, AgentItem, AgentReply, AgentRequest, DriverMessage, FileChangeEntry, OpenedThread,
     TurnOutcome, TurnRequest, command_line, parse_todo,
 };
+use super::lock;
 
 /// The protocol version Maple speaks.
 const PROTOCOL_VERSION: u64 = 1;
@@ -251,6 +252,11 @@ impl Client {
     /// Apply the turn's model and effort, then send its prompt. The prompt's
     /// reply ends the turn, which this client reports to the host itself.
     pub(super) async fn prompt(&self, request: &TurnRequest<'_>) -> Result<(), String> {
+        let mode = self
+            .entry
+            .mode(request.mode)
+            .and_then(|mode| mode.option.as_deref());
+        self.choose("mode", "permission mode", mode).await?;
         self.choose("model", "model", request.model).await?;
         self.choose("thought_level", "effort level", request.effort)
             .await?;
@@ -392,12 +398,6 @@ impl Client {
     fn failure(&self, method: &str, failure: &RpcFailure) -> String {
         describe_failure(self.entry, method, failure)
     }
-}
-
-fn lock<T>(mutex: &StdMutex<T>) -> std::sync::MutexGuard<'_, T> {
-    mutex
-        .lock()
-        .unwrap_or_else(std::sync::PoisonError::into_inner)
 }
 
 fn flag(value: &Value, key: &str) -> bool {
@@ -619,10 +619,7 @@ fn permission_request(
     let kind = call
         .and_then(|call| call.kind.clone())
         .unwrap_or_else(|| "other".to_string());
-    let arguments = match call.and_then(|call| call.raw_input.clone()) {
-        Some(Value::Object(input)) => input,
-        _ => Map::new(),
-    };
+    let arguments = call.map(request_arguments).unwrap_or_default();
     state
         .waiting
         .insert(id.to_string(), Waiting::Permission { options });
@@ -758,14 +755,56 @@ fn merge_tool_call(state: &mut Session, id: &str, update: &Value) -> Vec<AgentEv
 
 /// The command a call runs, under any of the names agents give it.
 fn command_of(call: &ToolCall) -> String {
+    input_command(call).unwrap_or_else(|| call.title.clone())
+}
+
+/// The command in a call's input, under any of the names agents give it.
+fn input_command(call: &ToolCall) -> Option<String> {
     let input = call.raw_input.as_ref();
-    ["command", "CommandLine", "cmd"]
+    ["command", "CommandLine", "cmd"].iter().find_map(|key| {
+        let line = command_line(input.and_then(|input| input.get(*key)));
+        (!line.is_empty()).then_some(line)
+    })
+}
+
+/// The file a call works on: in its input, under any of the names agents
+/// give it, else its first location or diff.
+fn input_path(call: &ToolCall) -> Option<String> {
+    let input = call.raw_input.as_ref();
+    ["path", "file_path", "filePath", "Path", "TargetFile"]
         .iter()
-        .find_map(|key| {
-            let line = command_line(input.and_then(|input| input.get(*key)));
-            (!line.is_empty()).then_some(line)
+        .find_map(|key| input?.get(*key)?.as_str().map(str::to_string))
+        .or_else(|| call.locations.first().cloned())
+        .or_else(|| {
+            call.content
+                .iter()
+                .find(|content| content["type"] == "diff")
+                .and_then(|diff| Some(diff.get("path")?.as_str()?.to_string()))
         })
-        .unwrap_or_else(|| call.title.clone())
+}
+
+/// What an approval request carries: the call's input, with its command or
+/// file also under the names Maple reads when the agent spells them its own
+/// way. Both come from the input or the call's locations, never from the
+/// agent's title for it.
+fn request_arguments(call: &ToolCall) -> Map<String, Value> {
+    let mut arguments = match &call.raw_input {
+        Some(Value::Object(input)) => input.clone(),
+        _ => Map::new(),
+    };
+    if !arguments.contains_key("command")
+        && let Some(command) = input_command(call)
+    {
+        arguments.insert("command".into(), command.into());
+    }
+    if !["command", "path", "file_path"]
+        .iter()
+        .any(|key| arguments.contains_key(*key))
+        && let Some(path) = input_path(call)
+    {
+        arguments.insert("path".into(), path.into());
+    }
+    arguments
 }
 
 /// A command's exit code, as a number or in its output's words.

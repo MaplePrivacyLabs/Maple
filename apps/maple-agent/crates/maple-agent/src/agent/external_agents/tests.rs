@@ -56,6 +56,45 @@ impl RecordingSink {
     }
 }
 
+/// Answer every card the task's gate shows with `answer`; the cards shown
+/// collect in what this returns.
+fn answer_cards(harness: &Harness, answer: &'static str) -> Arc<StdMutex<Vec<AgentQuestion>>> {
+    let sink = Arc::clone(&harness.sink);
+    let broker = harness.gate.questions.clone();
+    let shown = Arc::new(StdMutex::new(Vec::new()));
+    let seen = Arc::clone(&shown);
+    tokio::spawn(async move {
+        let mut answered = std::collections::HashSet::new();
+        loop {
+            for event in sink.events() {
+                if let AgentServiceEvent::Question {
+                    request_id,
+                    questions,
+                    ..
+                } = event
+                    && answered.insert(request_id.clone())
+                {
+                    seen.lock().unwrap().extend(questions);
+                    broker.answer(&request_id, answer.to_string()).await;
+                }
+            }
+            tokio::time::sleep(Duration::from_millis(20)).await;
+        }
+    });
+    shown
+}
+
+/// A task's permission gate in `mode`, with no classifier, whose cards go
+/// to `events`.
+fn task_gate(mode: AgentPermissionMode, events: AgentEventDispatcher) -> PermissionGate {
+    PermissionGate {
+        session_id: "task".to_string(),
+        mode: crate::agent::permissions::TaskPermissions::new(mode),
+        models: pi_coding_agent::ModelRegistry::new(Arc::new(crate::agent::provider::NoKeys)),
+        questions: crate::agent::questions::QuestionBroker::new(events),
+    }
+}
+
 /// Fake CLIs on a private PATH, where they log what they get.
 struct Fixtures {
     _temp: tempfile::TempDir,
@@ -126,6 +165,8 @@ struct Harness {
     sink: Arc<RecordingSink>,
     host: ExternalAgentHost,
     registry: Arc<ExternalAgentRegistry>,
+    /// The task's gate, in full access unless a test sets another mode.
+    gate: PermissionGate,
 }
 
 impl Harness {
@@ -136,17 +177,19 @@ impl Harness {
         let sink = Arc::new(RecordingSink::default());
         let events = AgentEventDispatcher::new(sink.clone());
         let host = ExternalAgentHost {
-            events,
+            events: events.clone(),
             runtime: Weak::new(),
             lifetime: CancellationToken::new(),
         };
         let registry = Arc::new(ExternalAgentRegistry::new(host.clone()));
+        let gate = task_gate(AgentPermissionMode::FullAccess, events.clone());
         Self {
             fixtures,
             project,
             sink,
             host,
             registry,
+            gate,
         }
     }
 
@@ -157,6 +200,7 @@ impl Harness {
             row_id: Some(row_id.to_string()),
             login_path: Some(self.fixtures.search_path()),
             cancel_token: CancellationToken::new(),
+            permissions: self.gate.clone(),
         }
     }
 

@@ -52,15 +52,16 @@ use tokio::sync::{Mutex, Notify, mpsc, oneshot};
 use tokio_util::sync::CancellationToken;
 
 use super::config::unix_ms;
+use super::permissions::{PermissionGate, Refusal, card_action};
 use super::runtime::AgentRuntime;
 use super::timeline::{
     MAPLE_NOTICE_ENTRY, MAX_AGENT_SESSION_TITLE_CHARS, bounded_timeline_text, notice_item,
     stored_tool_row_id,
 };
 use super::{
-    AgentEventDispatcher, AgentPermissionDecision, AgentPermissionRequest, AgentQuestion,
-    AgentRunEvent, AgentRuntimeHandle, AgentServiceEvent, AgentSubagent, AgentTimelineItem,
-    AgentTimelineLabel, ExternalAgentRef, emit_agent_event,
+    AgentEventDispatcher, AgentPermissionDecision, AgentPermissionMode, AgentPermissionRequest,
+    AgentQuestion, AgentRunEvent, AgentRuntimeHandle, AgentServiceEvent, AgentSubagent,
+    AgentTimelineItem, AgentTimelineLabel, ExternalAgentRef, emit_agent_event,
 };
 use app_server::AgentClient;
 use catalog::CatalogEntry;
@@ -146,6 +147,9 @@ pub struct ExternalAgentActivity {
     /// What the agent is waiting on the user for, while it waits.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub pending_permission: Option<String>,
+    /// What the agent asked to do this turn and was not allowed, and why.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub declined: Vec<String>,
 }
 
 /// A question an agent asked, as its caller answers it.
@@ -289,8 +293,16 @@ impl ExternalAgentActivity {
         self.questions.clear();
         self.error = None;
         self.pending_permission = None;
+        self.declined.clear();
         self.turns = self.turns.saturating_add(1);
     }
+}
+
+/// A lock that a panic elsewhere does not poison.
+fn lock<T>(mutex: &std::sync::Mutex<T>) -> std::sync::MutexGuard<'_, T> {
+    mutex
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
 }
 
 /// The model-facing summary of one agent's state.
@@ -307,6 +319,12 @@ fn render_activity(activity: &ExternalAgentActivity, guidance: &str) -> String {
     }
     if let Some(pending) = &activity.pending_permission {
         let _ = writeln!(out, "Waiting for the user to decide: {pending}");
+    }
+    if !activity.declined.is_empty() {
+        let _ = writeln!(out, "Not allowed:");
+        for declined in &activity.declined {
+            let _ = writeln!(out, "- {declined}");
+        }
     }
     if !activity.questions.is_empty() {
         let _ = writeln!(out, "Questions for you:");
@@ -447,6 +465,8 @@ pub(crate) struct ExternalAgentCall {
     pub(crate) row_id: Option<String>,
     pub(crate) login_path: Option<String>,
     pub(crate) cancel_token: CancellationToken,
+    /// The task's permission gate, which judges what the agent asks to do.
+    pub(super) permissions: PermissionGate,
 }
 
 #[derive(Debug, Deserialize)]
@@ -1006,6 +1026,8 @@ impl Drop for ContainedChild {
 
 struct AgentProcess {
     thread_id: String,
+    /// The arguments that set the agent's own mode at launch.
+    mode_args: Vec<String>,
     child: ContainedChild,
     client: Arc<AgentClient>,
     reader: tokio::task::JoinHandle<()>,
@@ -1051,6 +1073,8 @@ struct ExternalAgent {
     /// Held while a question waits for its answer: an agent asks one at a
     /// time.
     asking: Mutex<()>,
+    /// The task's permission gate, from the latest call that ran a turn.
+    gate: std::sync::Mutex<Option<PermissionGate>>,
 }
 
 impl ExternalAgent {
@@ -1097,6 +1121,7 @@ impl ExternalAgent {
             host,
             wake: Notify::new(),
             asking: Mutex::new(()),
+            gate: std::sync::Mutex::new(None),
         }
     }
 
@@ -1164,6 +1189,7 @@ impl ExternalAgent {
         if self.state.lock().await.turn.is_some() {
             return Err(self.busy());
         }
+        *lock(&self.gate) = Some(call.permissions.clone());
         tokio::select! {
             biased;
             _ = self.cancel.cancelled() => Err("This external agent has been shut down.".to_string()),
@@ -1213,6 +1239,7 @@ impl ExternalAgent {
             cwd: &self.cwd,
             model: input.model.as_deref(),
             effort: input.effort.as_deref(),
+            mode: call.permissions.mode.get(),
         };
         if let Err(error) = client.start_turn(&request).await {
             self.finish_turn(TurnOutcome::Failed, Some(error.clone()))
@@ -1351,19 +1378,34 @@ impl ExternalAgent {
         model: Option<&str>,
         effort: Option<&str>,
     ) -> Result<(), String> {
+        let mode = call.permissions.mode.get();
+        let mode_args = self.entry.mode_args(mode);
         {
-            let state = self.state.lock().await;
+            let mut state = self.state.lock().await;
             if let Some(process) = state.process.as_ref()
                 && !process.client.closed().is_cancelled()
             {
-                return Ok(());
+                if process.mode_args == mode_args {
+                    return Ok(());
+                }
+                // The task's mode changed, and the agent takes its own only
+                // at launch: a new process resumes the session in it.
+                log::info!("External agent {} restarts in another mode", self.agent_id);
+                if let Some(mut process) = state.process.take() {
+                    drop(state);
+                    process.child.kill_and_wait().await;
+                    process.reader.abort();
+                    process.events.abort();
+                }
             }
         }
         let existing_thread = self.state.lock().await.thread_id.clone();
         let search_path = call.login_path.as_deref();
         let executable = super::integrations::find_executable(&self.entry.executable, search_path)
             .ok_or_else(|| self.entry.text.launch_missing.clone())?;
-        let launch = self.entry.launch(existing_thread.as_deref(), model, effort);
+        let launch = self
+            .entry
+            .launch(existing_thread.as_deref(), model, effort, mode);
         let mut command = agent_command(
             &executable,
             &launch.args,
@@ -1409,6 +1451,7 @@ impl ExternalAgent {
         }
         state.process = Some(AgentProcess {
             thread_id: opened.thread_id,
+            mode_args: mode_args.to_vec(),
             child,
             client,
             reader,
@@ -1724,16 +1767,73 @@ impl ExternalAgent {
     /// Answer one approval request from the agent. Maple accepts every
     /// request at once, as its "Allow all" policy always did; a request that
     /// arrives after the agent or its turn has ended is cancelled instead.
+    /// Answer what the agent asks to do. An agent Maple sets the mode of
+    /// has it judged by the task's permission gate, which may ask the user;
+    /// any other is accepted once, as it runs in its own approval mode.
     async fn request_permission(&self, request: AgentPermissionRequest) -> AgentPermissionDecision {
-        if self.cancel.is_cancelled() || self.turn_ended().await.is_cancelled() {
+        let ended = self.turn_ended().await;
+        if self.cancel.is_cancelled() || ended.is_cancelled() {
             return AgentPermissionDecision::Cancel;
         }
+        let gate = lock(&self.gate)
+            .clone()
+            .filter(|_| self.entry.mode(AgentPermissionMode::ReadOnly).is_some());
+        let Some(gate) = gate else {
+            log::info!(
+                "External agent {} approval accepted for {}",
+                self.agent_id,
+                request.tool_name
+            );
+            return AgentPermissionDecision::AllowOnce;
+        };
+        let input = Value::Object(request.arguments);
+        let action = card_action(&request.tool_name, &input);
+        self.set_pending_permission(Some(format!("approve {action}")))
+            .await;
+        // Only the tool, its input and the folder reach the classifier: the
+        // agent's own title for the action could argue it through.
+        let cwd = self.cwd.display().to_string();
+        let stop = self.cancel.child_token();
+        let verdict = tokio::select! {
+            biased;
+            () = ended.cancelled() => Err(Refusal::Stopped),
+            verdict = gate.check_request(&request.tool_name, None, &input, &cwd, &stop) => verdict,
+        };
+        let declined = match &verdict {
+            Ok(()) | Err(Refusal::Stopped) => None,
+            Err(Refusal::Declined(None)) => Some(format!("{action}: the user declined it.")),
+            Err(Refusal::Declined(Some(note))) => {
+                Some(format!("{action}: the user declined it and said: {note}"))
+            }
+            Err(Refusal::NobodyToAsk) => Some(format!(
+                "{action}: it needed the user's approval and no connected interface could ask."
+            )),
+        };
+        {
+            let mut state = self.state.lock().await;
+            state.activity.pending_permission = None;
+            state.activity.declined.extend(declined);
+        }
+        self.emit_row(true).await;
         log::info!(
-            "External agent {} approval accepted for {}",
+            "External agent {} approval for {}: {}",
             self.agent_id,
-            request.tool_name
+            request.tool_name,
+            if verdict.is_ok() {
+                "allowed"
+            } else {
+                "refused"
+            }
         );
-        AgentPermissionDecision::AllowOnce
+        match verdict {
+            Ok(()) => AgentPermissionDecision::AllowOnce,
+            Err(_) => AgentPermissionDecision::Cancel,
+        }
+    }
+
+    async fn set_pending_permission(&self, pending: Option<String>) {
+        self.state.lock().await.activity.pending_permission = pending;
+        self.emit_row(true).await;
     }
 
     /// Ask the agent to stop its current turn. The thread stays open.

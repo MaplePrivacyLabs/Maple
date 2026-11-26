@@ -13,6 +13,7 @@ use pi_coding_agent::extensions::{RegisteredTool, ToolPrompt};
 use serde::de::DeserializeOwned;
 use serde_json::{Value, json};
 
+use super::super::permissions::PermissionGate;
 use super::{
     AGENT_CANCEL_TOOL, AGENT_SEND_TOOL, AGENT_START_TOOL, AGENT_STATUS_TOOL, AgentRefParams,
     AgentSendParams, AgentStartParams, EXTERNAL_AGENT_TOOLS, ExternalAgentCall,
@@ -48,6 +49,8 @@ pub(crate) struct ExternalAgentToolsFor {
     pub(crate) working_dir: PathBuf,
     pub(crate) login_path: Option<String>,
     pub(crate) providers: TaskProviders,
+    /// The task's permission gate, which judges what its agents ask to do.
+    pub(in crate::agent) permissions: PermissionGate,
 }
 
 #[derive(Clone, Copy)]
@@ -177,6 +180,7 @@ impl ExternalAgentTool {
                 .registry
                 .search_path(self.task.login_path.as_deref()),
             cancel_token: invocation.cancel.clone(),
+            permissions: self.task.permissions.clone(),
         }
     }
 

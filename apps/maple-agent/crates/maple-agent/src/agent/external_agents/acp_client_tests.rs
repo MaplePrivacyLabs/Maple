@@ -274,6 +274,7 @@ fn permission_requests_are_approvals_that_never_pick_lasting_options() {
     assert_eq!(item_id, "e1");
     assert_eq!(tool_name, "grok edit");
     assert_eq!(arguments["file_path"], "/p/hello.txt");
+    assert!(!arguments.contains_key("path"));
     assert_eq!(prompt.as_deref(), Some("Edit `hello.txt`"));
     let waiting = state.waiting.get("7").unwrap().clone();
     assert_eq!(
@@ -480,4 +481,40 @@ fn capabilities_are_read_under_either_spelling() {
         &json!({"sessionCapabilities": {}}),
         "resume"
     ));
+}
+
+#[test]
+fn an_approval_names_the_command_or_file_however_the_agent_spells_it() {
+    let arguments = |tool_call: Value| {
+        let mut state = Session::default();
+        let (_, request) = ask(
+            &mut state,
+            "session/request_permission",
+            json!({"sessionId": "s", "toolCall": tool_call,
+                "options": [{"optionId": "allow", "name": "Allow", "kind": "allow_once"}]}),
+        );
+        let AgentRequest::Approval { arguments, .. } = request else {
+            panic!("expected an approval");
+        };
+        arguments
+    };
+    // Antigravity's own spellings, as recorded.
+    let command = arguments(
+        json!({"toolCallId": "c", "kind": "execute", "title": "Read maple-live.txt",
+        "rawInput": {"CommandLine": "cat maple-live.txt", "WaitMsBeforeAsync": 5000}}),
+    );
+    assert_eq!(command["command"], "cat maple-live.txt");
+    assert_eq!(command["CommandLine"], "cat maple-live.txt");
+    let edit = arguments(json!({"toolCallId": "e", "kind": "edit", "title": "Edit",
+        "rawInput": {"Path": "/p/maple-live.txt", "Content": "ready", "Overwrite": true}}));
+    assert_eq!(edit["path"], "/p/maple-live.txt");
+    assert!(!edit.contains_key("command"));
+    // A call with no input is named by its location, never by its title.
+    let located = arguments(
+        json!({"toolCallId": "l", "kind": "delete", "title": "rm -rf /",
+        "locations": [{"path": "/p/old.txt"}]}),
+    );
+    assert_eq!(located["path"], "/p/old.txt");
+    let untitled = arguments(json!({"toolCallId": "t", "kind": "execute", "title": "ls"}));
+    assert!(untitled.is_empty());
 }

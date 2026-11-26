@@ -201,25 +201,23 @@ fn only_the_allow_label_allows() {
         Ok(())
     );
     assert_eq!(read_answer("Allow once"), Ok(()));
-    assert_eq!(read_answer(&card(json!(["Deny"]))), Err(DENIED.to_string()));
-    assert_eq!(read_answer(""), Err(DENIED.to_string()));
+    assert_eq!(read_answer(&card(json!(["Deny"]))), Err(None));
+    assert_eq!(read_answer(""), Err(None));
     assert_eq!(
         read_answer(&card(json!(["(no answer provided)"]))),
-        Err(DENIED.to_string())
+        Err(None)
     );
     let noted = read_answer(&card(json!([
         "Deny",
         "Additional note: use the staging DB"
     ])));
+    assert_eq!(noted, Err(Some("use the staging DB".to_string())));
     assert_eq!(
-        noted,
-        Err(format!("{DENIED} The user said: use the staging DB"))
+        Refusal::Declined(Some("use the staging DB".to_string())).for_model(),
+        format!("{DENIED} The user said: use the staging DB")
     );
     let typed = read_answer(&card(json!(["run the tests first"])));
-    assert_eq!(
-        typed,
-        Err(format!("{DENIED} The user said: run the tests first"))
-    );
+    assert_eq!(typed, Err(Some("run the tests first".to_string())));
     // Words near the label do not count, in either kind of answer.
     assert!(read_answer("allow").is_err());
     assert!(read_answer("Allow once, but not really").is_err());
@@ -568,4 +566,68 @@ fn saved_modes_read_back_and_old_tasks_keep_full_access() {
 fn the_maple_provider_serves_both_classifiers() {
     assert_eq!(system_one_model().provider, MAPLE_PROVIDER);
     assert_eq!(FALLBACK_CLASSIFIER_MODEL, system_one_model().id);
+}
+
+async fn agent_request(gate: &PermissionGate) -> Result<(), Refusal> {
+    gate.check_request(
+        "grok edit",
+        Some("Edit `src/lib.rs`"),
+        &json!({ "path": "src/lib.rs" }),
+        "/work",
+        &CancellationToken::new(),
+    )
+    .await
+}
+
+fn shown_reason(sink: &Answering) -> AgentPermissionReason {
+    let shown = sink.shown.lock().unwrap();
+    assert_eq!(shown.len(), 1);
+    let prompt = shown[0].permission.as_ref().unwrap();
+    assert_eq!(prompt.tool, "grok edit");
+    assert_eq!(prompt.action, "src/lib.rs");
+    prompt.reason
+}
+
+#[tokio::test]
+async fn full_access_lets_an_agents_request_run_unasked() {
+    let (gate, classifier, sink) = gate(AgentPermissionMode::FullAccess, Vec::new(), CARD_DENY);
+    assert_eq!(agent_request(&gate).await, Ok(()));
+    assert!(classifier.asked.lock().unwrap().is_empty());
+    assert!(sink.shown.lock().unwrap().is_empty());
+}
+
+#[tokio::test]
+async fn read_only_clears_a_harmless_agent_request_and_asks_about_the_rest() {
+    let (cleared, _, sink) = gate(
+        READ_ONLY,
+        vec![reply(answers(NO_HAZARD, OBSERVE))],
+        CARD_DENY,
+    );
+    assert_eq!(agent_request(&cleared).await, Ok(()));
+    assert!(sink.shown.lock().unwrap().is_empty());
+
+    let (asked, _, sink) = gate(
+        READ_ONLY,
+        vec![reply(answers(NO_HAZARD, "project_change"))],
+        CARD_DENY,
+    );
+    assert_eq!(agent_request(&asked).await, Err(Refusal::Declined(None)));
+    assert_eq!(shown_reason(&sink), AgentPermissionReason::ChangesProject);
+}
+
+#[tokio::test]
+async fn in_auto_what_the_agents_own_review_asks_about_goes_to_the_user() {
+    // The classifier would clear it, but the agent's auto mode already
+    // passed it on: the user decides, with no reason found.
+    let (cleared, _, sink) = gate(AUTO, vec![reply(answers(NO_HAZARD, OBSERVE))], CARD_ALLOW);
+    assert_eq!(agent_request(&cleared).await, Ok(()));
+    assert_eq!(shown_reason(&sink), AgentPermissionReason::Uncertain);
+
+    let (hazard, _, sink) = gate(
+        AUTO,
+        vec![reply(answers("push_or_publish", "sends_out"))],
+        CARD_DENY,
+    );
+    assert_eq!(agent_request(&hazard).await, Err(Refusal::Declined(None)));
+    assert_eq!(shown_reason(&sink), AgentPermissionReason::SendsOut);
 }

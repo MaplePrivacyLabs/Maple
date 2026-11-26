@@ -1,7 +1,9 @@
 //! The ACP agents installed on this computer, driven with real prompts on
 //! their own accounts. Never run in CI: run by hand, signed in, with
 //! `MAPLE_LIVE_ACP=grok,antigravity` and `--ignored --nocapture`. Each agent
-//! gets a fresh git folder; nothing outside it is touched.
+//! gets a fresh git folder; nothing outside it is touched. The task starts
+//! in read only, where every card is allowed, then moves to full access and
+//! auto.
 
 use super::*;
 
@@ -55,6 +57,11 @@ async fn live_acp_agents() {
     };
     for provider in providers.split(',').map(str::trim) {
         let harness = Harness::new("live");
+        harness.gate.mode.set(AgentPermissionMode::ReadOnly);
+        let cards = answer_cards(
+            &harness,
+            r#"{"answers":{"permission":{"answers":["Allow once"]}}}"#,
+        );
         let project = &harness.project;
         std::process::Command::new("git")
             .args(["init", "-q"])
@@ -87,6 +94,20 @@ async fn live_acp_agents() {
         );
         let written = fs::read_to_string(project.join("maple-live.txt")).unwrap_or_default();
         assert_eq!(written.trim(), "ready");
+        // Read only asks before the agent edits.
+        let asked: Vec<String> = cards
+            .lock()
+            .unwrap()
+            .iter()
+            .filter_map(|card| card.permission.as_ref())
+            .map(|prompt| format!("{}: {}", prompt.tool, prompt.action))
+            .collect();
+        println!("--- cards in read only {asked:?}");
+        assert!(!asked.is_empty());
+
+        // Full access: Grok starts again with its own, on the same session.
+        harness.gate.mode.set(AgentPermissionMode::FullAccess);
+        let shown = cards.lock().unwrap().len();
 
         // A question: the call returns waiting, or the agent asks in words.
         let asked = harness
@@ -118,6 +139,7 @@ async fn live_acp_agents() {
         let color = fs::read_to_string(project.join("color.txt")).unwrap_or_default();
         println!("--- color.txt: {color:?}");
         assert!(color.to_ascii_lowercase().contains("blue"), "{color:?}");
+        assert_eq!(cards.lock().unwrap().len(), shown, "full access asked");
 
         // Stop a long command, then resume the session in a new process.
         let background = harness
@@ -149,6 +171,7 @@ async fn live_acp_agents() {
             .await;
         println!("--- stopped\n{}", result_text(&stopped));
         assert!(result_text(&stopped).starts_with("Status: cancelled"));
+        harness.gate.mode.set(AgentPermissionMode::Auto);
         let resumed = harness
             .registry
             .send(

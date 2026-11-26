@@ -7,7 +7,9 @@ use std::path::Path;
 
 use serde_json::{Map, Value, json};
 
-use super::super::{AgentPermissionDecision, AgentQuestion, AgentQuestionOption};
+use super::super::{
+    AgentPermissionDecision, AgentPermissionMode, AgentQuestion, AgentQuestionOption,
+};
 
 /// One thing an agent reported, reduced to what Maple shows.
 #[derive(Debug, Clone, PartialEq)]
@@ -179,6 +181,8 @@ pub(super) struct TurnRequest<'a> {
     pub(super) cwd: &'a Path,
     pub(super) model: Option<&'a str>,
     pub(super) effort: Option<&'a str>,
+    /// The task's permission mode, for an agent that sets its own from it.
+    pub(super) mode: AgentPermissionMode,
 }
 
 /// A thread the agent opened or reopened.

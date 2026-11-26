@@ -1,8 +1,14 @@
 //! ACP agents through the registry, against the fake ACP agent: the
-//! handshake Maple offers, options, a turn's activity, approvals, questions
-//! to the caller, cancel and resume, and a signed-out agent.
+//! handshake Maple offers, options, a turn's activity, the task's mode and
+//! approvals, questions to the caller, cancel and resume, and a signed-out
+//! agent.
 
 use super::*;
+use crate::agent::AgentPermissionReason;
+
+const READ_ONLY: AgentPermissionMode = AgentPermissionMode::ReadOnly;
+const AUTO: AgentPermissionMode = AgentPermissionMode::Auto;
+const FULL_ACCESS: AgentPermissionMode = AgentPermissionMode::FullAccess;
 
 fn acp_start(provider: &str, prompt: &str) -> AgentStartParams {
     AgentStartParams {
@@ -25,6 +31,22 @@ fn acp_send(provider: &str, agent_id: &str, prompt: &str) -> AgentSendParams {
         model: None,
         effort: None,
     }
+}
+
+/// The arguments of each process start the fake agent logged.
+fn starts(log: &str) -> Vec<&str> {
+    log.lines()
+        .filter_map(|line| line.strip_prefix("args "))
+        .collect()
+}
+
+fn cards_shown(harness: &Harness) -> usize {
+    harness
+        .sink
+        .events()
+        .iter()
+        .filter(|event| matches!(event, AgentServiceEvent::Question { .. }))
+        .count()
 }
 
 /// The lines Maple sent the fake agent that call `method`.
@@ -69,8 +91,9 @@ async fn an_acp_agent_works_a_turn_with_the_chosen_model_and_effort() {
     assert_eq!(activity["commands"][0]["exitCode"], 0);
 
     let log = harness.log();
-    // Started as the catalog says, with telemetry and updates off.
-    assert!(log.contains("args agent stdio"), "{log}");
+    // Started as the catalog says, in the agent's mode for the task's, with
+    // telemetry and updates off.
+    assert_eq!(starts(&log), ["--always-approve agent stdio"]);
     assert!(log.contains("env GROK_TELEMETRY_ENABLED=false"), "{log}");
     assert!(
         log.contains("env GROK_TELEMETRY_TRACE_UPLOAD=false"),
@@ -154,7 +177,161 @@ async fn acp_approvals_allow_once_and_never_for_longer() {
         .start(harness.call("acp-3", "row-1"), acp_start("grok", "Edit it"))
         .await;
     let text = result_text(&result);
+    // Full access allows it once, without a card.
     assert!(text.contains("Chose: allow-once"), "{text}");
+    assert_eq!(cards_shown(&harness), 0);
+    harness.registry.shutdown_all(Duration::from_secs(5)).await;
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn in_read_only_the_user_decides_what_an_acp_agent_asks_to_do() {
+    let harness = Harness::new("acp-approve-ask");
+    harness.install_fixture("grok", "acp-approve");
+    harness.gate.mode.set(READ_ONLY);
+    let cards = answer_cards(
+        &harness,
+        r#"{"answers":{"permission":{"answers":["Allow once"]}}}"#,
+    );
+    let result = harness
+        .registry
+        .start(harness.call("acp-6", "row-1"), acp_start("grok", "Edit it"))
+        .await;
+    let text = result_text(&result);
+    assert!(text.contains("Chose: allow-once"), "{text}");
+    assert!(!text.contains("Not allowed"), "{text}");
+    {
+        let cards = cards.lock().unwrap();
+        assert_eq!(cards.len(), 1);
+        let prompt = cards[0].permission.as_ref().unwrap();
+        assert_eq!(prompt.tool, "grok edit");
+        assert_eq!(prompt.action, "src/lib.rs");
+        // There is no classifier here; one that cannot answer never allows.
+        assert_eq!(prompt.reason, AgentPermissionReason::Unavailable);
+    }
+    harness.registry.shutdown_all(Duration::from_secs(5)).await;
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_declined_request_is_refused_once_and_the_caller_hears_why() {
+    let harness = Harness::new("acp-approve-deny");
+    harness.install_fixture("grok", "acp-approve");
+    harness.gate.mode.set(AUTO);
+    answer_cards(
+        &harness,
+        r#"{"answers":{"permission":{"answers":["Deny","Additional note: not now"]}}}"#,
+    );
+    let result = harness
+        .registry
+        .start(harness.call("acp-7", "row-1"), acp_start("grok", "Edit it"))
+        .await;
+    let text = result_text(&result);
+    assert!(text.contains("Chose: reject-once"), "{text}");
+    assert!(
+        text.contains("Not allowed:\n- src/lib.rs: the user declined it and said: not now\n"),
+        "{text}"
+    );
+    harness.registry.shutdown_all(Duration::from_secs(5)).await;
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn with_nobody_to_ask_an_acp_agents_request_is_refused() {
+    let harness = Harness::new("acp-approve-nobody");
+    harness.install_fixture("grok", "acp-approve");
+    harness.gate.mode.set(READ_ONLY);
+    harness.gate.questions.manage_availability();
+    let result = harness
+        .registry
+        .start(harness.call("acp-8", "row-1"), acp_start("grok", "Edit it"))
+        .await;
+    let text = result_text(&result);
+    assert!(text.contains("Chose: reject-once"), "{text}");
+    assert!(
+        text.contains(
+            "- src/lib.rs: it needed the user's approval and no connected interface could ask."
+        ),
+        "{text}"
+    );
+    harness.registry.shutdown_all(Duration::from_secs(5)).await;
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn grok_starts_in_the_tasks_mode_and_restarts_when_it_changes() {
+    let harness = Harness::new("acp-grok-modes");
+    harness.install_fixture("grok", "acp");
+    harness.gate.mode.set(READ_ONLY);
+    let first = harness
+        .registry
+        .start(harness.call("acp-9", "row-1"), acp_start("grok", "One"))
+        .await;
+    assert!(result_text(&first).contains("Done: One"));
+    harness.gate.mode.set(AUTO);
+    for (row, prompt) in [("row-2", "Two"), ("row-3", "Three")] {
+        let next = harness
+            .registry
+            .send(
+                harness.call("acp-9", row),
+                acp_send("grok", "grok-1", prompt),
+            )
+            .await;
+        assert!(result_text(&next).contains(&format!("Done: {prompt}")));
+    }
+    let log = harness.log();
+    // Grok takes its mode only at launch: the change starts a new process
+    // on the same session, and a turn in the same mode keeps it.
+    assert_eq!(
+        starts(&log),
+        [
+            "--permission-mode default agent stdio",
+            "--permission-mode auto agent stdio"
+        ]
+    );
+    assert_eq!(
+        sent(&log, "session/resume")[0]["params"]["sessionId"],
+        "fixture-session"
+    );
+    assert!(
+        sent(&log, "session/set_config_option")
+            .iter()
+            .all(|set| set["params"]["configId"] != "mode")
+    );
+    harness.registry.shutdown_all(Duration::from_secs(5)).await;
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn antigravity_sets_its_mode_option_from_the_tasks() {
+    let harness = Harness::new("acp-agy-modes");
+    harness.install_fixture("agy", "acp");
+    for (row, mode) in [
+        ("row-1", READ_ONLY),
+        ("row-2", FULL_ACCESS),
+        ("row-3", READ_ONLY),
+    ] {
+        harness.gate.mode.set(mode);
+        let result = if row == "row-1" {
+            harness
+                .registry
+                .start(harness.call("acp-10", row), acp_start("antigravity", row))
+                .await
+        } else {
+            harness
+                .registry
+                .send(
+                    harness.call("acp-10", row),
+                    acp_send("antigravity", "antigravity-1", row),
+                )
+                .await
+        };
+        assert!(result_text(&result).contains(&format!("Done: {row}")));
+    }
+    let log = harness.log();
+    assert_eq!(starts(&log).len(), 1, "{log}");
+    // The agent starts in default, so read only needs no change.
+    let modes: Vec<Value> = sent(&log, "session/set_config_option")
+        .into_iter()
+        .filter(|set| set["params"]["configId"] == "mode")
+        .map(|set| set["params"]["value"].clone())
+        .collect();
+    assert_eq!(modes, [json!("auto"), json!("default")]);
     harness.registry.shutdown_all(Duration::from_secs(5)).await;
 }
 

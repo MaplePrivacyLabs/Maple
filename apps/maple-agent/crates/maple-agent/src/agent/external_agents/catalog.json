@@ -59,7 +59,26 @@
       "cancelMeta": {
         "cancelTrigger": "ctrl_c"
       },
-      "startupSeconds": 20
+      "startupSeconds": 20,
+      "modes": {
+        "readOnly": {
+          "args": [
+            "--permission-mode",
+            "default"
+          ]
+        },
+        "auto": {
+          "args": [
+            "--permission-mode",
+            "auto"
+          ]
+        },
+        "fullAccess": {
+          "args": [
+            "--always-approve"
+          ]
+        }
+      }
     },
     "text": {
       "notInstalled": "Install Grok Build and make sure `grok` is on your PATH, then reopen this page.",
@@ -86,7 +105,18 @@
         "acp",
         "--disable-telemetry"
       ],
-      "startupSeconds": 20
+      "startupSeconds": 20,
+      "modes": {
+        "readOnly": {
+          "option": "default"
+        },
+        "auto": {
+          "option": "auto"
+        },
+        "fullAccess": {
+          "option": "auto"
+        }
+      }
     },
     "text": {
       "notInstalled": "Install the Antigravity CLI and make sure `agy` is on your PATH, then reopen this page.",

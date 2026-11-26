@@ -12,12 +12,14 @@ use std::io::{BufRead, Write};
 const SESSION: &str = "fixture-session";
 const MODELS: [&str; 2] = ["fixture-default", "fixture-fast"];
 const EFFORTS: [&str; 2] = ["low", "high"];
+const MODES: [&str; 2] = ["default", "auto"];
 
 struct Agent {
     out: File,
     log: Option<String>,
     model: String,
     effort: String,
+    mode: String,
 }
 
 impl Agent {
@@ -50,6 +52,8 @@ impl Agent {
               "currentValue": self.model, "options": choices(&MODELS) },
             { "id": "reasoning_effort", "category": "thought_level", "type": "select",
               "currentValue": self.effort, "options": choices(&EFFORTS) },
+            { "id": "mode", "category": "mode", "type": "select",
+              "currentValue": self.mode, "options": choices(&MODES) },
         ])
     }
 
@@ -104,6 +108,7 @@ fn run() {
         log: std::env::var(FIXTURE_LOG).ok(),
         model: MODELS[0].to_string(),
         effort: EFFORTS[1].to_string(),
+        mode: MODES[0].to_string(),
     };
     agent.log(&format!("args {args}"));
     for name in [
@@ -152,6 +157,7 @@ fn run() {
                 match params["configId"].as_str() {
                     Some("model") => agent.model = value,
                     Some("reasoning_effort") => agent.effort = value,
+                    Some("mode") => agent.mode = value,
                     _ => {}
                 }
                 let options = agent.options();
