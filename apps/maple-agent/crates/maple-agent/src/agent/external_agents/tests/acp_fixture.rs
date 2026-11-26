@@ -135,11 +135,19 @@ fn run() {
             continue;
         };
         match method {
-            "initialize" => agent.send(json!({ "id": id, "result": {
-                "protocolVersion": 1,
-                "agentCapabilities": { "loadSession": true, "sessionCapabilities": { "resume": {} } },
-                "authMethods": [],
-            } })),
+            "initialize" => {
+                // A load-only agent reopens sessions with `session/load`.
+                let capabilities = if mode == "acp-load-replay" {
+                    json!({ "loadSession": true })
+                } else {
+                    json!({ "loadSession": true, "sessionCapabilities": { "resume": {} } })
+                };
+                agent.send(json!({ "id": id, "result": {
+                    "protocolVersion": 1,
+                    "agentCapabilities": capabilities,
+                    "authMethods": [],
+                } }));
+            }
             "session/new" if mode == "acp-signed-out" => agent.send(json!({ "id": id,
                 "error": { "code": -32000, "message": "Authentication required" } })),
             "session/new" => {
@@ -151,6 +159,12 @@ fn run() {
             "session/resume" => {
                 let options = agent.options();
                 agent.send(json!({ "id": id, "result": { "configOptions": options } }));
+            }
+            "session/load" => {
+                let options = agent.options();
+                agent.send(json!({ "id": id, "result": { "configOptions": options } }));
+                // As some agents do, history keeps arriving after the reply.
+                agent.say("Earlier reply.");
             }
             "session/set_config_option" => {
                 let value = params["value"].as_str().unwrap_or_default().to_string();
@@ -221,8 +235,10 @@ fn run() {
                         agent.update(json!({ "sessionUpdate": "tool_call", "toolCallId": "c1",
                             "kind": "execute", "status": "in_progress", "title": "Execute `cargo test`",
                             "rawInput": { "command": "cargo test" } }));
-                        agent.update(json!({ "sessionUpdate": "tool_call_update", "toolCallId": "c1",
-                            "status": "completed", "rawOutput": { "exit_code": 0 } }));
+                        agent.update(
+                            json!({ "sessionUpdate": "tool_call_update", "toolCallId": "c1",
+                            "status": "completed", "rawOutput": { "exit_code": 0 } }),
+                        );
                         agent.update(json!({ "sessionUpdate": "tool_call", "toolCallId": "e1",
                             "kind": "edit", "status": "completed", "title": "Edit `src/lib.rs`",
                             "content": [{ "type": "diff", "path": "src/lib.rs", "oldText": "a", "newText": "b" }] }));

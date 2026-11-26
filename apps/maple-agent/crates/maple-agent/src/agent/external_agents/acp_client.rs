@@ -19,7 +19,7 @@ use tokio::sync::mpsc;
 use tokio_util::sync::CancellationToken;
 
 use super::super::{AgentPermissionDecision, AgentQuestion, AgentQuestionOption};
-use super::app_server::{Dialect, RpcClient, RpcFailure, ServerMessage};
+use super::app_server::{Dialect, InOrder, RpcClient, RpcFailure, ServerMessage};
 use super::catalog::CatalogEntry;
 use super::driver::{
     AgentEvent, AgentItem, AgentReply, AgentRequest, DriverMessage, FileChangeEntry, OpenedThread,
@@ -210,9 +210,10 @@ impl Client {
                     .map_err(|failure| self.failure("session/resume", &failure))?,
             ),
             Some(session) if can_load => {
+                // Replayed history is not news; it is ignored until the next
+                // prompt, since some agents go on replaying after the reply.
                 lock(&self.state).replaying = true;
                 let result = self.rpc.call("session/load", params(Some(session))).await;
-                lock(&self.state).replaying = false;
                 (
                     session.to_string(),
                     result.map_err(|failure| self.failure("session/load", &failure))?,
@@ -250,7 +251,10 @@ impl Client {
     }
 
     /// Apply the turn's model and effort, then send its prompt. The prompt's
-    /// reply ends the turn, which this client reports to the host itself.
+    /// reply ends the turn: the reader reports it to the host in the order
+    /// the agent sent it, after the turn's last update and before anything
+    /// the agent sends later. The prompt is written before this returns, so a
+    /// cancel cannot reach the agent ahead of it.
     pub(super) async fn prompt(&self, request: &TurnRequest<'_>) -> Result<(), String> {
         let mode = self
             .entry
@@ -265,6 +269,12 @@ impl Client {
             state.prompt += 1;
             state.segment = 0;
             state.text_open = false;
+            // A reopened session's history can keep arriving after its load
+            // reply, as Paseo also finds; it ends with the first new prompt.
+            // Like Paseo's, this is a best effort: history the agent sends
+            // after Maple's prompt is already on its way is not told apart.
+            // Setting options first, as a turn usually does, makes that rare.
+            state.replaying = false;
             (state.id.clone(), state.prompt)
         };
         let session = session.ok_or("The agent has no open session.")?;
@@ -274,16 +284,13 @@ impl Client {
                 turn_id: Some(format!("prompt-{prompt}")),
             }))
             .await;
-        let rpc = Arc::clone(&self.rpc);
-        let events = self.events.clone();
         let state = Arc::clone(&self.state);
         let entry = self.entry;
         let params = json!({
             "sessionId": session,
             "prompt": [{ "type": "text", "text": request.prompt }],
         });
-        tokio::spawn(async move {
-            let reply = rpc.call("session/prompt", params).await;
+        let on_response: InOrder = Box::new(move |reply| {
             {
                 // Text after the reply comes from a turn the agent started
                 // itself, such as Grok's when a background command ends: a
@@ -295,14 +302,15 @@ impl Client {
                 }
             }
             let (outcome, error) = turn_end(entry, reply);
-            let _ = events
-                .send(DriverMessage::Event(AgentEvent::TurnCompleted {
-                    outcome,
-                    error,
-                }))
-                .await;
+            vec![DriverMessage::Event(AgentEvent::TurnCompleted {
+                outcome,
+                error,
+            })]
         });
-        Ok(())
+        self.rpc
+            .send_in_order("session/prompt", params, on_response)
+            .await
+            .map_err(|failure| self.failure("session/prompt", &failure))
     }
 
     /// Set the session's option of `category` to `wanted`, refusing a value

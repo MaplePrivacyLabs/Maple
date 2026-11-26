@@ -217,6 +217,84 @@ async fn an_agent_shut_down_mid_turn_ends_its_own_command_first() {
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn history_replayed_after_a_load_reply_is_not_news() {
+    let harness = Harness::new("acp-load-replay");
+    harness.install_fixture("grok", "acp-load-replay");
+    let first = harness
+        .registry
+        .start(harness.call("acp-13", "row-1"), acp_start("grok", "First"))
+        .await;
+    assert!(
+        result_text(&first).contains("Done: First"),
+        "{}",
+        result_text(&first)
+    );
+    // Grok takes its mode at launch: a new mode reopens the session, here
+    // with `session/load`.
+    harness.gate.mode.set(READ_ONLY);
+    // Maple sets the agent's options before it prompts; that round trip is
+    // what puts late history ahead of the prompt.
+    let second = harness
+        .registry
+        .send(
+            harness.call("acp-13", "row-2"),
+            AgentSendParams {
+                model: Some("fixture-fast".into()),
+                ..acp_send("grok", "grok-1", "Second")
+            },
+        )
+        .await;
+    let text = result_text(&second);
+    assert!(text.contains("Done: Second (fixture-fast"), "{text}");
+    assert!(!text.contains("Earlier reply."), "{text}");
+    assert_eq!(sent(&harness.log(), "session/load").len(), 1);
+    harness.registry.shutdown_all(Duration::from_secs(5)).await;
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_prompt_reaches_the_agent_before_a_stop_that_follows_it() {
+    let harness = Harness::new("acp-prompt-then-stop");
+    harness.install_fixture("grok", "acp-slow");
+    harness
+        .registry
+        .start(
+            harness.call("acp-14", "row-1"),
+            AgentStartParams {
+                background: true,
+                ..acp_start("grok", "Long job")
+            },
+        )
+        .await
+        .unwrap();
+    // Stop at once, with nothing in between.
+    let stopped = harness
+        .registry
+        .cancel_tool(
+            &harness.call("acp-14", "row-2"),
+            AgentRefParams {
+                provider: "grok".into(),
+                agent_id: "grok-1".into(),
+            },
+        )
+        .await;
+    assert!(
+        result_text(&stopped).starts_with("Status: cancelled"),
+        "{}\n{}",
+        result_text(&stopped),
+        harness.log()
+    );
+    let log = harness.log();
+    let position = |method: &str| {
+        log.lines()
+            .position(|line| line.starts_with("<- ") && line.contains(&format!("\"{method}\"")))
+    };
+    let prompt = position("session/prompt").expect("no prompt");
+    let cancel = position("session/cancel").expect("no cancel");
+    assert!(prompt < cancel, "{log}");
+    harness.registry.shutdown_all(Duration::from_secs(5)).await;
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn a_signed_out_acp_agent_says_how_to_sign_in() {
     let harness = Harness::new("acp-signed-out");
     harness.install_fixture("agy", "acp-signed-out");

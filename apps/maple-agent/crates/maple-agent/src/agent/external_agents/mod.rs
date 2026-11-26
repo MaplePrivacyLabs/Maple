@@ -1858,12 +1858,9 @@ impl ExternalAgent {
                 turn.turn_id.clone(),
             )
         };
-        let Some(turn_id) = turn_id else {
-            // The turn has not been identified yet; the agent will report
-            // it and the caller's settle timeout ends the wait.
-            return;
-        };
-        let request = client.interrupt(&thread_id, &turn_id);
+        // Claude and ACP agents stop without the turn's id, which can still
+        // be on its way when Stop comes.
+        let request = client.interrupt(&thread_id, turn_id.as_deref());
         if let Ok(Err(error)) = tokio::time::timeout(INTERRUPT_REQUEST_TIMEOUT, request).await {
             log::debug!("External agent interrupt was refused: {error}");
         }

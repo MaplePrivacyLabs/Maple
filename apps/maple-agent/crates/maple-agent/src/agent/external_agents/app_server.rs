@@ -5,7 +5,10 @@
 //! One reader task owns the child's stdout. It resolves responses to the
 //! requests this client sent, and hands the owner the agent's notifications
 //! and requests, decoded into Maple's terms by the transport, through one
-//! channel. The owner answers a request with [`AgentClient::reply`].
+//! channel. A response that means something to the owner, such as the one
+//! that ends an ACP turn, is turned into messages on that channel too, before
+//! the next line is read, so the owner sees everything in the order the agent
+//! sent it. The owner answers a request with [`AgentClient::reply`].
 
 use super::super::AgentPermissionDecision;
 use super::codex;
@@ -45,6 +48,18 @@ pub(super) enum ServerMessage {
 /// Turns the agent's messages into Maple's terms, in the order they arrive.
 pub(super) type Decoder = Box<dyn FnMut(ServerMessage) -> Vec<DriverMessage> + Send>;
 
+/// Turns the response to a request into Maple's terms, on the reader, before
+/// the agent's next message is read.
+pub(super) type InOrder = Box<dyn FnOnce(Result<Value, RpcFailure>) -> Vec<DriverMessage> + Send>;
+
+/// What waits for the response to a request.
+enum Pending {
+    /// A caller awaiting it.
+    Caller(oneshot::Sender<Result<Value, RpcFailure>>),
+    /// Messages for the owner, in wire order.
+    InOrder(InOrder),
+}
+
 impl ServerMessage {
     /// A Codex app-server message in Maple's terms.
     pub(super) fn decode_codex(self) -> Vec<DriverMessage> {
@@ -73,6 +88,16 @@ pub(super) struct Dialect {
 pub(super) struct RpcFailure {
     pub(super) code: Option<i64>,
     pub(super) message: String,
+}
+
+impl RpcFailure {
+    /// The failure of a request whose agent process is gone.
+    pub(super) fn exited() -> Self {
+        Self {
+            code: None,
+            message: "the agent process has exited".to_string(),
+        }
+    }
 }
 
 /// A connected agent process, whichever transport speaks to it. The host
@@ -152,15 +177,27 @@ impl AgentClient {
         }
     }
 
-    pub(super) async fn interrupt(&self, thread_id: &str, turn_id: &str) -> Result<(), String> {
+    /// Ask the agent to stop its current turn. Only Codex names the turn,
+    /// whose id can arrive after the turn starts; without it nothing is sent
+    /// and the caller's settle timeout ends the wait.
+    pub(super) async fn interrupt(
+        &self,
+        thread_id: &str,
+        turn_id: Option<&str>,
+    ) -> Result<(), String> {
         match self {
-            Self::Codex(client) => client
-                .request(
-                    "turn/interrupt",
-                    codex::turn_interrupt_params(thread_id, turn_id),
-                )
-                .await
-                .map(drop),
+            Self::Codex(client) => {
+                let Some(turn_id) = turn_id else {
+                    return Ok(());
+                };
+                client
+                    .request(
+                        "turn/interrupt",
+                        codex::turn_interrupt_params(thread_id, turn_id),
+                    )
+                    .await
+                    .map(drop)
+            }
             Self::Claude(client) => client.interrupt().await,
             Self::Acp(client) => client.cancel().await,
         }
@@ -195,7 +232,7 @@ impl AgentClient {
     }
 }
 
-type PendingResponses = Arc<StdMutex<HashMap<u64, oneshot::Sender<Result<Value, RpcFailure>>>>>;
+type PendingResponses = Arc<StdMutex<HashMap<u64, Pending>>>;
 
 /// A JSON-RPC peer over a child's stdio, one message per line.
 pub(super) struct RpcClient {
@@ -269,10 +306,7 @@ impl RpcClient {
 
     /// Send a request and wait for its response, keeping an error's code.
     pub(super) async fn call(&self, method: &str, params: Value) -> Result<Value, RpcFailure> {
-        let exited = || RpcFailure {
-            code: None,
-            message: "the agent process has exited".to_string(),
-        };
+        let exited = RpcFailure::exited;
         if self.closed.is_cancelled() {
             return Err(exited());
         }
@@ -281,7 +315,7 @@ impl RpcClient {
         self.pending
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner)
-            .insert(id, tx);
+            .insert(id, Pending::Caller(tx));
         if let Err(error) = self
             .write(json!({ "id": id, "method": method, "params": params }))
             .await
@@ -300,6 +334,40 @@ impl RpcClient {
             response = rx => response.unwrap_or_else(|_| Err(exited())),
             _ = self.closed.cancelled() => Err(exited()),
         }
+    }
+
+    /// Send a request whose response the reader turns into messages for the
+    /// owner with `on_response`, in the order the agent sends everything.
+    /// Returns once the request is written, so whatever is written after it,
+    /// such as a cancel, reaches the agent after it.
+    pub(super) async fn send_in_order(
+        &self,
+        method: &str,
+        params: Value,
+        on_response: InOrder,
+    ) -> Result<(), RpcFailure> {
+        if self.closed.is_cancelled() {
+            return Err(RpcFailure::exited());
+        }
+        let id = self.next_id.fetch_add(1, Ordering::Relaxed);
+        self.pending
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .insert(id, Pending::InOrder(on_response));
+        if let Err(error) = self
+            .write(json!({ "id": id, "method": method, "params": params }))
+            .await
+        {
+            self.pending
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner)
+                .remove(&id);
+            return Err(RpcFailure {
+                code: None,
+                message: error.to_string(),
+            });
+        }
+        Ok(())
     }
 
     pub(super) async fn notify(&self, method: &str, params: Value) -> Result<(), String> {
@@ -365,12 +433,23 @@ async fn read_server_messages(
         };
         match classify(message) {
             Classified::Response { id, result } => {
-                let sender = pending
+                let waiting = pending
                     .lock()
                     .unwrap_or_else(std::sync::PoisonError::into_inner)
                     .remove(&id);
-                if let Some(sender) = sender {
-                    let _ = sender.send(result);
+                match waiting {
+                    Some(Pending::Caller(caller)) => {
+                        let _ = caller.send(result);
+                    }
+                    Some(Pending::InOrder(on_response)) => {
+                        for message in on_response(result) {
+                            if sender.send(message).await.is_err() {
+                                closed.cancel();
+                                return;
+                            }
+                        }
+                    }
+                    None => {}
                 }
             }
             Classified::Server(message) => {
@@ -390,11 +469,18 @@ async fn read_server_messages(
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner),
     );
-    for (_, sender) in stale {
-        let _ = sender.send(Err(RpcFailure {
-            code: None,
-            message: "the agent process has exited".to_string(),
-        }));
+    for (_, waiting) in stale {
+        match waiting {
+            Pending::Caller(caller) => {
+                let _ = caller.send(Err(RpcFailure::exited()));
+            }
+            // The owner still hears how the request ended.
+            Pending::InOrder(on_response) => {
+                for message in on_response(Err(RpcFailure::exited())) {
+                    let _ = sender.send(message).await;
+                }
+            }
+        }
     }
 }
 
