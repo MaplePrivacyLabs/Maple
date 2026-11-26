@@ -1525,6 +1525,8 @@ fn visit_images(
 
 #[path = "markdown_images.rs"]
 pub(super) mod markdown_images;
+#[path = "project_files.rs"]
+pub(super) mod project_files;
 
 #[cfg(test)]
 #[path = "attachment_tests.rs"]

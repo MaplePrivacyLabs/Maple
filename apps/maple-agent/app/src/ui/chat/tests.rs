@@ -12343,6 +12343,35 @@ mod state_tests {
     }
 
     #[gpui::test]
+    fn a_file_link_acts_only_for_the_task_on_screen_and_one_at_a_time(cx: &mut TestAppContext) {
+        let (chat, cx) = chat_window(cx, |this, _| {
+            this.selected_session = Some("s1".into());
+        });
+        chat.update(cx, |this, cx| {
+            let generation = this.pages.generation;
+            this.notice = None;
+            // A click bound to another task, or to an older page of this
+            // one, does nothing.
+            this.open_task_link("s2", generation, "out/report.pdf".into(), cx);
+            this.open_task_link(
+                "s1",
+                generation.wrapping_add(1),
+                "out/report.pdf".into(),
+                cx,
+            );
+            assert!(!this.file_link_pending);
+            assert!(this.notice.is_none());
+            // A second file waits for the first.
+            this.file_link_pending = true;
+            this.open_task_link("s1", generation, "out/report.pdf".into(), cx);
+            assert_eq!(
+                this.notice,
+                Some(crate::ui::i18n::UiText::key("chat-file-busy"))
+            );
+        });
+    }
+
+    #[gpui::test]
     fn message_thumbnail_opens_a_fitted_image_and_dismisses_without_clicking_through(
         cx: &mut TestAppContext,
     ) {

@@ -40,6 +40,10 @@ const PERMISSIONS_UNSUPPORTED: &str =
 const TOOLS_UNCONFIRMED: &str = "Could not confirm that the remote computer can switch tools. Try again, or update Maple there.";
 const TOOLS_UNSUPPORTED: &str =
     "Update Maple on the remote computer to choose its tools from here.";
+const TASK_FILES_UNCONFIRMED: &str =
+    "Could not confirm that the remote computer can send files. Try again, or update Maple there.";
+const TASK_FILES_UNSUPPORTED: &str =
+    "Update Maple on the remote computer to download files from it.";
 // Attachments may take longer than control traffic on a slow link, but cannot
 // retain an admitted stream indefinitely.
 const TRANSFER_TIMEOUT: Duration = Duration::from_secs(60);
@@ -120,7 +124,10 @@ impl Capacity {
     pub fn acquire(&self, method: Method) -> Result<OwnedSemaphorePermit, String> {
         let pool = if method == Method::UploadAttachment {
             &self.bulk
-        } else if matches!(method, Method::ReadAttachment | Method::ReadRow) {
+        } else if matches!(
+            method,
+            Method::ReadAttachment | Method::ReadRow | Method::ReadTaskFile
+        ) {
             &self.ranges
         } else if method.urgent() {
             &self.urgent
@@ -141,6 +148,7 @@ pub struct Client {
     project_folders: OnceCell<bool>,
     permission_modes: OnceCell<bool>,
     tool_switches: OnceCell<bool>,
+    task_files: OnceCell<bool>,
     scratch_project: OnceCell<bool>,
     recent_projects: OnceCell<bool>,
     discovery_timeout: Duration,
@@ -165,6 +173,7 @@ impl Client {
             project_folders: OnceCell::new(),
             permission_modes: OnceCell::new(),
             tool_switches: OnceCell::new(),
+            task_files: OnceCell::new(),
             scratch_project: OnceCell::new(),
             recent_projects: OnceCell::new(),
             discovery_timeout: DISCOVERY_TIMEOUT,
@@ -185,6 +194,12 @@ impl Client {
                 check: super::update::PeerInfo::supports_tool_switches,
                 unconfirmed: ("remote-tools-unconfirmed", TOOLS_UNCONFIRMED),
                 unsupported: ("remote-tools-unsupported", TOOLS_UNSUPPORTED),
+            },
+            Method::ReadTaskFile => CodedGate {
+                support: &self.task_files,
+                check: super::update::PeerInfo::supports_task_files,
+                unconfirmed: ("remote-task-files-unconfirmed", TASK_FILES_UNCONFIRMED),
+                unsupported: ("remote-task-files-unsupported", TASK_FILES_UNSUPPORTED),
             },
             _ => return None,
         })
@@ -542,5 +557,7 @@ mod folder_tests;
 #[cfg(test)]
 mod permission_tests;
 
+#[cfg(test)]
+mod task_file_tests;
 #[cfg(test)]
 mod tool_switch_tests;

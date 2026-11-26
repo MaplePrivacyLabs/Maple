@@ -309,6 +309,22 @@ the row and the copies with the ordinary row and attachment reads. A host that
 predates this lists no pictures, and a controller that predates it ignores the
 list, so either side shows the reply's alternative text.
 
+A link in a reply that names a file (a path or a `file:` URL) resolves inside the
+task's project folder, and a symbolic link counts only if it leads inside. On
+the execution computer the desktop opens documents, pictures, media and text
+where they are, and shows anything else, every folder included, in the file
+manager. Only `http`, `https` and `mailto` links reach the browser. Resolving a
+link to a path has no remote method. A controller
+downloads the file with `read_task_file` instead, which requires `task_files_v1`;
+Agent 0.0.25 and earlier cannot decode it, so the controller refuses the download
+and asks for the remote computer to be updated. Each read returns at most 1 MiB
+and resolves the link again; the first also carries the whole file's SHA-256 and
+a version, and a read of a version that has changed is refused. Folders and files
+over 100 MiB are refused. The controller saves the checked file to its Downloads
+folder under a free name, marked as downloaded before it gets that name
+(quarantine on macOS, the mark of the web on Windows), then opens or shows it by
+the same rule; a file it could not mark is only shown.
+
 Four pre-admission handshakes and eight paired control connections have capacity
 separate from local IPC. Each control connection bounds ordinary calls and keeps
 separate capacity for cancellation/questions. Each request/reply uses an

@@ -1363,6 +1363,11 @@ chat-wait-project = Espera a que termine la selección del proyecto e inténtalo
 chat-choose-project = Elige un proyecto antes de crear una tarea
 chat-compacting = Compactando…
 chat-compacted = Conversación compactada
+chat-file-busy = Espera a que termine de abrirse el otro archivo
+chat-file-downloading = Descargando { $name }…
+chat-file-saved = { $name } se guardó en Descargas
+chat-file-damaged = El archivo no llegó completo. Inténtalo de nuevo.
+chat-file-not-saved = No se pudo guardar el archivo en Descargas.
 chat-thinking-still-saving = El nivel de razonamiento se está guardando
 chat-runtime-starting = El agente se está iniciando
 chat-task-creating = La tarea se está creando
@@ -1816,6 +1821,13 @@ runtime-error-remote-permissions-unsupported = Primero actualiza Maple en la com
 runtime-error-remote-permissions-unconfirmed = No se pudo comprobar la computadora remota. Inténtalo de nuevo o actualiza Maple ahí.
 runtime-error-remote-tools-unsupported = Actualiza Maple en la computadora remota para elegir sus herramientas desde aquí.
 runtime-error-remote-tools-unconfirmed = No se pudieron comprobar las herramientas de la computadora remota. Inténtalo de nuevo o actualiza Maple ahí.
+runtime-error-remote-task-files-unsupported = Actualiza Maple en la computadora remota para descargar archivos desde ella.
+runtime-error-remote-task-files-unconfirmed = No se pudo comprobar si la computadora remota puede enviar archivos. Inténtalo de nuevo o actualiza Maple ahí.
+runtime-error-task-file-missing = Maple no encontró este archivo en la carpeta de la tarea.
+runtime-error-task-file-outside = Maple solo abre archivos dentro de la carpeta de la tarea.
+runtime-error-task-file-folder = No se puede descargar una carpeta desde otra computadora.
+runtime-error-task-file-too-large = No se pueden descargar desde otra computadora archivos de más de { $limit_mb } MB.
+runtime-error-task-file-changed = El archivo cambió mientras se descargaba. Inténtalo de nuevo.
 
 # Model catalog names remain unchanged.
 runtime-timeline-model-switched = Se cambió a { $name }

@@ -14,8 +14,9 @@ use maple_agent::store::{AccountId, PageTransport, Store};
 pub use maple_agent::store::{
     AttachmentRangeReply, HistoryAnchorRequest, HistoryPageRequest, NavigationGroupQuery,
     NavigationSearchQuery, NavigationTaskQuery, OpenTaskPageRequest, ProjectSummary,
-    RowRangeRequest, TaskSummary, TimelineRow,
+    RowRangeRequest, TaskFileLocation, TaskFileRange, TaskSummary, TimelineRow,
 };
+use maple_agent::store::{MAX_TASK_FILE_BYTES, TaskFileRefusal};
 use serde::{Deserialize, Serialize, de::DeserializeOwned};
 use serde_json::Value;
 
@@ -52,6 +53,27 @@ pub struct ReadAttachmentRequest {
     pub attachment: String,
     pub offset: u64,
     pub len: usize,
+}
+
+/// A file or folder a link in a task's reply names.
+#[derive(Clone, Debug, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct TaskFileRequest {
+    pub task: String,
+    /// The link as the reply wrote it, resolved inside the task's folder.
+    pub link: String,
+}
+
+/// A piece of a file a link names, read from the execution computer.
+#[derive(Clone, Debug, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct ReadTaskFileRequest {
+    pub task: String,
+    pub link: String,
+    pub offset: u64,
+    pub len: usize,
+    /// The version the earlier pieces came from; none on the first read.
+    pub version: Option<String>,
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -250,6 +272,25 @@ impl AgentBackend {
     ) -> Result<AttachmentRangeReply, String> {
         self.call("read_attachment", (user, request)).await
     }
+    /// Where a link of a task's reply leads on this computer. Local only:
+    /// no remote method exists, so a paired host's path never opens here.
+    pub async fn locate_task_file(
+        &self,
+        user: &str,
+        request: TaskFileRequest,
+    ) -> Result<TaskFileLocation, HostFailure> {
+        self.call_presented("locate_task_file", (user, request))
+            .await
+    }
+    /// A piece of a file a link of a task's reply names, from whichever
+    /// computer runs the task.
+    pub async fn read_task_file(
+        &self,
+        user: &str,
+        request: ReadTaskFileRequest,
+    ) -> Result<TaskFileRange, HostFailure> {
+        self.call_presented("read_task_file", (user, request)).await
+    }
     pub async fn save_tool_summary(
         &self,
         user: &str,
@@ -275,6 +316,8 @@ pub(super) fn is_paging(method: &str) -> bool {
             | "task_facts"
             | "read_row"
             | "read_attachment"
+            | "locate_task_file"
+            | "read_task_file"
             | "store_tool_summary"
             | "queued_message"
     )
@@ -337,6 +380,39 @@ fn parse<T: DeserializeOwned>(params: Value) -> Result<(String, T), HostFailure>
 fn encode(value: impl Serialize) -> Result<Value, HostFailure> {
     serde_json::to_value(value)
         .map_err(|_| HostFailure::new("paging-encode", "Could not encode host page"))
+}
+
+/// Why a link opens nothing, as a code the viewer words in its language.
+fn task_file_refusal(refusal: TaskFileRefusal) -> HostFailure {
+    let mut failure = match refusal {
+        TaskFileRefusal::Missing => HostFailure::new(
+            "task-file-missing",
+            "Maple could not find this file in the task folder.",
+        ),
+        TaskFileRefusal::Outside => HostFailure::new(
+            "task-file-outside",
+            "Maple opens only files inside the task folder.",
+        ),
+        TaskFileRefusal::Folder => HostFailure::new(
+            "task-file-folder",
+            "A folder cannot be downloaded from another computer.",
+        ),
+        TaskFileRefusal::TooLarge => HostFailure::new(
+            "task-file-too-large",
+            "Files larger than 100 MB cannot be downloaded from another computer.",
+        ),
+        TaskFileRefusal::Changed => HostFailure::new(
+            "task-file-changed",
+            "The file changed while it downloaded. Try again.",
+        ),
+    };
+    if refusal == TaskFileRefusal::TooLarge {
+        failure.args.insert(
+            "limit_mb".into(),
+            (MAX_TASK_FILE_BYTES / (1024 * 1024)).to_string(),
+        );
+    }
+    failure
 }
 
 pub(super) async fn dispatch_presented(
@@ -525,6 +601,37 @@ pub(super) async fn dispatch_presented(
                 })
                 .await?,
             )
+        }
+        "locate_task_file" => {
+            // Paired viewers have no wire method for this; refuse it anyway
+            // should one ever be routed here.
+            if transport == PageTransport::Remote {
+                return Err(HostFailure::new(
+                    "local-desktop-required",
+                    "This operation is available only on the local computer.",
+                ));
+            }
+            let (user, query) = parse::<TaskFileRequest>(request.params)?;
+            let (store, account) = context(backend, &user).await?;
+            let located =
+                blocking(move || store.locate_task_file(account, &query.task, &query.link)).await?;
+            encode(located.map_err(task_file_refusal)?)
+        }
+        "read_task_file" => {
+            let (user, query) = parse::<ReadTaskFileRequest>(request.params)?;
+            let (store, account) = context(backend, &user).await?;
+            let range = blocking(move || {
+                store.read_task_file(
+                    account,
+                    &query.task,
+                    &query.link,
+                    query.offset,
+                    query.len,
+                    query.version.as_deref(),
+                )
+            })
+            .await?;
+            encode(range.map_err(task_file_refusal)?)
         }
         "store_tool_summary" => {
             let (user, query) = parse::<StoreToolSummaryRequest>(request.params)?;

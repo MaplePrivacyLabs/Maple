@@ -1468,6 +1468,11 @@ chat-wait-project = Warte, bis die Projektauswahl abgeschlossen ist, und versuch
 chat-choose-project = Wähle ein Projekt, bevor du eine Aufgabe erstellst
 chat-compacting = Wird komprimiert…
 chat-compacted = Gespräch komprimiert
+chat-file-busy = Warte, bis die andere Datei geöffnet ist
+chat-file-downloading = { $name } wird heruntergeladen…
+chat-file-saved = { $name } in Downloads gespeichert
+chat-file-damaged = Die Datei ist nicht vollständig angekommen. Versuche es erneut.
+chat-file-not-saved = Die Datei konnte nicht in Downloads gespeichert werden.
 chat-thinking-still-saving = Die Denkstufe wird noch gespeichert
 chat-runtime-starting = Agent-Laufzeit wird noch gestartet
 chat-task-creating = Die Aufgabe wird noch erstellt
@@ -1974,6 +1979,13 @@ runtime-error-remote-permissions-unsupported = Aktualisiere zuerst Maple auf dem
 runtime-error-remote-permissions-unconfirmed = Der entfernte Computer konnte nicht geprüft werden. Versuche es erneut oder aktualisiere Maple dort.
 runtime-error-remote-tools-unsupported = Aktualisiere Maple auf dem entfernten Computer, um seine Werkzeuge von hier aus auszuwählen.
 runtime-error-remote-tools-unconfirmed = Die Werkzeuge des entfernten Computers konnten nicht geprüft werden. Versuche es erneut oder aktualisiere Maple dort.
+runtime-error-remote-task-files-unsupported = Aktualisiere Maple auf dem entfernten Computer, um Dateien von dort herunterzuladen.
+runtime-error-remote-task-files-unconfirmed = Es konnte nicht geprüft werden, ob der entfernte Computer Dateien senden kann. Versuche es erneut oder aktualisiere Maple dort.
+runtime-error-task-file-missing = Maple hat diese Datei im Ordner der Aufgabe nicht gefunden.
+runtime-error-task-file-outside = Maple öffnet nur Dateien im Ordner der Aufgabe.
+runtime-error-task-file-folder = Ein Ordner kann nicht von einem anderen Computer heruntergeladen werden.
+runtime-error-task-file-too-large = Dateien über { $limit_mb } MB können nicht von einem anderen Computer heruntergeladen werden.
+runtime-error-task-file-changed = Die Datei hat sich beim Herunterladen geändert. Versuche es erneut.
 
 # $name is a model name, not translated.
 runtime-timeline-model-switched = Zu { $name } gewechselt

@@ -57,6 +57,10 @@ pub use attachments::{
         MARKDOWN_IMAGES_KEY, MAX_MARKDOWN_IMAGES, MAX_PICTURE_DESTINATIONS, MarkdownImage,
         REPLY_PICTURES_GUIDANCE, image_destinations,
     },
+    project_files::{
+        MAX_TASK_FILE_BYTES, MAX_TASK_FILE_RANGE_BYTES, REPLY_FILE_LINKS_GUIDANCE,
+        TaskFileLocation, TaskFileRange, TaskFileRefusal,
+    },
 };
 pub use error::{DamageReason, RefusalReason, StoreError, StoreResult};
 pub use gc::{CollectionProgress, CollectionStage, DeletedTask};
