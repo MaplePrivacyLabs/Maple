@@ -25,6 +25,7 @@ mod acp_fixture;
 mod acp_live;
 mod claude_fixture;
 mod end_to_end;
+mod restart;
 
 const FIXTURE_MARKER: &str = "MAPLE_FAKE_AGENT";
 const FIXTURE_ARGS: &str = "MAPLE_FAKE_AGENT_ARGS";

@@ -943,6 +943,9 @@ impl AgentRuntime {
             },
         );
         drop(sessions);
+        // External agents a restart of Maple cut short are recorded as such,
+        // and the model hears of them with the task's next run.
+        self.external_agents.reconcile(&session, &row.id).await;
         self.evict_idle_tasks(&row.id).await;
         Ok((session, switched))
     }
