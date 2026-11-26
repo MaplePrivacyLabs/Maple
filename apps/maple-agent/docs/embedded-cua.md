@@ -30,6 +30,14 @@ binding uses the SDK's canonical `list_tools_json` and `call_tool` surfaces, so
 Maple does not maintain a second copy of CUA's tool definitions or run an
 in-process network protocol.
 
+The SDK ends a trusted connection after 30 minutes unused or 8 hours in all,
+and one run can outlast either. The binding therefore replaces its connection
+five minutes before either limit, and once more if the SDK still refuses a call
+as lapsed; that refusal always comes before any action, so the retry cannot act
+twice. Computer use never stops in the middle of a run. After a gap long enough
+for the SDK to reclaim the session, it is revived empty, so earlier snapshot
+tokens stop resolving and the model observes again.
+
 The tools join the task's Pi session as `cua-driver__<tool>`, and the
 instructions below join its system prompt, while the task is bound. Every CUA
 call goes through the task's [permission mode](permissions.md), like every other

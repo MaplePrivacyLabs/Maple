@@ -4,7 +4,8 @@
 //! Each run binds the task to its own account-and-task scoped CUA session
 //! anew, which renews the session's authorization, and registers the tools
 //! on the task's Pi session; other tasks share the process-wide runtime.
-//! Maple, not the model, owns the session: the lifecycle tools and every
+//! Within a run the binding renews itself, so the SDK's connection limits
+//! never end computer use. Maple, not the model, owns the session: the lifecycle tools and every
 //! `session` argument are hidden. Every model gets an observation's
 //! structured grounding as bounded, image-free text; a model without vision
 //! gets each screenshot described by the side model in its place.
