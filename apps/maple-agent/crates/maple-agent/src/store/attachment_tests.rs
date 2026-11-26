@@ -83,6 +83,100 @@ fn expire(store: &Store, id: &str) {
         .unwrap();
 }
 
+const MINIMAL_GIF: &[u8] = b"GIF89a\x01\x00\x01\x00\x80\x00\x00\x00\x00\x00\xff\xff\xff\x2c\x00\x00\x00\x00\x01\x00\x01\x00\x00\x02\x02\x44\x01\x00\x3b";
+
+#[test]
+fn task_files_are_snapshots_confined_to_the_execution_workspace() {
+    let (directory, store, alice, bob) = fixture();
+    let task = "00000000-0000-7000-8000-000000000001";
+    let other_task = "00000000-0000-7000-8000-000000000002";
+    let workspace = directory.path().join("workspace");
+    fs::create_dir(&workspace).unwrap();
+    for account in [alice, bob] {
+        store
+            .write(Durability::Durable, |tx| {
+                tx.execute(
+                    "UPDATE projects SET root=?2 WHERE account_id=?1",
+                    params![account.0, workspace.to_string_lossy()],
+                )?;
+                Ok(())
+            })
+            .unwrap();
+    }
+    let source = workspace.join("automatic.gif");
+    fs::write(&source, MINIMAL_GIF).unwrap();
+    let stored = store
+        .import_task_file(alice, task, "automatic.gif", TaskFileKind::Image)
+        .unwrap();
+    assert_eq!(stored.sha256, hex(&Sha256::digest(MINIMAL_GIF)));
+    assert_eq!(stored.attachment.mime_type, "image/gif");
+    assert_eq!(stored.attachment.name, "automatic.gif");
+    assert_eq!(
+        store
+            .task_file_source(alice, task, "automatic.gif")
+            .unwrap(),
+        TaskFileSource {
+            name: "automatic.gif".into(),
+            path: std::fs::canonicalize(&source).unwrap(),
+        }
+    );
+    let repeated = store
+        .import_task_file(
+            alice,
+            task,
+            source.to_str().unwrap(),
+            TaskFileKind::Download,
+        )
+        .unwrap();
+    assert_eq!(repeated.attachment.id, stored.attachment.id);
+    assert_eq!(repeated.sha256, stored.sha256);
+    assert!(matches!(
+        store.read_attachment(bob, other_task, &stored.attachment.id, 0, 1024),
+        Err(StoreError::NotFound)
+    ));
+    fs::remove_file(&source).unwrap();
+    assert_eq!(
+        store
+            .read_attachment(alice, task, &stored.attachment.id, 0, 1024)
+            .unwrap()
+            .data,
+        MINIMAL_GIF
+    );
+
+    let outside = directory.path().join("outside.gif");
+    fs::write(&outside, MINIMAL_GIF).unwrap();
+    for rejected in [
+        "../outside.gif".to_owned(),
+        outside.to_string_lossy().into_owned(),
+        "x".repeat(MAX_TASK_FILE_PATH_BYTES + 1),
+    ] {
+        assert!(
+            store
+                .import_task_file(alice, task, &rejected, TaskFileKind::Image)
+                .is_err()
+        );
+        assert!(store.task_file_source(alice, task, &rejected).is_err());
+    }
+    fs::write(workspace.join("notes.txt"), b"ordinary text").unwrap();
+    assert_eq!(
+        store.import_task_file(alice, task, "notes.txt", TaskFileKind::Image),
+        Err(StoreError::InvalidInput)
+    );
+    let text = store
+        .import_task_file(alice, task, "notes.txt", TaskFileKind::Download)
+        .unwrap();
+    assert_eq!(text.attachment.mime_type, "application/octet-stream");
+    assert_eq!(text.sha256, hex(&Sha256::digest(b"ordinary text")));
+    #[cfg(unix)]
+    {
+        std::os::unix::fs::symlink(&outside, workspace.join("escape.gif")).unwrap();
+        assert_eq!(
+            store.import_task_file(alice, task, "escape.gif", TaskFileKind::Image),
+            Err(StoreError::UnsafePath)
+        );
+    }
+}
+
 #[test]
 fn cleanup_metadata_rejects_negative_sizes_and_accepts_zero_and_file_cap() {
     let (_directory, store, _, _) = fixture();

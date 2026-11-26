@@ -10,6 +10,7 @@ pub const VERSION: u32 = 7;
 pub const MAX_FRAME: usize = 16 * 1024 * 1024;
 pub const MAX_PREFACE: usize = 4096;
 pub const MAX_MANAGEMENT_REPLY: usize = 16 * 1024;
+pub const MAX_TASK_FILE_REQUEST: usize = 8 * 1024;
 
 #[derive(Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -124,6 +125,8 @@ pub enum Method {
     HistoryForward,
     TaskFacts,
     ReadRow,
+    /// Only sent to a host advertising `task_files_v1`.
+    ImportTaskFile,
     ReadAttachment,
     UploadAttachment,
     AttachmentUploadStatus,
@@ -210,6 +213,7 @@ impl Method {
                 | Self::UploadAttachment
                 | Self::AttachmentUploadStatus
                 | Self::CancelAttachmentUpload
+                | Self::ImportTaskFile
         ) {
             MAX_MANAGEMENT_REPLY
         } else if matches!(
@@ -827,7 +831,8 @@ mod tests {
         check::<crate::host::protocol::Message>(&examples["cancel_upload_reply"]);
         check::<()>(&examples["cancel_upload_reply"]["Response"]["result"]["Ok"]);
         assert!(
-            Method::parse("import_attachment").is_err(),
+            Method::parse("import_attachment").is_err()
+                && Method::parse("resolve_local_task_file").is_err(),
             "local source paths never reach a remote filesystem importer"
         );
         check::<Command>(&examples["rename_project"]);

@@ -51,7 +51,8 @@ pub use attachments::{
     ATTACHMENT_SOURCE_PREFIX, AttachmentCollectionProgress, AttachmentRange,
     AttachmentUploadMetadata, AttachmentUploadStart, AttachmentUploadStatus,
     AttachmentUploadWriter, ImageUpload, MAX_ATTACHMENT_BYTES, MAX_ATTACHMENT_RANGE_BYTES,
-    MAX_ATTACHMENTS, MAX_UPLOAD_IMAGE_BYTES, PreparedAttachmentUpload, StoredAttachment,
+    MAX_ATTACHMENTS, MAX_TASK_FILE_BYTES, MAX_TASK_IMAGE_BYTES, MAX_UPLOAD_IMAGE_BYTES,
+    PreparedAttachmentUpload, StoredAttachment, TaskFileKind, TaskFileSnapshot, TaskFileSource,
     UNAVAILABLE_IMAGE_SOURCE,
 };
 pub use error::{DamageReason, RefusalReason, StoreError, StoreResult};

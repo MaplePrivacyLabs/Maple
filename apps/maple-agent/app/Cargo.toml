@@ -69,6 +69,7 @@ rand = "0.8.6"
 tokio = { workspace = true }
 serde = { workspace = true }
 serde_json = { workspace = true }
+tempfile = "3"
 sha2 = "0.10"
 tokio-util = { workspace = true }
 semver = "1"
@@ -129,7 +130,6 @@ windows-sys = { version = "0.61", features = ["Win32_Networking_WinSock", "Win32
 [dev-dependencies]
 fluent-syntax = "0.12"
 syn = { version = "2", features = ["full", "visit"] }
-tempfile = "3"
 parking_lot = "0.12"
 # The gpui test harness. Keep this out of [dependencies]: with test-support on,
 # App::shutdown skips the on_app_quit futures and logs a timeout on every quit.

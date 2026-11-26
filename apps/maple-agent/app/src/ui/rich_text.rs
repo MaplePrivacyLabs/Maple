@@ -377,7 +377,12 @@ pub struct RenderCtx {
     /// The view whose render this is, so a copy button can ask for one
     /// repaint of that view instead of refreshing the whole window.
     pub view: Option<gpui::EntityId>,
+    /// Optional assistant-task-file behavior. Ordinary Markdown stays on
+    /// the generic URL launcher, and web links keep that behavior here.
+    pub on_link: Option<TaskLinkHandler>,
 }
+
+pub type TaskLinkHandler = std::rc::Rc<dyn Fn(String, &mut Window, &mut App)>;
 
 impl RenderCtx {
     /// Ordinal of block `index` when text blocks are interactive.
@@ -406,6 +411,7 @@ pub struct RichText {
     selection: Option<Entity<TextSelection>>,
     focus: Option<FocusHandle>,
     styled: Option<StyledText>,
+    on_link: Option<TaskLinkHandler>,
 }
 
 type HighlightStyleT = gpui::HighlightStyle;
@@ -691,6 +697,7 @@ impl Element for RichText {
         {
             let entity = entity.clone();
             let links = self.links.clone();
+            let on_link = self.on_link.clone();
             window.on_mouse_event(
                 move |event: &gpui::MouseUpEvent, phase, window: &mut Window, cx: &mut App| {
                     if phase != gpui::DispatchPhase::Bubble || event.button != MouseButton::Left {
@@ -728,7 +735,11 @@ impl Element for RichText {
                         url
                     });
                     if let Some(url) = url {
-                        open_link(&url);
+                        if let Some(on_link) = &on_link {
+                            on_link(url, window, cx);
+                        } else {
+                            open_link(&url);
+                        }
                     }
                 },
             );
@@ -785,6 +796,7 @@ pub fn paragraph(
         selection: ctx.selection.clone(),
         focus: ctx.focus.clone(),
         styled: None,
+        on_link: ctx.on_link.clone(),
     })
 }
 
@@ -857,6 +869,7 @@ pub fn code_block(
                     selection: ctx.selection.clone(),
                     focus: ctx.focus.clone(),
                     styled: None,
+                    on_link: ctx.on_link.clone(),
                 }),
         )
 }
@@ -879,6 +892,7 @@ mod tests {
             selection: None,
             focus: None,
             styled: None,
+            on_link: None,
         }
     }
 

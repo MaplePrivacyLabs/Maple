@@ -365,6 +365,53 @@ pub(crate) mod tests {
     }
 
     #[tokio::test]
+    async fn local_task_file_import_uses_the_real_paging_dispatch() {
+        use crate::backend::paging::ImportTaskFileRequest;
+        use crate::remote::wire::Method;
+        use maple_agent::store::{TaskFileKind, TaskFileSnapshot};
+
+        let root = tempfile::tempdir().unwrap();
+        let backend = fixture(root.path());
+        for (name, contents, kind) in [
+            (
+                "overview.png",
+                &b"\x89PNG\r\n\x1a\n"[..],
+                TaskFileKind::Image,
+            ),
+            ("note.txt", &b"local download"[..], TaskFileKind::Download),
+        ] {
+            let source = root.path().join(name);
+            std::fs::write(&source, contents).unwrap();
+            let response = super::super::dispatch(
+                &backend,
+                Request {
+                    id: 1,
+                    method: Method::ImportTaskFile.name(),
+                    send_id: None,
+                    params: serde_json::json!([
+                        "account",
+                        ImportTaskFileRequest {
+                            task: "01234567-89ab-7def-8123-456789abcdef".into(),
+                            source: name.into(),
+                            kind,
+                        }
+                    ]),
+                },
+            )
+            .await
+            .unwrap();
+            let snapshot: TaskFileSnapshot = serde_json::from_value(response).unwrap();
+            assert!(!snapshot.attachment.id.is_empty());
+            assert_eq!(snapshot.sha256.len(), 64);
+            std::fs::remove_file(&source).unwrap();
+            assert_eq!(
+                std::fs::read(&snapshot.attachment.execution_path).unwrap(),
+                contents
+            );
+        }
+    }
+
+    #[tokio::test]
     async fn local_import_refuses_directories_oversized_files_and_wrong_account_before_reading() {
         let root = tempfile::tempdir().unwrap();
         let mut backend = fixture(root.path());

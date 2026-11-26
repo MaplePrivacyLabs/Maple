@@ -83,6 +83,7 @@ impl ChatScreen {
                         focus: transcript_focus.clone(),
                         id_seed: item.id.clone(),
                         view: Some(window.current_view()),
+                        on_link: None,
                     };
                     let transcript = TranscriptCtx {
                         messages: &chat.messages,
@@ -90,11 +91,31 @@ impl ChatScreen {
                         markdown_cache: &chat.markdown_cache,
                         derived: &chat.derived,
                         attachment_images: &chat.attachment_images,
+                        attachment_dimensions: &chat.attachment_dimensions,
+                        markdown_image_ids: &chat.markdown_image_ids,
+                        markdown_image_widths: &chat.markdown_image_widths,
                         attachment_previews: &chat.attachment_previews,
                         attachment_failures: &chat.attachment_failures,
                         chat: &entity,
                         tool_summaries: &chat.tool_summaries,
                         render: &render_ctx,
+                        on_file_link: chat.selected_session.as_ref().map(|task| {
+                            let generation = chat.selection_generation;
+                            let chat = chat_entity.downgrade();
+                            let task = task.clone();
+                            Rc::new(
+                                move |source: String, window: &mut Window, cx: &mut gpui::App| {
+                                    let task = task.clone();
+                                    if let Some(screen) = chat.upgrade() {
+                                        screen.update(cx, |screen, cx| {
+                                            screen.open_task_link(
+                                                task, generation, source, window, cx,
+                                            );
+                                        });
+                                    }
+                                },
+                            ) as crate::ui::rich_text::TaskLinkHandler
+                        }),
                         speech: chat.speech.as_ref(),
                         speech_available: chat.audio_caps.speech,
                         position: (ix + 1, chat.timeline.len()),
@@ -1020,6 +1041,137 @@ pub(super) fn attachment_thumbnail(image: Arc<gpui::Image>) -> Div {
         )
 }
 
+/// An image the assistant named in Markdown. Source-to-store resolution is
+/// done off the render path; before it lands, preserve the alt-text fallback.
+fn render_markdown_image(
+    source: &SharedString,
+    alt: &SharedString,
+    ordinal: u64,
+    transcript: &TranscriptCtx,
+) -> Div {
+    let Some(id) = transcript.markdown_image_ids.get(source.as_str()) else {
+        return rich_text::plain_paragraph(
+            alt.clone(),
+            transcript.render.for_block(ordinal as usize),
+            transcript.render,
+        );
+    };
+    let Some(image) = transcript.attachment_images.get(id) else {
+        return rich_text::plain_paragraph(
+            alt.clone(),
+            transcript.render.for_block(ordinal as usize),
+            transcript.render,
+        );
+    };
+    let ratio = transcript
+        .attachment_dimensions
+        .get(id)
+        .map(|(width, height)| *width as f32 / *height as f32)
+        .filter(|ratio| ratio.is_finite() && *ratio > 0.)
+        .unwrap_or(16. / 9.);
+    let shown = Arc::clone(image);
+    let attachment_id = id.clone();
+    let chat = transcript.chat.clone();
+    // In this nested Markdown layout, a percentage width does not give
+    // GPUI's aspect-ratio calculation a usable width after max-w is applied.
+    // Fit both dimensions to a measured sibling's actual available width.
+    let available_width = transcript
+        .markdown_image_widths
+        .get(id)
+        .map_or(720., |width| f32::from(*width))
+        .clamp(1., 720.);
+    let height = available_width / ratio;
+    let (width, height) = if height > 480. {
+        (480. * ratio, 480.)
+    } else {
+        (available_width, height)
+    };
+    let width_observer = transcript.chat.clone();
+    let width_id = id.clone();
+    let width_row_id = transcript.render.id_seed.clone();
+    let width_row = transcript.position.0.saturating_sub(1);
+    let label = if alt.is_empty() {
+        tr("chat-attachment-image")
+    } else {
+        alt.clone()
+    };
+    div()
+        .w_full()
+        .on_children_prepainted(move |bounds, _, cx| {
+            let Some(width) = bounds.first().map(|probe| probe.size.width) else {
+                return;
+            };
+            if width <= gpui::px(0.) {
+                return;
+            }
+            let width_observer = width_observer.clone();
+            let id = width_id.clone();
+            let row_id = width_row_id.clone();
+            // Apply this after prepaint has released the virtual list.
+            cx.spawn(async move |cx| {
+                let Some(chat) = width_observer.upgrade() else {
+                    return;
+                };
+                chat.update(cx, move |chat, cx| {
+                    if chat.markdown_image_widths.get(&id) == Some(&width)
+                        || chat.timeline.get(width_row).map(|item| &item.id) != Some(&row_id)
+                    {
+                        return;
+                    }
+                    if chat.markdown_image_widths.len() >= super::summaries::MAX_CACHED_ATTACHMENTS
+                        && !chat.markdown_image_widths.contains_key(&id)
+                    {
+                        chat.markdown_image_widths.clear();
+                    }
+                    chat.markdown_image_widths.insert(id, width);
+                    chat.remeasure_item(width_row);
+                    cx.notify();
+                });
+            })
+            .detach();
+        })
+        .child(div().w_full().h(px(0.)))
+        .child(
+            div()
+                .w(px(width))
+                .h(px(height))
+                .max_w_full()
+                .max_h(px(480.))
+                .rounded(theme::RADIUS_MD)
+                .overflow_hidden()
+                .bg(gpui::rgb(theme::bg_elevated()))
+                .border_1()
+                .border_color(gpui::rgb(theme::border()))
+                .child(
+                    gpui::img(gpui::ImageSource::Image(Arc::clone(image)))
+                        // GPUI schedules animated frames only for stable image IDs.
+                        .id(SharedString::from(format!("markdown-image-picture-{id}")))
+                        .size_full()
+                        .object_fit(gpui::ObjectFit::Contain)
+                        .rounded(theme::RADIUS_MD),
+                )
+                .id(SharedString::from(format!("markdown-image-{id}")))
+                .debug_selector({
+                    let id = id.clone();
+                    move || format!("markdown-image-{id}")
+                })
+                .role(gpui::Role::Button)
+                .aria_label(label)
+                .key_context("Button")
+                .tab_index(0)
+                .focus_visible(widgets::focus_ring)
+                .hover_bg(theme::overlay_hover())
+                .hover(|style| style.cursor_pointer())
+                .on_click(move |_event, _window, cx| {
+                    chat.update(cx, |chat, cx| {
+                        chat.open_attachment(&attachment_id, Arc::clone(&shown), cx);
+                    })
+                    .ok();
+                })
+                .on_key_down(ChatScreen::sidebar_button_key_down),
+        )
+}
+
 /// An attachment with no picture to show: its name and what it is. Long
 /// file names stay within the message.
 pub(super) fn attachment_chip(name: SharedString, detail: SharedString) -> Div {
@@ -1106,6 +1258,10 @@ fn render_attachment(
 
 fn render_message(item: &AgentTimelineItem, revision: u64, transcript: &TranscriptCtx) -> Div {
     let ctx = transcript.render;
+    let assistant_ctx = RenderCtx {
+        on_link: transcript.on_file_link.clone(),
+        ..ctx.clone()
+    };
     let chat = transcript.chat;
     let is_user = item.role.as_deref() == Some("user");
     let text = item.text.as_deref().unwrap_or("");
@@ -1127,6 +1283,7 @@ fn render_message(item: &AgentTimelineItem, revision: u64, transcript: &Transcri
             focus: ctx.focus.clone(),
             id_seed: format!("{}#user", ctx.id_seed),
             view: ctx.view,
+            on_link: None,
         };
         let ordinal = user_ctx.base_ordinal;
         div()
@@ -1184,11 +1341,12 @@ fn render_message(item: &AgentTimelineItem, revision: u64, transcript: &Transcri
             .flex_col()
             .gap_0p5()
             .text_color(gpui::rgb(theme::text_primary()))
-            .child(markdown::render_with(
+            .child(markdown::render_with_media(
                 &transcript
                     .markdown_cache
                     .get(&item.id, MarkdownKind::Body, revision, text),
-                ctx,
+                &assistant_ctx,
+                |source, alt, ordinal| render_markdown_image(source, alt, ordinal, transcript),
             ))
             .children(copy.map(|button| {
                 div()

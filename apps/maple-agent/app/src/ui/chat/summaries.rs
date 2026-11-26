@@ -13,7 +13,7 @@ use super::transcript::{has_tool_input, image_attachment_refs, tool_output_markd
 use crate::backend::{
     AgentBackend, ReadAttachmentRequest, StoreToolSummaryRequest, ToolStartSummary,
 };
-use crate::ui::chat::attachments::image_format_from_bytes;
+use crate::ui::chat::attachments::{image_format_from_bytes, read_image_metadata};
 
 /// A thinking block shorter than this reads faster than its summary;
 /// skip the model call.
@@ -22,8 +22,10 @@ const ATTACHMENT_CHUNK_BYTES: usize = 1024 * 1024;
 // Generated/tool images can be 20 MiB; user image admission remains 10 MiB.
 const MAX_ATTACHMENT_BYTES: usize = 20 * 1024 * 1024;
 const MAX_CACHED_ATTACHMENT_BYTES: usize = 32 * 1024 * 1024;
-const MAX_CACHED_ATTACHMENTS: usize = 64;
+pub(super) const MAX_CACHED_ATTACHMENTS: usize = 64;
 const MAX_ATTACHMENT_READS: usize = 4;
+const MAX_MARKDOWN_IMAGE_REQUESTS: usize = 2;
+const MAX_MARKDOWN_IMAGE_SOURCE_BYTES: usize = 4096;
 const ATTACHMENT_OVERDRAW_ROWS: usize = 5;
 const INITIAL_ATTACHMENT_ROWS: usize = 20;
 
@@ -376,13 +378,147 @@ impl ChatScreen {
         self.request_attachment_rows(start, end.max(start), cx);
     }
 
+    /// Image sources from the already committed assistant row. Live prose is
+    /// deliberately excluded: its referenced file may still be changing.
+    pub(super) fn markdown_sources_at(&mut self, index: usize) -> Vec<String> {
+        let Some(item) = self.timeline.get(index) else {
+            return Vec::new();
+        };
+        if item.item_type != "message"
+            || item.role.as_deref() == Some("user")
+            || item.persisted.is_none()
+        {
+            return Vec::new();
+        }
+        let Some(source) = item.text.clone() else {
+            return Vec::new();
+        };
+        let id = item.id.clone();
+        let revision = self.timeline_index.get(&id).map_or(0, |entry| entry.1);
+        self.markdown_cache
+            .get(&id, super::cache::MarkdownKind::Body, revision, &source)
+            .image_sources()
+            .filter(|source| supported_markdown_image_source(source))
+            .map(str::to_owned)
+            .collect::<Vec<_>>()
+    }
+
+    fn row_references_image(&mut self, index: usize, changed: &HashSet<String>) -> bool {
+        if image_attachment_refs(&self.timeline[index])
+            .any(|(candidate, _)| changed.contains(candidate))
+        {
+            return true;
+        }
+        self.markdown_sources_at(index).into_iter().any(|source| {
+            self.markdown_image_ids
+                .get(&source)
+                .is_some_and(|id| changed.contains(id))
+        })
+    }
+
+    /// Import task-local images with a small queue independent of byte reads.
+    /// Stale completions cannot attach a path from one task/host to another.
+    fn request_markdown_images(&mut self, sources: Vec<String>, cx: &mut Context<Self>) {
+        if self.selected_session.is_none() {
+            return;
+        }
+        for source in sources {
+            if self.markdown_image_ids.contains_key(&source) {
+                continue;
+            }
+            if let Some(id) = direct_markdown_attachment_id(&source) {
+                self.markdown_image_ids.insert(source, id);
+            } else if !self.markdown_image_failures.contains(&source)
+                && self.markdown_image_requests.insert(source.clone())
+            {
+                self.markdown_image_queue.push_back(source);
+            }
+        }
+        while self.pending_markdown_images < MAX_MARKDOWN_IMAGE_REQUESTS {
+            let Some(source) = self.markdown_image_queue.pop_front() else {
+                break;
+            };
+            if self.markdown_image_ids.contains_key(&source) {
+                self.markdown_image_requests.remove(&source);
+                continue;
+            }
+            let Some(session) = self.selected_session.clone() else {
+                self.markdown_image_requests.remove(&source);
+                break;
+            };
+            self.pending_markdown_images += 1;
+            let generation = self.selection_generation;
+            let request_source = source.clone();
+            self.call(
+                {
+                    let backend = self.backend.clone();
+                    let user = self.user_id.clone();
+                    let task = session.clone();
+                    let request_source = request_source.clone();
+                    async move {
+                        backend
+                            .import_task_file(
+                                &user,
+                                crate::backend::ImportTaskFileRequest {
+                                    task,
+                                    source: request_source,
+                                    kind: maple_agent::store::TaskFileKind::Image,
+                                },
+                            )
+                            .await
+                    }
+                },
+                cx,
+                move |this, result, cx| {
+                    this.pending_markdown_images = this.pending_markdown_images.saturating_sub(1);
+                    this.markdown_image_requests.remove(&request_source);
+                    if this.selection_generation == generation && this.is_selected(&session) {
+                        match result {
+                            Ok(snapshot) => {
+                                let stored = snapshot.attachment;
+                                this.markdown_image_ids
+                                    .insert(request_source.clone(), stored.id.clone());
+                                this.request_attachments(vec![stored.id], cx);
+                            }
+                            // Alt text remains in place. A failed source is
+                            // stable for this visit rather than retried per paint.
+                            Err(_) => {
+                                this.markdown_image_failures.insert(request_source.clone());
+                            }
+                        }
+                    }
+                    this.request_markdown_images(Vec::new(), cx);
+                },
+            );
+        }
+    }
+
     fn request_attachment_rows(&mut self, start: usize, end: usize, cx: &mut Context<Self>) {
         self.attachment_viewport = start..end;
-        let visible: HashSet<String> = self.timeline[start..end]
+        let mut sources = Vec::new();
+        for index in start..end {
+            sources.extend(self.markdown_sources_at(index));
+        }
+        self.request_markdown_images(sources.clone(), cx);
+        let visible_sources: HashSet<String> = sources.iter().cloned().collect();
+        self.markdown_image_queue.retain(|source| {
+            if visible_sources.contains(source) {
+                true
+            } else {
+                self.markdown_image_requests.remove(source);
+                false
+            }
+        });
+        let mut visible: HashSet<String> = self.timeline[start..end]
             .iter()
             .flat_map(image_attachment_refs)
             .map(|(id, _)| id.to_string())
             .collect();
+        visible.extend(
+            sources
+                .iter()
+                .filter_map(|source| self.markdown_image_ids.get(source).cloned()),
+        );
         // A fast scroll must not leave a backlog downloading distant pages.
         // Reads already in flight keep their slots until their completion.
         let requested = &mut self.attachment_requests;
@@ -420,12 +556,21 @@ impl ChatScreen {
                 return;
             }
         }
-        let wanted: Vec<String> = image_attachment_refs(item)
+        let mut wanted: Vec<String> = image_attachment_refs(item)
             .map(|(id, _)| id.to_string())
-            .filter(|id| {
-                !self.attachment_images.contains_key(id) && !self.attachment_requests.contains(id)
-            })
             .collect();
+        if let Some(&(index, _)) = self.timeline_index.get(&item.id) {
+            let sources = self.markdown_sources_at(index);
+            self.request_markdown_images(sources.clone(), cx);
+            wanted.extend(
+                sources
+                    .iter()
+                    .filter_map(|source| self.markdown_image_ids.get(source).cloned()),
+            );
+        }
+        wanted.retain(|id| {
+            !self.attachment_images.contains_key(id) && !self.attachment_requests.contains(id)
+        });
         self.request_attachments(wanted, cx);
     }
 
@@ -465,13 +610,19 @@ impl ChatScreen {
                     this.pending_attachments = this.pending_attachments.saturating_sub(1);
                     if this.selection_generation == generation && this.is_selected(&target) {
                         match result {
-                            Ok(image) => this.insert_attachment_image(&id, image, cx),
+                            Ok((image, dimensions)) => {
+                                this.insert_sized_attachment_image(&id, image, Some(dimensions), cx);
+                            }
                             Err(_) => {
                                 this.attachment_previews.remove(&id);
                                 this.attachment_failures.insert(id.clone());
-                                let rows: Vec<_> = this.timeline.iter().enumerate().filter(|(_, item)|
-                                    image_attachment_refs(item).any(|(candidate, _)| candidate == id))
-                                    .map(|(index, _)| index).collect();
+                                let changed = HashSet::from([id.clone()]);
+                                let mut rows = Vec::new();
+                                for index in 0..this.timeline.len() {
+                                    if this.row_references_image(index, &changed) {
+                                        rows.push(index);
+                                    }
+                                }
                                 for index in rows { this.remeasure_item(index); }
                                 cx.notify();
                             },
@@ -485,10 +636,21 @@ impl ChatScreen {
         }
     }
 
+    #[cfg(test)]
     pub(super) fn insert_attachment_image(
         &mut self,
         id: &str,
         image: Arc<gpui::Image>,
+        cx: &mut Context<Self>,
+    ) {
+        self.insert_sized_attachment_image(id, image, None, cx);
+    }
+
+    pub(super) fn insert_sized_attachment_image(
+        &mut self,
+        id: &str,
+        image: Arc<gpui::Image>,
+        dimensions: Option<(u32, u32)>,
         cx: &mut Context<Self>,
     ) {
         let start = self.attachment_viewport.start.min(self.timeline.len());
@@ -497,12 +659,25 @@ impl ChatScreen {
             .end
             .max(start)
             .min(self.timeline.len());
-        let visible: HashSet<String> = self.timeline[start..end]
+        let mut visible: HashSet<String> = self.timeline[start..end]
             .iter()
             .flat_map(image_attachment_refs)
             .map(|(id, _)| id.to_string())
             .collect();
+        for index in start..end {
+            visible.extend(
+                self.markdown_sources_at(index)
+                    .iter()
+                    .filter_map(|source| self.markdown_image_ids.get(source).cloned()),
+            );
+        }
         self.attachment_images.remove(id);
+        if let Some(dimensions) = dimensions {
+            self.attachment_dimensions
+                .insert(id.to_string(), dimensions);
+        } else {
+            self.attachment_dimensions.remove(id);
+        }
         let mut cached: usize = self
             .attachment_images
             .values()
@@ -529,6 +704,7 @@ impl ChatScreen {
             }
             if let Some(evicted) = self.attachment_images.remove(&candidate) {
                 cached = cached.saturating_sub(evicted.bytes.capacity());
+                self.attachment_dimensions.remove(&candidate);
                 self.attachment_requests.remove(&candidate);
                 changed.insert(candidate);
             }
@@ -542,12 +718,12 @@ impl ChatScreen {
         self.attachment_images.insert(id.to_string(), image);
         // Re-measure only rows at the viewport; an offscreen evicted image is
         // requested and measured when that row becomes visible again.
-        let rows: Vec<usize> = (start..end)
-            .filter(|&index| {
-                image_attachment_refs(&self.timeline[index])
-                    .any(|(candidate, _)| changed.contains(candidate))
-            })
-            .collect();
+        let mut rows = Vec::new();
+        for index in start..end {
+            if self.row_references_image(index, &changed) {
+                rows.push(index);
+            }
+        }
         for index in rows {
             self.remeasure_item(index);
         }
@@ -555,12 +731,42 @@ impl ChatScreen {
     }
 }
 
+fn direct_markdown_attachment_id(source: &str) -> Option<String> {
+    let id = source.strip_prefix("maple-attachment://")?;
+    (id.len() == 32
+        && id
+            .bytes()
+            .all(|byte| byte.is_ascii_digit() || (b'a'..=b'f').contains(&byte)))
+    .then(|| id.to_owned())
+}
+
+fn supported_markdown_image_source(source: &str) -> bool {
+    if source.is_empty() || source.len() > MAX_MARKDOWN_IMAGE_SOURCE_BYTES {
+        return false;
+    }
+    if direct_markdown_attachment_id(source).is_some() {
+        return true;
+    }
+    let Some(colon) = source.find(':') else {
+        return true;
+    };
+    // A single ASCII drive letter is a Windows path, not a URI scheme.
+    if colon == 1 && source.as_bytes()[0].is_ascii_alphabetic() {
+        return true;
+    }
+    let scheme = &source[..colon];
+    !(scheme.starts_with(|c: char| c.is_ascii_alphabetic())
+        && scheme
+            .bytes()
+            .all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'+' | b'-' | b'.')))
+}
+
 async fn read_attachment_image(
     backend: Arc<AgentBackend>,
     user: String,
     task: String,
     attachment: String,
-) -> Result<Arc<gpui::Image>, String> {
+) -> Result<(Arc<gpui::Image>, (u32, u32)), String> {
     let mut bytes = Vec::new();
     let mut expected = None;
     let mut mime = None;
@@ -588,7 +794,7 @@ async fn read_attachment_image(
         }
         if !matches!(
             reply.mime.as_str(),
-            "image/png" | "image/jpeg" | "image/webp"
+            "image/png" | "image/jpeg" | "image/webp" | "image/gif"
         ) {
             return Err("Attachment is not a supported image".into());
         }
@@ -624,8 +830,39 @@ async fn read_attachment_image(
         bytes.shrink_to_fit();
         let format = image_format_from_bytes(&bytes)
             .ok_or_else(|| "Attachment is not a supported image".to_string())?;
-        Ok::<_, String>(Arc::new(gpui::Image::from_bytes(format, bytes)))
+        let dimensions = read_image_metadata(&bytes)?;
+        Ok::<_, String>((Arc::new(gpui::Image::from_bytes(format, bytes)), dimensions))
     })
     .await
     .map_err(|_| "Image preparation did not complete".to_string())?
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn markdown_image_sources_admit_local_and_stored_media_only() {
+        for source in [
+            "/workspace/artifacts/result.gif",
+            "artifacts/result.png",
+            "C:\\workspace\\result.gif",
+            "maple-attachment://0123456789abcdef0123456789abcdef",
+        ] {
+            assert!(supported_markdown_image_source(source), "{source}");
+        }
+        for source in [
+            "",
+            "https://example.com/private.gif",
+            "data:image/png;base64,AAAA",
+            "file:///workspace/result.gif",
+            "maple-attachment://not-an-id",
+            "javascript:alert(1)",
+        ] {
+            assert!(!supported_markdown_image_source(source), "{source}");
+        }
+        assert!(!supported_markdown_image_source(
+            &"x".repeat(MAX_MARKDOWN_IMAGE_SOURCE_BYTES + 1)
+        ));
+    }
 }

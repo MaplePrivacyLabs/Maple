@@ -708,6 +708,29 @@ fn ranges_have_four_slots_and_do_not_consume_urgent_capacity() {
     assert!(capacity.acquire(Method::ReadAttachment).is_err());
     assert!(capacity.acquire(Method::ReadRow).is_err());
     assert!(capacity.acquire(Method::CancelRun).is_ok());
+    // An image import must not occupy one of the four range-read slots.
+    assert_eq!(capacity.ranges.available_permits(), 0);
+    let before = (
+        capacity.ranges.available_permits(),
+        capacity.bulk.available_permits(),
+    );
+    let _image = capacity
+        .acquire(Method::ImportTaskFile)
+        .unwrap_or_else(|error| panic!("import failed after {before:?}: {error}"));
+    assert_eq!(
+        (
+            capacity.ranges.available_permits(),
+            capacity.bulk.available_permits(),
+        ),
+        (0, MAX_BULK_REQUESTS - 1)
+    );
+    let _bulk: Vec<_> = (1..MAX_BULK_REQUESTS)
+        .map(|_| capacity.acquire(Method::UploadAttachment).unwrap())
+        .collect();
+    assert!(capacity.acquire(Method::ImportTaskFile).is_err());
+    assert!(capacity.acquire(Method::UploadAttachment).is_err());
+    // Bulk imports still cannot turn a saturated range queue into a free slot.
+    assert!(capacity.acquire(Method::ReadRow).is_err());
     assert_eq!(Method::OpenTask.priority(), 5);
     assert_eq!(Method::HistoryBefore.priority(), 5);
     assert_eq!(Method::CancelRun.priority(), 10);

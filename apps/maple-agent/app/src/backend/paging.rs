@@ -10,7 +10,9 @@ use maple_agent::agent::{
 };
 #[cfg(test)]
 use maple_agent::store::NavigationProjectPage;
-use maple_agent::store::{AccountId, PageTransport, Store};
+use maple_agent::store::{
+    AccountId, PageTransport, Store, TaskFileKind, TaskFileSnapshot, TaskFileSource,
+};
 pub use maple_agent::store::{
     AttachmentRangeReply, HistoryAnchorRequest, HistoryPageRequest, NavigationGroupQuery,
     NavigationSearchQuery, NavigationTaskQuery, OpenTaskPageRequest, ProjectSummary,
@@ -21,6 +23,7 @@ use serde_json::Value;
 
 use super::{AgentBackend, HostFailure, LocalBackend};
 use crate::host::protocol::Request;
+use crate::remote::wire::Method;
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
@@ -43,6 +46,15 @@ pub struct ProjectPageRequest {
     pub cursor: Option<String>,
     #[serde(default = "default_limit")]
     pub limit: u16,
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct ImportTaskFileRequest {
+    pub task: String,
+    /// A task-local source hint, never authority for an arbitrary host file.
+    pub source: String,
+    pub kind: TaskFileKind,
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -243,6 +255,24 @@ impl AgentBackend {
         }
         Ok(())
     }
+    pub async fn import_task_file(
+        &self,
+        user: &str,
+        request: ImportTaskFileRequest,
+    ) -> Result<TaskFileSnapshot, String> {
+        self.call(&Method::ImportTaskFile.name(), (user, request))
+            .await
+    }
+
+    /// Native same-computer path resolution only. This deliberately has no
+    /// remote wire method: clicking a remote path must not open local lookalikes.
+    pub async fn task_file_source(
+        &self,
+        user: &str,
+        request: ImportTaskFileRequest,
+    ) -> Result<TaskFileSource, String> {
+        self.call("resolve_local_task_file", (user, request)).await
+    }
     pub async fn read_attachment(
         &self,
         user: &str,
@@ -274,6 +304,8 @@ pub(super) fn is_paging(method: &str) -> bool {
             | "history_forward"
             | "task_facts"
             | "read_row"
+            | "import_task_file"
+            | "resolve_local_task_file"
             | "read_attachment"
             | "store_tool_summary"
             | "queued_message"
@@ -507,6 +539,25 @@ pub(super) async fn dispatch_presented(
             let (_, account) = context(backend, &user).await?;
             let reader = backend.row_reader()?;
             encode(blocking(move || reader.read_row(account, &query, transport)).await?)
+        }
+        "import_task_file" => {
+            let (user, query) = parse::<ImportTaskFileRequest>(request.params)?;
+            let (store, account) = context(backend, &user).await?;
+            encode(
+                blocking(move || {
+                    store.import_task_file(account, &query.task, &query.source, query.kind)
+                })
+                .await?,
+            )
+        }
+        // There is no matching remote Method for this local-open resolver.
+        "resolve_local_task_file" => {
+            let (user, query) = parse::<ImportTaskFileRequest>(request.params)?;
+            let (store, account) = context(backend, &user).await?;
+            encode(
+                blocking(move || store.task_file_source(account, &query.task, &query.source))
+                    .await?,
+            )
         }
         "read_attachment" => {
             let (user, query) = parse::<ReadAttachmentRequest>(request.params)?;

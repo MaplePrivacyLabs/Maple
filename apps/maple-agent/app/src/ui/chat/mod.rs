@@ -40,6 +40,7 @@ pub(crate) mod computers;
 use computers::{Computer, Destination, Navigate, NavigationChanged};
 mod attachments;
 mod dialogs;
+mod downloads;
 mod effort;
 mod feedback;
 mod navigation;
@@ -212,11 +213,15 @@ struct TranscriptCtx<'a> {
     markdown_cache: &'a MarkdownCache,
     derived: &'a DerivedCache,
     attachment_images: &'a HashMap<String, Arc<gpui::Image>>,
+    attachment_dimensions: &'a HashMap<String, (u32, u32)>,
+    markdown_image_ids: &'a HashMap<String, String>,
+    markdown_image_widths: &'a HashMap<String, gpui::Pixels>,
     attachment_previews: &'a HashMap<String, Arc<gpui::Image>>,
     attachment_failures: &'a HashSet<String>,
     chat: &'a gpui::WeakEntity<ChatScreen>,
     tool_summaries: &'a HashMap<String, SharedString>,
     render: &'a RenderCtx,
+    on_file_link: Option<crate::ui::rich_text::TaskLinkHandler>,
     /// Message being spoken, if any.
     speech: Option<&'a SpeechState>,
     /// The account can use text-to-speech.
@@ -819,6 +824,19 @@ pub struct ChatScreen {
     /// Decoded images for sent attachments, keyed by attachment id, so the
     /// transcript shows the picture instead of only its file name.
     attachment_images: HashMap<String, Arc<gpui::Image>>,
+    /// Pixel dimensions decoded off the UI thread, for stable row sizing.
+    attachment_dimensions: HashMap<String, (u32, u32)>,
+    /// Exact Markdown destination -> immutable execution-store attachment.
+    /// Cleared with task selection: paths are scoped to one execution host.
+    markdown_image_ids: HashMap<String, String>,
+    /// Last measured available width for a Markdown picture. Layout-only;
+    /// bounded like the decoded-image cache and cleared with task selection.
+    markdown_image_widths: HashMap<String, gpui::Pixels>,
+    markdown_image_requests: HashSet<String>,
+    markdown_image_failures: HashSet<String>,
+    markdown_image_queue: std::collections::VecDeque<String>,
+    pending_markdown_images: usize,
+    file_operation_pending: bool,
     /// The small picture a draft had, for the attachments of a message that
     /// was just sent, until the stored picture loads: the row that takes
     /// over from the message being sent shows what that message showed.
@@ -1670,6 +1688,14 @@ impl ChatScreen {
             selection_generation: 0,
             reload_generation: 0,
             attachment_images: HashMap::new(),
+            attachment_dimensions: HashMap::new(),
+            markdown_image_ids: HashMap::new(),
+            markdown_image_widths: HashMap::new(),
+            markdown_image_requests: HashSet::new(),
+            markdown_image_failures: HashSet::new(),
+            markdown_image_queue: std::collections::VecDeque::new(),
+            pending_markdown_images: 0,
+            file_operation_pending: false,
             attachment_previews: HashMap::new(),
             attachment_requests: HashSet::new(),
             attachment_failures: HashSet::new(),
@@ -3755,6 +3781,12 @@ impl ChatScreen {
         self.subagents.clear();
         self.tool_summaries.clear();
         self.attachment_images.clear();
+        self.attachment_dimensions.clear();
+        self.markdown_image_ids.clear();
+        self.markdown_image_widths.clear();
+        self.markdown_image_requests.clear();
+        self.markdown_image_failures.clear();
+        self.markdown_image_queue.clear();
         self.attachment_previews.clear();
         self.attachment_requests.clear();
         self.attachment_failures.clear();
@@ -4595,8 +4627,15 @@ impl ChatScreen {
     ) {
         self.markdown_cache
             .install(kind, id, revision, len, document);
-        if let Some((ix, _)) = self.timeline_index.get(id) {
-            self.list_state.remeasure_items(*ix..*ix + 1);
+        if let Some((ix, item)) = self
+            .timeline_index
+            .get(id)
+            .and_then(|(ix, _)| self.timeline.get(*ix).map(|item| (*ix, item.clone())))
+        {
+            self.list_state.remeasure_items(ix..ix + 1);
+            if matches!(kind, MarkdownKind::Body) {
+                self.load_attachment_images_for(&item, cx);
+            }
         }
         cx.notify();
     }
@@ -7779,6 +7818,8 @@ impl Render for ChatScreen {
                                 .on_click(|_, _, cx| cx.stop_propagation())
                                 .child(
                                     gpui::img(gpui::ImageSource::Image(image))
+                                        // Keep animation state on the image, not its clickable card.
+                                        .id("lightbox-image")
                                         .debug_selector(|| "lightbox-image".to_string())
                                         .size_full()
                                         .aspect_ratio(card.width / card.height)

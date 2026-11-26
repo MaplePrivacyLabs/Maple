@@ -76,6 +76,10 @@ chat-feedback-send 1ba751df9eb29b5a
 chat-feedback-sending d0417854c72462d3
 chat-feedback-thanks 78c2ae3449bf834d
 chat-file-dialog-failed 59f459a478adf869
+chat-file-download-busy c0b2307e2c8f965a
+chat-file-download-failed a94464153e2f17ee
+chat-file-download-open 62a9e2730d80b473
+chat-file-open-failed dbc89f23e37dca55
 chat-files b94ce2002d4f89dd
 chat-files-preparing 405cee8e85278052
 chat-folder-cancel-new a7011c56c4eefddf

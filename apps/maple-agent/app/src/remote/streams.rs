@@ -40,6 +40,9 @@ const PERMISSIONS_UNSUPPORTED: &str =
 const TOOLS_UNCONFIRMED: &str = "Could not confirm that the remote computer can switch tools. Try again, or update Maple there.";
 const TOOLS_UNSUPPORTED: &str =
     "Update Maple on the remote computer to choose its tools from here.";
+const TASK_FILES_UNCONFIRMED: &str = "Could not confirm task file support on the remote computer.";
+const TASK_FILES_UNSUPPORTED: &str =
+    "Update Maple on the remote computer to download task files here.";
 // Attachments may take longer than control traffic on a slow link, but cannot
 // retain an admitted stream indefinitely.
 const TRANSFER_TIMEOUT: Duration = Duration::from_secs(60);
@@ -118,7 +121,7 @@ impl Capacity {
         .map_err(|_| "Remote request header timed out".to_string())?
     }
     pub fn acquire(&self, method: Method) -> Result<OwnedSemaphorePermit, String> {
-        let pool = if method == Method::UploadAttachment {
+        let pool = if matches!(method, Method::UploadAttachment | Method::ImportTaskFile) {
             &self.bulk
         } else if matches!(method, Method::ReadAttachment | Method::ReadRow) {
             &self.ranges
@@ -143,6 +146,7 @@ pub struct Client {
     tool_switches: OnceCell<bool>,
     scratch_project: OnceCell<bool>,
     recent_projects: OnceCell<bool>,
+    task_files: OnceCell<bool>,
     discovery_timeout: Duration,
 }
 
@@ -167,6 +171,7 @@ impl Client {
             tool_switches: OnceCell::new(),
             scratch_project: OnceCell::new(),
             recent_projects: OnceCell::new(),
+            task_files: OnceCell::new(),
             discovery_timeout: DISCOVERY_TIMEOUT,
         }
     }
@@ -185,6 +190,12 @@ impl Client {
                 check: super::update::PeerInfo::supports_tool_switches,
                 unconfirmed: ("remote-tools-unconfirmed", TOOLS_UNCONFIRMED),
                 unsupported: ("remote-tools-unsupported", TOOLS_UNSUPPORTED),
+            },
+            Method::ImportTaskFile => CodedGate {
+                support: &self.task_files,
+                check: super::update::PeerInfo::supports_task_files,
+                unconfirmed: ("remote-task-files-unconfirmed", TASK_FILES_UNCONFIRMED),
+                unsupported: ("remote-task-files-unsupported", TASK_FILES_UNSUPPORTED),
             },
             _ => return None,
         })
@@ -326,7 +337,9 @@ impl Header {
 }
 
 fn body_limit(method: Method) -> usize {
-    if matches!(
+    if method == Method::ImportTaskFile {
+        wire::MAX_TASK_FILE_REQUEST
+    } else if matches!(
         method,
         Method::PeerInfo
             | Method::RemoteUpdateInstall
@@ -544,3 +557,6 @@ mod permission_tests;
 
 #[cfg(test)]
 mod tool_switch_tests;
+
+#[cfg(test)]
+mod task_file_tests;

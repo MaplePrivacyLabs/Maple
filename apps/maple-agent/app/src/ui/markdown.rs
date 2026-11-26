@@ -171,6 +171,12 @@ pub enum Block {
         in_quote: bool,
         list_depth: usize,
     },
+    Image {
+        source: SharedString,
+        alt: SharedString,
+        in_quote: bool,
+        list_depth: usize,
+    },
     Table {
         /// Rows of cells; the first row is the header. Every row holds
         /// as many cells as the delimiter row has columns.
@@ -207,6 +213,13 @@ pub struct Document {
 }
 
 impl Document {
+    pub fn image_sources(&self) -> impl Iterator<Item = &str> {
+        self.blocks.iter().filter_map(|block| match block {
+            Block::Image { source, .. } => Some(source.as_str()),
+            _ => None,
+        })
+    }
+
     /// The source as one unstyled paragraph: what a row shows while its
     /// real parse runs in the background.
     pub fn plain(source: &str) -> Document {
@@ -230,6 +243,8 @@ impl Document {
         for block in &self.blocks {
             match block {
                 Block::Text { text, .. } | Block::Code { code: text, .. } => visit(offset, text),
+                // Keep alternative text selectable even when bytes render.
+                Block::Image { alt, .. } => visit(offset, alt),
                 Block::Table { rows, .. } => {
                     for (cell_ix, cell) in rows.iter().flat_map(|row| row.iter()).enumerate() {
                         visit(offset + cell_ix as u64, &cell.text);
@@ -353,6 +368,26 @@ pub fn render(document: &Document) -> Div {
 /// Build elements from a parsed document, making text blocks selectable
 /// when the context carries a selection entity.
 pub fn render_with(document: &Document, ctx: &RenderCtx) -> Div {
+    render_inner(document, ctx, None)
+}
+
+/// Only task-message rows provide a task-authorized image resolver. Other
+/// Markdown keeps its alternative-text-only presentation and file denial.
+pub fn render_with_media(
+    document: &Document,
+    ctx: &RenderCtx,
+    mut image: impl FnMut(&SharedString, &SharedString, u64) -> Div,
+) -> Div {
+    render_inner(document, ctx, Some(&mut image))
+}
+
+type ImageRenderer<'a> = dyn FnMut(&SharedString, &SharedString, u64) -> Div + 'a;
+
+fn render_inner(
+    document: &Document,
+    ctx: &RenderCtx,
+    mut image_renderer: Option<&mut ImageRenderer<'_>>,
+) -> Div {
     let mut container = div().flex().flex_col().gap_2().w_full().pr_6();
     // One shared name per message; each code block adds its index.
     let id_name = ctx.id_name();
@@ -415,6 +450,20 @@ pub fn render_with(document: &Document, ctx: &RenderCtx) -> Div {
                 *in_quote,
                 *list_depth,
             )),
+            Block::Image {
+                source,
+                alt,
+                in_quote,
+                list_depth,
+            } => {
+                let rendered = match image_renderer.as_deref_mut() {
+                    Some(render) => render(source, alt, block_offset as u64),
+                    None => {
+                        rich_text::plain_paragraph(alt.clone(), ctx.for_block(block_offset), ctx)
+                    }
+                };
+                container.child(wrap_inline(rendered, *in_quote, *list_depth))
+            }
             Block::Table {
                 rows,
                 alignments,
@@ -548,6 +597,13 @@ pub fn parse(source: &str) -> Document {
         alignments: Vec<ColumnAlign>,
     }
     let mut table: Option<TableBuilder> = None;
+    struct ImageBuilder {
+        source: String,
+        alt: String,
+        in_quote: bool,
+        list_depth: usize,
+    }
+    let mut image: Option<ImageBuilder> = None;
 
     let current_style = |flags: &[InlineStyle]| -> InlineStyle {
         let mut style = InlineStyle::default();
@@ -624,6 +680,15 @@ pub fn parse(source: &str) -> Document {
                     strikethrough: true,
                     ..Default::default()
                 }),
+                Tag::Image { dest_url, .. } => {
+                    flush_paragraph!();
+                    image = Some(ImageBuilder {
+                        source: dest_url.into_string(),
+                        alt: String::new(),
+                        in_quote,
+                        list_depth: list_counters.len(),
+                    });
+                }
                 Tag::Link { dest_url, .. } => {
                     inline_flags.push(InlineStyle {
                         link: true,
@@ -692,6 +757,16 @@ pub fn parse(source: &str) -> Document {
                     inline_flags.pop();
                     link_stack.pop();
                 }
+                TagEnd::Image => {
+                    if let Some(image) = image.take() {
+                        blocks.push(Block::Image {
+                            source: SharedString::new(image.source),
+                            alt: SharedString::new(image.alt),
+                            in_quote: image.in_quote,
+                            list_depth: image.list_depth,
+                        });
+                    }
+                }
                 TagEnd::TableCell => {
                     if let Some(builder) = table.as_mut() {
                         // Keep empty cells: they hold their column open.
@@ -734,7 +809,9 @@ pub fn parse(source: &str) -> Document {
                 _ => {}
             },
             Event::Text(chunk) => {
-                if let Some(code) = code_block_text.as_mut() {
+                if let Some(image) = image.as_mut() {
+                    image.alt.push_str(&chunk);
+                } else if let Some(code) = code_block_text.as_mut() {
                     code.push_str(&chunk);
                 } else {
                     let start = paragraph.text.len();
@@ -746,6 +823,10 @@ pub fn parse(source: &str) -> Document {
                 }
             }
             Event::Code(chunk) => {
+                if let Some(image) = image.as_mut() {
+                    image.alt.push_str(&chunk);
+                    continue;
+                }
                 let start = paragraph.text.len();
                 let mut style = current_style(&inline_flags);
                 style.code = true;
@@ -763,7 +844,9 @@ pub fn parse(source: &str) -> Document {
                 }
             }
             Event::SoftBreak | Event::HardBreak => {
-                if code_block_text.is_none() {
+                if let Some(image) = image.as_mut() {
+                    image.alt.push(' ');
+                } else if code_block_text.is_none() {
                     paragraph.push("\n", InlineStyle::default());
                 }
             }
@@ -772,6 +855,10 @@ pub fn parse(source: &str) -> Document {
                 blocks.push(Block::Rule);
             }
             Event::InlineHtml(html) => {
+                if let Some(image) = image.as_mut() {
+                    image.alt.push_str(&html);
+                    continue;
+                }
                 // `<br>` is the tag chat models lean on to break a line
                 // inside a table cell; it becomes a newline. Other inline
                 // HTML shows as its source.
@@ -787,6 +874,10 @@ pub fn parse(source: &str) -> Document {
                 }
             }
             Event::Html(html) => {
+                if let Some(image) = image.as_mut() {
+                    image.alt.push_str(&html);
+                    continue;
+                }
                 // Block HTML is shown as its source, like inline HTML.
                 if let Some(code) = code_block_text.as_mut() {
                     code.push_str(&html);
@@ -824,6 +915,31 @@ fn wrap_inline(element: impl IntoElement, in_quote: bool, list_depth: usize) -> 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn images_keep_alt_text_source_and_neighboring_text() {
+        let document = parse("before ![A *small* `preview`](/tmp/result.gif) after");
+        assert_eq!(document.blocks.len(), 3);
+        let Block::Image { source, alt, .. } = &document.blocks[1] else {
+            panic!("expected an image block");
+        };
+        assert_eq!(source.as_ref(), "/tmp/result.gif");
+        assert_eq!(alt.as_ref(), "A small preview");
+        assert_eq!(
+            document.image_sources().collect::<Vec<_>>(),
+            ["/tmp/result.gif"]
+        );
+        let mut selectable = Vec::new();
+        document.for_each_selectable(|offset, text| selectable.push((offset, text.to_string())));
+        assert_eq!(
+            selectable,
+            [
+                (0, "before ".into()),
+                (1, "A small preview".into()),
+                (2, " after".into())
+            ]
+        );
+    }
 
     #[test]
     fn link_ranges_carry_destinations() {

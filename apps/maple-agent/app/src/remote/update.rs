@@ -23,6 +23,7 @@ pub const PERMISSION_MODES_CAPABILITY: &str = "permission_modes_v1";
 /// A paired controller may list and switch the host's tools (Settings →
 /// Tools). Agent 0.0.21 and earlier cannot decode either call.
 pub const TOOL_SWITCHES_CAPABILITY: &str = "tool_switches_v1";
+pub const TASK_FILES_CAPABILITY: &str = "task_files_v1";
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ProtocolInfo {
@@ -46,6 +47,7 @@ impl ProtocolInfo {
                 DOWNLOAD_CAPABILITY.into(),
                 PERMISSION_MODES_CAPABILITY.into(),
                 TOOL_SWITCHES_CAPABILITY.into(),
+                TASK_FILES_CAPABILITY.into(),
             ],
         }
     }
@@ -257,6 +259,10 @@ impl PeerInfo {
 
     pub fn supports_tool_switches(&self) -> bool {
         self.protocol.supports(TOOL_SWITCHES_CAPABILITY)
+    }
+
+    pub fn supports_task_files(&self) -> bool {
+        self.protocol.supports(TASK_FILES_CAPABILITY)
     }
 
     pub(crate) fn validate(&self) -> Result<(), String> {

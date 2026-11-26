@@ -120,6 +120,35 @@ and are outside database encryption and application-data erasure. Newly
 generated delegation resources use the new `resources/` location; this does not
 authorize reading old application JSON or databases.
 
+## Assistant task-linked images and files
+
+A committed assistant image can reference an absolute or project-relative
+PNG, JPEG, WebP or GIF inside its execution project. As it approaches the
+viewport, the execution host canonicalizes the project and source, admits only
+a confined regular file, and pins an immutable attachment snapshot. Images
+above 20 MiB are unavailable. Existing `maple-attachment://` image references
+use the established attachment reads without importing a filesystem path.
+Live/uncommitted output, tool output and rejected sources retain text rather
+than gaining a generic host-file read. A later source edit does not change an
+already imported snapshot.
+
+An ordinary non-image file link in a committed assistant response activates
+only on a click. A local task resolves the same confined canonical path and
+then asks the OS to open it. A remote task never opens a coincidentally named
+viewer-local path. Its host accepts `import_task_file` with the `download`
+purpose only when `task_files_v1` is advertised. The viewer chooses a local
+destination, reads the immutable snapshot through the ordinary bounded range
+transfers, verifies its whole-file SHA-256, and atomically persists a private
+copy without overwriting an existing destination. Only then is the local copy
+opened. This first implementation bounds such a download at 30 MiB, allows
+empty files, and keeps HTTP(S), `data:`, `file:` and other schemes out of the
+task-file resolver. Legacy hosts leave an explanatory notice rather than
+silently failing or issuing an unknown operation.
+
+Neither path uploads a file to Maple cloud services. The task-attachment
+copies remain plaintext under the execution-side attachment lifecycle and
+follow its retention and backup rules above.
+
 ## History display and replay limits
 
 Desktop and ACP page through saved history rather than loading an entire task.

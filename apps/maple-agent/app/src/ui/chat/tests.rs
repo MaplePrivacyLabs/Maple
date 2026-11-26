@@ -11521,6 +11521,86 @@ mod state_tests {
         });
     }
 
+    #[gpui::test]
+    fn committed_markdown_images_render_and_live_images_do_not(cx: &mut TestAppContext) {
+        cx.update(|cx| cx.set_reduce_motion(true));
+        let source = "/tmp/artifacts/preview.gif";
+        let mut committed = item(
+            "committed-image",
+            "message",
+            Some("Before\n\n![Automatic preview](/tmp/artifacts/preview.gif)"),
+        );
+        committed.persisted = Some(maple_agent::agent::AgentPersistedRowIdentity {
+            task_id: "s1".into(),
+            rows_epoch: 1,
+            row_seq: 2,
+            update_seq: 2,
+        });
+        let live = item(
+            "live-image",
+            "message",
+            Some("![Live preview](/tmp/artifacts/still-writing.gif)"),
+        );
+        let (chat, cx) = chat_window(cx, move |this, cx| {
+            this.sidebar_collapsed = true;
+            this.selected_session = Some("s1".into());
+            this.replace_timeline(vec![live, committed]);
+            assert!(this.markdown_sources_at(0).is_empty());
+            assert_eq!(this.markdown_sources_at(1), [source]);
+            this.markdown_image_ids
+                .insert(source.into(), "markdown-preview".into());
+            this.attachment_viewport = 0..this.timeline.len();
+            this.insert_sized_attachment_image(
+                "markdown-preview",
+                sized_image(1200, 600),
+                Some((1200, 600)),
+                cx,
+            );
+            assert_eq!(
+                this.attachment_dimensions.get("markdown-preview"),
+                Some(&(1200, 600))
+            );
+        });
+        cx.run_until_parked();
+        let bounds = cx
+            .debug_bounds("markdown-image-markdown-preview")
+            .expect("a parsed, committed image has a visible, focusable card");
+        assert!(bounds.size.width > px(0.) && bounds.size.width <= px(720.));
+        assert!(bounds.size.height > px(0.) && bounds.size.height <= px(480.));
+        let aspect_ratio = f32::from(bounds.size.width) / f32::from(bounds.size.height);
+        assert!(
+            (aspect_ratio - 2.).abs() < 0.01,
+            "the 2:1 source keeps its shape: {bounds:?}"
+        );
+        assert!(cx.debug_bounds("markdown-image-live-preview").is_none());
+
+        cx.simulate_resize(gpui::size(px(640.), px(800.)));
+        cx.run_until_parked();
+        let narrow = cx
+            .debug_bounds("markdown-image-markdown-preview")
+            .expect("the image fits a narrow pane");
+        assert!(narrow.size.width <= px(640.), "{narrow:?}");
+        let ratio = f32::from(narrow.size.width) / f32::from(narrow.size.height);
+        assert!((ratio - 2.).abs() < 0.01, "{narrow:?}");
+
+        chat.update(cx, |this, cx| {
+            this.insert_sized_attachment_image(
+                "markdown-preview",
+                sized_image(400, 1600),
+                Some((400, 1600)),
+                cx,
+            );
+        });
+        cx.run_until_parked();
+        let portrait = cx
+            .debug_bounds("markdown-image-markdown-preview")
+            .expect("the portrait image remains available after resizing");
+        assert!(portrait.size.width > px(0.) && portrait.size.width <= px(720.));
+        assert!((portrait.size.height - px(480.)).abs() < px(0.01));
+        let ratio = f32::from(portrait.size.width) / f32::from(portrait.size.height);
+        assert!((ratio - 0.25).abs() < 0.01, "{portrait:?}");
+    }
+
     /// With motion on, the frame on which the row takes over draws its
     /// picture and its text where the message being sent had them. From
     /// there the row only eases to its own place.

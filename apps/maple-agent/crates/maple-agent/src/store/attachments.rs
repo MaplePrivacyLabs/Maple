@@ -36,6 +36,9 @@ const MAX_CANCELLATION_TOMBSTONES: i64 = 4096;
 const MAX_PENDING_BYTES: u64 = 300 * 1024 * 1024;
 const STAGING_TTL_MS: i64 = 24 * 60 * 60 * 1000;
 pub const ATTACHMENT_SOURCE_PREFIX: &str = "maple-attachment://";
+pub const MAX_TASK_IMAGE_BYTES: usize = 20 * 1024 * 1024;
+pub const MAX_TASK_FILE_BYTES: usize = MAX_ATTACHMENT_BYTES;
+const MAX_TASK_FILE_PATH_BYTES: usize = 4096;
 pub const UNAVAILABLE_IMAGE_SOURCE: &str = "maple-attachment-unavailable:retired";
 
 #[derive(Default)]
@@ -300,6 +303,27 @@ impl PreparedEntryImages {
         }
         pin_tx(tx, task_id, &self.attachments)
     }
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum TaskFileKind {
+    Image,
+    Download,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+pub struct TaskFileSnapshot {
+    pub attachment: StoredAttachment,
+    pub sha256: String,
+}
+
+/// Canonical source for a same-computer open. A remote viewer never gets
+/// this path as authority to open a coincidentally named local file.
+#[derive(Clone, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+pub struct TaskFileSource {
+    pub path: PathBuf,
+    pub name: String,
 }
 
 impl Store {
@@ -601,6 +625,129 @@ impl Store {
                 writer.finish(self)
             }
         }
+    }
+
+    /// Resolve a task-local regular file, not an arbitrary host path. This
+    /// is also the local-open boundary; remote callers receive snapshots only.
+    fn open_task_file(
+        &self,
+        account: AccountId,
+        task_uuid: &str,
+        source: &str,
+    ) -> StoreResult<(PathBuf, File)> {
+        if source.is_empty() || source.len() > MAX_TASK_FILE_PATH_BYTES {
+            return Err(StoreError::InvalidInput);
+        }
+        let root = self.read(|tx| {
+            let task = active_task(tx, account, task_uuid)?;
+            tx.query_row(
+                "SELECT p.root FROM projects p JOIN tasks t ON t.project_id=p.id WHERE t.id=?1",
+                [task],
+                |row| row.get::<_, String>(0),
+            )
+            .optional()?
+            .ok_or(StoreError::NotFound)
+        })?;
+        let root = std::fs::canonicalize(root).map_err(|_| StoreError::NotFound)?;
+        if !root.is_dir() {
+            return Err(StoreError::UnsafePath);
+        }
+        let requested = {
+            let source = Path::new(source);
+            if source.is_absolute() {
+                source.to_owned()
+            } else {
+                root.join(source)
+            }
+        };
+        let path = std::fs::canonicalize(requested).map_err(|_| StoreError::NotFound)?;
+        if !path.starts_with(&root) || path == root {
+            return Err(StoreError::UnsafePath);
+        }
+        let mut options = std::fs::OpenOptions::new();
+        options.read(true);
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::OpenOptionsExt;
+            // A path in a workspace can name a FIFO. Never let it trap the
+            // daemon worker before regular-file validation.
+            options.custom_flags(libc::O_NONBLOCK);
+        }
+        let file = options.open(&path).map_err(|_| StoreError::NotFound)?;
+        if !file.metadata()?.is_file() {
+            return Err(StoreError::InvalidInput);
+        }
+        Ok((path, file))
+    }
+
+    pub fn task_file_source(
+        &self,
+        account: AccountId,
+        task_uuid: &str,
+        source: &str,
+    ) -> StoreResult<TaskFileSource> {
+        let (path, file) = self.open_task_file(account, task_uuid, source)?;
+        drop(file);
+        Ok(TaskFileSource {
+            name: normalized_name(
+                path.file_name()
+                    .and_then(|value| value.to_str())
+                    .ok_or(StoreError::InvalidInput)?,
+            ),
+            path,
+        })
+    }
+
+    /// A task-scoped immutable snapshot for either image display or an
+    /// explicit download. The digest also covers the later viewer-side file.
+    pub fn import_task_file(
+        &self,
+        account: AccountId,
+        task_uuid: &str,
+        source: &str,
+        kind: TaskFileKind,
+    ) -> StoreResult<TaskFileSnapshot> {
+        let (path, mut file) = self.open_task_file(account, task_uuid, source)?;
+        let limit = match kind {
+            TaskFileKind::Image => MAX_TASK_IMAGE_BYTES,
+            TaskFileKind::Download => MAX_TASK_FILE_BYTES,
+        };
+        if file.metadata()?.len() > limit as u64 {
+            return Err(StoreError::InvalidInput);
+        }
+        let mut bytes = Vec::new();
+        (&mut file).take(limit as u64 + 1).read_to_end(&mut bytes)?;
+        if bytes.len() > limit || (kind == TaskFileKind::Image && bytes.is_empty()) {
+            return Err(StoreError::InvalidInput);
+        }
+        let detected_mime = detected_image_mime(&bytes[..bytes.len().min(16)]);
+        let mime_type = match (kind, detected_mime) {
+            (TaskFileKind::Image, Some(mime)) => mime,
+            (TaskFileKind::Image, None) => return Err(StoreError::InvalidInput),
+            (TaskFileKind::Download, Some(mime)) => mime,
+            (TaskFileKind::Download, None) => "application/octet-stream",
+        };
+        let sha256 = hex(&Sha256::digest(&bytes));
+        let mut operation = Sha256::new();
+        operation.update(b"maple-task-file-v1\0");
+        operation.update(task_uuid.as_bytes());
+        operation.update(path.as_os_str().as_encoded_bytes());
+        operation.update(&bytes);
+        let operation = format!("task-file-{}", hex(&operation.finalize()));
+        let metadata = AttachmentUploadMetadata {
+            name: normalized_name(
+                path.file_name()
+                    .and_then(|value| value.to_str())
+                    .ok_or(StoreError::InvalidInput)?,
+            ),
+            mime_type: mime_type.to_owned(),
+            size: bytes.len() as u64,
+            sha256: sha256.clone(),
+        };
+        let attachment =
+            self.import_attachment_bytes(account, task_uuid, &operation, metadata, &bytes, true)?;
+        self.pin_attachments(account, task_uuid, std::slice::from_ref(&attachment.id))?;
+        Ok(TaskFileSnapshot { attachment, sha256 })
     }
 
     pub fn read_attachment(

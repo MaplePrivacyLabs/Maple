@@ -563,14 +563,153 @@ pub(super) fn image_format_from_bytes(bytes: &[u8]) -> Option<gpui::ImageFormat>
         Some(gpui::ImageFormat::Jpeg)
     } else if bytes.len() > 12 && &bytes[0..4] == b"RIFF" && &bytes[8..12] == b"WEBP" {
         Some(gpui::ImageFormat::Webp)
+    } else if bytes.starts_with(b"GIF87a") || bytes.starts_with(b"GIF89a") {
+        Some(gpui::ImageFormat::Gif)
     } else {
         None
+    }
+}
+
+const MAX_IMAGE_EDGE: u32 = 16_384;
+const MAX_IMAGE_PIXELS: u64 = 16 * 1024 * 1024;
+// GPUI holds decoded RGBA frames for animated playback. Cap their aggregate
+// before the image cache allocates them, rather than treating compressed
+// bytes as a decoded-memory limit.
+const MAX_GIF_FRAMES: usize = 300;
+const MAX_GIF_FRAME_PIXELS: u64 = 64 * 1024 * 1024;
+
+/// Header-only dimensions for stills and a bounded structural walk for GIF.
+/// This runs off the UI thread and never decodes animation frames here.
+pub(super) fn read_image_metadata(bytes: &[u8]) -> Result<(u32, u32), String> {
+    let (width, height) = if image_format_from_bytes(bytes) == Some(gpui::ImageFormat::Gif) {
+        return gif_metadata(bytes);
+    } else {
+        image::ImageReader::new(std::io::Cursor::new(bytes))
+            .with_guessed_format()
+            .map_err(|_| "Attachment image metadata is invalid".to_string())?
+            .into_dimensions()
+            .map_err(|_| "Attachment image metadata is invalid".to_string())?
+    };
+    check_image_dimensions(width, height)?;
+    Ok((width, height))
+}
+
+fn check_image_dimensions(width: u32, height: u32) -> Result<u64, String> {
+    let pixels = u64::from(width) * u64::from(height);
+    if width == 0
+        || height == 0
+        || width > MAX_IMAGE_EDGE
+        || height > MAX_IMAGE_EDGE
+        || pixels > MAX_IMAGE_PIXELS
+    {
+        Err("Attachment image dimensions exceed the limit".into())
+    } else {
+        Ok(pixels)
+    }
+}
+
+fn gif_metadata(bytes: &[u8]) -> Result<(u32, u32), String> {
+    fn error() -> String {
+        "Attachment GIF is invalid or exceeds its animation limit".into()
+    }
+    fn invalid<T>() -> Result<T, String> {
+        Err(error())
+    }
+    fn word(bytes: &[u8], offset: usize) -> Option<u32> {
+        Some(u32::from(u16::from_le_bytes([
+            *bytes.get(offset)?,
+            *bytes.get(offset + 1)?,
+        ])))
+    }
+    fn color_table(packed: u8) -> Option<usize> {
+        (packed & 0x80 != 0).then(|| 3 * (1usize << usize::from((packed & 7) + 1)))
+    }
+    fn sub_blocks(bytes: &[u8], offset: &mut usize) -> Result<(), String> {
+        loop {
+            let size = usize::from(*bytes.get(*offset).ok_or_else(error)?);
+            *offset = offset.checked_add(1).ok_or_else(error)?;
+            if size == 0 {
+                return Ok(());
+            }
+            *offset = offset.checked_add(size).ok_or_else(error)?;
+            if *offset > bytes.len() {
+                return invalid();
+            }
+        }
+    }
+    if bytes.len() < 14 {
+        return invalid();
+    }
+    let width = word(bytes, 6).ok_or_else(error)?;
+    let height = word(bytes, 8).ok_or_else(error)?;
+    check_image_dimensions(width, height)?;
+    let mut offset = 13usize
+        .checked_add(color_table(bytes[10]).unwrap_or(0))
+        .ok_or_else(error)?;
+    let mut frames = 0usize;
+    let mut frame_pixels = 0u64;
+    loop {
+        match *bytes.get(offset).ok_or_else(error)? {
+            0x3b if frames > 0 => return Ok((width, height)),
+            0x21 => {
+                offset = offset.checked_add(2).ok_or_else(error)?;
+                sub_blocks(bytes, &mut offset)?;
+            }
+            0x2c => {
+                let end = offset.checked_add(10).ok_or_else(error)?;
+                if end > bytes.len() {
+                    return invalid();
+                }
+                let table = color_table(bytes[offset + 9]).unwrap_or(0);
+                offset = offset.checked_add(11 + table).ok_or_else(error)?;
+                if offset > bytes.len() {
+                    return invalid();
+                }
+                sub_blocks(bytes, &mut offset)?;
+                frames += 1;
+                if frames > MAX_GIF_FRAMES {
+                    return invalid();
+                }
+                frame_pixels = frame_pixels.saturating_add(u64::from(width) * u64::from(height));
+                if frame_pixels > MAX_GIF_FRAME_PIXELS {
+                    return invalid();
+                }
+            }
+            _ => return invalid(),
+        }
     }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn gif_with_frames(width: u16, height: u16, frames: usize) -> Vec<u8> {
+        let (width, height) = (width.to_le_bytes(), height.to_le_bytes());
+        let mut bytes = vec![
+            b'G', b'I', b'F', b'8', b'9', b'a', width[0], width[1], height[0], height[1], 0x80, 0,
+            0, 0, 0, 0, 0xff, 0xff, 0xff,
+        ];
+        for _ in 0..frames {
+            bytes.extend_from_slice(&[0x2c, 0, 0, 0, 0, 1, 0, 1, 0, 0, 2, 2, 0x44, 1, 0]);
+        }
+        bytes.push(0x3b);
+        bytes
+    }
+
+    #[test]
+    fn gif_preflight_checks_structure_frames_and_decoded_bounds() {
+        let gif = gif_with_frames(1, 1, 1);
+        assert_eq!(image_format_from_bytes(&gif), Some(gpui::ImageFormat::Gif));
+        assert_eq!(read_image_metadata(&gif), Ok((1, 1)));
+        assert_eq!(
+            read_image_metadata(&gif_with_frames(1, 1, 0)).unwrap_err(),
+            "Attachment GIF is invalid or exceeds its animation limit"
+        );
+        assert!(read_image_metadata(&gif_with_frames(1, 1, MAX_GIF_FRAMES + 1)).is_err());
+        assert!(read_image_metadata(&gif_with_frames(4096, 4096, 5)).is_err());
+        assert!(read_image_metadata(&gif[..gif.len() - 2]).is_err());
+    }
 
     #[test]
     fn staged_failure_reformats_after_returning_from_worker() {
