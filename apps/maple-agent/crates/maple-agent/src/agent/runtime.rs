@@ -153,7 +153,6 @@ impl AgentRuntime {
         Arc::new_cyclic(|runtime| Self {
             external_agents: Arc::new(ExternalAgentRegistry::new(ExternalAgentHost {
                 events: parts.host.events.clone(),
-                questions: parts.questions.clone(),
                 runtime: runtime.clone(),
                 lifetime: lifetime.clone(),
             })),

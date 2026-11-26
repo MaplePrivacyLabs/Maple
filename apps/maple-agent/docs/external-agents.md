@@ -67,7 +67,7 @@ and speaks its JSON-RPC protocol over stdio. Codex uses the user's own
 sign-in and `~/.codex` configuration, including its `sandbox_mode` and
 `approval_policy`. Maple sends only the prompt, the working directory, and
 one feature flag, `features.default_mode_request_user_input`, so Codex can
-ask the user questions outside plan mode.
+ask questions outside plan mode.
 
 Maple does not change what Codex may do; Codex's sandbox does that. When
 Codex asks to run a command or change a file, Maple sends `accept` without
@@ -75,9 +75,8 @@ asking. A request that arrives after the agent or its turn has ended gets
 `cancel`, and so does stopping the agent. Maple never grants
 `acceptForSession`.
 A question from Codex, blocking in plan mode or asynchronous in the
-default mode, opens Maple's question card and the answer goes back in
-Codex's own shape; an asynchronous answer that arrives after the turn
-ended starts a follow-up turn on the same thread.
+default mode, goes to the model that called the agent (see
+[Questions](#questions)), and the answer goes back in Codex's own shape.
 
 The child runs in the requested project directory, on the user's login PATH, with the
 task's id as the shell tool has it, in its own process group (on
@@ -120,12 +119,10 @@ Claude keeps its normal system prompt and configuration. Maple passes
 `--permission-mode default` and `--permission-prompt-tool stdio`, never a
 bypass-permissions flag. Claude's rules decide which actions need approval;
 Maple answers every `can_use_tool` request with allow, except after Stop,
-when it declines. `AskUserQuestion` uses Maple's question card, including
-multiple choices when
-Claude sets `multiSelect`. Click options or use numbered shortcuts to toggle
-them, then choose Answer (or Next in a batch). Vim navigation moves the cursor;
-Enter toggles the current choice. Answers change only that call's input; Maple
-never persists an allow rule in Claude's settings.
+when it declines. `AskUserQuestion` goes to the model that called the agent
+(see [Questions](#questions)), including multiple choices when Claude sets
+`multiSelect`. Answers change only that call's input; Maple never persists an
+allow rule in Claude's settings.
 
 Each turn starts a contained Claude CLI process using `--session-id` initially
 and `--resume` after the CLI confirms the session with `system/init` or a
@@ -146,14 +143,29 @@ forwarding potentially sensitive exception text or CLI stderr.
 
 The `claude_native_*` runtime tests use a Rust CLI fixture, including a Rust
 sleeping child for descendant cleanup; they need no installed `sleep` program
-or Claude account. On Linux, the ignored `native_question_card_fixture` app
-test mounts the real chat screen with multi-select and single-select questions
-for interactive checks on a private desktop. Build it with `cargo test -p
-maple-agent-app native_question_card_fixture --no-run` through the component build
-environment, then launch the reported test binary on the private display with
-`native_question_card_fixture --ignored --nocapture --test-threads=1` and
-isolated XDG directories. It supplies fixture questions without authenticating
-or starting inference; runtime broker tests cover delivery of the answer.
+or Claude account.
+
+## Questions
+
+An agent's questions are for the model that started it. That model may answer
+them itself, ask the user first with Maple's own question tool, or decline;
+the agent's question never opens the user's question card.
+
+- A blocking `agent_start` or `agent_send` returns as soon as the agent asks,
+  with status `waiting` and each question's ID, text, and option labels. The
+  transcript row shows the question.
+- A background agent's question reaches the model as a message the user does
+  not see, as a background result does.
+- While a question holds the turn, `agent_send` answers it. Its prompt answers
+  a single question; `answers` maps question IDs to answers when there are
+  several. An answer that names an option's label, in any case, chooses it; a
+  comma-separated list of labels chooses several where the question allows
+  it. Anything else is sent as the answer's own words. The call then waits for
+  the turn's end or the next question, or returns at once with
+  `background: true`.
+- `agent_cancel` and Stop decline the question and stop the turn.
+- Codex's asynchronous questions do not hold the turn. The turn's result lists
+  them, and the next `agent_send` answers them as the next turn's input.
 
 ## Transcript
 

@@ -123,7 +123,7 @@ pub(super) enum AgentRequest {
         arguments: Map<String, Value>,
         prompt: Option<String>,
     },
-    /// Questions for the user, as Maple's question card shows them.
+    /// Questions for the model that called the agent.
     UserInput { questions: Vec<AgentQuestion> },
     /// A request Maple does not serve.
     Unknown { method: String },
@@ -144,7 +144,8 @@ impl AgentRequest {
 #[derive(Debug, Clone, PartialEq)]
 pub(super) enum AgentReply {
     Decision(AgentPermissionDecision),
-    /// The question card's answer, as its response JSON; empty when nobody
+    /// The caller's answers as JSON, `{"answers": {question id: {"answers":
+    /// [...]}}}` as Maple's question card also answers; empty when nobody
     /// answered.
     Answers(String),
 }
@@ -189,8 +190,8 @@ pub(super) struct OpenedThread {
     pub(super) confirmed: bool,
 }
 
-/// The questions Maple shows for an async question, in the shape its
-/// question card already understands.
+/// An async question's questions, with the ids `q0`, `q1`, ... that the
+/// caller answers them by.
 pub(super) fn async_question_prompts(questions: &[AsyncQuestion]) -> Vec<AgentQuestion> {
     questions
         .iter()
@@ -213,43 +214,8 @@ pub(super) fn async_question_prompts(questions: &[AsyncQuestion]) -> Vec<AgentQu
         .collect()
 }
 
-/// The user's answers as the next turn's input, or `None` when every
-/// question was dismissed. `answer` is the card's response JSON.
-pub(super) fn async_answer_prompt(questions: &[AsyncQuestion], answer: &str) -> Option<String> {
-    let parsed = serde_json::from_str::<Value>(answer).ok()?;
-    let answers = parsed.get("answers")?;
-    let mut lines = Vec::new();
-    for (index, question) in questions.iter().enumerate() {
-        let values = answers
-            .get(format!("q{index}"))
-            .and_then(|entry| entry.get("answers"))
-            .and_then(Value::as_array)
-            .map(|values| {
-                values
-                    .iter()
-                    .filter_map(Value::as_str)
-                    .map(str::trim)
-                    .filter(|value| !value.is_empty())
-                    .collect::<Vec<_>>()
-                    .join(", ")
-            })
-            .unwrap_or_default();
-        if values.is_empty() {
-            continue;
-        }
-        lines.push(format!("{}\n{values}", question.title));
-    }
-    if lines.is_empty() {
-        return None;
-    }
-    Some(format!(
-        "Answers to your questions:\n\n{}",
-        lines.join("\n\n")
-    ))
-}
-
-/// The question card's response as JSON: `{"answers": {...}}`, or no
-/// answers when it is not one.
+/// The answers JSON of an [`AgentReply::Answers`], or no answers when it is
+/// not one.
 pub(super) fn card_answers(answer: &str) -> Value {
     if let Ok(value) = serde_json::from_str::<Value>(answer)
         && value.get("answers").is_some()

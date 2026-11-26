@@ -213,6 +213,70 @@ async fn a_task_delegates_in_the_background_and_hears_back() {
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_background_agents_question_reaches_the_model_which_answers_it() {
+    let fixtures = Fixtures::new("question");
+    let harness = Harness::new().await;
+    let runtime = harness.runtime().await;
+    runtime
+        .external_agents
+        .set_test_search_path(fixtures.search_path());
+    switch_on_in_settings(&harness, &["codex"]);
+    let task = harness.create_task().await;
+    choose_for_task(&runtime, &task, &["codex"]);
+
+    harness.faux.push_message(vec![faux_tool_call(
+        AGENT_START_TOOL,
+        json!({"provider": "codex", "prompt": "Ask me something", "background": true}),
+    )]);
+    harness.faux.push_text("Started it.");
+    harness.faux.push_message(vec![faux_tool_call(
+        AGENT_SEND_TOOL,
+        json!({"provider": "codex", "agent_id": "codex-1", "prompt": "Spaces"}),
+    )]);
+    harness.faux.push_text("Answered.");
+    let mut run = harness.send(&task, "Delegate this").await;
+    assert_eq!(finished(&mut run).await, AgentRunTerminal::Completed);
+
+    // The question reaches the model as a message of its own; the model
+    // answers it, and the user's question card never shows.
+    eventually(|| harness.faux.requests().len() >= 4).await;
+    eventually(|| !runtime.runs.is_running(&task)).await;
+    let requests = harness.faux.requests();
+    let question = last_user_text(&requests[2]);
+    assert!(
+        question.starts_with("A background agent asked a question and is waiting for your answer."),
+        "{question}"
+    );
+    assert!(question.contains("style: Tabs or spaces?"), "{question}");
+    assert!(
+        question.contains(r#"Answer with agent_send(provider: "codex", agent_id: "codex-1")."#),
+        "{question}"
+    );
+
+    let detail = harness.handle.load_session(task.clone()).await.unwrap();
+    let answer = detail
+        .timeline
+        .iter()
+        .find(|item| item.title.as_deref() == Some("External agent: continue"))
+        .unwrap();
+    let activity = &answer.output.as_ref().unwrap()["structuredContent"][ACTIVITY_KEY];
+    assert_eq!(activity["status"], "completed");
+    assert!(
+        activity["text"]
+            .as_str()
+            .unwrap()
+            .contains("Chosen: Spaces"),
+        "{activity}"
+    );
+    // The answering call waited for the turn, so its end is no notice.
+    assert_eq!(harness.faux.requests().len(), 4);
+    runtime
+        .external_agents
+        .shutdown_all(Duration::from_secs(5))
+        .await;
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn a_working_agent_shows_until_it_stops_and_goes_with_its_task() {
     let fixtures = Fixtures::new("slow");
     let harness = Harness::new().await;
@@ -268,6 +332,7 @@ async fn a_working_agent_shows_until_it_stops_and_goes_with_its_task() {
                 provider: "codex".into(),
                 agent_id: "codex-1".into(),
                 prompt: "Carry on".into(),
+                answers: BTreeMap::new(),
                 background: true,
                 model: None,
                 effort: None,

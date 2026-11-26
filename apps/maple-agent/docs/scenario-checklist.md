@@ -73,7 +73,7 @@ stdio MCP server configured in Settings > Integrations.
 | E1 | Codex start, send, status, cancel | Blocking `agent_start`, then `agent_send`, `agent_status`, and Stop from the row | Rows stream activity; cancel kills the process (**automated**: `external_agents::tests`) |
 | E2 | Claude Code | The same with `provider: claude` | Same |
 | E3 | Background agent | `agent_start` with `background: true` | The row stays after the turn; the completion notice and the model's follow-up arrive |
-| E4 | Questions on Maple's cards | Codex `request_user_input`; Claude `AskUserQuestion` | Both render as Maple's question card and the answers reach the agent |
+| E4 | Questions go to the caller | Codex `request_user_input`; Claude `AskUserQuestion` | The call returns `waiting` with the question, no card opens, and the model's `agent_send` answer reaches the agent (**automated**: `a_question_from_the_agent_comes_back_to_the_caller`, `claude_questions_come_back_to_the_caller`) |
 | E5 | Approvals | A Codex configuration that asks on request; a Claude `Write` | Accepted at once, no card (**automated**: `external_agent_approvals_are_accepted_without_a_card`) |
 
 ## Computer use, MCP, ACP

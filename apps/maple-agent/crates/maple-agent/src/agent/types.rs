@@ -921,7 +921,8 @@ pub struct ExternalAgentActivity {
     pub agent_id: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub thread_id: Option<String>,
-    /// `running`, `completed`, `failed`, `cancelled`, or `idle`.
+    /// `running`, `waiting` (on its caller's answer), `completed`,
+    /// `failed`, `cancelled`, or `idle`.
     pub status: String,
     /// The agent's messages in the current turn, tail-kept.
     pub text: String,

@@ -128,25 +128,6 @@ impl AgentClient {
         }
     }
 
-    /// Add input to the turn in progress.
-    pub(super) async fn steer(
-        &self,
-        thread_id: &str,
-        turn_id: &str,
-        text: &str,
-    ) -> Result<(), String> {
-        match self {
-            Self::Codex(client) => client
-                .request(
-                    "turn/steer",
-                    codex::turn_steer_params(thread_id, turn_id, text),
-                )
-                .await
-                .map(drop),
-            Self::Claude(_) => Err("Claude does not support steering an active turn".into()),
-        }
-    }
-
     pub(super) async fn interrupt(&self, thread_id: &str, turn_id: &str) -> Result<(), String> {
         match self {
             Self::Codex(client) => client
