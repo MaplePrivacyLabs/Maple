@@ -185,3 +185,36 @@ async fn a_turn_a_restart_cuts_short_is_reported_once() {
         .shutdown_all(WAIT)
         .await;
 }
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_turn_that_finished_just_before_maple_stopped_reads_as_finished() {
+    let fixtures = Fixtures::new("acp");
+    let (mut harness, task) = grok_task(&fixtures, "acp").await;
+    harness.faux.push_message(vec![faux_tool_call(
+        AGENT_START_TOOL,
+        json!({"provider": "grok", "prompt": "Quick job"}),
+    )]);
+    harness.faux.push_text("Done.");
+    let mut run = harness.send(&task, "Delegate this").await;
+    assert_eq!(finished(&mut run).await, AgentRunTerminal::Completed);
+
+    // Stop at once: the turn's record was written before its call returned.
+    restart(&mut harness, &fixtures).await;
+    harness.faux.push_text("Nothing more.");
+    let mut run = harness.send(&task, "Anything else?").await;
+    assert_eq!(finished(&mut run).await, AgentRunTerminal::Completed);
+    let request = harness.faux.requests().pop().unwrap();
+    assert!(
+        user_texts(&request)
+            .iter()
+            .all(|text| !text.starts_with("Maple stopped")),
+        "{:?}",
+        user_texts(&request)
+    );
+    harness
+        .runtime()
+        .await
+        .external_agents
+        .shutdown_all(WAIT)
+        .await;
+}

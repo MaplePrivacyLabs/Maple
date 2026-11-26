@@ -657,7 +657,8 @@ impl ExternalAgentRegistry {
             return;
         }
         let context = session.extension_context();
-        let mut listed = Vec::new();
+        let mut resumable = Vec::new();
+        let mut unresumable = Vec::new();
         for mut record in stopped {
             record.activity = records::after_restart(record.activity);
             let agent_id = record.activity.agent_id.clone();
@@ -690,18 +691,25 @@ impl ExternalAgentRegistry {
                     item,
                 },
             );
-            listed.push(format!("{agent_id} (provider: \"{provider}\")"));
+            let named = format!("{agent_id} (provider: \"{provider}\")");
+            if record.activity.thread_id.is_some() {
+                resumable.push(named);
+            } else {
+                unresumable.push(named);
+            }
         }
         log::info!(
             "External agents interrupted when Maple stopped: {}",
-            listed.join(", ")
+            [resumable.as_slice(), unresumable.as_slice()]
+                .concat()
+                .join(", ")
         );
         context.send_message(
             CustomMessageDraft {
                 custom_type: INTERRUPTED_MESSAGE.to_string(),
-                content: vec![pi_ai::Content::text(format!(
-                    "Maple stopped while these external agents were working, so their turns did not finish: {}. Each keeps its session: {AGENT_STATUS_TOOL} shows what it did before it stopped, and {AGENT_SEND_TOOL} with its provider and agent ID continues it.",
-                    listed.join(", ")
+                content: vec![pi_ai::Content::text(records::interrupted_message(
+                    &resumable,
+                    &unresumable,
                 ))],
                 display: false,
                 details: None,
@@ -2156,6 +2164,9 @@ impl ExternalAgent {
                 .take()
                 .map(|ends| (ends, TurnEnd { outcome, report }))
         };
+        // Recorded before anyone waiting on the turn hears it ended, so the
+        // record never trails the next turn's or a shutdown.
+        self.record().await;
         self.wake.notify_waiters();
         emit_agent_event(
             &self.host.events,
@@ -2170,7 +2181,6 @@ impl ExternalAgent {
         if let Some((ends, end)) = end {
             let _ = ends.send(end);
         }
-        self.record().await;
     }
 
     /// A background turn ended: leave the result in the transcript and

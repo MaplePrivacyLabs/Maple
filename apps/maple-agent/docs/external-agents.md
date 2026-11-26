@@ -289,12 +289,13 @@ the task, on whichever computer runs it. As Paseo does with its agents:
   task's current mode. An agent whose session was never confirmed cannot be
   resumed.
 - New agents are numbered past the ones the task has recorded.
-- When a task first opens after a restart, an agent its records leave
-  working or waiting did not finish its turn. Maple records it as
-  cancelled, shows the same notice as a stopped turn ("External agent
-  grok-1 (Grok Build) was interrupted."), and gives the model one message
-  it reads with its next run, naming each such agent. Nothing resumes on its
-  own: the model decides whether to continue.
+- When a task next runs after a restart (a message, or anything else that
+  loads it to run), an agent its records leave working or waiting did not
+  finish its turn. Maple records it as cancelled, shows the same notice as a
+  stopped turn ("External agent grok-1 (Grok Build) was interrupted."), and
+  gives the model one message it reads with that run, naming each such
+  agent. One that never had a session is named as one to start again.
+  Nothing resumes on its own: the model decides whether to continue.
 - A question or approval the agent was waiting on went with its process.
 
 Stopping an agent, from its row or with `agent_cancel`, sends

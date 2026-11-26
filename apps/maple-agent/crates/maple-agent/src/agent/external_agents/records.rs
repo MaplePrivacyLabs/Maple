@@ -19,6 +19,9 @@ pub(super) const AGENT_RECORD_ENTRY: &str = "maple.external-agent-record";
 /// What the model is told of a turn a restart cut short.
 pub(super) const INTERRUPTED_ERROR: &str = "Maple stopped while this agent was working, so its last turn did not finish. Its session is kept: agent_send continues it.";
 
+/// What the model is told when the agent never had a session to keep.
+pub(super) const INTERRUPTED_UNRESUMABLE: &str = "Maple stopped before this agent had a session to keep, so it cannot be continued. Start a new agent with agent_start if the work is still needed.";
+
 /// One agent of the task as it last stood.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -77,17 +80,46 @@ pub(super) fn was_working(activity: &ExternalAgentActivity) -> bool {
 pub(super) fn after_restart(mut activity: ExternalAgentActivity) -> ExternalAgentActivity {
     if was_working(&activity) {
         activity.status = "cancelled".to_string();
-        activity.error = Some(INTERRUPTED_ERROR.to_string());
+        activity.error = Some(
+            if activity.thread_id.is_some() {
+                INTERRUPTED_ERROR
+            } else {
+                INTERRUPTED_UNRESUMABLE
+            }
+            .to_string(),
+        );
         for command in &mut activity.commands {
             if command.status == "running" {
                 command.status = "failed".to_string();
             }
         }
+        // A question that held the turn went with the process. Questions
+        // a finished turn ended with still wait for their answers.
+        activity.questions.clear();
     }
-    activity.questions.clear();
     activity.pending_permission = None;
     activity.elapsed_ms = 0;
     activity
+}
+
+/// The message that tells the model which of its agents a restart cut
+/// short, each named as `agent-id (provider: "id")`: those it can continue
+/// and those that never had a session.
+pub(super) fn interrupted_message(resumable: &[String], unresumable: &[String]) -> String {
+    let mut parts = Vec::new();
+    if !resumable.is_empty() {
+        parts.push(format!(
+            "Maple stopped while these external agents were working, so their turns did not finish: {}. Each keeps its session: agent_status shows what it did before it stopped, and agent_send with its provider and agent ID continues it.",
+            resumable.join(", ")
+        ));
+    }
+    if !unresumable.is_empty() {
+        parts.push(format!(
+            "Maple stopped before these external agents had a session to keep, so they cannot be continued: {}. Start a new agent with agent_start if the work is still needed.",
+            unresumable.join(", ")
+        ));
+    }
+    parts.join(" ")
 }
 
 #[cfg(test)]
@@ -173,9 +205,39 @@ mod tests {
         assert!(after.pending_permission.is_none());
         assert_eq!(after.elapsed_ms, 0);
 
-        // A finished turn keeps how it ended.
-        let done = after_restart(activity("grok-1", "completed"));
+        // A finished turn keeps how it ended, and the questions it ended
+        // with, which still wait for their answers.
+        let mut finished = activity("codex-1", "completed");
+        finished.questions.push(ActivityQuestion {
+            id: "q".into(),
+            question: "Which branch?".into(),
+            options: Vec::new(),
+            multi_select: false,
+        });
+        let done = after_restart(finished);
         assert_eq!(done.status, "completed");
         assert!(done.error.is_none());
+        assert_eq!(done.questions.len(), 1);
+
+        // An agent that never had a session cannot be continued.
+        let mut starting = activity("claude-1", "running");
+        starting.thread_id = None;
+        let after = after_restart(starting);
+        assert_eq!(after.error.as_deref(), Some(INTERRUPTED_UNRESUMABLE));
+    }
+
+    #[test]
+    fn the_model_hears_which_agents_it_can_continue() {
+        let both = interrupted_message(
+            &[r#"grok-1 (provider: "grok")"#.to_string()],
+            &[r#"claude-2 (provider: "claude")"#.to_string()],
+        );
+        assert!(both.starts_with("Maple stopped while these external agents were working, so their turns did not finish: grok-1 (provider: \"grok\")."), "{both}");
+        assert!(
+            both.contains("cannot be continued: claude-2 (provider: \"claude\")."),
+            "{both}"
+        );
+        let one = interrupted_message(&[], &[r#"claude-2 (provider: "claude")"#.to_string()]);
+        assert!(one.starts_with("Maple stopped before"), "{one}");
     }
 }
