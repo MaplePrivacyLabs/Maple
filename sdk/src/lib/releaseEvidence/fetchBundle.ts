@@ -22,14 +22,22 @@ export type BundleFetch =
       category: "bundle-not-found" | "bundle-fetch-failed" | "bundle-timeout" | "bundle-too-large";
     };
 
+/*
+ * A leading byte order mark is kept, so JSON parsing rejects it as the Rust
+ * SDK does. The default decoder, and response.text(), drop it silently.
+ */
+function decodeBundleText(bytes: Uint8Array): string {
+  return new TextDecoder("utf-8", { fatal: true, ignoreBOM: true }).decode(bytes);
+}
+
 async function readBoundedText(response: Response, maxBytes: number): Promise<string | undefined> {
   if (!response.body) {
-    const text = await response.text();
-    const textTooLarge = new TextEncoder().encode(text).byteLength > maxBytes;
-    if (textTooLarge) {
+    const bytes = new Uint8Array(await response.arrayBuffer());
+    const responseTooLarge = bytes.byteLength > maxBytes;
+    if (responseTooLarge) {
       return undefined;
     }
-    return text;
+    return decodeBundleText(bytes);
   }
   const reader = response.body.getReader();
   const chunks: Uint8Array[] = [];
@@ -61,7 +69,7 @@ async function readBoundedText(response: Response, maxBytes: number): Promise<st
     bytes.set(chunk, offset);
     offset += chunk.byteLength;
   }
-  return new TextDecoder("utf-8", { fatal: true }).decode(bytes);
+  return decodeBundleText(bytes);
 }
 
 export async function fetchReleaseBundle(

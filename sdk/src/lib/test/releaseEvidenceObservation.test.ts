@@ -64,6 +64,22 @@ function countingFetch(respond: () => Response): { fetchImpl: FetchBundle; calls
   return { fetchImpl, calls: () => calls };
 }
 
+// The published bundle with a UTF-8 byte order mark in front, as a host
+// that adds one would serve it.
+const BYTE_ORDER_MARK = [0xef, 0xbb, 0xbf];
+const PUBLISHED_BUNDLE_WITH_BOM = new Uint8Array([
+  ...BYTE_ORDER_MARK,
+  ...readFileSync(PUBLISHED_BUNDLE_PATH)
+]);
+
+// A response without a readable stream, so the fetch reads the whole body at
+// once instead of streaming it.
+function responseWithoutStream(body: Uint8Array | string): Response {
+  const response = new Response(body, { status: 200 });
+  Object.defineProperty(response, "body", { value: null });
+  return response;
+}
+
 const networkForbidden: FetchBundle = async () => {
   throw new Error("this observation must not use the network");
 };
@@ -210,6 +226,36 @@ describe("observeReleaseEvidence", () => {
       fetchImpl: respondWith(oversized, { status: 200 })
     });
     expect(result).toMatchObject({ outcome: "fail", category: "bundle-too-large" });
+  });
+
+  test("a streamed bundle with a byte order mark in front is rejected", async () => {
+    const result = await observeReleaseEvidence(DEV_RELEASE, {
+      fetchImpl: respondWith(PUBLISHED_BUNDLE_WITH_BOM, { status: 200 }),
+      embeddedBundles: []
+    });
+    expect(result).toMatchObject({
+      outcome: "fail",
+      category: "json-syntax-error",
+      source: "fetched"
+    });
+  });
+
+  test("a bundle read without a stream keeps its byte order mark and is rejected", async () => {
+    const withBom = await observeReleaseEvidence(DEV_RELEASE, {
+      fetchImpl: async () => responseWithoutStream(PUBLISHED_BUNDLE_WITH_BOM),
+      embeddedBundles: []
+    });
+    expect(withBom).toMatchObject({
+      outcome: "fail",
+      category: "json-syntax-error",
+      source: "fetched"
+    });
+
+    const withoutBom = await observeReleaseEvidence(DEV_RELEASE, {
+      fetchImpl: async () => responseWithoutStream(PUBLISHED_BUNDLE),
+      embeddedBundles: []
+    });
+    expect(withoutBom).toMatchObject({ outcome: "pass", source: "fetched" });
   });
 
   test("a cached pass is not reused for a different PCR tuple", async () => {
