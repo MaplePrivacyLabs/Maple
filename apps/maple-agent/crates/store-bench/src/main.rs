@@ -37,6 +37,7 @@ fn main() -> Result<()> {
         return maple_agent::store::integrity::run_checker_stdio(&PathBuf::from(root))
             .map_err(Into::into);
     }
+    maple_agent::store::integrity::register_checker_entry();
     let options = options()?;
     if options.seed {
         return run::seed_profile(&options);

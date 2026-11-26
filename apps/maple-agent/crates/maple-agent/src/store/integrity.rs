@@ -36,6 +36,20 @@ const REPORT_PREFIX: &str = "MPLINTREPORT1 ";
 const REQUEST_MAGIC: &[u8; 8] = b"MPLINT04";
 const MAX_CHECK_DURATION: Duration = Duration::from_secs(60 * 60);
 
+/// Whether the current executable answers the hidden checker flag. This
+/// crate's own tests re-launch their harness's `checker_child` fixture instead.
+static CHECKER_ENTRY: AtomicBool = AtomicBool::new(cfg!(test));
+
+/// Call from the `main` of an executable that dispatches
+/// `--internal-store-integrity-check` to [`run_checker_stdio`]. Full and
+/// staged checks re-launch the current executable as their isolated checker.
+/// Until this runs they report `CheckerUnavailable` without starting a process,
+/// so test harnesses and other executables that link this crate never start
+/// copies of themselves that cannot check anything.
+pub fn register_checker_entry() {
+    CHECKER_ENTRY.store(true, Ordering::Release);
+}
+
 #[derive(Clone, Copy)]
 enum CheckerTarget {
     Canonical,
@@ -276,8 +290,14 @@ impl Store {
             }
             IntegrityKind::Full => {
                 self.paths.verify_database()?;
-                let command = checker_command(&self.paths)?;
-                self.run_integrity_checker(command, kind, budget, cancellation)?
+                match checker_command(&self.paths)? {
+                    Some(command) => {
+                        self.run_integrity_checker(command, kind, budget, cancellation)?
+                    }
+                    None => {
+                        IntegrityReport::partial(kind, CheckIncomplete::CheckerUnavailable, start)
+                    }
+                }
             }
         };
         if report.outcome == IntegrityOutcome::Damaged && !cancellation.is_cancelled() {
@@ -490,7 +510,13 @@ pub(in crate::store) fn check_staged(
         operation: expected_setup_op.map(decode_hex_id).transpose()?,
     };
     checker_target_path(paths, target)?;
-    let mut command = checker_command(paths)?;
+    let Some(mut command) = checker_command(paths)? else {
+        return Ok(IntegrityReport::partial(
+            IntegrityKind::Full,
+            CheckIncomplete::CheckerUnavailable,
+            start,
+        ));
+    };
     if prepare_checker_command(&mut command).is_err() {
         return Ok(IntegrityReport::partial(
             IntegrityKind::Full,
@@ -547,7 +573,11 @@ fn native_windows_directory() -> StoreResult<std::ffi::OsString> {
     Ok(std::ffi::OsString::from_wide(&directory[..length]))
 }
 
-fn checker_command(paths: &StorePaths) -> StoreResult<Command> {
+/// `None` when the current executable has not registered as the checker.
+fn checker_command(paths: &StorePaths) -> StoreResult<Option<Command>> {
+    if !CHECKER_ENTRY.load(Ordering::Acquire) {
+        return Ok(None);
+    }
     // Keep the checker as our direct child, including bundled-loader packages.
     // Bypass launcher wrappers so watchdog parent verification and direct
     // cancellation/reaping are preserved. No key enters argv or environment.
@@ -564,7 +594,7 @@ fn checker_command(paths: &StorePaths) -> StoreResult<Command> {
     #[cfg(not(test))]
     command.arg("--internal-store-integrity-check");
     command.arg(paths.root());
-    Ok(command)
+    Ok(Some(command))
 }
 
 fn checker_target_path(
