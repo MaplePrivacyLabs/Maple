@@ -655,6 +655,14 @@ fn gif_shape(bytes: &[u8]) -> Result<(u32, u32, u64), String> {
                 sub_blocks(bytes, &mut offset)?;
             }
             0x2c => {
+                // A frame decodes at its own size before it is drawn on the
+                // canvas, so it counts at the larger of the two.
+                let frame_width = word(bytes, offset + 5).ok_or_else(error)?;
+                let frame_height = word(bytes, offset + 7).ok_or_else(error)?;
+                if frame_width > MAX_PICTURE_EDGE || frame_height > MAX_PICTURE_EDGE {
+                    return Err(error());
+                }
+                let frame = canvas.max(u64::from(frame_width) * u64::from(frame_height));
                 let packed = *bytes.get(offset + 9).ok_or_else(error)?;
                 // Descriptor, local colors, then the LZW code size byte.
                 offset += 10 + color_table(packed) + 1;
@@ -663,7 +671,7 @@ fn gif_shape(bytes: &[u8]) -> Result<(u32, u32, u64), String> {
                 }
                 sub_blocks(bytes, &mut offset)?;
                 frames += 1;
-                pixels += canvas;
+                pixels += frame;
                 if frames > MAX_GIF_FRAMES || pixels > MAX_GIF_FRAME_PIXELS {
                     return Err(error());
                 }
@@ -678,14 +686,27 @@ mod tests {
     use super::*;
 
     fn gif_with_frames(width: u16, height: u16, frames: usize) -> Vec<u8> {
+        gif_with_frame_size(width, height, frames, 1, 1)
+    }
+
+    fn gif_with_frame_size(
+        width: u16,
+        height: u16,
+        frames: usize,
+        frame_width: u16,
+        frame_height: u16,
+    ) -> Vec<u8> {
         let (width, height) = (width.to_le_bytes(), height.to_le_bytes());
+        let (fw, fh) = (frame_width.to_le_bytes(), frame_height.to_le_bytes());
         let mut bytes = vec![
             b'G', b'I', b'F', b'8', b'9', b'a', width[0], width[1], height[0], height[1], 0x80, 0,
             0, 0, 0, 0, 0xff, 0xff, 0xff,
         ];
         for _ in 0..frames {
-            // A 1x1 frame at the origin with one LZW sub-block.
-            bytes.extend_from_slice(&[0x2c, 0, 0, 0, 0, 1, 0, 1, 0, 0, 2, 2, 0x44, 1, 0]);
+            // A frame at the origin with one LZW sub-block.
+            bytes.extend_from_slice(&[
+                0x2c, 0, 0, 0, 0, fw[0], fw[1], fh[0], fh[1], 0, 2, 2, 0x44, 1, 0,
+            ]);
         }
         bytes.push(0x3b);
         bytes
@@ -706,6 +727,14 @@ mod tests {
         assert!(picture_shape(&gif_with_frames(1, 1, MAX_GIF_FRAMES + 1)).is_err());
         // 3 frames of 4096x4096 is 48 Mi pixels, over the budget.
         assert!(picture_shape(&gif_with_frames(4096, 4096, 3)).is_err());
+        // A tiny canvas does not hide frames that decode large: 3 frames of
+        // 4096x4096 on a 1x1 canvas are over the budget too.
+        assert!(picture_shape(&gif_with_frame_size(1, 1, 3, 4096, 4096)).is_err());
+        assert!(picture_shape(&gif_with_frame_size(1, 1, 1, 20_000, 1)).is_err());
+        assert_eq!(
+            picture_shape(&gif_with_frame_size(2, 2, 2, 3, 3)).map(|shape| shape.animation_pixels),
+            Ok(18)
+        );
         assert!(picture_shape(&gif[..gif.len() - 2]).is_err());
         assert!(picture_shape(&gif[..12]).is_err());
     }

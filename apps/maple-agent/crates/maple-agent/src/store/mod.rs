@@ -54,8 +54,8 @@ pub use attachments::{
     MAX_ATTACHMENTS, MAX_UPLOAD_IMAGE_BYTES, PreparedAttachmentUpload, StoredAttachment,
     UNAVAILABLE_IMAGE_SOURCE,
     markdown_images::{
-        MARKDOWN_IMAGES_KEY, MAX_MARKDOWN_IMAGES, MarkdownImage, REPLY_PICTURES_GUIDANCE,
-        image_destinations,
+        MARKDOWN_IMAGES_KEY, MAX_MARKDOWN_IMAGES, MAX_PICTURE_DESTINATIONS, MarkdownImage,
+        REPLY_PICTURES_GUIDANCE, image_destinations,
     },
 };
 pub use error::{DamageReason, RefusalReason, StoreError, StoreResult};

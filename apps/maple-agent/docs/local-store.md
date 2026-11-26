@@ -127,8 +127,12 @@ Markdown on its own (`![alt](path)`, not inside a table, heading or link) is
 copied into the task's attachments, up to 8 per reply. The path may be relative
 to the task's project folder, absolute, a `file:` URL or percent-encoded; it
 must lead to a regular PNG, JPEG, WebP or GIF file of at most 20 MiB inside the
-project folder (a symbolic link counts only if it leads inside). Anything else
-keeps its alternative text, and nothing about a picture can fail the save.
+project folder (a symbolic link counts only if it leads inside). A path is
+first checked against the folder by its text alone, so nothing outside it, such
+as a share on another computer, is ever opened or looked up. The first 32
+distinct pictures a reply names are considered. Anything else keeps its
+alternative text, and nothing about a picture can fail the save. Copies waiting
+for their reply's save do not count against the composer's attachment limits.
 
 The copy is the picture as it was when the reply was saved: later edits or
 deletion of the file change nothing, and a reply that names the same path later

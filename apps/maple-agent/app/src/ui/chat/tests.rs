@@ -12292,6 +12292,44 @@ mod state_tests {
     }
 
     #[gpui::test]
+    fn a_picture_in_the_preview_is_released_once_the_preview_closes(cx: &mut TestAppContext) {
+        cx.update(|cx| cx.set_reduce_motion(true));
+        let (chat, cx) = chat_window(cx, |this, cx| {
+            this.sidebar_collapsed = true;
+            this.replace_timeline(vec![reply_with_pictures(
+                "pictures",
+                "![a](a.png)",
+                &[("a.png", "a")],
+            )]);
+            this.attachment_viewport = 0..1;
+            this.insert_attachment_image("a", sized_image(40, 20), cx);
+        });
+        cx.run_until_parked();
+        chat.update(cx, |this, cx| {
+            let shown = this.attachment_images["a"].clone();
+            assert!(
+                this.drawn_pictures
+                    .borrow()
+                    .contains(&(Arc::as_ptr(&shown) as usize)),
+                "the reply drew it"
+            );
+            this.open_lightbox(shown, cx);
+            this.release_all_pictures();
+            cx.notify();
+        });
+        cx.run_until_parked();
+        chat.update(cx, |this, cx| {
+            assert_eq!(this.released_pictures.len(), 1, "kept while shown");
+            this.close_lightbox(cx);
+        });
+        cx.run_until_parked();
+        chat.update(cx, |this, _| {
+            assert!(this.released_pictures.is_empty());
+            assert!(this.drawn_pictures.borrow().is_empty());
+        });
+    }
+
+    #[gpui::test]
     fn message_thumbnail_opens_a_fitted_image_and_dismisses_without_clicking_through(
         cx: &mut TestAppContext,
     ) {

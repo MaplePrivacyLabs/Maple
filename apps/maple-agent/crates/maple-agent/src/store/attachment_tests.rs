@@ -84,6 +84,45 @@ fn expire(store: &Store, id: &str) {
 }
 
 #[test]
+fn reply_picture_copies_never_take_the_composers_room() {
+    let (_directory, store, alice, _) = fixture();
+    let task = "00000000-0000-7000-8000-000000000001";
+    // Copies of a reply that has not been saved yet are unbound for a moment
+    // and stay so if the save fails; the composer keeps its own allowance.
+    for n in 0..MAX_ATTACHMENTS {
+        let bytes = png(64 + n);
+        let metadata = AttachmentUploadMetadata {
+            name: format!("p{n}.png"),
+            mime_type: "image/png".into(),
+            size: bytes.len() as u64,
+            sha256: hex(&Sha256::digest(&bytes)),
+        };
+        store
+            .import_attachment_bytes(
+                alice,
+                task,
+                &format!("markdown-{n:064x}"),
+                metadata,
+                &bytes,
+                true,
+            )
+            .unwrap();
+    }
+    write_upload(
+        &store,
+        alice,
+        task,
+        "11111111-1111-4111-8111-111111111111",
+        b"composer",
+    );
+    // Nobody else may claim that name for an upload.
+    assert!(matches!(
+        store.begin_attachment_upload(alice, task, "markdown-upload", &metadata(b"x")),
+        Err(StoreError::InvalidInput)
+    ));
+}
+
+#[test]
 fn cleanup_metadata_rejects_negative_sizes_and_accepts_zero_and_file_cap() {
     let (_directory, store, _, _) = fixture();
     for size in [-1, 0, MAX_ATTACHMENT_BYTES as i64] {

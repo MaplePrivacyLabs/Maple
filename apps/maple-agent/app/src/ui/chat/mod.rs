@@ -214,6 +214,9 @@ struct TranscriptCtx<'a> {
     markdown_cache: &'a MarkdownCache,
     derived: &'a DerivedCache,
     attachment_images: &'a HashMap<String, Arc<gpui::Image>>,
+    /// Pictures handed to GPUI to draw, so a release frees only what GPUI
+    /// decoded.
+    drawn_pictures: &'a std::cell::RefCell<HashSet<usize>>,
     /// Pixel size of loaded pictures, read from their headers off the UI thread.
     attachment_dimensions: &'a HashMap<String, (u32, u32)>,
     attachment_previews: &'a HashMap<String, Arc<gpui::Image>>,
@@ -839,6 +842,10 @@ pub struct ChatScreen {
     /// Pictures dropped from the cache whose decoded frames and textures
     /// GPUI still holds; the next render frees them (it needs the window).
     released_pictures: Vec<Arc<gpui::Image>>,
+    /// Pictures GPUI was asked to draw, by address while they are alive. A
+    /// picture never drawn holds nothing to free, and asking for its frames
+    /// would decode it.
+    drawn_pictures: std::cell::RefCell<HashSet<usize>>,
     /// Finished replies whose saved row was read for its picture list.
     picture_rows_read: HashSet<String>,
     /// The small picture a draft had, for the attachments of a message that
@@ -1745,6 +1752,7 @@ impl ChatScreen {
             attachment_dimensions: HashMap::new(),
             attachment_animation_pixels: HashMap::new(),
             released_pictures: Vec::new(),
+            drawn_pictures: Default::default(),
             picture_rows_read: HashSet::new(),
             attachment_previews: HashMap::new(),
             attachment_requests: HashSet::new(),
@@ -5129,19 +5137,27 @@ impl ChatScreen {
     /// decoded frames and the textures of frames already drawn. A picture
     /// that is still on screen, such as the open preview, decodes again.
     fn release_pictures(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let mut shown = Vec::new();
         for picture in std::mem::take(&mut self.released_pictures) {
+            // The open preview still draws it: release it once it closes.
             if self
                 .lightbox
                 .as_ref()
-                .is_some_and(|shown| Arc::ptr_eq(shown, &picture))
+                .is_some_and(|open| Arc::ptr_eq(open, &picture))
             {
+                shown.push(picture);
                 continue;
             }
-            if let Some(decoded) = Arc::clone(&picture).get_render_image(window, cx) {
+            let drawn = self
+                .drawn_pictures
+                .get_mut()
+                .remove(&(Arc::as_ptr(&picture) as usize));
+            if drawn && let Some(decoded) = Arc::clone(&picture).get_render_image(window, cx) {
                 cx.drop_image(decoded, Some(window));
             }
             picture.remove_asset(cx);
         }
+        self.released_pictures = shown;
     }
 
     fn close_lightbox(&mut self, cx: &mut Context<Self>) {
@@ -8015,6 +8031,9 @@ impl Render for ChatScreen {
                     ),
             )
             .when_some(self.lightbox.clone(), |root, image| {
+                self.drawn_pictures
+                    .borrow_mut()
+                    .insert(Arc::as_ptr(&image) as usize);
                 // The card is the picture and nothing more, so a click
                 // beside it lands on the backdrop and closes the preview.
                 // Until the picture has decoded its shape is unknown and

@@ -337,6 +337,10 @@ impl Store {
         operation_id: &str,
         metadata: &AttachmentUploadMetadata,
     ) -> StoreResult<AttachmentUploadStart> {
+        // That prefix names the store's own reply-picture copies.
+        if operation_id.starts_with("markdown-") {
+            return Err(StoreError::InvalidInput);
+        }
         self.begin_attachment_upload_inner(account, task_uuid, operation_id, metadata, false)
     }
 
@@ -370,7 +374,9 @@ impl Store {
                 if stored_task != task || row.metadata != metadata || row.state == "cancelled" { return Err(StoreError::Conflict); }
                 return Ok(row);
             }
-            let (count,bytes,task_count):(i64,i64,i64) = tx.query_row("SELECT coalesce(sum(state!='cancelled'),0),coalesce(sum(size),0),coalesce(sum(task_id=?1 AND state!='cancelled'),0) FROM file_attachments WHERE bound=0 AND account_id=?2", params![task,account.0], |row| Ok((row.get(0)?,row.get(1)?,row.get(2)?)))?;
+            // Reply pictures waiting for their reply's save are the store's
+            // own copies, not uploads: they never take the composer's room.
+            let (count,bytes,task_count):(i64,i64,i64) = tx.query_row("SELECT coalesce(sum(state!='cancelled'),0),coalesce(sum(size),0),coalesce(sum(task_id=?1 AND state!='cancelled'),0) FROM file_attachments WHERE bound=0 AND account_id=?2 AND operation_id NOT LIKE 'markdown-%'", params![task,account.0], |row| Ok((row.get(0)?,row.get(1)?,row.get(2)?)))?;
             if !source_image && (count >= MAX_PENDING_FILES as i64 || task_count >= MAX_ATTACHMENTS as i64 || bytes as u64 + metadata.size > MAX_PENDING_BYTES) { return Err(StoreError::Busy); }
             let tombstones:i64=tx.query_row("SELECT count(*) FROM file_attachments WHERE account_id=?1 AND state='cancelled'",[account.0],|row|row.get(0))?;
             if !source_image && tombstones>=MAX_CANCELLATION_TOMBSTONES {return Err(StoreError::Busy);}

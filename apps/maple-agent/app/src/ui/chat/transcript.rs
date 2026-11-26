@@ -126,6 +126,7 @@ impl ChatScreen {
                     markdown_cache: &chat.markdown_cache,
                     derived: &chat.derived,
                     attachment_images: &chat.attachment_images,
+                    drawn_pictures: &chat.drawn_pictures,
                     attachment_dimensions: &chat.attachment_dimensions,
                     attachment_previews: &chat.attachment_previews,
                     attachment_failures: &chat.attachment_failures,
@@ -1229,6 +1230,10 @@ fn render_markdown_picture(
             transcript.render,
         );
     };
+    transcript
+        .drawn_pictures
+        .borrow_mut()
+        .insert(Arc::as_ptr(image) as usize);
     let (ratio, width) = match transcript.attachment_dimensions.get(id) {
         Some(&(width, height)) if width > 0 && height > 0 => {
             let ratio = width as f32 / height as f32;
@@ -1335,6 +1340,10 @@ fn render_attachment(
         .get(id)
         .or_else(|| transcript.attachment_previews.get(id));
     if let Some(image) = image {
+        transcript
+            .drawn_pictures
+            .borrow_mut()
+            .insert(Arc::as_ptr(image) as usize);
         let shown = Arc::clone(image);
         let attachment_id = attachment.id.clone();
         let chat = transcript.chat.clone();

@@ -12,7 +12,7 @@
 
 use std::fs::File;
 use std::io::Read;
-use std::path::{Path, PathBuf};
+use std::path::{Component, Path, PathBuf};
 
 use pi_ai::Message;
 use pi_coding_agent::{
@@ -37,6 +37,9 @@ pub const REPLY_PICTURES_GUIDANCE: &str = "Maple shows pictures in your replies.
 pub const MARKDOWN_IMAGES_KEY: &str = "markdownImages";
 /// Distinct pictures copied for one reply; later ones keep their text.
 pub const MAX_MARKDOWN_IMAGES: usize = 8;
+/// Distinct picture destinations of one reply considered for those copies,
+/// so web pictures or missing files ahead of a real one do not crowd it out.
+pub const MAX_PICTURE_DESTINATIONS: usize = 32;
 const MAX_DESTINATION_BYTES: usize = 4096;
 const MAX_IMAGE_EDGE: u32 = 16_384;
 
@@ -54,7 +57,7 @@ pub struct MarkdownImage {
 
 /// Destinations of the pictures `text` shows on their own: images outside
 /// table cells, headings and links, in order, each once, at most
-/// [`MAX_MARKDOWN_IMAGES`]. The desktop's Markdown renderer draws exactly
+/// [`MAX_PICTURE_DESTINATIONS`]. The desktop's Markdown renderer draws exactly
 /// these as pictures; any other image keeps its alternative text inline.
 pub fn image_destinations(text: &str) -> Vec<String> {
     let mut options = Options::empty();
@@ -84,7 +87,7 @@ pub fn image_destinations(text: &str) -> Vec<String> {
             _ => {}
         }
     }
-    found.truncate(MAX_MARKDOWN_IMAGES);
+    found.truncate(MAX_PICTURE_DESTINATIONS);
     found
 }
 
@@ -128,6 +131,9 @@ pub(in crate::store) fn entry_markdown_images_tx(
     })?;
     let mut images = Vec::new();
     for source in destinations {
+        if images.len() == MAX_MARKDOWN_IMAGES {
+            break;
+        }
         let operation = operation_id(&uuid, &entry.id, &source);
         let found = tx
             .query_row(
@@ -192,6 +198,9 @@ impl Store {
         let mut root = None;
         let mut ids = Vec::new();
         for destination in destinations {
+            if ids.len() == MAX_MARKDOWN_IMAGES {
+                break;
+            }
             let operation = operation_id(task_uuid, &entry.id, &destination);
             match self.import_markdown_image(
                 account,
@@ -214,7 +223,7 @@ impl Store {
         task_uuid: &str,
         operation: &str,
         destination: &str,
-        root: &mut Option<PathBuf>,
+        root: &mut Option<ProjectRoot>,
     ) -> StoreResult<Option<String>> {
         let existing = self.read(|tx| {
             let task = active_task(tx, account, task_uuid)?;
@@ -244,7 +253,7 @@ impl Store {
                         |row| row.get::<_, String>(0),
                     )?)
                 })?;
-                let Ok(found) = std::fs::canonicalize(found) else {
+                let Some(found) = ProjectRoot::new(&found) else {
                     return Ok(None);
                 };
                 *root = Some(found.clone());
@@ -302,6 +311,8 @@ fn local_candidates(destination: &str) -> Vec<PathBuf> {
     }
     if let Some(rest) = strip_prefix_ignore_case(destination, "file://") {
         let rest = strip_prefix_ignore_case(rest, "localhost").unwrap_or(rest);
+        // A URL's query and fragment name no part of the file.
+        let rest = rest.split(['?', '#']).next().unwrap_or_default();
         if !rest.starts_with('/') {
             return Vec::new();
         }
@@ -368,16 +379,72 @@ fn percent_decode(value: &str) -> Option<String> {
     String::from_utf8(decoded).ok()
 }
 
-/// Open a regular file inside `root` (already canonical). Symbolic links are
-/// followed only to where they really lead, which must also be inside.
-fn open_confined(root: &Path, candidate: &Path) -> Option<(PathBuf, File)> {
-    let requested = if candidate.is_absolute() {
-        candidate.to_owned()
-    } else {
-        root.join(candidate)
-    };
+/// A task's project folder as the store records it and as it really is. A
+/// path may name the folder either way.
+#[derive(Clone, Debug)]
+pub(super) struct ProjectRoot {
+    recorded: PathBuf,
+    canonical: PathBuf,
+}
+
+impl ProjectRoot {
+    pub(super) fn new(recorded: &str) -> Option<Self> {
+        let canonical = std::fs::canonicalize(recorded).ok()?;
+        Some(Self {
+            recorded: lexical(Path::new(recorded)).unwrap_or_else(|| canonical.clone()),
+            canonical,
+        })
+    }
+
+    pub(super) fn canonical(&self) -> &Path {
+        &self.canonical
+    }
+
+    /// Where `candidate` leads, worked out from the text alone, if that is
+    /// inside the folder. Nothing else is ever touched, even to look: a
+    /// path on another computer's share must not make this one connect.
+    pub(super) fn within(&self, candidate: &Path) -> Option<PathBuf> {
+        let joined = if candidate.is_absolute() {
+            candidate.to_owned()
+        } else {
+            self.canonical.join(candidate)
+        };
+        let path = lexical(&joined)?;
+        [&self.canonical, &self.recorded]
+            .into_iter()
+            .any(|root| path.starts_with(root) && path != *root)
+            .then_some(path)
+    }
+}
+
+/// `path` with `.` and `..` worked out from the text; `None` if `..` would
+/// climb above its root.
+fn lexical(path: &Path) -> Option<PathBuf> {
+    let mut resolved = PathBuf::new();
+    for component in path.components() {
+        match component {
+            Component::CurDir => {}
+            Component::ParentDir => {
+                if !matches!(
+                    resolved.components().next_back(),
+                    Some(Component::Normal(_))
+                ) {
+                    return None;
+                }
+                resolved.pop();
+            }
+            other => resolved.push(other),
+        }
+    }
+    Some(resolved)
+}
+
+/// Open a regular file inside the project. Symbolic links are followed only
+/// to where they really lead, which must also be inside.
+fn open_confined(root: &ProjectRoot, candidate: &Path) -> Option<(PathBuf, File)> {
+    let requested = root.within(candidate)?;
     let path = std::fs::canonicalize(&requested).ok()?;
-    if !path.starts_with(root) || path == root {
+    if !path.starts_with(root.canonical()) || path == root.canonical() {
         return None;
     }
     let mut options = std::fs::OpenOptions::new();
@@ -407,7 +474,34 @@ fn open_confined(root: &Path, candidate: &Path) -> Option<(PathBuf, File)> {
             return None;
         }
     }
+    #[cfg(windows)]
+    {
+        let current = File::open(&again).ok()?;
+        if file_identity(&current)? != file_identity(&file)? {
+            return None;
+        }
+    }
     Some((path, file))
+}
+
+/// The volume and file index of an open file.
+#[cfg(windows)]
+fn file_identity(file: &File) -> Option<(u32, u32, u32)> {
+    use std::os::windows::io::AsRawHandle;
+    use windows_sys::Win32::Storage::FileSystem::{
+        BY_HANDLE_FILE_INFORMATION, GetFileInformationByHandle,
+    };
+    let mut information = BY_HANDLE_FILE_INFORMATION::default();
+    // SAFETY: the handle stays open for the call and `information` is a
+    // valid out-pointer.
+    if unsafe { GetFileInformationByHandle(file.as_raw_handle(), &mut information) } == 0 {
+        return None;
+    }
+    Some((
+        information.dwVolumeSerialNumber,
+        information.nFileIndexHigh,
+        information.nFileIndexLow,
+    ))
 }
 
 #[cfg(test)]
@@ -427,8 +521,8 @@ mod tests {
             image_destinations(text),
             ["out/chart.png", "quote.gif", "list.webp"]
         );
-        let many: String = (0..20).map(|n| format!("![{n}](p{n}.png)\n\n")).collect();
-        assert_eq!(image_destinations(&many).len(), MAX_MARKDOWN_IMAGES);
+        let many: String = (0..40).map(|n| format!("![{n}](p{n}.png)\n\n")).collect();
+        assert_eq!(image_destinations(&many).len(), MAX_PICTURE_DESTINATIONS);
     }
 
     #[test]
@@ -442,6 +536,7 @@ mod tests {
             ("/work/a.gif", vec!["/work/a.gif"]),
             ("file:///work/a%20b.png", vec!["/work/a b.png"]),
             ("file://localhost/work/a.png", vec!["/work/a.png"]),
+            ("file:///work/a.png?v=2#top", vec!["/work/a.png"]),
             (r"C:\work\a.png", vec![r"C:\work\a.png"]),
         ] {
             assert_eq!(
@@ -461,5 +556,68 @@ mod tests {
             assert!(local_candidates(destination).is_empty(), "{destination}");
         }
         assert!(local_candidates(&"a".repeat(MAX_DESTINATION_BYTES + 1)).is_empty());
+    }
+
+    fn check_within(root: &ProjectRoot, cases: &[(&str, Option<&str>)]) {
+        for (candidate, expected) in cases {
+            assert_eq!(
+                root.within(Path::new(candidate)),
+                expected.map(PathBuf::from),
+                "{candidate}"
+            );
+        }
+    }
+
+    /// Only the text decides; nothing outside the project is looked up, so
+    /// a share on another computer is never contacted.
+    #[cfg(unix)]
+    #[test]
+    fn only_paths_inside_the_project_are_looked_up() {
+        let root = ProjectRoot {
+            recorded: PathBuf::from("/work/project"),
+            canonical: PathBuf::from("/private/work/project"),
+        };
+        check_within(
+            &root,
+            &[
+                ("out/a.png", Some("/private/work/project/out/a.png")),
+                ("./out/../b.png", Some("/private/work/project/b.png")),
+                ("/work/project/c.png", Some("/work/project/c.png")),
+                (
+                    "/private/work/project/d.png",
+                    Some("/private/work/project/d.png"),
+                ),
+                ("../e.png", None),
+                ("out/../../f.png", None),
+                ("/etc/passwd", None),
+                ("/work/projectx/g.png", None),
+                ("//attacker.example/share/a.png", None),
+                ("/work/project", None),
+                ("/work/project/..", None),
+            ],
+        );
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn only_paths_inside_the_project_are_looked_up() {
+        let root = ProjectRoot {
+            recorded: PathBuf::from(r"C:\work\project"),
+            canonical: PathBuf::from(r"\\?\C:\work\project"),
+        };
+        check_within(
+            &root,
+            &[
+                (r"out\a.png", Some(r"\\?\C:\work\project\out\a.png")),
+                (r"C:\work\project\c.png", Some(r"C:\work\project\c.png")),
+                (r"..\e.png", None),
+                (r"C:\Windows\win.ini", None),
+                (r"\\attacker.example\share\a.png", None),
+                ("//attacker.example/share/a.png", None),
+                (r"\\?\UNC\attacker.example\share\a.png", None),
+                (r"\\.\pipe\x", None),
+                (r"C:a.png", None),
+            ],
+        );
     }
 }

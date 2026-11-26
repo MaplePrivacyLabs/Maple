@@ -637,8 +637,14 @@ impl ChatScreen {
             },
             cx,
             move |this, result, cx| {
-                let Ok(Some(input)) = result else {
-                    return;
+                let input = match result {
+                    Ok(Some(input)) => input,
+                    Ok(None) => return,
+                    // A failed read is tried again on the row's next update.
+                    Err(_) => {
+                        this.picture_rows_read.remove(&key);
+                        return;
+                    }
                 };
                 if this.pages.generation == generation && this.is_selected(&target) {
                     this.apply_reply_pictures(&key, &target, input, cx);

@@ -997,7 +997,7 @@ mod tests {
                     drawn.push(picture.to_owned());
                 }
             }
-            drawn.truncate(maple_agent::store::MAX_MARKDOWN_IMAGES);
+            drawn.truncate(maple_agent::store::MAX_PICTURE_DESTINATIONS);
             assert_eq!(
                 drawn,
                 maple_agent::store::image_destinations(source),
