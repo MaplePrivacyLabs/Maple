@@ -1900,19 +1900,18 @@ impl ExternalAgent {
         }
     }
 
-    /// End the agent: interrupt, kill its process group, and close its turn.
+    /// End the agent: stop its turn as Stop does, then kill its process
+    /// group. Interrupting first and waiting for the turn to end lets the
+    /// agent end its own commands: Grok runs each in a process group of its
+    /// own, which killing the agent's group does not reach.
     async fn shutdown(&self) {
         self.cancel.cancel();
-        self.interrupt().await;
+        self.stop_turn().await;
         let process = self.state.lock().await.process.take();
         if let Some(mut process) = process {
             process.child.kill_and_wait().await;
             process.reader.abort();
             process.events.abort();
-        }
-        let had_turn = self.state.lock().await.turn.is_some();
-        if had_turn {
-            self.finish_turn(TurnOutcome::Cancelled, None).await;
         }
     }
 

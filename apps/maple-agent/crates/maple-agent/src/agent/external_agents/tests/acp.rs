@@ -191,6 +191,32 @@ async fn text_after_a_turn_ends_is_a_message_of_its_own() {
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn an_agent_shut_down_mid_turn_ends_its_own_command_first() {
+    let harness = Harness::new("acp-shutdown");
+    harness.install_fixture("grok", "acp-slow");
+    harness
+        .registry
+        .start(
+            harness.call("acp-10", "row-1"),
+            AgentStartParams {
+                background: true,
+                ..acp_start("grok", "Run a long command")
+            },
+        )
+        .await
+        .unwrap();
+    let deadline = Instant::now() + Duration::from_secs(10);
+    while sent(&harness.log(), "session/prompt").is_empty() {
+        assert!(Instant::now() < deadline, "{}", harness.log());
+        tokio::time::sleep(Duration::from_millis(20)).await;
+    }
+    // As when Maple stops or the task is deleted.
+    harness.registry.shutdown_session("acp-10").await;
+    let log = harness.log();
+    assert!(log.contains("ended its own command"), "{log}");
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn a_signed_out_acp_agent_says_how_to_sign_in() {
     let harness = Harness::new("acp-signed-out");
     harness.install_fixture("agy", "acp-signed-out");

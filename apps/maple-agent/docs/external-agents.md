@@ -275,7 +275,10 @@ Stopping an agent, from its row or with `agent_cancel`, sends
 `turn/interrupt` (translated to Claude’s native `interrupt` control request), waits
 briefly for confirmation, then kills the
 process group. Codex does not always end a sandboxed command on interrupt,
-so the kill is what guarantees nothing keeps running.
+so the kill is what guarantees nothing keeps running. Stopping Maple or
+deleting the task stops each working agent the same way before killing it:
+Grok runs each command in a process group of its own, which the kill does
+not reach, so Grok has to end the command itself.
 
 ## Limits
 

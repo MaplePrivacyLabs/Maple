@@ -210,6 +210,10 @@ fn run() {
                                 break;
                             }
                         }
+                        // As Grok does, end the command it started, which
+                        // takes a moment, before the turn ends.
+                        std::thread::sleep(std::time::Duration::from_millis(300));
+                        agent.log("ended its own command");
                         "cancelled"
                     }
                     _ => {
