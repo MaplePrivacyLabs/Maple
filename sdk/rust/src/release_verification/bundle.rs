@@ -14,6 +14,10 @@ use sigstore_verify::{
 use std::cell::Cell;
 use std::collections::HashSet;
 
+/// The largest bundle accepted, however it arrived: fetched, embedded or
+/// passed in directly. The TypeScript SDK uses the same limit, so both accept
+/// and reject the same bundles. Real bundles are about 5.5 KB.
+pub(super) const MAX_BUNDLE_BYTES: usize = 256 * 1024;
 const EXPECTED_MEDIA_TYPE: &str = "application/vnd.dev.sigstore.bundle.v0.3+json";
 pub(super) const EXPECTED_PAYLOAD_TYPE: &str = "application/vnd.in-toto+json";
 const EXPECTED_STATEMENT_TYPE: &str = "https://in-toto.io/Statement/v1";
@@ -125,6 +129,8 @@ pub(super) struct VerificationEvidence {
 #[derive(Debug)]
 pub(super) struct ReleaseVerificationEvidence {
     pub(super) tlog_verified: bool,
+    pub(super) environment: Pcr0Environment,
+    pub(super) pcr0: [u8; 48],
     pub(super) repository: String,
     pub(super) commit: String,
     pub(super) build_run_id: String,
@@ -169,6 +175,10 @@ pub(super) fn verify_release_bundle(
     trusted_root: &TrustedRoot,
     release_policy: ReleasePolicy,
 ) -> Result<ReleaseVerificationEvidence, VerificationFailure> {
+    let is_too_large = bundle_bytes.len() > MAX_BUNDLE_BYTES;
+    if is_too_large {
+        return Err(VerificationFailure::policy("bundle-too-large"));
+    }
     // Maple has no EIF bytes here. The only artifact is the signed statement's
     // typed SHA-256 subject digest; the separate SHA-384 PCR tuple is checked
     // against the authenticated Nitro document after signature verification.
@@ -181,8 +191,12 @@ pub(super) fn verify_release_bundle(
     )?;
     let (_, statement) = decode_release_statement(bundle_bytes)?;
     let source = statement.validate(release_policy)?;
+    // The statement has just been checked against this environment and the
+    // authenticated document's measurements, so these are verified values.
     Ok(ReleaseVerificationEvidence {
         tlog_verified: evidence.tlog_verified,
+        environment: release_policy.environment,
+        pcr0: release_policy.measurements.pcr0,
         repository: source.repository,
         commit: source.commit,
         build_run_id: source.run_id,

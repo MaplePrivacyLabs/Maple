@@ -234,6 +234,8 @@ fn assert_development_identity(result: &ReleaseVerificationResult) {
     assert_eq!(identity.build_run_id, DEVELOPMENT_BUILD_RUN_ID);
     assert_eq!(identity.build_run_attempt, DEVELOPMENT_BUILD_RUN_ATTEMPT);
     assert_eq!(identity.log_index, DEVELOPMENT_LOG_INDEX);
+    assert_eq!(identity.environment, Pcr0Environment::Development);
+    assert_eq!(identity.pcr0, DEVELOPMENT_PCR0);
 }
 
 #[test]
@@ -775,6 +777,77 @@ async fn declared_oversized_bundle_is_rejected_before_body_reading() {
         "bundle-too-large"
     );
     assert_eq!(verifier.cache_len(), 0);
+}
+
+/// The real Development bundle followed by spaces, which JSON allows, to
+/// exactly `length` bytes.
+fn padded_development_bundle(length: usize) -> Vec<u8> {
+    let mut bundle = DEVELOPMENT_BUNDLE.to_vec();
+    bundle.resize(length, b' ');
+    bundle
+}
+
+async fn observe_served_bundle(bundle: Vec<u8>) -> ReleaseVerificationResult {
+    let server = MockServer::start().await;
+    Mock::given(method("GET"))
+        .and(path(format!("/{DEVELOPMENT_PCR0}.json")))
+        .respond_with(ResponseTemplate::new(200).set_body_bytes(bundle))
+        .mount(&server)
+        .await;
+    let (root_refresher, _) = StubRootRefresher::good_root();
+    let verifier = remote_verifier(
+        Pcr0Environment::Development,
+        Url::parse(&server.uri()).unwrap(),
+        root_refresher,
+    );
+    verifier.observe(&document()).await
+}
+
+#[test]
+fn bundle_cap_is_256_kib_as_in_the_typescript_sdk() {
+    assert_eq!(MAX_BUNDLE_BYTES, 256 * 1024);
+}
+
+#[tokio::test]
+async fn fetched_bundle_of_exactly_the_cap_verifies() {
+    let result = observe_served_bundle(padded_development_bundle(MAX_BUNDLE_BYTES)).await;
+    assert_eq!(result.outcome, ReleaseVerificationOutcome::Verified);
+    assert_eq!(result.source, ReleaseBundleSource::Remote);
+    assert_development_identity(&result);
+}
+
+#[tokio::test]
+async fn fetched_bundle_one_byte_over_the_cap_is_too_large() {
+    let result = observe_served_bundle(padded_development_bundle(MAX_BUNDLE_BYTES + 1)).await;
+    assert_eq!(result.outcome, ReleaseVerificationOutcome::Rejected);
+    assert_eq!(result.category, "bundle-too-large");
+}
+
+#[tokio::test]
+async fn fetched_bundle_with_300_kib_of_padding_is_too_large() {
+    let length = DEVELOPMENT_BUNDLE.len() + 300 * 1024;
+    let result = observe_served_bundle(padded_development_bundle(length)).await;
+    assert_eq!(result.category, "bundle-too-large");
+}
+
+#[test]
+fn verifier_caps_bundles_that_did_not_come_from_a_fetch() {
+    // Embedded bundles reach the verifier without the fetch's streaming cap.
+    let verify = |bundle: &[u8]| {
+        verify_release_bundle(
+            bundle,
+            &development_key(),
+            &embedded_trusted_root().unwrap(),
+            ReleasePolicy::new(Pcr0Environment::Development, measurements()),
+        )
+    };
+    let at_cap = padded_development_bundle(MAX_BUNDLE_BYTES);
+    let evidence = verify(&at_cap).expect("a bundle of exactly the cap is accepted");
+    assert!(evidence.tlog_verified);
+
+    let over_cap = padded_development_bundle(MAX_BUNDLE_BYTES + 1);
+    let error = verify(&over_cap).expect_err("a bundle over the cap is rejected");
+    assert_eq!(error.code(), "bundle-too-large");
 }
 
 #[tokio::test]

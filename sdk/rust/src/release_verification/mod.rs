@@ -6,7 +6,7 @@ use crate::attestation::AttestationDocument;
 use crate::pcr::Pcr0Environment;
 use bundle::{
     verify_release_bundle, MeasurementTuple, ReleasePolicy, ReleaseVerificationEvidence,
-    VerificationFailure,
+    VerificationFailure, MAX_BUNDLE_BYTES,
 };
 use futures::StreamExt;
 use reqwest::{Client, StatusCode, Url};
@@ -20,7 +20,6 @@ use std::sync::{Arc, Mutex, RwLock};
 use std::time::Duration;
 use tokio::sync::Mutex as AsyncMutex;
 
-const MAX_BUNDLE_BYTES: usize = 1024 * 1024;
 const DEFAULT_BUNDLE_FETCH_TIMEOUT: Duration = Duration::from_secs(3);
 pub(super) const DEFAULT_ROOT_REFRESH_TIMEOUT: Duration = Duration::from_secs(4);
 const DEFAULT_OBSERVATION_TIMEOUT: Duration = Duration::from_secs(8);
@@ -39,10 +38,14 @@ pub enum ReleaseBundleSource {
     Unavailable,
 }
 
-/// Signed source, build and transparency-log data from a verified release.
-/// These values are diagnostics, never authorization policy inputs.
+/// Signed source, build and transparency-log data from a verified release,
+/// with the environment and authenticated PCR0 the statement was checked
+/// against. These values are diagnostics, never authorization policy inputs.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct ReleaseVerificationIdentity {
+    pub environment: Pcr0Environment,
+    /// Lowercase hex, 96 characters.
+    pub pcr0: String,
     pub repository: String,
     pub commit: String,
     pub build_run_id: String,
@@ -63,6 +66,8 @@ pub struct ReleaseVerificationResult {
 impl ReleaseVerificationResult {
     fn verified(source: ReleaseBundleSource, evidence: ReleaseVerificationEvidence) -> Self {
         let identity = ReleaseVerificationIdentity {
+            environment: evidence.environment,
+            pcr0: hex::encode(evidence.pcr0),
             repository: evidence.repository,
             commit: evidence.commit,
             build_run_id: evidence.build_run_id,

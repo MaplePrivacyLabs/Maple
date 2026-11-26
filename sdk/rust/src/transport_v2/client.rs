@@ -93,6 +93,8 @@ fn log_release_result(result: &ReleaseVerificationResult) {
     let is_verified = result.outcome == ReleaseVerificationOutcome::Verified;
     let verified_identity = result.identity.as_ref().filter(|_| is_verified);
     if let Some(identity) = verified_identity {
+        let environment = identity.environment.release_name();
+        let pcr0 = identity.pcr0.as_str();
         let repository = identity.repository.as_str();
         let commit = identity.commit.as_str();
         let build_run = format!("{}/{}", identity.build_run_id, identity.build_run_attempt);
@@ -103,6 +105,8 @@ fn log_release_result(result: &ReleaseVerificationResult) {
             source = ?result.source,
             tlog_verified = result.tlog_verified,
             refresh_error = result.refresh_error,
+            environment,
+            pcr0,
             repository,
             commit,
             build_run = %build_run,
@@ -1189,6 +1193,8 @@ mod tests {
             tlog_verified: true,
             refresh_error: None,
             identity: Some(crate::release_verification::ReleaseVerificationIdentity {
+                environment: crate::pcr::Pcr0Environment::Development,
+                pcr0: "b422d5fcb25929a1b76f0eb8aa10c26a78c635a86a58039b48f22eb0dc4dc6f8ae6e646aa2fbbc57db756e6f06cad3dc".to_owned(),
                 repository: "https://github.com/MaplePrivacyLabs/Maple".to_owned(),
                 commit: "bcf6e84476be2cf08b575c5303f5a83d98adbf40".to_owned(),
                 build_run_id: "44636648269".to_owned(),
@@ -1209,6 +1215,57 @@ mod tests {
         })
         .await
         .expect("completed release result becomes readable")
+    }
+
+    #[derive(Clone, Default)]
+    struct CapturedLog(Arc<StdMutex<Vec<u8>>>);
+
+    impl std::io::Write for CapturedLog {
+        fn write(&mut self, bytes: &[u8]) -> std::io::Result<usize> {
+            let mut captured = self.0.lock().unwrap();
+            captured.extend_from_slice(bytes);
+            Ok(bytes.len())
+        }
+
+        fn flush(&mut self) -> std::io::Result<()> {
+            Ok(())
+        }
+    }
+
+    #[tokio::test]
+    async fn verified_release_log_names_the_environment_and_authenticated_pcr0() {
+        let verifier = ReleaseVerifier::new(crate::pcr::Pcr0Environment::Development).unwrap();
+        let document = crate::attestation::AttestationDocument {
+            module_id: "local-test".to_owned(),
+            timestamp: 0,
+            digest: "SHA384".to_owned(),
+            pcrs: release_pcrs(),
+            certificate: Vec::new(),
+            cabundle: Vec::new(),
+            public_key: None,
+            user_data: None,
+            nonce: None,
+        };
+        let result = verifier.observe(&document).await;
+        assert_eq!(
+            result.outcome,
+            crate::release_verification::ReleaseVerificationOutcome::Verified
+        );
+
+        let captured = CapturedLog::default();
+        let writer = captured.clone();
+        let subscriber = tracing_subscriber::fmt()
+            .with_ansi(false)
+            .with_writer(move || writer.clone())
+            .finish();
+        tracing::subscriber::with_default(subscriber, || log_release_result(&result));
+
+        let logged = String::from_utf8(captured.0.lock().unwrap().clone()).unwrap();
+        let expected_pcr0 = hex::encode(&release_pcrs()[&0]);
+        assert!(logged.contains("release verification observation completed"));
+        assert!(logged.contains("environment=\"development\""));
+        assert!(logged.contains(&format!("pcr0=\"{expected_pcr0}\"")));
+        assert!(logged.contains("source=Embedded"));
     }
 
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
