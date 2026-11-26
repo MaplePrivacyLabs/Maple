@@ -7,7 +7,7 @@ use std::sync::{
 };
 use std::time::Duration;
 
-use agent_client_protocol::schema::v1::{ContentBlock, SessionUpdate};
+use agent_client_protocol::v1::schema::{ContentBlock, SessionUpdate};
 use tokio_util::sync::CancellationToken;
 
 use crate::agent::AgentRuntimeHandle;

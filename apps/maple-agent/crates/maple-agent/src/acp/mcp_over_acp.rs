@@ -24,27 +24,34 @@ use tokio_util::sync::CancellationToken;
 const CHANNEL_OPERATION_TIMEOUT: Duration = Duration::from_secs(ACP_SESSION_MCP_TIMEOUT_SECONDS);
 
 /// The four messages of the connection-based MCP-over-ACP binding, as
-/// untyped JSON-RPC. T3 Code serves this binding and decodes nothing else, so
-/// these stay byte for byte what Maple has always sent: absent params are
-/// omitted and nothing carries `_meta`. `wire_tests` pins them.
+/// untyped JSON-RPC. T3 Code serves this binding and decodes nothing else.
+/// The SDK dropped its types for the request-scoped binding that replaced
+/// it, so Maple writes them itself, byte for byte what it has always sent:
+/// absent params are omitted and nothing carries `_meta`. `wire_tests` pins
+/// them.
 pub(super) mod wire {
-    use agent_client_protocol::schema::v1::{
-        ConnectMcpRequest, DisconnectMcpRequest, McpConnectionId, MessageMcpNotification,
-        MessageMcpRequest,
-    };
-    use agent_client_protocol::{JsonRpcMessage, UntypedMessage};
-    use serde_json::{Map, Value};
+    use agent_client_protocol::UntypedMessage;
+    use serde_json::{Map, Value, json};
 
-    fn untyped<M: JsonRpcMessage + serde::Serialize>(
-        message: &M,
-    ) -> Result<UntypedMessage, String> {
-        UntypedMessage::new(message.method(), message)
+    fn untyped(method: &str, params: Value) -> Result<UntypedMessage, String> {
+        UntypedMessage::new(method, params)
             .map_err(|error| format!("the MCP-over-ACP message could not be encoded: {error}"))
+    }
+
+    /// `mcp/message`'s params, request or notification alike.
+    fn inner(connection: &str, method: &str, params: Option<Map<String, Value>>) -> Value {
+        let mut fields = Map::new();
+        fields.insert("connectionId".to_string(), json!(connection));
+        fields.insert("method".to_string(), json!(method));
+        if let Some(params) = params {
+            fields.insert("params".to_string(), Value::Object(params));
+        }
+        Value::Object(fields)
     }
 
     /// `mcp/connect`: open a connection to the client's server `server_id`.
     pub(in crate::acp) fn connect(server_id: &str) -> Result<UntypedMessage, String> {
-        untyped(&ConnectMcpRequest::new(server_id.to_string()))
+        untyped("mcp/connect", json!({"serverId": server_id}))
     }
 
     /// `mcp/message` as a request: one inner MCP request on a connection.
@@ -53,10 +60,7 @@ pub(super) mod wire {
         method: &str,
         params: Option<Map<String, Value>>,
     ) -> Result<UntypedMessage, String> {
-        untyped(
-            &MessageMcpRequest::new(McpConnectionId::new(connection), method.to_string())
-                .params(params),
-        )
+        untyped("mcp/message", inner(connection, method, params))
     }
 
     /// `mcp/message` as a notification: one inner MCP notification.
@@ -65,15 +69,12 @@ pub(super) mod wire {
         method: &str,
         params: Option<Map<String, Value>>,
     ) -> Result<UntypedMessage, String> {
-        untyped(
-            &MessageMcpNotification::new(McpConnectionId::new(connection), method.to_string())
-                .params(params),
-        )
+        untyped("mcp/message", inner(connection, method, params))
     }
 
     /// `mcp/disconnect`: close a connection.
     pub(in crate::acp) fn disconnect(connection: &str) -> Result<UntypedMessage, String> {
-        untyped(&DisconnectMcpRequest::new(McpConnectionId::new(connection)))
+        untyped("mcp/disconnect", json!({"connectionId": connection}))
     }
 
     /// The connection id in `mcp/connect`'s answer.

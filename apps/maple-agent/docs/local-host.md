@@ -194,7 +194,11 @@ nothing new. Legacy SSE servers are refused.
 
 For an `acp` server, each inner MCP request travels as one `mcp/message`
 request on the same connection, opened with `mcp/connect` and closed with
-`mcp/disconnect`. Such a channel lives as long as its ACP session.
+`mcp/disconnect`. Such a channel lives as long as its ACP session. This is
+the connection-based binding T3 Code serves. The ACP crate replaced it with a
+request-scoped `mcp/message` and dropped its types, so Maple writes these
+messages itself (`acp/mcp_over_acp.rs`) and does not speak the newer binding
+yet.
 
 `session/new` and `session/load` also answer the v1 unstable `models` field.
 The `model` config option stays the selector; `models.availableModels[]` lists

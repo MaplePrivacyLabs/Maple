@@ -8,7 +8,7 @@ use serde_json::{Value, json};
 #[serde(rename_all = "camelCase")]
 struct SteeringRequest {
     session_id: SessionId,
-    prompt: Vec<agent_client_protocol::schema::v1::ContentBlock>,
+    prompt: Vec<agent_client_protocol::v1::schema::ContentBlock>,
     #[serde(rename = "_meta", default)]
     meta: Value,
 }
@@ -32,9 +32,9 @@ impl AcpConnectionContext {
         let session_id = canonical_session_id(&request.session_id)?;
         let (access, model) = {
             let sessions = self.sessions.lock().await;
-            let session = sessions.get(&session_id).ok_or_else(|| {
-                agent_client_protocol::Error::resource_not_found(Some(session_id.clone()))
-            })?;
+            let session = sessions
+                .get(&session_id)
+                .ok_or_else(|| super::resource_not_found(Some(session_id.clone())))?;
             (
                 session
                     .lease
@@ -105,7 +105,7 @@ impl AcpConnectionContext {
         questions: Vec<crate::agent::AgentQuestion>,
         cancellation: &CancellationToken,
     ) {
-        use agent_client_protocol::schema::v1::{
+        use agent_client_protocol::v1::schema::{
             CreateElicitationRequest, ElicitationFormMode, ElicitationSchema,
             ElicitationSessionScope, StringPropertySchema,
         };

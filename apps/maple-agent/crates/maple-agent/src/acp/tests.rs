@@ -9,7 +9,7 @@ use super::transport::is_session_update_line;
 use super::*;
 use crate::agent::tests::{Harness, eventually};
 use crate::agent::{AgentRunUsage, AgentSessionSummary};
-use agent_client_protocol::schema::v1::{
+use agent_client_protocol::v1::schema::{
     ClientCapabilities, ElicitationCapabilities, ElicitationFormCapabilities, EnvVariable,
     InitializeRequest, McpServer, McpServerAcp, McpServerHttp, McpServerStdio,
     RequestPermissionOutcome, SelectedPermissionOutcome,
