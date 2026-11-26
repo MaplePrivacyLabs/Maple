@@ -575,6 +575,8 @@ fn main() {
         }
         return;
     }
+    // Every later mode may open a store whose checks re-launch this binary.
+    maple_agent::store::integrity::register_checker_entry();
     #[cfg(windows)]
     if let Err(error) = windows_ownership::prepare() {
         init_logging(LogOutput::FileAndStderr);
@@ -1295,5 +1297,33 @@ mod tests {
         assert_eq!(tip("frobnicate"), None);
         // Clap's own suggestion for a top-level typo is kept.
         assert!(tip("remot").is_some_and(|tip| tip.contains("'remote'")));
+    }
+
+    /// Only `main` registers this binary as the store checker. Copies of the
+    /// test harness cannot answer the checker flag and outlived their tests
+    /// (issue 1698). A 1 ms budget cannot fit a launch, so a launch would
+    /// report `Budget` rather than `CheckerUnavailable`.
+    #[test]
+    fn test_harness_never_launches_itself_as_the_store_checker() {
+        use maple_agent::store::integrity::{
+            CheckIncomplete, IntegrityCancellation, IntegrityKind, IntegrityOutcome,
+        };
+        let root = tempfile::tempdir().unwrap();
+        let store =
+            maple_agent::store::Store::open(maple_agent::store::StorePaths::new(root.path()))
+                .unwrap();
+        let report = store
+            .check_integrity(
+                IntegrityKind::Full,
+                std::time::Duration::from_millis(1),
+                &IntegrityCancellation::default(),
+            )
+            .unwrap();
+        assert_eq!(
+            report.outcome,
+            IntegrityOutcome::Partial {
+                reason: CheckIncomplete::CheckerUnavailable
+            }
+        );
     }
 }
