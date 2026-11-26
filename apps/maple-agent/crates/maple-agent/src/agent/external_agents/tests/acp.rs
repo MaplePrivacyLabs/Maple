@@ -382,6 +382,49 @@ async fn in_read_only_the_user_decides_what_an_acp_agent_asks_to_do() {
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_request_offering_several_ways_to_allow_still_goes_to_the_gate() {
+    let harness = Harness::new("acp-approve-repeated");
+    harness.install_fixture("grok", "acp-approve-repeated");
+    harness.gate.mode.set(READ_ONLY);
+    let cards = answer_cards(
+        &harness,
+        r#"{"answers":{"permission":{"answers":["Allow once"]}}}"#,
+    );
+    let result = harness
+        .registry
+        .start(
+            harness.call("acp-11", "row-1"),
+            acp_start("grok", "Edit it"),
+        )
+        .await;
+    let text = result_text(&result);
+    // The user's card decided, not the calling model, and only once.
+    assert!(text.starts_with("Status: completed"), "{text}");
+    assert!(text.contains("Chose: allow-once"), "{text}");
+    assert_eq!(cards.lock().unwrap().len(), 1);
+    harness.registry.shutdown_all(Duration::from_secs(5)).await;
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn an_agent_asking_to_change_its_own_mode_is_refused() {
+    let harness = Harness::new("acp-switch-mode");
+    harness.install_fixture("grok", "acp-switch-mode");
+    // Even in full access, where its other requests are allowed.
+    let result = harness
+        .registry
+        .start(harness.call("acp-12", "row-1"), acp_start("grok", "Go"))
+        .await;
+    let text = result_text(&result);
+    assert!(text.contains("Chose: reject-once"), "{text}");
+    assert!(
+        text.contains("Not allowed:\n- Changing its own mode"),
+        "{text}"
+    );
+    assert_eq!(cards_shown(&harness), 0);
+    harness.registry.shutdown_all(Duration::from_secs(5)).await;
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn a_declined_request_is_refused_once_and_the_caller_hears_why() {
     let harness = Harness::new("acp-approve-deny");
     harness.install_fixture("grok", "acp-approve");
@@ -495,13 +538,14 @@ async fn antigravity_sets_its_mode_option_from_the_tasks() {
     }
     let log = harness.log();
     assert_eq!(starts(&log).len(), 1, "{log}");
-    // The agent starts in default, so read only needs no change.
+    // The mode is set before every prompt, even when it reads as set
+    // already: the agent may have changed it on its own.
     let modes: Vec<Value> = sent(&log, "session/set_config_option")
         .into_iter()
         .filter(|set| set["params"]["configId"] == "mode")
         .map(|set| set["params"]["value"].clone())
         .collect();
-    assert_eq!(modes, [json!("auto"), json!("default")]);
+    assert_eq!(modes, [json!("default"), json!("auto"), json!("default")]);
     harness.registry.shutdown_all(Duration::from_secs(5)).await;
 }
 

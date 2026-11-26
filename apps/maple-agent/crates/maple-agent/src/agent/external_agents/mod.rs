@@ -1682,6 +1682,16 @@ impl ExternalAgent {
                 };
                 AgentReply::Decision(self.request_permission(request).await)
             }
+            AgentRequest::ModeChange { .. } => {
+                // Maple sets the agent's mode from the task's; the caller
+                // hears that the agent asked.
+                self.state.lock().await.activity.declined.push(
+                    "Changing its own mode: Maple keeps the agent in the task's permission mode."
+                        .to_string(),
+                );
+                self.emit_row(true).await;
+                AgentReply::Decision(AgentPermissionDecision::Cancel)
+            }
             AgentRequest::UserInput { questions } => {
                 if questions.is_empty() {
                     AgentReply::Answers(String::new())

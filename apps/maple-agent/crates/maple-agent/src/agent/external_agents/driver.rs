@@ -125,6 +125,12 @@ pub(super) enum AgentRequest {
         arguments: Map<String, Value>,
         prompt: Option<String>,
     },
+    /// The agent asks to change its own mode. Maple refuses: it sets the
+    /// agent's mode from the task's.
+    ModeChange {
+        /// The agent's id for the request's tool call.
+        item_id: String,
+    },
     /// Questions for the model that called the agent.
     UserInput { questions: Vec<AgentQuestion> },
     /// A request Maple does not serve.
@@ -136,6 +142,7 @@ impl AgentRequest {
     pub(super) fn kind(&self) -> &str {
         match self {
             Self::Approval { tool_name, .. } => tool_name,
+            Self::ModeChange { .. } => "mode change",
             Self::UserInput { .. } => "user input",
             Self::Unknown { method } => method,
         }

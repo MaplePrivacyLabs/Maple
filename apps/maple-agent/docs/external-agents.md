@@ -186,9 +186,9 @@ the entry's sign-in hint.
 - A permission request is judged by the task's gate (see
   [Approvals](#approvals)): allowed with its `allow_once` option, refused
   with `reject_once`. Options that outlive the turn are never chosen; with
-  neither option, the request is cancelled. A request that offers several
-  options of the same allow kind is a choice, and goes to the caller as a
-  question.
+  neither option, the request is cancelled. However many ways to allow a
+  request offers, it is an approval for the gate, never a question for the
+  calling model.
 - A form elicitation goes to the caller as questions (see
   [Questions](#questions)). Grok asks only through its own
   `_x.ai/ask_user_question`, which Maple refuses like every request it does
@@ -209,7 +209,9 @@ task's, following Paseo:
 Grok takes its mode only as launch arguments, before `agent stdio`; when the
 task's mode changes, the next turn starts a new process that resumes the
 session. Antigravity's is the session's `mode` option, set before each
-prompt. Maple never answers a request to change mode.
+prompt, even when it reads as set already, and Maple follows the mode and
+options the agent reports. A request from the agent to change its own mode
+is refused and listed under "Not allowed" for the calling model.
 
 What the agent still asks about goes to the task's gate, as the task's own
 calls do, with the tool named `<agent> <kind>` (such as `grok edit`) and the

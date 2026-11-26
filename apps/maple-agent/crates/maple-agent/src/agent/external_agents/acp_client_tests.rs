@@ -318,35 +318,122 @@ fn permission_requests_are_approvals_that_never_pick_lasting_options() {
 }
 
 #[test]
-fn a_permission_request_that_offers_choices_is_a_question() {
+fn a_permission_request_is_an_approval_however_many_ways_it_offers_to_allow() {
+    // An agent may offer several options of one kind. The request still goes
+    // to the task's gate, never to the calling model, and only a once-option
+    // is ever chosen.
     let mut state = Session::default();
     let (_, request) = ask(
         &mut state,
         "session/request_permission",
-        json!({"toolCall": {"toolCallId": "p", "title": "Which plan?"},
+        json!({"toolCall": {"toolCallId": "p", "title": "Run `rm -rf build`", "kind": "execute",
+                "rawInput": {"command": "rm -rf build"}},
             "options": [
-                {"optionId": "a", "name": "Plan A", "kind": "allow_once"},
-                {"optionId": "b", "name": "Plan B", "kind": "allow_once"},
-                {"optionId": "no", "name": "Neither", "kind": "reject_once"}]}),
+                {"optionId": "this", "name": "Allow this command this session", "kind": "allow_always"},
+                {"optionId": "all", "name": "Allow all commands this session", "kind": "allow_always"},
+                {"optionId": "once", "name": "Allow once", "kind": "allow_once"},
+                {"optionId": "no", "name": "Reject", "kind": "reject_once"}]}),
     );
-    let AgentRequest::UserInput { questions } = request else {
-        panic!("expected a question");
+    let AgentRequest::Approval {
+        tool_name,
+        arguments,
+        ..
+    } = request
+    else {
+        panic!("expected an approval, got {request:?}");
     };
-    assert_eq!(questions[0].id, "choice");
-    assert_eq!(questions[0].question, "Which plan?");
-    assert_eq!(questions[0].options[1].label, "Plan B");
+    assert_eq!(tool_name, "grok execute");
+    assert_eq!(arguments["command"], "rm -rf build");
     let waiting = state.waiting.get("7").unwrap().clone();
     assert_eq!(
         answer(
             &waiting,
-            AgentReply::Answers(r#"{"answers":{"choice":{"answers":["plan b"]}}}"#.into())
+            AgentReply::Decision(AgentPermissionDecision::AllowOnce)
         ),
-        json!({"outcome": {"outcome": "selected", "optionId": "b"}})
+        json!({"outcome": {"outcome": "selected", "optionId": "once"}})
     );
     assert_eq!(
-        answer(&waiting, AgentReply::Answers(String::new())),
+        answer(
+            &waiting,
+            AgentReply::Decision(AgentPermissionDecision::Cancel)
+        ),
+        json!({"outcome": {"outcome": "selected", "optionId": "no"}})
+    );
+
+    // With no once-option, allowing cancels: a lasting option is never chosen.
+    let mut state = Session::default();
+    let (_, request) = ask(
+        &mut state,
+        "session/request_permission",
+        json!({"toolCall": {"toolCallId": "q", "title": "Which plan?"},
+            "options": [
+                {"optionId": "a", "name": "Plan A", "kind": "allow_always"},
+                {"optionId": "b", "name": "Plan B", "kind": "allow_always"}]}),
+    );
+    assert!(
+        matches!(request, AgentRequest::Approval { .. }),
+        "{request:?}"
+    );
+    let waiting = state.waiting.get("7").unwrap().clone();
+    assert_eq!(
+        answer(
+            &waiting,
+            AgentReply::Decision(AgentPermissionDecision::AllowOnce)
+        ),
         json!({"outcome": {"outcome": "cancelled"}})
     );
+}
+
+#[test]
+fn a_request_to_change_the_agents_own_mode_is_refused() {
+    let mut state = Session::default();
+    let (_, request) = ask(
+        &mut state,
+        "session/request_permission",
+        json!({"toolCall": {"toolCallId": "m", "title": "Switch to auto", "kind": "switch_mode"},
+            "options": [
+                {"optionId": "yes", "name": "Switch", "kind": "allow_once"},
+                {"optionId": "no", "name": "Stay", "kind": "reject_once"}]}),
+    );
+    assert_eq!(
+        request,
+        AgentRequest::ModeChange {
+            item_id: "m".into()
+        }
+    );
+    // The host refuses it, which picks the agent's reject option.
+    let waiting = state.waiting.get("7").unwrap().clone();
+    assert_eq!(
+        answer(
+            &waiting,
+            AgentReply::Decision(AgentPermissionDecision::Cancel)
+        ),
+        json!({"outcome": {"outcome": "selected", "optionId": "no"}})
+    );
+}
+
+#[test]
+fn maple_follows_the_mode_and_options_the_agent_reports() {
+    let mut state = Session {
+        options: config_options(&json!({"configOptions": [
+            {"id": "mode", "category": "mode", "currentValue": "default",
+                "options": [{"value": "default"}, {"value": "auto"}]}]}))
+        .unwrap(),
+        ..Session::default()
+    };
+    update(
+        &mut state,
+        json!({"sessionUpdate": "current_mode_update", "currentModeId": "auto"}),
+    );
+    assert_eq!(state.options[0].current.as_deref(), Some("auto"));
+    update(
+        &mut state,
+        json!({"sessionUpdate": "config_option_update", "configOptions": [
+            {"id": "mode", "category": "mode", "currentValue": "plan",
+                "options": [{"value": "default"}, {"value": "plan"}]}]}),
+    );
+    assert_eq!(state.options[0].current.as_deref(), Some("plan"));
+    assert_eq!(state.options[0].values, ["default", "plan"]);
 }
 
 #[test]

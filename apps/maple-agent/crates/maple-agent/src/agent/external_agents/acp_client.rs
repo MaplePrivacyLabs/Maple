@@ -92,16 +92,8 @@ struct ToolCall {
 /// How a request the agent waits on is answered.
 #[derive(Debug, Clone)]
 enum Waiting {
-    Permission {
-        options: Vec<Value>,
-    },
-    /// A permission request whose options are choices, not a yes or no.
-    Choice {
-        options: Vec<Value>,
-    },
-    Form {
-        schema: Value,
-    },
+    Permission { options: Vec<Value> },
+    Form { schema: Value },
 }
 
 impl Client {
@@ -338,7 +330,10 @@ impl Client {
         let Some(option) = option else {
             return Err(format!("{} offers no {label} choice.", self.entry.name));
         };
-        if option.current.as_deref() == Some(wanted) {
+        // The mode is set before every prompt even when it reads as set
+        // already: Maple keeps the agent in the task's mode whatever the
+        // agent did meanwhile.
+        if option.current.as_deref() == Some(wanted) && category != "mode" {
             return Ok(());
         }
         if !option.values.iter().any(|value| value == wanted) {
@@ -572,10 +567,12 @@ fn decode(agent: &str, state: &mut Session, message: ServerMessage) -> Vec<Drive
     }
 }
 
-/// A permission request: an approval of one action, or, when it offers
-/// several ways to allow alike, a choice the caller makes. The request can
-/// say more about its call than the call's updates did; what that shows
-/// comes first.
+/// A permission request: always the approval of one action, which the
+/// task's gate decides, never a question for the calling model however many
+/// ways to allow it offers. Only its once-options are ever chosen. A request
+/// to change the agent's own mode is refused: Maple sets the mode from the
+/// task's. The request can say more about its call than the call's updates
+/// did; what that shows comes first.
 fn permission_request(
     agent: &str,
     state: &mut Session,
@@ -596,45 +593,6 @@ fn permission_request(
         .cloned()
         .unwrap_or_default();
     let title = call.map(|call| call.title.clone()).unwrap_or_default();
-    let allow_kinds = options
-        .iter()
-        .filter_map(|option| option.get("kind").and_then(Value::as_str))
-        .filter(|kind| kind.starts_with("allow"))
-        .collect::<Vec<_>>();
-    let repeated = allow_kinds
-        .iter()
-        .enumerate()
-        .any(|(index, kind)| allow_kinds[..index].contains(kind));
-    if repeated {
-        let question = AgentQuestion {
-            multi_select: false,
-            id: "choice".to_string(),
-            header: "Choice".to_string(),
-            question: if title.is_empty() {
-                "The agent asks which way to go on.".to_string()
-            } else {
-                title
-            },
-            options: options
-                .iter()
-                .filter_map(|option| option.get("name").and_then(Value::as_str))
-                .map(|name| AgentQuestionOption {
-                    label: name.to_string(),
-                    description: String::new(),
-                })
-                .collect(),
-            permission: None,
-        };
-        state
-            .waiting
-            .insert(id.to_string(), Waiting::Choice { options });
-        return (
-            events,
-            AgentRequest::UserInput {
-                questions: vec![question],
-            },
-        );
-    }
     let kind = call
         .and_then(|call| call.kind.clone())
         .unwrap_or_else(|| "other".to_string());
@@ -642,6 +600,9 @@ fn permission_request(
     state
         .waiting
         .insert(id.to_string(), Waiting::Permission { options });
+    if kind == "switch_mode" {
+        return (events, AgentRequest::ModeChange { item_id: call_id });
+    }
     (
         events,
         AgentRequest::Approval {
@@ -681,6 +642,22 @@ fn session_update(state: &mut Session, update: &Value) -> Vec<AgentEvent> {
                 state.segment += 1;
             }
             merge_tool_call(state, id, update)
+        }
+        Some("current_mode_update") => {
+            if let Some(mode) = update.get("currentModeId").and_then(Value::as_str)
+                && let Some(option) = state.options.iter_mut().find(|option| {
+                    option.category.as_deref() == Some("mode") || option.id == "mode"
+                })
+            {
+                option.current = Some(mode.to_string());
+            }
+            Vec::new()
+        }
+        Some("config_option_update") => {
+            if let Some(options) = config_options(update) {
+                state.options = options;
+            }
+            Vec::new()
         }
         Some("plan") => {
             let items = update
@@ -1053,18 +1030,6 @@ fn typed_answer(field: &Value, text: &str) -> Value {
     }
 }
 
-/// The first answer to question `id` in the caller's answers JSON.
-fn first_answer(answers: &str, id: &str) -> Option<String> {
-    let parsed = serde_json::from_str::<Value>(answers).ok()?;
-    parsed["answers"][id]["answers"]
-        .as_array()?
-        .iter()
-        .filter_map(Value::as_str)
-        .map(str::trim)
-        .find(|answer| !answer.is_empty())
-        .map(str::to_string)
-}
-
 /// The result that answers a waiting request with Maple's reply.
 fn answer(waiting: &Waiting, reply: AgentReply) -> Value {
     match (waiting, reply) {
@@ -1075,16 +1040,6 @@ fn answer(waiting: &Waiting, reply: AgentReply) -> Value {
             };
             // Options that outlive the turn are never chosen for the user.
             selected(options.iter().find(|option| option["kind"] == kind))
-        }
-        (Waiting::Choice { options }, AgentReply::Answers(answers)) => {
-            let chosen = first_answer(&answers, "choice");
-            selected(options.iter().find(|option| {
-                chosen.as_deref().is_some_and(|chosen| {
-                    option["name"]
-                        .as_str()
-                        .is_some_and(|name| name.trim().eq_ignore_ascii_case(chosen))
-                })
-            }))
         }
         (Waiting::Form { schema }, AgentReply::Answers(answers)) => form_response(schema, &answers),
         (waiting, _) => dismissed(waiting),
@@ -1101,7 +1056,7 @@ fn selected(option: Option<&Value>) -> Value {
 /// The answer to a request nobody will answer now.
 fn dismissed(waiting: &Waiting) -> Value {
     match waiting {
-        Waiting::Permission { .. } | Waiting::Choice { .. } => {
+        Waiting::Permission { .. } => {
             json!({ "outcome": { "outcome": "cancelled" } })
         }
         Waiting::Form { .. } => json!({ "action": "cancel" }),

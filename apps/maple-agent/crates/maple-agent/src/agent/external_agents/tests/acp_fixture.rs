@@ -183,16 +183,25 @@ fn run() {
                     .unwrap_or_default()
                     .to_string();
                 let stop = match mode.as_str() {
-                    "acp-approve" => {
+                    "acp-approve" | "acp-approve-repeated" | "acp-switch-mode" => {
                         let request = json!("permission-1");
+                        let tool = if mode == "acp-switch-mode" {
+                            json!({ "toolCallId": "m1", "kind": "switch_mode", "title": "Switch to auto" })
+                        } else {
+                            json!({ "toolCallId": "e1", "kind": "edit", "title": "Edit `src/lib.rs`",
+                                "rawInput": { "file_path": "src/lib.rs" } })
+                        };
+                        let mut options = vec![
+                            json!({ "optionId": "allow-always", "name": "Always", "kind": "allow_always" }),
+                            json!({ "optionId": "allow-once", "name": "Once", "kind": "allow_once" }),
+                            json!({ "optionId": "reject-once", "name": "Reject", "kind": "reject_once" }),
+                        ];
+                        if mode == "acp-approve-repeated" {
+                            // Several ways to allow alike, as some agents offer.
+                            options.insert(1, json!({ "optionId": "allow-all", "name": "Allow all this session", "kind": "allow_always" }));
+                        }
                         agent.send(json!({ "id": request, "method": "session/request_permission",
-                            "params": { "sessionId": SESSION,
-                                "toolCall": { "toolCallId": "e1", "kind": "edit", "title": "Edit `src/lib.rs`",
-                                    "rawInput": { "file_path": "src/lib.rs" } },
-                                "options": [
-                                    { "optionId": "allow-always", "name": "Always", "kind": "allow_always" },
-                                    { "optionId": "allow-once", "name": "Once", "kind": "allow_once" },
-                                    { "optionId": "reject-once", "name": "Reject", "kind": "reject_once" }] } }));
+                            "params": { "sessionId": SESSION, "toolCall": tool, "options": options } }));
                         let reply = wait_for_reply(&agent, &mut lines, &request);
                         let chosen = reply["result"]["outcome"]["optionId"]
                             .as_str()
