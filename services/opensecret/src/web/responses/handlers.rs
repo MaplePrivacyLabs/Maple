@@ -325,6 +325,10 @@ pub enum PublicResponseFailure {
     DeadlineExceeded,
     RepetitionDetected,
     ContextLimit,
+    /// The Free plan's conversation token limit, found after acceptance.
+    FreeTokenLimit,
+    /// The account's usage limit, found after acceptance.
+    UsageLimit,
     Internal,
 }
 
@@ -359,6 +363,8 @@ impl PublicResponseFailure {
             }
             ApiError::InferenceProvider(error) => Self::Provider(*error),
             ApiError::MessageExceedsContextLimit => Self::ContextLimit,
+            ApiError::FreeTokenLimitExceeded => Self::FreeTokenLimit,
+            ApiError::UsageLimitReached => Self::UsageLimit,
             _ => Self::Internal,
         }
     }
@@ -369,6 +375,8 @@ impl PublicResponseFailure {
             Self::Provider(error) => error.code(),
             Self::RepetitionDetected => "repetition_detected",
             Self::ContextLimit => "message_exceeds_context_limit",
+            Self::FreeTokenLimit => "free_tier_token_limit_exceeded",
+            Self::UsageLimit => "usage_limit_reached",
             Self::CapacityOverloaded | Self::DeadlineExceeded | Self::Internal => "server_error",
         }
     }
@@ -381,6 +389,8 @@ impl PublicResponseFailure {
             Self::DeadlineExceeded => "deadline",
             Self::RepetitionDetected => "repetition",
             Self::ContextLimit => "context_limit",
+            Self::FreeTokenLimit => "free_token_limit",
+            Self::UsageLimit => "usage_limit",
             Self::Internal => "internal",
         }
     }
@@ -394,6 +404,8 @@ impl PublicResponseFailure {
             Self::Provider(error) => error.message(),
             Self::RepetitionDetected => "The model stopped because it was repeating itself.",
             Self::ContextLimit => "The message exceeds the model's context limit.",
+            Self::FreeTokenLimit => "This conversation exceeds the Free plan's token limit.",
+            Self::UsageLimit => "The account's usage limit has been reached.",
             Self::Internal => "The response could not be completed.",
         }
     }
@@ -403,6 +415,8 @@ impl PublicResponseFailure {
             Self::CapacityRateLimited | Self::CapacityOverloaded => INFERENCE_CAPACITY_ERROR_CODE,
             Self::Provider(error) => error.code(),
             Self::ContextLimit => "message_exceeds_context_limit",
+            Self::FreeTokenLimit => "free_tier_token_limit_exceeded",
+            Self::UsageLimit => "usage_limit_reached",
             Self::DeadlineExceeded | Self::RepetitionDetected | Self::Internal => return None,
         };
         Some(OpenSecretResponseError {
@@ -2896,6 +2910,35 @@ mod tests {
             context.contract_metadata().unwrap().error_code,
             "message_exceeds_context_limit"
         );
+    }
+
+    #[test]
+    fn accepted_plan_limits_keep_their_http_error_codes() {
+        // A plan limit found after acceptance carries the code its HTTP
+        // rejection uses, so clients can show the matching upgrade prompt.
+        for (error, failure, code) in [
+            (
+                ApiError::FreeTokenLimitExceeded,
+                PublicResponseFailure::FreeTokenLimit,
+                "free_tier_token_limit_exceeded",
+            ),
+            (
+                ApiError::UsageLimitReached,
+                PublicResponseFailure::UsageLimit,
+                "usage_limit_reached",
+            ),
+        ] {
+            let public = PublicResponseFailure::from_api_error(&error);
+            assert_eq!(public, failure);
+            assert_eq!(public.openai_code(), code);
+            let metadata = public.contract_metadata().unwrap();
+            assert_eq!(metadata.error_contract, "1");
+            assert_eq!(metadata.error_code, code);
+            assert_eq!(
+                ResponseTerminal::Failed(public).status(),
+                ResponseStatus::Failed
+            );
+        }
     }
 
     #[test]

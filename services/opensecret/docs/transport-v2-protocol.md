@@ -483,6 +483,13 @@ codes grant no automatic replay permission and request neither a new session
 nor token refresh. V2 authenticates the logical status, headers and body inside
 its outer HTTP 200 response.
 
+A Responses request can find a usage, Free-token or context limit after
+acceptance, when it reads the whole conversation. It then ends with encrypted
+`response.failed` whose `response.error.code` and
+`opensecret: {"error_contract": "1", "error_code": ...}` carry the same code
+from this table. Clients that ignore stream error codes see an ordinary failed
+Response, as before.
+
 Retained flat fields preserve existing message parsers, while the nested error
 is readable by existing OpenAI clients. Research clients using
 structured status/code classification against backends without these additions
