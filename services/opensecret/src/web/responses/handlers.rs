@@ -1784,6 +1784,43 @@ mod tests {
     }
 
     #[test]
+    fn free_accounts_prepare_compaction_before_acceptance() {
+        use crate::web::responses::context_policy::ContextPolicy;
+
+        // A Free account's history check must stay an HTTP 403 that clients
+        // turn into the upgrade prompt, including when the quota is exhausted.
+        let free = [
+            ChatBillingAccess::for_tests(true, true),
+            ChatBillingAccess::for_tests(false, true),
+        ];
+        let paid = [
+            ChatBillingAccess::for_tests(true, false),
+            ChatBillingAccess::for_tests(false, false),
+        ];
+        let compaction = ContextPolicy::compaction();
+        for access in free {
+            assert!(!super::streams_compaction_preparation(
+                compaction,
+                Some(access)
+            ));
+        }
+        for access in paid {
+            assert!(super::streams_compaction_preparation(
+                compaction,
+                Some(access)
+            ));
+        }
+        // No billing access applies no plan limit, so nothing changes there.
+        assert!(super::streams_compaction_preparation(compaction, None));
+        for access in free.into_iter().chain(paid).map(Some).chain([None]) {
+            assert!(!super::streams_compaction_preparation(
+                ContextPolicy::legacy(),
+                access
+            ));
+        }
+    }
+
+    #[test]
     fn legacy_terminal_recovery_never_reads_existing_checkpoint_data() {
         use crate::web::responses::context_policy::ContextPolicy;
 
@@ -5591,6 +5628,22 @@ fn reserved_response_output_tokens(body: &ResponsesCreateRequest) -> usize {
         .unwrap_or(0)
 }
 
+/// Whether compaction prepares the prompt after durable acceptance.
+///
+/// Free accounts prepare before acceptance, as the legacy window does, so a
+/// conversation over the Free token limit stays an HTTP 403
+/// `free_tier_token_limit_exceeded`, which shipped clients turn into the
+/// upgrade prompt. After acceptance it could only be a generic failed
+/// Response. That limit sits far below any default compaction trigger, so
+/// Free turns never need the long paid preparation that streaming exists for.
+fn streams_compaction_preparation(
+    policy: ContextPolicy,
+    billing_access: Option<ChatBillingAccess>,
+) -> bool {
+    policy.strategy == ContextStrategy::Compaction
+        && billing_access.is_none_or(ChatBillingAccess::is_paid)
+}
+
 fn compaction_recovery_enabled(policy: ContextPolicy, body: &ResponsesCreateRequest) -> bool {
     policy.strategy == ContextStrategy::Compaction
         && compaction::policy_for(body).is_ok_and(|(_, enabled)| enabled)
@@ -8102,7 +8155,7 @@ async fn create_response_stream_inner(
     );
     *admission_observation = Some(context_observation.clone());
 
-    if context_policy.strategy == ContextStrategy::Compaction {
+    if streams_compaction_preparation(context_policy, billing_access) {
         // All provider-free controls remain real admission errors. The chosen
         // executing model is fixed before it becomes durable and caller-visible;
         // later within-model provider routing keeps its existing retry policy.
