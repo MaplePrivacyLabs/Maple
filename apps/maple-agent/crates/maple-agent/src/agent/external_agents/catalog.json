@@ -1,0 +1,36 @@
+[
+  {
+    "id": "codex",
+    "name": "Codex",
+    "description": "Let a task hand work to the Codex CLI installed on this computer, with its own account.",
+    "summary": "Runs `codex app-server` with the user's own Codex account and configuration",
+    "icon": "icons/openai-mark.svg",
+    "transport": "codex-app-server",
+    "executable": "codex",
+    "minimumVersion": "0.143.0",
+    "signInProbe": "codex-auth-file",
+    "text": {
+      "notInstalled": "Install the Codex CLI and make sure `codex` is on your PATH, then reopen this page.",
+      "launchMissing": "Codex is not installed, or `codex` is not on PATH. Ask the user to install the Codex CLI.",
+      "versionFailed": "Maple could not run `codex --version`: {error}",
+      "signInHint": "Codex is not signed in. Run `codex login` in a terminal, then try again."
+    }
+  },
+  {
+    "id": "claude",
+    "name": "Claude Code",
+    "description": "Let a task hand work to the Claude Code CLI installed on this computer, with its own account.",
+    "summary": "Runs Claude Code with the user's own account and configuration",
+    "icon": "icons/claude-mark.svg",
+    "transport": "claude-stream-json",
+    "executable": "claude",
+    "signInProbe": "claude-auth-status",
+    "text": {
+      "notInstalled": "Install Claude Code and make sure `claude` is on PATH, then reopen this page.",
+      "launchMissing": "Install Claude Code and make sure `claude` is on PATH.",
+      "versionFailed": "Maple could not run `claude --version`. Check the Claude Code installation.",
+      "signInHint": "Claude Code is not signed in. Run `claude auth login` in a terminal, then try again.",
+      "signInUnknown": "Could not check sign-in. Run `claude auth status` in a terminal."
+    }
+  }
+]

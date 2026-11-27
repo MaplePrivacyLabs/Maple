@@ -3337,13 +3337,11 @@ impl SettingsScreen {
                             .size(px(28.))
                             .text_color(gpui::rgb(theme::text_primary()))
                             .into_any_element()
-                    } else if matches!(integration.id.as_str(), "codex" | "claude") {
+                    } else if let Some(mark) =
+                        maple_agent::agent::external_agent_icon(&integration.id)
+                    {
                         gpui::svg()
-                            .path(if integration.id == "claude" {
-                                "icons/claude-mark.svg"
-                            } else {
-                                "icons/openai-mark.svg"
-                            })
+                            .path(mark)
                             .size(px(26.))
                             .text_color(gpui::rgb(theme::text_primary()))
                             .into_any_element()

@@ -8,15 +8,19 @@
 //! question card, and its progress streams into the transcript row of the
 //! tool call that started the turn.
 //!
-//! Codex uses its app-server; Claude Code its stream-json protocol, as
-//! Goose's Claude Code provider speaks it. Both feed the same activity,
-//! permission, and lifecycle host. A background turn's result reaches the task as a message the user
+//! Which agents exist, and how each is found, started and spoken to, is
+//! data in [`catalog`]. Codex uses its app-server; Claude Code its
+//! stream-json protocol, as Goose's Claude Code provider speaks it. Each
+//! transport turns its wire into [`driver`]'s terms, which is all the
+//! activity, permission, and lifecycle host speaks. A background turn's result reaches the task as a message the user
 //! does not see, behind its run or in a run of its own, and stays on the
 //! tool call's row through an entry in the task's session.
 
 mod app_server;
-pub(crate) mod claude;
-pub(crate) mod codex;
+pub(in crate::agent) mod catalog;
+mod claude;
+mod codex;
+mod driver;
 mod skills;
 mod task;
 #[cfg(test)]
@@ -57,8 +61,12 @@ use super::{
     AgentRuntimeHandle, AgentServiceEvent, AgentSubagent, AgentTimelineItem, AgentTimelineLabel,
     ExternalAgentRef, emit_agent_event,
 };
-use app_server::{AgentClient, AppServerClient, RequestMethod, ServerMessage};
-use codex::{CodexEvent, CodexItem, CodexServerRequest};
+use app_server::AgentClient;
+use catalog::CatalogEntry;
+use driver::{
+    AgentEvent, AgentItem, AgentReply, AgentRequest, DriverMessage, FileChangeEntry, TodoEntry,
+    TurnOutcome, TurnRequest,
+};
 
 pub(crate) const AGENT_START_TOOL: &str = "agent_start";
 pub(crate) const AGENT_SEND_TOOL: &str = "agent_send";
@@ -73,8 +81,6 @@ pub(crate) const EXTERNAL_AGENT_TOOLS: [&str; 5] = [
     AGENT_CANCEL_TOOL,
     LIST_AGENT_PROVIDERS_TOOL,
 ];
-/// Every provider, in catalog order.
-pub(crate) const PROVIDERS: [&str; 2] = [codex::PROVIDER_ID, claude::PROVIDER_ID];
 /// The key under which a tool result and a persisted notice carry the
 /// activity payload the transcript renders.
 pub const ACTIVITY_KEY: &str = "mapleExternalAgent";
@@ -207,7 +213,7 @@ impl ExternalAgentActivity {
         }
     }
 
-    fn record_file_changes(&mut self, changes: Vec<codex::FileChangeEntry>) {
+    fn record_file_changes(&mut self, changes: Vec<FileChangeEntry>) {
         for change in changes {
             if let Some(existing) = self
                 .file_changes
@@ -231,7 +237,7 @@ impl ExternalAgentActivity {
         }
     }
 
-    fn record_todos(&mut self, items: Vec<codex::TodoEntry>) {
+    fn record_todos(&mut self, items: Vec<TodoEntry>) {
         self.todos = items
             .into_iter()
             .take(MAX_ACTIVITY_TODOS)
@@ -535,15 +541,13 @@ impl ExternalAgentRegistry {
         login_path.map(str::to_string)
     }
 
-    fn require_provider(provider: &str) -> Result<(), String> {
-        if PROVIDERS.contains(&provider.trim()) {
-            Ok(())
-        } else {
-            Err(format!(
+    fn require_provider(provider: &str) -> Result<&'static CatalogEntry, String> {
+        catalog::entry(provider.trim()).ok_or_else(|| {
+            format!(
                 "Unknown agent provider '{}'. Call {LIST_AGENT_PROVIDERS_TOOL} to see what is installed.",
                 provider.trim()
-            ))
-        }
+            )
+        })
     }
 
     async fn agent(&self, session_id: &str, agent_id: &str) -> Option<Arc<ExternalAgent>> {
@@ -617,57 +621,29 @@ impl ExternalAgentRegistry {
             return AgentToolResult::text("No external agent providers are enabled for this task.");
         }
         let mut out = String::from("Agent providers available to this task:\n");
-        if providers
+        for entry in catalog::entries()
             .iter()
-            .any(|provider| provider == claude::PROVIDER_ID)
+            .filter(|entry| providers.contains(&entry.id))
         {
-            let detection = super::integrations::detect_claude(call.login_path.as_deref()).await;
-            let detail = if detection.executable.is_none() {
-                "Install Claude Code and make sure `claude` is on PATH.".to_string()
-            } else if let Some(problem) = detection.problem {
-                problem
-            } else {
-                let sign_in = match detection.signed_in {
-                    Some(true) => "Signed in.",
-                    Some(false) => super::integrations::CLAUDE_SIGN_IN_HINT,
-                    None => "Sign-in state unknown.",
-                };
-                format!(
-                    "{}; {sign_in} Supports model and effort overrides.",
-                    detection.version.unwrap_or_default()
-                )
-            };
-            let _ = writeln!(out, "- claude: {detail}");
-        }
-        if providers
-            .iter()
-            .any(|provider| provider == codex::PROVIDER_ID)
-        {
-            let detection = super::integrations::detect_codex(call.login_path.as_deref()).await;
-            match (&detection.executable, &detection.problem) {
-                (None, _) => {
-                    let _ = writeln!(
-                        out,
-                        "- codex: not installed. Ask the user to install the Codex CLI and make sure `codex` is on PATH."
-                    );
-                }
-                (Some(_), Some(problem)) => {
-                    let _ = writeln!(out, "- codex: unusable. {problem}");
-                }
+            let detection = super::integrations::detect(entry, call.login_path.as_deref()).await;
+            let detail = match (&detection.executable, detection.problem) {
+                (None, _) => entry.text.launch_missing.clone(),
+                (Some(_), Some(problem)) => format!("unusable. {problem}"),
                 (Some(_), None) => {
-                    let version = detection.version.as_deref().unwrap_or("unknown version");
                     let sign_in = match detection.signed_in {
-                        Some(true) => "signed in".to_string(),
-                        Some(false) => super::integrations::CODEX_SIGN_IN_HINT.to_string(),
-                        None => "sign-in state unknown".to_string(),
+                        Some(true) => "Signed in.",
+                        Some(false) => entry.text.sign_in_hint.as_str(),
+                        None => "Sign-in state unknown.",
                     };
-                    let _ = writeln!(
-                        out,
-                        "- codex: {} {version}, {sign_in}. Runs `codex app-server` with the user's own Codex account and configuration; optional `model` and `effort` arguments override its defaults.",
-                        codex::PROVIDER_NAME
-                    );
+                    format!(
+                        "{} {}. {sign_in} {}; optional `model` and `effort` arguments override its defaults.",
+                        entry.name,
+                        detection.version.as_deref().unwrap_or("unknown version"),
+                        entry.summary,
+                    )
                 }
-            }
+            };
+            let _ = writeln!(out, "- {}: {detail}", entry.id);
         }
         let _ = writeln!(
             out,
@@ -681,7 +657,7 @@ impl ExternalAgentRegistry {
         call: ExternalAgentCall,
         params: AgentStartParams,
     ) -> Result<AgentToolResult, String> {
-        Self::require_provider(&params.provider)?;
+        let entry = Self::require_provider(&params.provider)?;
         let prompt = params.prompt.trim().to_string();
         if prompt.is_empty() {
             return Err("prompt must not be empty".to_string());
@@ -697,11 +673,11 @@ impl ExternalAgentRegistry {
             }
             let agent_id = format!(
                 "{}-{}",
-                params.provider.trim(),
+                entry.id,
                 self.next_agent.fetch_add(1, Ordering::Relaxed)
             );
             let agent = Arc::new(ExternalAgent::new(
-                params.provider.trim().to_string(),
+                entry,
                 agent_id.clone(),
                 call.session_id.clone(),
                 first_line_label(&prompt),
@@ -894,32 +870,6 @@ struct TurnInput {
     effort: Option<String>,
 }
 
-/// The end of one turn, as the waiter reads it.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum TurnOutcome {
-    Completed,
-    Failed,
-    Cancelled,
-}
-
-impl TurnOutcome {
-    fn status(self) -> &'static str {
-        match self {
-            Self::Completed => "completed",
-            Self::Failed => "failed",
-            Self::Cancelled => "cancelled",
-        }
-    }
-
-    fn verb(self) -> &'static str {
-        match self {
-            Self::Completed => "finished",
-            Self::Failed => "failed",
-            Self::Cancelled => "was interrupted",
-        }
-    }
-}
-
 struct ActiveTurn {
     turn_id: Option<String>,
     row_id: String,
@@ -996,6 +946,9 @@ struct AgentState {
 }
 
 struct ExternalAgent {
+    /// The agent's catalog entry.
+    entry: &'static CatalogEntry,
+    /// Its id, as tools and results name it.
     provider: String,
     launch: Mutex<()>,
     agent_id: String,
@@ -1012,15 +965,11 @@ struct ExternalAgent {
 
 impl ExternalAgent {
     fn provider_name(&self) -> &str {
-        if self.provider == claude::PROVIDER_ID {
-            claude::PROVIDER_NAME
-        } else {
-            codex::PROVIDER_NAME
-        }
+        &self.entry.name
     }
 
     fn new(
-        provider: String,
+        entry: &'static CatalogEntry,
         agent_id: String,
         session_id: String,
         task: String,
@@ -1028,7 +977,9 @@ impl ExternalAgent {
         host: ExternalAgentHost,
     ) -> Self {
         let cancel = host.lifetime.child_token();
+        let provider = entry.id.clone();
         Self {
+            entry,
             state: Mutex::new(AgentState {
                 process: None,
                 thread_id: None,
@@ -1175,14 +1126,14 @@ impl ExternalAgent {
         self.emit_subagent_started(input.background);
         self.emit_row(true).await;
 
-        let params = codex::turn_start_params(&codex::TurnRequest {
+        let request = TurnRequest {
             thread_id: &thread_id,
             prompt: &input.prompt,
             cwd: &self.cwd,
             model: input.model.as_deref(),
             effort: input.effort.as_deref(),
-        });
-        if let Err(error) = client.request(RequestMethod::TurnStart, params).await {
+        };
+        if let Err(error) = client.start_turn(&request).await {
             self.finish_turn(TurnOutcome::Failed, Some(error.clone()))
                 .await;
             return Err(error);
@@ -1253,39 +1204,19 @@ impl ExternalAgent {
             }
         }
         let existing_thread = self.state.lock().await.thread_id.clone();
-        let claude_thread = existing_thread
-            .clone()
-            .unwrap_or_else(claude::new_session_id);
         let search_path = call.login_path.as_deref();
-        let (executable, args) = if self.provider == claude::PROVIDER_ID {
-            let executable = super::integrations::find_executable("claude", search_path)
-                .ok_or("Install Claude Code and make sure `claude` is on PATH.")?;
-            (
-                executable,
-                claude::command_args(&claude_thread, existing_thread.is_some(), model, effort),
-            )
-        } else {
-            let executable = super::integrations::find_executable("codex", search_path).ok_or_else(|| {
-                "Codex is not installed, or `codex` is not on PATH. Ask the user to install the Codex CLI.".to_string()
-            })?;
-            (
-                executable,
-                codex::app_server_args()
-                    .iter()
-                    .map(|arg| arg.to_string())
-                    .collect(),
-            )
-        };
+        let executable = super::integrations::find_executable(&self.entry.executable, search_path)
+            .ok_or_else(|| self.entry.text.launch_missing.clone())?;
+        let transport = self.entry.transport;
+        let launch = transport.launch(existing_thread.as_deref(), model, effort);
         let mut command = agent_command(
             &executable,
-            &args,
+            &launch.args,
             &self.cwd,
             call.login_path.as_deref(),
             &self.session_id,
         )?;
-        if self.provider == claude::PROVIDER_ID {
-            command.env_remove("CLAUDECODE");
-        }
+        self.entry.apply_environment(&mut command);
         if call.cancel_token.is_cancelled() {
             return Err("Agent run was cancelled before command launch".to_string());
         }
@@ -1304,57 +1235,25 @@ impl ExternalAgent {
             .stdout
             .take()
             .ok_or_else(|| "Failed to open the agent stdout".to_string())?;
-        let (client, receiver, reader) = if self.provider == claude::PROVIDER_ID {
-            let (client, receiver, reader) = claude::Client::new(stdin, stdout, claude_thread);
-            (Arc::new(AgentClient::Claude(client)), receiver, reader)
-        } else {
-            let (client, receiver, reader) = AppServerClient::new(stdin, stdout);
-            (Arc::new(AgentClient::Codex(client)), receiver, reader)
-        };
-        client
-            .request(RequestMethod::Initialize, codex::initialize_params())
+        let (client, receiver, reader) = transport.connect(stdin, stdout, launch);
+        client.initialize().await?;
+        let opened = client
+            .open_thread(existing_thread.as_deref(), &self.cwd, model)
             .await?;
-        client.initialized().await?;
-        let thread_id = {
-            let existing = self.state.lock().await.thread_id.clone();
-            let response = match &existing {
-                Some(thread_id) => {
-                    client
-                        .request(
-                            RequestMethod::ThreadResume,
-                            codex::thread_resume_params(thread_id),
-                        )
-                        .await?
-                }
-                None => {
-                    client
-                        .request(
-                            RequestMethod::ThreadStart,
-                            codex::thread_start_params(&self.cwd, model),
-                        )
-                        .await?
-                }
-            };
-            match existing {
-                Some(thread_id) => thread_id,
-                None => codex::thread_id_from_response(&response)
-                    .ok_or_else(|| "The agent did not report a thread ID".to_string())?,
-            }
-        };
         let events = tokio::spawn(Arc::clone(self).consume_server_messages(receiver));
         let mut state = self.state.lock().await;
         if let Some(previous) = state.process.take() {
             previous.reader.abort();
             previous.events.abort();
         }
-        // Claude's initial UUID is provisional until the CLI confirms it.
-        // A launch failure before system/init must start fresh on retry.
-        if self.provider != claude::PROVIDER_ID {
-            state.thread_id = Some(thread_id.clone());
-            state.activity.thread_id = Some(thread_id.clone());
+        // A thread the agent has not confirmed is provisional: a launch that
+        // fails before the confirmation starts fresh on retry.
+        if opened.confirmed {
+            state.thread_id = Some(opened.thread_id.clone());
+            state.activity.thread_id = Some(opened.thread_id.clone());
         }
         state.process = Some(AgentProcess {
-            thread_id,
+            thread_id: opened.thread_id,
             child,
             client,
             reader,
@@ -1363,15 +1262,14 @@ impl ExternalAgent {
         Ok(())
     }
 
-    async fn consume_server_messages(self: Arc<Self>, mut receiver: mpsc::Receiver<ServerMessage>) {
+    async fn consume_server_messages(self: Arc<Self>, mut receiver: mpsc::Receiver<DriverMessage>) {
         while let Some(message) = receiver.recv().await {
             match message {
-                ServerMessage::Notification { method, params } => {
-                    let event = codex::parse_notification(&method, &params);
-                    if self.provider == claude::PROVIDER_ID
-                        && let CodexEvent::TurnCompleted { ref status, .. } = event
+                DriverMessage::Event(event) => {
+                    if self.entry.transport.one_turn_per_process()
+                        && let AgentEvent::TurnCompleted { outcome, .. } = event
                     {
-                        // A Claude process serves one turn. Reclaim it before
+                        // The process served its turn. Reclaim it before
                         // reporting completion, including on protocol failure.
                         // On success stdin is closed: give session writes time
                         // to flush, then clean up any remaining descendants.
@@ -1379,7 +1277,7 @@ impl ExternalAgent {
                         // cannot return while this task still owns a child.
                         let mut state = self.state.lock().await;
                         if let Some(mut process) = state.process.take() {
-                            if status == "completed" {
+                            if outcome == TurnOutcome::Completed {
                                 let _ = tokio::time::timeout(
                                     Duration::from_secs(2),
                                     process.child.child.wait(),
@@ -1396,12 +1294,12 @@ impl ExternalAgent {
                     }
                     self.handle_event(event).await;
                 }
-                ServerMessage::Request { id, method, params } => {
+                DriverMessage::Request { id, request } => {
                     // An approval waits on the user. It must not stall the
-                    // notifications behind it, so it runs on its own task.
+                    // events behind it, so it runs on its own task.
                     let agent = Arc::clone(&self);
                     tokio::spawn(async move {
-                        agent.handle_request(id, &method, params).await;
+                        agent.handle_request(id, request).await;
                     });
                 }
             }
@@ -1420,28 +1318,23 @@ impl ExternalAgent {
         }
     }
 
-    async fn handle_event(self: &Arc<Self>, event: CodexEvent) {
+    async fn handle_event(self: &Arc<Self>, event: AgentEvent) {
         match event {
-            CodexEvent::ThreadStarted { thread_id } => {
+            AgentEvent::ThreadStarted { thread_id } => {
                 let mut state = self.state.lock().await;
                 state.thread_id.get_or_insert(thread_id.clone());
                 state.activity.thread_id.get_or_insert(thread_id);
             }
-            CodexEvent::TurnStarted { turn_id } => {
+            AgentEvent::TurnStarted { turn_id } => {
                 let mut state = self.state.lock().await;
                 if let Some(turn) = state.turn.as_mut() {
                     turn.turn_id = turn_id;
                 }
             }
-            CodexEvent::TurnCompleted { status, error } => {
-                let outcome = match status.as_str() {
-                    "completed" => TurnOutcome::Completed,
-                    "interrupted" | "cancelled" | "canceled" => TurnOutcome::Cancelled,
-                    _ => TurnOutcome::Failed,
-                };
+            AgentEvent::TurnCompleted { outcome, error } => {
                 self.finish_turn(outcome, error).await;
             }
-            CodexEvent::AgentMessageDelta { item_id, delta } => {
+            AgentEvent::AgentMessageDelta { item_id, delta } => {
                 {
                     let mut state = self.state.lock().await;
                     match state.messages.iter_mut().find(|(id, _)| *id == item_id) {
@@ -1452,20 +1345,20 @@ impl ExternalAgent {
                 }
                 self.emit_row(false).await;
             }
-            CodexEvent::ItemStarted(item) => {
+            AgentEvent::ItemStarted(item) => {
                 let label = {
                     let mut state = self.state.lock().await;
                     match item {
-                        CodexItem::CommandExecution { id, command, .. } => {
+                        AgentItem::CommandExecution { id, command, .. } => {
                             let label = format!("Running: {command}");
                             state.activity.record_command_started(id, command);
                             Some(label)
                         }
-                        CodexItem::TodoList { items, .. } => {
+                        AgentItem::TodoList { items, .. } => {
                             state.activity.record_todos(items);
                             None
                         }
-                        CodexItem::FileChange { changes, .. } => {
+                        AgentItem::FileChange { changes, .. } => {
                             let label = changes
                                 .first()
                                 .map(|change| format!("Editing: {}", change.path));
@@ -1480,11 +1373,11 @@ impl ExternalAgent {
                 }
                 self.emit_row(true).await;
             }
-            CodexEvent::ItemCompleted(item) => {
+            AgentEvent::ItemCompleted(item) => {
                 let label = {
                     let mut state = self.state.lock().await;
                     match item {
-                        CodexItem::AgentMessage { id, text } => {
+                        AgentItem::AgentMessage { id, text } => {
                             match state
                                 .messages
                                 .iter_mut()
@@ -1497,7 +1390,7 @@ impl ExternalAgent {
                             Self::refresh_text(&mut state);
                             None
                         }
-                        CodexItem::CommandExecution {
+                        AgentItem::CommandExecution {
                             id,
                             command,
                             exit_code,
@@ -1508,18 +1401,18 @@ impl ExternalAgent {
                                 .record_command_finished(&id, command, exit_code, status);
                             None
                         }
-                        CodexItem::FileChange { changes, .. } => {
+                        AgentItem::FileChange { changes, .. } => {
                             let label = changes
                                 .first()
                                 .map(|change| format!("Edited: {}", change.path));
                             state.activity.record_file_changes(changes);
                             label
                         }
-                        CodexItem::TodoList { items, .. } => {
+                        AgentItem::TodoList { items, .. } => {
                             state.activity.record_todos(items);
                             None
                         }
-                        CodexItem::AsyncQuestion { id, questions } => {
+                        AgentItem::AsyncQuestion { id, questions } => {
                             // Mark the wait now, before the turn can end and
                             // render its result; the answer task runs later.
                             state.open_questions += 1;
@@ -1529,7 +1422,7 @@ impl ExternalAgent {
                             tokio::spawn(agent.answer_async_question(id, questions));
                             None
                         }
-                        CodexItem::Other { .. } => None,
+                        AgentItem::Other { .. } => None,
                     }
                 };
                 if let Some(label) = label {
@@ -1537,7 +1430,7 @@ impl ExternalAgent {
                 }
                 self.emit_row(true).await;
             }
-            CodexEvent::Other => {}
+            AgentEvent::Other => {}
         }
     }
 
@@ -1566,8 +1459,9 @@ impl ExternalAgent {
         }
     }
 
-    async fn handle_request(&self, id: Value, method: &str, params: Value) {
-        log::info!("External agent {} asks: {method}", self.agent_id);
+    async fn handle_request(&self, id: Value, request: AgentRequest) {
+        let kind = request.kind().to_string();
+        log::info!("External agent {} asks: {kind}", self.agent_id);
         let client = {
             let state = self.state.lock().await;
             match state.process.as_ref() {
@@ -1575,60 +1469,24 @@ impl ExternalAgent {
                 None => return,
             }
         };
-        if self.provider == claude::PROVIDER_ID && method == "claude/tool/requestApproval" {
-            let tool = params["tool"].as_str().unwrap_or("tool");
-            let arguments = params["input"].as_object().cloned().unwrap_or_default();
-            let request = AgentPermissionRequest {
-                request_id: format!("{}-{}", self.agent_id, id.as_str().unwrap_or("request")),
-                tool_name: "claude_tool".into(),
-                arguments,
-                prompt: Some(format!("Claude Code wants to use {tool}")),
-            };
-            let decision = self.request_permission(request).await;
-            let _ = client.respond(id, codex::approval_response(decision)).await;
-            return;
-        }
-        let response = match codex::parse_server_request(method, &params) {
-            CodexServerRequest::CommandApproval {
+        let reply = match request {
+            AgentRequest::Approval {
                 item_id,
-                command,
-                cwd,
-                reason,
+                tool_name,
+                arguments,
+                prompt,
             } => {
-                let mut arguments = serde_json::Map::new();
-                arguments.insert("command".to_string(), json!(command));
-                if let Some(cwd) = cwd {
-                    arguments.insert("cwd".to_string(), json!(cwd));
-                }
-                if let Some(reason) = &reason {
-                    arguments.insert("reason".to_string(), json!(reason));
-                }
                 let request = AgentPermissionRequest {
                     request_id: format!("{}-{item_id}", self.agent_id),
-                    tool_name: "codex_command".to_string(),
+                    tool_name,
                     arguments,
-                    prompt: Some(format!("Codex wants to run: {command}")),
+                    prompt,
                 };
-                let decision = self.request_permission(request).await;
-                codex::approval_response(decision)
+                AgentReply::Decision(self.request_permission(request).await)
             }
-            CodexServerRequest::FileChangeApproval { item_id, reason } => {
-                let mut arguments = serde_json::Map::new();
-                if let Some(reason) = &reason {
-                    arguments.insert("reason".to_string(), json!(reason));
-                }
-                let request = AgentPermissionRequest {
-                    request_id: format!("{}-{item_id}", self.agent_id),
-                    tool_name: "codex_file_change".to_string(),
-                    arguments,
-                    prompt: Some("Codex wants to change files in the project".to_string()),
-                };
-                let decision = self.request_permission(request).await;
-                codex::approval_response(decision)
-            }
-            CodexServerRequest::UserInput { questions } => {
+            AgentRequest::UserInput { questions } => {
                 if questions.is_empty() {
-                    codex::user_input_response("")
+                    AgentReply::Answers(String::new())
                 } else {
                     // The service's own broker, not a process global: a
                     // rebuilt service must not strand this agent's question
@@ -1644,25 +1502,22 @@ impl ExternalAgent {
                         answer = broker.ask(&self.session_id, questions) => answer,
                     };
                     self.set_pending_permission(None).await;
-                    codex::user_input_response(&answer)
+                    AgentReply::Answers(answer)
                 }
             }
-            CodexServerRequest::Unknown { method } => {
+            AgentRequest::Unknown { method } => {
                 client
-                    .respond_error(id, &format!("{method} is not supported by this client"))
+                    .refuse(id, &format!("{method} is not supported by this client"))
                     .await;
                 return;
             }
         };
         log::info!(
-            "External agent {} answered {method}: {}",
+            "External agent {} answered {kind}: {}",
             self.agent_id,
-            response
-                .get("decision")
-                .and_then(Value::as_str)
-                .unwrap_or("answers")
+            reply.label()
         );
-        if let Err(error) = client.respond(id, response).await {
+        if let Err(error) = client.reply(id, reply).await {
             log::warn!("Failed to answer an external agent request: {error}");
         }
     }
@@ -1673,7 +1528,7 @@ impl ExternalAgent {
     fn answer_async_question(
         self: Arc<Self>,
         item_id: String,
-        questions: Vec<codex::AsyncQuestion>,
+        questions: Vec<driver::AsyncQuestion>,
     ) -> std::pin::Pin<Box<dyn std::future::Future<Output = ()> + Send>> {
         // Boxed: the answer may start a turn, whose event loop reaches this
         // function again. A concrete boxed type ends the recursive future.
@@ -1689,14 +1544,14 @@ impl ExternalAgent {
             let answer = tokio::select! {
                 biased;
                 _ = self.cancel.cancelled() => String::new(),
-                answer = broker.ask(&self.session_id, codex::async_question_prompts(&questions)) => answer,
+                answer = broker.ask(&self.session_id, driver::async_question_prompts(&questions)) => answer,
             };
             {
                 let mut state = self.state.lock().await;
                 state.open_questions = state.open_questions.saturating_sub(1);
             }
             self.set_pending_permission(None).await;
-            let Some(prompt) = codex::async_answer_prompt(&questions, &answer) else {
+            let Some(prompt) = driver::async_answer_prompt(&questions, &answer) else {
                 log::info!(
                     "External agent {} question {item_id} was dismissed",
                     self.agent_id
@@ -1723,13 +1578,7 @@ impl ExternalAgent {
                 }
             };
             if let Some((client, thread_id, turn_id)) = steer {
-                match client
-                    .request(
-                        RequestMethod::TurnSteer,
-                        codex::turn_steer_params(&thread_id, &turn_id, &prompt),
-                    )
-                    .await
-                {
+                match client.steer(&thread_id, &turn_id, &prompt).await {
                     Ok(_) => {
                         log::info!("External agent {} took the answers mid-turn", self.agent_id);
                         return;
@@ -1817,10 +1666,7 @@ impl ExternalAgent {
             // it and the caller's settle timeout ends the wait.
             return;
         };
-        let request = client.request(
-            RequestMethod::TurnInterrupt,
-            codex::turn_interrupt_params(&thread_id, &turn_id),
-        );
+        let request = client.interrupt(&thread_id, &turn_id);
         if let Ok(Err(error)) = tokio::time::timeout(INTERRUPT_REQUEST_TIMEOUT, request).await {
             log::debug!("External agent interrupt was refused: {error}");
         }
@@ -2355,14 +2201,14 @@ mod unit_tests {
 
         activity.record_file_changes(
             (0..(MAX_ACTIVITY_FILE_CHANGES + 3))
-                .map(|index| codex::FileChangeEntry {
+                .map(|index| FileChangeEntry {
                     path: format!("f{index}"),
                     kind: "update".into(),
                 })
                 .collect(),
         );
         assert_eq!(activity.file_changes.len(), MAX_ACTIVITY_FILE_CHANGES);
-        activity.record_file_changes(vec![codex::FileChangeEntry {
+        activity.record_file_changes(vec![FileChangeEntry {
             path: "f42".into(),
             kind: "delete".into(),
         }]);
@@ -2371,7 +2217,7 @@ mod unit_tests {
 
         activity.record_todos(
             (0..(MAX_ACTIVITY_TODOS + 1))
-                .map(|index| codex::TodoEntry {
+                .map(|index| TodoEntry {
                     text: format!("t{index}"),
                     completed: false,
                 })

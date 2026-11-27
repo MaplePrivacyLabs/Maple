@@ -1,5 +1,5 @@
 //! Maple-curated integrations on this device: built-in computer use (CUA),
-//! and the Codex and Claude Code command lines as external agents. A card
+//! and the external agents in the external-agent catalog. A card
 //! joins what Maple finds on the device with the choice saved for new tasks
 //! in the account's `agent.integrations` setting in the host-owned store.
 //!
@@ -11,12 +11,13 @@
 
 mod detect;
 
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
 use super::config::{account_store, load_agent_config_inner};
+use super::external_agents::catalog::{self, CatalogEntry};
 use super::mcp::{name_to_key, normalize_mcp_servers};
 use super::{
     AgentIntegration, AgentIntegrationAvailability, AgentIntegrationBackend,
@@ -24,9 +25,9 @@ use super::{
     AgentSetIntegrationEnabledRequest, AgentSetupIntegrationRequest,
 };
 use detect::CliDetection;
-pub(super) use detect::{
-    CLAUDE_SIGN_IN_HINT, CODEX_SIGN_IN_HINT, detect_claude, detect_codex, find_executable,
-};
+#[cfg(test)]
+pub(super) use detect::parse_version;
+pub(super) use detect::{detect, find_executable};
 
 pub(in crate::agent) const CUA_INTEGRATION_ID: &str = "cua-driver";
 /// The integration's name wherever Maple shows it. Cua, the open-source
@@ -43,99 +44,54 @@ const CUA_NAMES: [&str; 5] = [
 ];
 pub(in crate::agent) const CUA_DESCRIPTION: &str = "Let Maple see your screen and use apps on this computer for you: clicking, typing and scrolling.";
 
-/// An external coding agent a task can hand work to.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum ExternalAgent {
-    Codex,
-    Claude,
+/// An external agent's card note: what is missing, or whether it is signed
+/// in. Sign-in is reported but does not gate enabling: the CLI itself says
+/// what to do when it is missing.
+fn agent_detail(entry: &CatalogEntry, detection: &CliDetection) -> Option<String> {
+    let detail = match (&detection.executable, &detection.problem) {
+        (None, _) => entry.text.not_installed.as_str(),
+        (Some(_), Some(problem)) => return Some(problem.clone()),
+        (Some(_), None) => match detection.signed_in {
+            Some(true) => "Signed in.",
+            Some(false) => entry.text.sign_in_hint.as_str(),
+            None => return entry.text.sign_in_unknown.clone(),
+        },
+    };
+    Some(detail.to_string())
 }
 
-impl ExternalAgent {
-    const ALL: [Self; 2] = [Self::Codex, Self::Claude];
-
-    fn from_id(id: &str) -> Option<Self> {
-        Self::ALL.into_iter().find(|agent| agent.id() == id)
+fn agent_card(
+    entry: &CatalogEntry,
+    detection: &CliDetection,
+    stored: Option<&StoredIntegration>,
+) -> AgentIntegration {
+    AgentIntegration {
+        id: entry.id.clone(),
+        name: entry.name.clone(),
+        description: entry.description.clone(),
+        availability: match (&detection.executable, &detection.problem) {
+            (None, _) => AgentIntegrationAvailability::NotDetected,
+            (Some(_), Some(_)) => AgentIntegrationAvailability::SetupRequired,
+            (Some(_), None) => AgentIntegrationAvailability::Available,
+        },
+        backend: stored.map(StoredIntegration::backend),
+        version: detection.version.clone(),
+        permissions: None,
+        setup_available: false,
+        enabled_for_new_tasks: stored.is_some_and(|entry| entry.enabled),
+        detail: agent_detail(entry, detection),
     }
+}
 
-    fn id(self) -> &'static str {
-        match self {
-            Self::Codex => "codex",
-            Self::Claude => "claude",
-        }
-    }
-
-    fn name(self) -> &'static str {
-        match self {
-            Self::Codex => "Codex",
-            Self::Claude => "Claude Code",
-        }
-    }
-
-    fn description(self) -> &'static str {
-        match self {
-            Self::Codex => {
-                "Let a task hand work to the Codex CLI installed on this computer, with its own account."
-            }
-            Self::Claude => {
-                "Let a task hand work to the Claude Code CLI installed on this computer, with its own account."
-            }
-        }
-    }
-
-    /// The card's note: what is missing, or whether the CLI is signed in.
-    /// Sign-in is reported but does not gate enabling: the CLI itself says
-    /// what to do when it is missing.
-    fn detail(self, detection: &CliDetection) -> Option<String> {
-        let detail = match (self, &detection.executable, &detection.problem) {
-            (Self::Codex, None, _) => {
-                "Install the Codex CLI and make sure `codex` is on your PATH, then reopen this page."
-            }
-            (Self::Claude, None, _) => {
-                "Install Claude Code and make sure `claude` is on PATH, then reopen this page."
-            }
-            (_, Some(_), Some(problem)) => return Some(problem.clone()),
-            (Self::Codex, Some(_), None) => match detection.signed_in {
-                Some(true) => "Signed in.",
-                Some(false) => detect::CODEX_SIGN_IN_HINT,
-                None => return None,
-            },
-            (Self::Claude, Some(_), None) => match detection.signed_in {
-                Some(true) => "Signed in.",
-                Some(false) => detect::CLAUDE_SIGN_IN_HINT,
-                None => "Could not check sign-in. Run `claude auth status` in a terminal.",
-            },
-        };
-        Some(detail.to_string())
-    }
-
-    fn card(
-        self,
-        detection: &CliDetection,
-        stored: Option<&StoredIntegration>,
-    ) -> AgentIntegration {
-        AgentIntegration {
-            id: self.id().to_string(),
-            name: self.name().to_string(),
-            description: self.description().to_string(),
-            availability: match (&detection.executable, &detection.problem) {
-                (None, _) => AgentIntegrationAvailability::NotDetected,
-                (Some(_), Some(_)) => AgentIntegrationAvailability::SetupRequired,
-                (Some(_), None) => AgentIntegrationAvailability::Available,
-            },
-            backend: stored.map(StoredIntegration::backend),
-            version: detection.version.clone(),
-            permissions: None,
-            setup_available: false,
-            enabled_for_new_tasks: stored.is_some_and(|entry| entry.enabled),
-            detail: self.detail(detection),
-        }
-    }
+/// The app asset an external agent's card shows.
+pub fn external_agent_icon(id: &str) -> Option<&'static str> {
+    catalog::entry(id).map(|entry| entry.icon.as_str())
 }
 
 impl AgentIntegration {
     /// Whether this card is an external coding agent.
     pub fn is_external_agent(&self) -> bool {
-        ExternalAgent::from_id(&self.id).is_some()
+        catalog::entry(&self.id).is_some()
     }
 }
 
@@ -143,7 +99,7 @@ impl AgentIntegration {
 /// cannot disagree.
 fn require_known_integration(id: &str) -> Result<(), String> {
     let id = id.trim();
-    if id == CUA_INTEGRATION_ID || ExternalAgent::from_id(id).is_some() {
+    if id == CUA_INTEGRATION_ID || catalog::entry(id).is_some() {
         Ok(())
     } else {
         Err(format!("Unknown integration '{id}'"))
@@ -295,7 +251,7 @@ fn validate_stored_integrations(stored: &StoredIntegrations) -> Result<(), Strin
     }
     let mut ids = HashSet::new();
     for entry in &stored.integrations {
-        if (entry.id != CUA_INTEGRATION_ID && ExternalAgent::from_id(&entry.id).is_none())
+        if (entry.id != CUA_INTEGRATION_ID && catalog::entry(&entry.id).is_none())
             || !ids.insert(entry.id.as_str())
         {
             return Err(
@@ -383,33 +339,43 @@ impl CuaDetection {
     }
 }
 
+/// What detection found for an agent nobody looked for.
+static NOT_FOUND: CliDetection = CliDetection {
+    executable: None,
+    version: None,
+    signed_in: None,
+    problem: None,
+};
+
 /// Everything found out about the curated integrations on this device.
 struct Detections {
     cua: CuaDetection,
-    codex: CliDetection,
-    claude: CliDetection,
+    /// By external agent id.
+    agents: HashMap<String, CliDetection>,
 }
 
 impl Detections {
     /// Look on `search_path`, when the host knows a fuller one than the
     /// process's own, as after a launch from the Dock.
     async fn find(search_path: Option<&str>) -> Self {
-        let (codex, claude) = tokio::join!(
-            detect::detect_codex(search_path),
-            detect::detect_claude(search_path)
-        );
+        let found = futures_util::future::join_all(
+            catalog::entries()
+                .iter()
+                .map(|entry| detect::detect(entry, search_path)),
+        )
+        .await;
         Self {
             cua: CuaDetection::find(),
-            codex,
-            claude,
+            agents: catalog::entries()
+                .iter()
+                .map(|entry| entry.id.clone())
+                .zip(found)
+                .collect(),
         }
     }
 
-    fn of(&self, agent: ExternalAgent) -> &CliDetection {
-        match agent {
-            ExternalAgent::Codex => &self.codex,
-            ExternalAgent::Claude => &self.claude,
-        }
+    fn of(&self, entry: &CatalogEntry) -> &CliDetection {
+        self.agents.get(&entry.id).unwrap_or(&NOT_FOUND)
     }
 }
 
@@ -421,9 +387,9 @@ fn project_integrations(
     let stored = load_stored_integrations(paths, user_id)?;
     let mut cards = vec![detections.cua.card(stored.entry(CUA_INTEGRATION_ID))];
     cards.extend(
-        ExternalAgent::ALL
-            .into_iter()
-            .map(|agent| agent.card(detections.of(agent), stored.entry(agent.id()))),
+        catalog::entries()
+            .iter()
+            .map(|entry| agent_card(entry, detections.of(entry), stored.entry(&entry.id))),
     );
     Ok(cards)
 }
@@ -436,13 +402,13 @@ fn set_integration_default(
 ) -> Result<Vec<AgentIntegration>, String> {
     let id = request.id.trim();
     require_known_integration(id)?;
-    match ExternalAgent::from_id(id) {
-        Some(agent) => set_external_agent_default(
+    match catalog::entry(id) {
+        Some(entry) => set_external_agent_default(
             paths,
             user_id,
             request.enabled,
-            agent,
-            detections.of(agent),
+            entry,
+            detections.of(entry),
         )?,
         None => set_cua_default(paths, user_id, request.enabled, &detections.cua)?,
     }
@@ -455,31 +421,31 @@ fn set_external_agent_default(
     paths: &AgentPathLayout,
     user_id: &str,
     enabled: bool,
-    agent: ExternalAgent,
+    agent: &CatalogEntry,
     detection: &CliDetection,
 ) -> Result<(), String> {
     let mut stored = load_stored_integrations(paths, user_id)?;
     if enabled {
-        let card = agent.card(detection, None);
+        let card = agent_card(agent, detection, None);
         if card.availability != AgentIntegrationAvailability::Available {
             return Err(card
                 .detail
-                .unwrap_or_else(|| format!("Set up {} in Integrations first", agent.name())));
+                .unwrap_or_else(|| format!("Set up {} in Integrations first", agent.name)));
         }
     }
-    match stored.entry_mut(agent.id()) {
+    match stored.entry_mut(&agent.id) {
         Some(entry) => entry.enabled = enabled,
         None if enabled => stored.integrations.push(StoredIntegration {
-            id: agent.id().to_string(),
+            id: agent.id.clone(),
             enabled,
             backend: StoredBackend::Embedded,
         }),
         None => {}
     }
     save_stored_integrations(paths, user_id, &stored)?;
-    let any_on = ExternalAgent::ALL
-        .into_iter()
-        .any(|agent| stored.entry(agent.id()).is_some_and(|entry| entry.enabled));
+    let any_on = catalog::entries()
+        .iter()
+        .any(|agent| stored.entry(&agent.id).is_some_and(|entry| entry.enabled));
     if let Err(error) = super::external_agents::sync_skills(paths, user_id, any_on) {
         log::warn!("Failed to update the external agent skills: {error}");
     }
@@ -503,10 +469,10 @@ pub(in crate::agent) fn cua_default(paths: &AgentPathLayout, user_id: &str) -> O
 /// keep working, so an unusable file reads as all off.
 pub(super) fn external_agents_on(paths: &AgentPathLayout, user_id: &str) -> Vec<String> {
     match load_stored_integrations(paths, user_id) {
-        Ok(stored) => ExternalAgent::ALL
-            .into_iter()
-            .filter(|agent| stored.entry(agent.id()).is_some_and(|entry| entry.enabled))
-            .map(|agent| agent.id().to_string())
+        Ok(stored) => catalog::entries()
+            .iter()
+            .filter(|agent| stored.entry(&agent.id).is_some_and(|entry| entry.enabled))
+            .map(|agent| agent.id.clone())
             .collect(),
         Err(error) => {
             log::warn!("{error}; external agents read as off");

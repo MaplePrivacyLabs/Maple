@@ -72,7 +72,7 @@ pub(crate) fn external_agent_tools(task: ExternalAgentToolsFor) -> Vec<Registere
                 task: Arc::clone(&task),
             }),
             prompt: ToolPrompt {
-                snippet: Some(snippet.to_string()),
+                snippet: Some(snippet),
                 guidelines: Vec::new(),
             },
             active: false,
@@ -207,7 +207,9 @@ fn enabled(providers: &[String], provider: &str) -> Result<(), String> {
     }
 }
 
-fn declarations() -> [(Action, Tool, &'static str); 5] {
+fn declarations() -> [(Action, Tool, String); 5] {
+    let names = super::catalog::example_names();
+    let ids = super::catalog::example_ids();
     let reference = || {
         json!({
             "type": "object",
@@ -224,7 +226,7 @@ fn declarations() -> [(Action, Tool, &'static str); 5] {
             Tool::new(
                 AGENT_START_TOOL,
                 format!(
-                    "Hand a self-contained piece of work to an external coding agent (an installed harness such as Codex or Claude Code) that runs in the project with its own context and its own account. \
+                    "Hand a self-contained piece of work to an external coding agent (an installed harness such as {names}) that runs in the project with its own context and its own account. \
 The new agent knows nothing about this conversation: write a complete briefing with the task, relevant files, current state, what was tried, decisions made, acceptance criteria, and constraints. \
 It runs under its own sandbox and approval settings; Maple accepts its approval requests, and its questions still come to the user through Maple. \
 Blocking by default: the call returns the agent's result. With background=true the call returns at once and Maple tells you when the agent finishes; do not poll. \
@@ -235,7 +237,7 @@ Call {LIST_AGENT_PROVIDERS_TOOL} first when unsure what is installed."
                     "properties": {
                         "provider": {
                             "type": "string",
-                            "description": "Which external agent to use, from list_agent_providers (for example \"codex\" or \"claude\")"
+                            "description": format!("Which external agent to use, from list_agent_providers (for example {ids})")
                         },
                         "prompt": {
                             "type": "string",
@@ -261,7 +263,9 @@ Call {LIST_AGENT_PROVIDERS_TOOL} first when unsure what is installed."
                     "required": ["provider", "prompt"]
                 }),
             ),
-            "Hand a self-contained piece of work to an external coding agent such as Codex or Claude Code",
+            format!(
+                "Hand a self-contained piece of work to an external coding agent such as {names}"
+            ),
         ),
         (
             Action::Send,
@@ -286,7 +290,7 @@ Call {LIST_AGENT_PROVIDERS_TOOL} first when unsure what is installed."
                     "required": ["provider", "agent_id", "prompt"]
                 }),
             ),
-            "Continue an external agent's thread with more instructions",
+            "Continue an external agent's thread with more instructions".to_string(),
         ),
         (
             Action::Status,
@@ -295,7 +299,7 @@ Call {LIST_AGENT_PROVIDERS_TOOL} first when unsure what is installed."
                 "Read the state and latest result of an external agent: its status, last message, files it changed, and commands it ran. Maple tells you when a background agent finishes, so call this when you need the result or when the user asks, not in a loop.",
                 reference(),
             ),
-            "Read an external agent's state and latest result",
+            "Read an external agent's state and latest result".to_string(),
         ),
         (
             Action::Cancel,
@@ -306,7 +310,7 @@ Call {LIST_AGENT_PROVIDERS_TOOL} first when unsure what is installed."
                 ),
                 reference(),
             ),
-            "Interrupt what an external agent is doing now",
+            "Interrupt what an external agent is doing now".to_string(),
         ),
         (
             Action::ListProviders,
@@ -318,7 +322,7 @@ Call {LIST_AGENT_PROVIDERS_TOOL} first when unsure what is installed."
                     "properties": {}
                 }),
             ),
-            "List the external coding agents this task may delegate to",
+            "List the external coding agents this task may delegate to".to_string(),
         ),
     ]
 }

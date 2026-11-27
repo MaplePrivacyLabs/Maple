@@ -194,12 +194,16 @@ so the kill is what guarantees nothing keeps running.
 
 ## Adding a provider
 
-Add it to the `ExternalAgent` catalog in `agent/integrations.rs` (its
-stable ID, label, description, and card detail), add discovery to
-`integrations/detect.rs` and `Detections`, list its ID in `PROVIDERS` in
-`agent/external_agents/mod.rs`, and add a transport adapter there.
-Settings gates, composer rows, and task choices use this catalog.
-No provider-specific composer branch or database migration is needed.
+Providers are data: one entry in `agent/external_agents/catalog.json` gives
+the stable ID, name, Settings description and icon, the command to find,
+the oldest version Maple accepts, which sign-in probe to run, the transport,
+and every sentence Maple says about the provider. Settings cards, detection,
+`list_agent_providers`, the tool descriptions' examples, composer rows and
+task choices all read the catalog. A difference between providers is a
+catalog key or a named behaviour a key selects (`signInProbe`, `transport`);
+no code tests a provider ID. No provider-specific composer branch or database
+migration is needed. The app keeps each provider's translated card copy by ID
+and falls back to the catalog's English.
 
 A task's choices live with the task in the task index, as the
 `externalAgents` list of provider IDs in its settings. A provider missing
@@ -210,9 +214,11 @@ MCP names and external provider IDs are separate domains; a custom MCP
 server named `codex` or `claude` cannot toggle either provider. Older MCP requests
 without `kind` continue to mean MCP.
 
-Provider transport adapters still own their protocol, discovery, progress,
-approval replies, and cancellation. Extend `ExternalAgentRegistry` dispatch and
-provider listing when adding an adapter. Every desktop task's Pi session has
+A transport owns its protocol: it turns its wire into the host's terms in
+`external_agents/driver.rs` (events, items, requests and replies) and serves
+the client operations in `app_server.rs` (initialize, open a thread, start,
+steer and interrupt a turn, reply). A new protocol is a `Transport` variant in
+the catalog module and its arm of `AgentClient`; the host does not change. Every desktop task's Pi session has
 the five tools; each run declares them to the model only while the task may
 use a provider, and the tools reject calls for any other provider. Keep
 listing filtered by that same selection when more adapters are added.

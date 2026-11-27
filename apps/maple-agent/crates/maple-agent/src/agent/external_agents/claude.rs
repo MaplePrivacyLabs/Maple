@@ -10,7 +10,12 @@
 //! Finding and probing the CLI is the integration catalog's
 //! (`integrations::detect`).
 
-use super::app_server::{RequestMethod, ServerMessage};
+use super::super::AgentPermissionDecision;
+use super::super::tools::parse_user_questions;
+use super::driver::{
+    AgentEvent, AgentItem, AgentReply, AgentRequest, DriverMessage, FileChangeEntry, OpenedThread,
+    TurnOutcome, card_answers, command_line, parse_todo,
+};
 use futures_util::StreamExt;
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
@@ -23,8 +28,9 @@ use tokio::sync::{Mutex, mpsc, oneshot};
 use tokio_util::codec::{FramedRead, LinesCodec};
 use tokio_util::sync::CancellationToken;
 
-pub(crate) const PROVIDER_ID: &str = "claude";
-pub(crate) const PROVIDER_NAME: &str = "Claude Code";
+/// What Claude Code asks Maple to approve, as Maple's permission request
+/// names it.
+const TOOL_APPROVAL: &str = "claude_tool";
 const MAX_LINE_BYTES: usize = 4 * 1024 * 1024;
 const FAILURE: &str =
     "Claude Code could not complete this request. Check its sign-in and configuration.";
@@ -164,7 +170,7 @@ pub(super) struct Client {
     session: String,
     interrupted: AtomicBool,
     closed: CancellationToken,
-    sender: mpsc::Sender<ServerMessage>,
+    sender: mpsc::Sender<DriverMessage>,
 }
 
 impl Client {
@@ -174,7 +180,7 @@ impl Client {
         session: String,
     ) -> (
         Arc<Self>,
-        mpsc::Receiver<ServerMessage>,
+        mpsc::Receiver<DriverMessage>,
         tokio::task::JoinHandle<()>,
     ) {
         let (sender, receiver) = mpsc::channel(256);
@@ -232,39 +238,49 @@ impl Client {
         result
     }
 
-    pub(super) async fn request(
-        &self,
-        method: RequestMethod,
-        params: Value,
-    ) -> Result<Value, String> {
+    fn usable(&self) -> Result<(), String> {
         if self.closed.is_cancelled() {
-            return Err(FAILURE.into());
-        }
-        match method {
-            RequestMethod::Initialize => self.control(ControlRequestBody::Initialize).await,
-            RequestMethod::ThreadStart | RequestMethod::ThreadResume => {
-                Ok(json!({"thread": {"id": self.session}}))
-            }
-            RequestMethod::TurnStart => {
-                self.notify("turn/started", json!({"turn": {"id": new_session_id()}}))
-                    .await;
-                self.write(json!({
-                    "type": "user", "session_id": self.session,
-                    "message": {"role": "user", "content": [{"type": "text", "text": params["input"][0]["text"]}]},
-                })).await?;
-                Ok(json!({}))
-            }
-            RequestMethod::TurnInterrupt => {
-                self.interrupted.store(true, Ordering::Relaxed);
-                self.control(ControlRequestBody::Interrupt).await
-            }
-            RequestMethod::TurnSteer => {
-                Err("Claude does not support steering an active turn".into())
-            }
+            Err(FAILURE.into())
+        } else {
+            Ok(())
         }
     }
 
-    pub(super) async fn respond(&self, id: Value, result: Value) -> Result<(), String> {
+    pub(super) async fn initialize(&self) -> Result<(), String> {
+        self.usable()?;
+        self.control(ControlRequestBody::Initialize).await.map(drop)
+    }
+
+    /// The session given on the command line. Claude confirms it once it
+    /// starts, so it stays provisional until then.
+    pub(super) fn open_thread(&self) -> Result<OpenedThread, String> {
+        self.usable()?;
+        Ok(OpenedThread {
+            thread_id: self.session.clone(),
+            confirmed: false,
+        })
+    }
+
+    pub(super) async fn start_turn(&self, prompt: &str) -> Result<(), String> {
+        self.usable()?;
+        self.emit(AgentEvent::TurnStarted {
+            turn_id: Some(new_session_id()),
+        })
+        .await;
+        self.write(json!({
+            "type": "user", "session_id": self.session,
+            "message": {"role": "user", "content": [{"type": "text", "text": prompt}]},
+        }))
+        .await
+    }
+
+    pub(super) async fn interrupt(&self) -> Result<(), String> {
+        self.usable()?;
+        self.interrupted.store(true, Ordering::Relaxed);
+        self.control(ControlRequestBody::Interrupt).await.map(drop)
+    }
+
+    pub(super) async fn reply(&self, id: Value, reply: AgentReply) -> Result<(), String> {
         let id = id.as_str().ok_or(FAILURE)?;
         let request = self.permissions.lock().unwrap().remove(id).ok_or(FAILURE)?;
         let IncomingRequestBody::CanUseTool {
@@ -273,6 +289,10 @@ impl Client {
             tool_use_id,
         } = request;
         let allow = if tool_name == "AskUserQuestion" {
+            let result = match &reply {
+                AgentReply::Answers(answer) => card_answers(answer),
+                AgentReply::Decision(_) => card_answers(""),
+            };
             let mut answers = serde_json::Map::new();
             for (i, question) in input
                 .get("questions")
@@ -302,7 +322,10 @@ impl Client {
             input.insert("answers".into(), answers.into());
             answered
         } else {
-            result["decision"] == "accept"
+            matches!(
+                reply,
+                AgentReply::Decision(AgentPermissionDecision::AllowOnce)
+            )
         };
         let response =
             if allow && !self.interrupted.load(Ordering::Relaxed) && !self.closed.is_cancelled() {
@@ -319,14 +342,8 @@ impl Client {
             .await
     }
 
-    async fn notify(&self, method: &str, params: Value) {
-        let _ = self
-            .sender
-            .send(ServerMessage::Notification {
-                method: method.into(),
-                params,
-            })
-            .await;
+    async fn emit(&self, event: AgentEvent) {
+        let _ = self.sender.send(DriverMessage::Event(event)).await;
     }
 
     async fn permission(&self, message: Value) -> Result<(), String> {
@@ -335,9 +352,9 @@ impl Client {
         let IncomingRequestBody::CanUseTool {
             ref tool_name,
             ref input,
-            ref tool_use_id,
+            ..
         } = request.request;
-        let (method, params) = if tool_name == "AskUserQuestion" {
+        let agent_request = if tool_name == "AskUserQuestion" {
             let questions: Vec<_> = input
                 .get("questions")
                 .and_then(Value::as_array)
@@ -351,15 +368,16 @@ impl Client {
                     question
                 })
                 .collect();
-            (
-                "item/tool/requestUserInput",
-                json!({"questions": questions}),
-            )
+            AgentRequest::UserInput {
+                questions: parse_user_questions(&questions),
+            }
         } else {
-            (
-                "claude/tool/requestApproval",
-                json!({"tool": tool_name, "input": input, "itemId": tool_use_id}),
-            )
+            AgentRequest::Approval {
+                item_id: request.request_id.clone(),
+                tool_name: TOOL_APPROVAL.to_string(),
+                arguments: input.clone(),
+                prompt: Some(format!("Claude Code wants to use {tool_name}")),
+            }
         };
         let id = request.request_id;
         {
@@ -370,10 +388,9 @@ impl Client {
             pending.insert(id.clone(), request.request);
         }
         self.sender
-            .send(ServerMessage::Request {
+            .send(DriverMessage::Request {
                 id: id.into(),
-                method: method.into(),
-                params,
+                request: agent_request,
             })
             .await
             .map_err(|_| FAILURE.into())
@@ -433,21 +450,26 @@ impl Client {
                                 && message["is_error"] != true))
                     {
                         session_confirmed = true;
-                        self.notify("thread/started", json!({"thread": {"id": self.session}}))
-                            .await;
+                        self.emit(AgentEvent::ThreadStarted {
+                            thread_id: self.session.clone(),
+                        })
+                        .await;
                     }
-                    for (method, mut params) in activity.events(&message) {
-                        if method == "turn/completed" {
+                    for mut event in activity.events(&message) {
+                        if matches!(event, AgentEvent::TurnCompleted { .. }) {
                             completed = true;
                             // EOF lets Claude flush its persisted session and
                             // exit normally before the next turn resumes it.
                             self.writer.lock().await.take();
                             self.permissions.lock().unwrap().clear();
+                            if self.interrupted.load(Ordering::Relaxed) {
+                                event = AgentEvent::TurnCompleted {
+                                    outcome: TurnOutcome::Cancelled,
+                                    error: None,
+                                };
+                            }
                         }
-                        if method == "turn/completed" && self.interrupted.load(Ordering::Relaxed) {
-                            params = json!({"turn": {"status": "interrupted"}});
-                        }
-                        self.notify(method, params).await;
+                        self.emit(event).await;
                     }
                 }
             }
@@ -457,12 +479,18 @@ impl Client {
         if completed {
             return;
         }
-        let turn = if self.interrupted.load(Ordering::Relaxed) {
-            json!({"status": "interrupted"})
+        let event = if self.interrupted.load(Ordering::Relaxed) {
+            AgentEvent::TurnCompleted {
+                outcome: TurnOutcome::Cancelled,
+                error: None,
+            }
         } else {
-            json!({"status": "failed", "error": {"message": FAILURE}})
+            AgentEvent::TurnCompleted {
+                outcome: TurnOutcome::Failed,
+                error: Some(FAILURE.into()),
+            }
         };
-        self.notify("turn/completed", json!({"turn": turn})).await;
+        self.emit(event).await;
     }
 }
 
@@ -473,7 +501,7 @@ struct Activity {
 }
 
 impl Activity {
-    fn events(&mut self, message: &Value) -> Vec<(&'static str, Value)> {
+    fn events(&mut self, message: &Value) -> Vec<AgentEvent> {
         let mut events = Vec::new();
         // Nested Claude agents keep their own transcript. Only project the
         // delegated agent's top-level messages into Maple's activity row.
@@ -488,10 +516,13 @@ impl Activity {
                 } else if event["type"] == "content_block_delta"
                     && event["delta"]["type"] == "text_delta"
                 {
-                    events.push((
-                        "item/agentMessage/delta",
-                        json!({"itemId": self.message_id, "delta": event["delta"]["text"]}),
-                    ));
+                    events.push(AgentEvent::AgentMessageDelta {
+                        item_id: self.message_id.clone(),
+                        delta: event["delta"]["text"]
+                            .as_str()
+                            .unwrap_or_default()
+                            .to_string(),
+                    });
                 }
             }
             Some("assistant") => {
@@ -518,14 +549,32 @@ impl Activity {
                                 .insert(id.into(), (name.into(), block["input"].clone()));
                         }
                         match name {
-                            "Bash" => events.push(("item/started", json!({"item": {"id": id, "type": "commandExecution", "command": block["input"]["command"]}}))),
-                            "TodoWrite" => events.push(("item/started", json!({"item": {"id": id, "type": "todoList", "items": block["input"]["todos"]}}))),
+                            "Bash" => {
+                                events.push(AgentEvent::ItemStarted(AgentItem::CommandExecution {
+                                    id: id.into(),
+                                    command: command_line(Some(&block["input"]["command"])),
+                                    exit_code: None,
+                                    status: None,
+                                }))
+                            }
+                            "TodoWrite" => {
+                                events.push(AgentEvent::ItemStarted(AgentItem::TodoList {
+                                    id: id.into(),
+                                    items: block["input"]["todos"]
+                                        .as_array()
+                                        .map(|items| items.iter().filter_map(parse_todo).collect())
+                                        .unwrap_or_default(),
+                                }))
+                            }
                             _ => {}
                         }
                     }
                 }
                 if !text.is_empty() {
-                    events.push(("item/completed", json!({"item": {"id": self.message_id, "type": "agentMessage", "text": text.join("\n")}})));
+                    events.push(AgentEvent::ItemCompleted(AgentItem::AgentMessage {
+                        id: self.message_id.clone(),
+                        text: text.join("\n"),
+                    }));
                 }
             }
             Some("user") => {
@@ -545,14 +594,30 @@ impl Activity {
                     };
                     let failed = block["is_error"] == true;
                     if name == "Bash" {
-                        events.push(("item/completed", json!({"item": {"id": id, "type": "commandExecution", "command": args["command"], "status": if failed { "failed" } else { "completed" }}})));
+                        events.push(AgentEvent::ItemCompleted(AgentItem::CommandExecution {
+                            id: id.into(),
+                            command: command_line(Some(&args["command"])),
+                            exit_code: None,
+                            status: Some(if failed { "failed" } else { "completed" }.into()),
+                        }));
                     } else if matches!(name.as_str(), "Edit" | "Write" | "NotebookEdit")
                         && !failed
                         && let Some(path) = args["file_path"]
                             .as_str()
                             .or(args["notebook_path"].as_str())
                     {
-                        events.push(("item/completed", json!({"item": {"id": id, "type": "fileChange", "changes": [{"path": path, "kind": "update"}]}})));
+                        let path = path.trim();
+                        events.push(AgentEvent::ItemCompleted(AgentItem::FileChange {
+                            id: id.into(),
+                            changes: (!path.is_empty())
+                                .then(|| FileChangeEntry {
+                                    path: path.to_string(),
+                                    kind: "update".to_string(),
+                                })
+                                .into_iter()
+                                .collect(),
+                            status: None,
+                        }));
                     }
                 }
             }
@@ -560,7 +625,14 @@ impl Activity {
                 let success = message["type"] == "result"
                     && message["subtype"] == "success"
                     && message["is_error"] != true;
-                events.push(("turn/completed", json!({"turn": {"status": if success { "completed" } else { "failed" }, "error": if success { Value::Null } else { json!({"message": FAILURE}) }}})));
+                events.push(AgentEvent::TurnCompleted {
+                    outcome: if success {
+                        TurnOutcome::Completed
+                    } else {
+                        TurnOutcome::Failed
+                    },
+                    error: (!success).then(|| FAILURE.to_string()),
+                });
             }
             _ => {}
         }
