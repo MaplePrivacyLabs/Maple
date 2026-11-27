@@ -272,7 +272,31 @@ again, rather than being required after every completion. If the user stops
 the run before the result went, the result stays in the task's history,
 where the model reads it with the next message. If the task cannot be
 resumed, a second notice asks you to send a message instead. Deleting the
-task, stopping the runtime, or signing out ends its agents without a report.
+task ends its agents without a report.
+
+## Restarts
+
+An agent's process ends when Maple stops, but its session lives on with its
+vendor, and the task keeps a record of each agent: an entry in its session
+that the model and the transcript never see, written when a turn starts,
+when the agent's session is confirmed, and when the turn ends. It holds the
+agent's ID, provider, session ID, folder and last activity, and goes with
+the task, on whichever computer runs it. As Paseo does with its agents:
+
+- `agent_send` or `agent_status` for an agent this run of Maple has not
+  seen opens it again from its latest record on the task's current branch.
+  Nothing starts until its next turn, which resumes its session in the
+  task's current mode. An agent whose session was never confirmed cannot be
+  resumed.
+- New agents are numbered past the ones the task has recorded.
+- When a task next runs after a restart (a message, or anything else that
+  loads it to run), an agent its records leave working or waiting did not
+  finish its turn. Maple records it as cancelled, shows the same notice as a
+  stopped turn ("External agent grok-1 (Grok Build) was interrupted."), and
+  gives the model one message it reads with that run, naming each such
+  agent. One that never had a session is named as one to start again.
+  Nothing resumes on its own: the model decides whether to continue.
+- A question or approval the agent was waiting on went with its process.
 
 Stopping an agent, from its row or with `agent_cancel`, sends
 `turn/interrupt` (translated to Claude’s native `interrupt` control request), waits
@@ -285,9 +309,10 @@ not reach, so Grok has to end the command itself.
 
 ## Limits
 
-- One task may start at most four external agents. An agent whose command
-  could not start does not count; the others last until the task is deleted
-  or the runtime stops, as they did on the Goose runtime.
+- One task may start at most four external agents in one run of Maple. An
+  agent whose command could not start does not count; the others last until
+  the task is deleted or the runtime stops. Agents opened again from their
+  records after a restart count too, but are never refused.
 - Flatpak builds report external agents as unsupported.
 - Codex 0.143 or newer is required.
 - Maple cannot sign Codex in. The Integrations card says when a sign-in is

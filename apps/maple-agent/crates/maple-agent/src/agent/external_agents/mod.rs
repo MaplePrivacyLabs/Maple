@@ -1,12 +1,14 @@
 //! External coding agents a task can hand work to.
 //!
 //! A task delegates through `agent_start`, `agent_send`, `agent_status`,
-//! `agent_cancel`, and `list_agent_providers`. Each external agent is one
-//! child process owned by the task that started it. Pi stays the engine;
-//! the external agent runs under its own configuration, Maple accepts its
-//! approval requests, its questions go to the model that called it, and its
-//! progress streams into the transcript row of the tool call that started
-//! the turn.
+//! `agent_cancel`, and `list_agent_providers`. Each external agent is a
+//! session of its own vendor's, worked by a child process the task owns;
+//! the task's [`records`] let a restart of Maple open it again. Pi stays the
+//! engine; the external agent runs under its own configuration, its
+//! approval requests go through the task's permission gate when Maple sets
+//! its mode and are accepted otherwise, its questions go to the model that
+//! called it, and its progress streams into the transcript row of the tool
+//! call that started the turn.
 //!
 //! Which agents exist, and how each is found, started and spoken to, is
 //! data in [`catalog`]. Codex uses its app-server; Claude Code its
@@ -23,6 +25,7 @@ pub(in crate::agent) mod catalog;
 mod claude;
 mod codex;
 mod driver;
+mod records;
 mod skills;
 mod task;
 #[cfg(test)]
@@ -96,6 +99,9 @@ pub(crate) const TURN_END_ENTRY: &str = "maple.external-agent";
 const BACKGROUND_RESULT_MESSAGE: &str = "maple.background-agent-result";
 /// The custom message type of a background agent's question for the model.
 const BACKGROUND_QUESTION_MESSAGE: &str = "maple.background-agent-question";
+/// The custom message type that tells the model which of its agents a
+/// restart of Maple cut short.
+const INTERRUPTED_MESSAGE: &str = "maple.external-agents-interrupted";
 const NOTICE_ROW_KEY: &str = "rowId";
 const NOTICE_RESULT_KEY: &str = "resultText";
 
@@ -571,13 +577,145 @@ impl ExternalAgentRegistry {
         })
     }
 
+    /// An agent of the task: the one running here, or one opened again from
+    /// its record, as after Maple restarted.
     async fn agent(&self, session_id: &str, agent_id: &str) -> Option<Arc<ExternalAgent>> {
-        self.sessions
+        let live = self
+            .sessions
             .lock()
             .await
             .get(session_id)
             .and_then(|session| session.agents.get(agent_id.trim()))
-            .cloned()
+            .cloned();
+        match live {
+            Some(agent) => Some(agent),
+            None => self.restore(session_id, agent_id.trim()).await,
+        }
+    }
+
+    /// Open an agent again from its latest record in the task's session.
+    /// Nothing starts until its next turn, which resumes its session. An
+    /// agent whose session was never confirmed cannot be resumed.
+    async fn restore(&self, session_id: &str, agent_id: &str) -> Option<Arc<ExternalAgent>> {
+        let runtime = self.host.runtime.upgrade()?;
+        let session = runtime.loaded_session(session_id).await?;
+        let record = session
+            .with_session(records::latest)
+            .into_iter()
+            .find(|record| record.activity.agent_id == agent_id)?;
+        record.activity.thread_id.as_ref()?;
+        let entry = catalog::entry(&record.activity.provider)?;
+        let agent = Arc::new(ExternalAgent::from_record(
+            entry,
+            session_id.to_string(),
+            record,
+            self.host.clone(),
+        ));
+        let mut sessions = self.sessions.lock().await;
+        let agents = &mut sessions.entry(session_id.to_string()).or_default().agents;
+        // Another call may have opened it meanwhile.
+        let agent = Arc::clone(agents.entry(agent_id.to_string()).or_insert(agent));
+        log::info!("External agent {agent_id} opened again from its task's record");
+        Some(agent)
+    }
+
+    /// The highest agent number the task has recorded, so new agents are
+    /// numbered past the ones it already has.
+    async fn highest_recorded(&self, session_id: &str) -> Option<u64> {
+        let runtime = self.host.runtime.upgrade()?;
+        let session = runtime.loaded_session(session_id).await?;
+        session
+            .with_session(records::latest)
+            .iter()
+            .filter_map(|record| records::number(&record.activity.agent_id))
+            .max()
+    }
+
+    /// A task opened after Maple restarted: agents its records leave mid-turn
+    /// are not running any more. Record that their turns were cut short, and
+    /// tell the model, with the task's next run, and the user, once.
+    pub(crate) async fn reconcile(
+        &self,
+        session: &pi_coding_agent::AgentSession,
+        session_id: &str,
+    ) {
+        let live: Vec<String> = self
+            .sessions
+            .lock()
+            .await
+            .get(session_id)
+            .map(|session| session.agents.keys().cloned().collect())
+            .unwrap_or_default();
+        let stopped: Vec<records::AgentRecord> = session
+            .with_session(records::latest)
+            .into_iter()
+            .filter(|record| {
+                records::was_working(&record.activity) && !live.contains(&record.activity.agent_id)
+            })
+            .collect();
+        if stopped.is_empty() {
+            return;
+        }
+        let context = session.extension_context();
+        let mut resumable = Vec::new();
+        let mut unresumable = Vec::new();
+        for mut record in stopped {
+            record.activity = records::after_restart(record.activity);
+            let agent_id = record.activity.agent_id.clone();
+            let provider = record.activity.provider.clone();
+            let name = catalog::entry(&provider)
+                .map_or_else(|| provider.clone(), |entry| entry.name.clone());
+            if let Ok(data) = serde_json::to_value(&record) {
+                context.append_entry(records::AGENT_RECORD_ENTRY, Some(data));
+            }
+            // The same notice as a turn Stop ends, shown at once and kept.
+            let id = format!("external-{agent_id}-restart-{}", unix_ms());
+            let text = format!("External agent {agent_id} ({name}) was interrupted.");
+            let label = AgentTimelineLabel {
+                kind: "external-cancelled".to_string(),
+                name: Some(agent_id.clone()),
+                detail: Some(name.clone()),
+            };
+            context.append_entry(
+                MAPLE_NOTICE_ENTRY,
+                Some(json!({"id": id, "text": text, "label": label})),
+            );
+            let mut item = notice_item(id, "Agent notice", &text, pi_ai::now_ms());
+            item.label = Some(label);
+            item.revision = super::runs::next_timeline_revision();
+            emit_agent_event(
+                &self.host.events,
+                AgentServiceEvent::TimelineItem {
+                    session_id: session_id.to_string(),
+                    run_id: None,
+                    item,
+                },
+            );
+            let named = format!("{agent_id} (provider: \"{provider}\")");
+            if record.activity.thread_id.is_some() {
+                resumable.push(named);
+            } else {
+                unresumable.push(named);
+            }
+        }
+        log::info!(
+            "External agents interrupted when Maple stopped: {}",
+            [resumable.as_slice(), unresumable.as_slice()]
+                .concat()
+                .join(", ")
+        );
+        context.send_message(
+            CustomMessageDraft {
+                custom_type: INTERRUPTED_MESSAGE.to_string(),
+                content: vec![pi_ai::Content::text(records::interrupted_message(
+                    &resumable,
+                    &unresumable,
+                ))],
+                display: false,
+                details: None,
+            },
+            Delivery::Append,
+        );
     }
 
     /// An agent of the task, of the provider the call names.
@@ -689,6 +827,12 @@ impl ExternalAgentRegistry {
             return Err("prompt must not be empty".to_string());
         }
         let cwd = Self::resolve_cwd(&call, params.cwd.as_deref())?;
+        // Numbers continue past the agents the task already has, which an
+        // earlier run of Maple may have started.
+        if let Some(highest) = self.highest_recorded(&call.session_id).await {
+            self.next_agent
+                .fetch_max(highest.saturating_add(1), Ordering::Relaxed);
+        }
         let agent = {
             let mut sessions = self.sessions.lock().await;
             let session = sessions.entry(call.session_id.clone()).or_default();
@@ -1064,6 +1208,59 @@ impl ExternalAgent {
         }
     }
 
+    /// An agent of the task opened again from its record, as after Maple
+    /// restarted: its process is gone, its session is not, and the next
+    /// turn resumes it.
+    fn from_record(
+        entry: &'static CatalogEntry,
+        session_id: String,
+        record: records::AgentRecord,
+        host: ExternalAgentHost,
+    ) -> Self {
+        let mut agent = Self::new(
+            entry,
+            record.activity.agent_id.clone(),
+            session_id,
+            record.task,
+            record.cwd,
+            host,
+        );
+        let state = agent.state.get_mut();
+        state.thread_id = record.activity.thread_id.clone();
+        state.activity = records::after_restart(record.activity);
+        agent
+    }
+
+    /// Leave the agent's record in its task's session, so that after a
+    /// restart its session can be opened again. An agent shut down with its
+    /// task or the runtime leaves none: its last record stands, and one left
+    /// mid-turn reads as cut short.
+    async fn record(&self) {
+        if self.cancel.is_cancelled() {
+            return;
+        }
+        let Some(runtime) = self.host.runtime.upgrade() else {
+            return;
+        };
+        let record = records::AgentRecord {
+            task: self.task.clone(),
+            cwd: self.cwd.clone(),
+            activity: self.activity().await,
+        };
+        let Ok(data) = serde_json::to_value(&record) else {
+            return;
+        };
+        match runtime.side_question_session(&self.session_id).await {
+            Ok(session) => session
+                .extension_context()
+                .append_entry(records::AGENT_RECORD_ENTRY, Some(data)),
+            Err(error) => log::warn!(
+                "External agent {} could not record itself in its task: {error}",
+                self.agent_id
+            ),
+        }
+    }
+
     /// Whether no turn of the agent ever started.
     async fn never_ran(&self) -> bool {
         let state = self.state.lock().await;
@@ -1196,6 +1393,7 @@ impl ExternalAgent {
         log::info!("External agent {} turn starts", self.agent_id);
         self.emit_subagent_started(input.background);
         self.emit_row(true).await;
+        self.record().await;
 
         if let Err(error) = client.start_turn(&request).await {
             self.finish_turn(TurnOutcome::Failed, Some(error.clone()))
@@ -1475,9 +1673,18 @@ impl ExternalAgent {
     async fn handle_event(self: &Arc<Self>, event: AgentEvent) {
         match event {
             AgentEvent::ThreadStarted { thread_id } => {
-                let mut state = self.state.lock().await;
-                state.thread_id.get_or_insert(thread_id.clone());
-                state.activity.thread_id.get_or_insert(thread_id);
+                let first = {
+                    let mut state = self.state.lock().await;
+                    let first = state.thread_id.is_none();
+                    state.thread_id.get_or_insert(thread_id.clone());
+                    state.activity.thread_id.get_or_insert(thread_id);
+                    first
+                };
+                // An agent that names its session only once its turn runs,
+                // as Claude Code does, is recorded once it has.
+                if first {
+                    self.record().await;
+                }
             }
             AgentEvent::TurnStarted { turn_id } => {
                 let mut state = self.state.lock().await;
@@ -1957,6 +2164,9 @@ impl ExternalAgent {
                 .take()
                 .map(|ends| (ends, TurnEnd { outcome, report }))
         };
+        // Recorded before anyone waiting on the turn hears it ended, so the
+        // record never trails the next turn's or a shutdown.
+        self.record().await;
         self.wake.notify_waiters();
         emit_agent_event(
             &self.host.events,

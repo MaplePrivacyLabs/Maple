@@ -13,7 +13,7 @@ use crate::agent::{
 
 /// Switch external agents on in Settings, as the Integrations page saves
 /// them.
-fn switch_on_in_settings(harness: &Harness, providers: &[&str]) {
+pub(super) fn switch_on_in_settings(harness: &Harness, providers: &[&str]) {
     let entries: Vec<Value> = providers
         .iter()
         .map(|id| json!({"id": id, "enabled": true, "backend": "embedded"}))
@@ -32,7 +32,7 @@ fn switch_on_in_settings(harness: &Harness, providers: &[&str]) {
 
 /// Switch external agents on for a task, as its MCP menu does once the
 /// agent is installed.
-fn choose_for_task(runtime: &AgentRuntime, task: &str, providers: &[&str]) {
+pub(super) fn choose_for_task(runtime: &AgentRuntime, task: &str, providers: &[&str]) {
     runtime
         .store
         .update(task, |row| {

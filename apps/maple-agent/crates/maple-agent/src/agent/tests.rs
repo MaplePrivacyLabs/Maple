@@ -217,7 +217,7 @@ impl Harness {
         harness
     }
 
-    async fn start(&self) {
+    pub(crate) async fn start(&self) {
         self.handle
             .start(
                 test_maple_api_session(USER),
@@ -237,7 +237,7 @@ impl Harness {
     }
 
     /// A service over the same files, as after the app restarts.
-    async fn restart(&mut self) {
+    pub(crate) async fn restart(&mut self) {
         self.handle.stop().await.unwrap();
         self.recorder = Arc::new(Recorder::default());
         self.service = service(self.data.path(), self.recorder.clone());
@@ -332,7 +332,7 @@ pub(crate) fn last_user_text(request: &pi_ai::faux::FauxRequest) -> String {
         .unwrap_or_default()
 }
 
-fn user_texts(request: &pi_ai::faux::FauxRequest) -> Vec<String> {
+pub(crate) fn user_texts(request: &pi_ai::faux::FauxRequest) -> Vec<String> {
     request
         .context
         .messages
