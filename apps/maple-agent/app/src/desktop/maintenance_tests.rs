@@ -288,7 +288,7 @@ fn shell(
     host: &FixtureHost,
     cx: &mut gpui::TestAppContext,
     busy: bool,
-    settings: &parking_lot::MutexGuard<'_, ()>,
+    settings: &parking_lot::ReentrantMutexGuard<'_, ()>,
 ) -> Entity<MapleApp> {
     let app = super::tests::password_settings_shell_with_backend(
         cx,

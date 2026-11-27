@@ -1493,6 +1493,7 @@ mod tests {
 
     #[gpui::test]
     fn spanish_general_preserves_controls_and_saved_values(cx: &mut TestAppContext) {
+        let _settings = crate::settings::SETTINGS_IO_LOCK.lock();
         let _localization = crate::ui::i18n::TestLocalizationGuard::enable();
         crate::ui::i18n::initialize_saved_preference(Some("es"));
         let (settings, cx) = dropdown_window(cx, true);
@@ -1577,6 +1578,7 @@ mod tests {
 
     #[gpui::test]
     fn dropdown_rows_select_highlight_and_close(cx: &mut TestAppContext) {
+        let _settings = crate::settings::SETTINGS_IO_LOCK.lock();
         let (settings, cx) = dropdown_window(cx, false);
         // Opening highlights the saved voice.
         settings.update(cx, |this, cx| {
@@ -1636,6 +1638,7 @@ mod tests {
 
     #[gpui::test]
     fn vim_activation_opens_picks_and_escapes_the_dropdown(cx: &mut TestAppContext) {
+        let _settings = crate::settings::SETTINGS_IO_LOCK.lock();
         let (settings, cx) = dropdown_window(cx, true);
         let highlighted = |cx: &mut gpui::VisualTestContext| {
             settings.update(cx, |this, _| this.popup.highlighted().cloned())

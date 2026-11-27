@@ -379,6 +379,8 @@ pub fn attach_backend(backend: std::sync::Arc<crate::backend::AgentBackend>, val
 }
 
 pub fn clear_decrypted_cache() {
+    #[cfg(test)]
+    assert_settings_lock_held();
     let mut cache = CACHE.lock().unwrap_or_else(|e| e.into_inner());
     cache.value = AppSettings::default();
     // Account-owned paths cannot survive losing the verified account/store
@@ -394,6 +396,8 @@ pub fn clear_decrypted_cache() {
 /// A destructive local reset or a different verified store generation must
 /// not replay edits from the retired database into the new one.
 pub fn discard_decrypted_cache() {
+    #[cfg(test)]
+    assert_settings_lock_held();
     let mut cache = CACHE.lock().unwrap_or_else(|e| e.into_inner());
     cache.value = AppSettings::default();
     cache.pending.clear();
@@ -461,6 +465,8 @@ fn compose_patch(target: &mut serde_json::Value, patch: &serde_json::Value) {
 }
 
 fn edit_cache(update: impl FnOnce(&mut AppSettings)) {
+    #[cfg(test)]
+    assert_settings_lock_held();
     let mut cache = CACHE.lock().unwrap_or_else(|e| e.into_inner());
     let before = serde_json::to_value(&cache.value).expect("settings serialize");
     let store_password_mode = cache.value.store_password_mode;
@@ -586,6 +592,8 @@ pub(crate) fn pending_dictionary_words() -> Vec<String> {
 }
 
 pub(crate) fn queue_dictionary_word(word: String) {
+    #[cfg(test)]
+    assert_settings_lock_held();
     CACHE
         .lock()
         .unwrap_or_else(|e| e.into_inner())
@@ -1003,11 +1011,29 @@ pub(crate) fn apply_host_patch(
     Ok(())
 }
 
+/// Serializes tests that touch the process-wide settings cache. Every
+/// edit asserts that its own thread holds it: a test that edits without it
+/// can save its values into the store another test installed. It is
+/// reentrant, so a test can hold it across helpers that take it too.
 #[cfg(test)]
-pub(crate) static SETTINGS_IO_LOCK: parking_lot::Mutex<()> = parking_lot::Mutex::new(());
+pub(crate) static SETTINGS_IO_LOCK: parking_lot::ReentrantMutex<()> =
+    parking_lot::ReentrantMutex::new(());
+
+/// Tests share one settings cache and one writer: an edit from a test that
+/// does not hold `SETTINGS_IO_LOCK` races every test that does.
+#[cfg(test)]
+#[track_caller]
+fn assert_settings_lock_held() {
+    assert!(
+        SETTINGS_IO_LOCK.is_owned_by_current_thread(),
+        "this test edits the shared settings cache without holding SETTINGS_IO_LOCK"
+    );
+}
 
 #[cfg(test)]
 pub(crate) fn install_test_settings(value: AppSettings) {
+    #[cfg(test)]
+    assert_settings_lock_held();
     let mut cache = CACHE.lock().unwrap();
     let generation = cache.generation.wrapping_add(1);
     *cache = SettingsCache {
@@ -1023,6 +1049,8 @@ pub(crate) fn install_test_settings(value: AppSettings) {
 
 #[cfg(test)]
 pub(crate) fn install_test_store(store: std::sync::Arc<maple_agent::store::Store>) {
+    #[cfg(test)]
+    assert_settings_lock_held();
     let value = load_host_settings(&store, None).unwrap();
     let mut cache = CACHE.lock().unwrap();
     let generation = cache.generation.wrapping_add(1);
