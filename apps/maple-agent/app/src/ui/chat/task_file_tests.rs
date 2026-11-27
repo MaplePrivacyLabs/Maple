@@ -89,6 +89,17 @@ async fn a_download_is_whole_checked_and_never_replaces_a_file() {
         assert!(len > 0, "the download is quarantined");
         assert!(value[..len as usize].starts_with(b"0081;"));
     }
+    // The mark is written on the part file and must survive its rename.
+    #[cfg(windows)]
+    {
+        let mut stream = saved.as_os_str().to_owned();
+        stream.push(":Zone.Identifier");
+        let mark = std::fs::read_to_string(std::path::PathBuf::from(stream)).unwrap();
+        assert!(
+            mark.contains("ZoneId=3"),
+            "the download has the mark of the web"
+        );
+    }
 }
 
 #[tokio::test]
