@@ -13,12 +13,13 @@ use std::future::Future;
 use std::io::{BufRead, Write};
 use std::os::fd::FromRawFd;
 use std::sync::Mutex as StdMutex;
+use std::time::Instant;
 
 use pi_ai::content_text;
 
 use super::*;
-use crate::agent::AgentEventSink;
 use crate::agent::test_executable::write_executable;
+use crate::agent::{AgentEventSink, AgentPermissionMode, AgentRunEvent};
 
 mod acp;
 mod acp_fixture;
@@ -243,42 +244,21 @@ fn wait_for<T>(mut probe: impl FnMut() -> Option<T>) -> impl Future<Output = T> 
 
 #[tokio::test]
 async fn live_revision_changes_on_finish_and_is_retained_without_a_live_row() {
-    let harness = Harness::new("background");
-    let agent = Arc::new(ExternalAgent::new(
-        catalog::entry("codex").unwrap(),
-        "agent".into(),
-        "task".into(),
-        "work".into(),
-        harness.project.clone(),
-        harness.host.clone(),
-    ));
+    let harness = Harness::new("slow");
     harness
         .registry
-        .sessions
-        .lock()
+        .start(
+            harness.call("task", "tool-row"),
+            codex_start("Take your time", true),
+        )
         .await
-        .entry("task".into())
-        .or_default()
-        .agents
-        .insert("agent".into(), Arc::clone(&agent));
-    {
-        let mut state = agent.state.lock().await;
-        state.activity.begin_turn();
-        state.turn = Some(ActiveTurn {
-            turn_id: None,
-            row_id: "tool-row".into(),
-            number: state.activity.turns,
-            background: true,
-            waiters: 0,
-            ends: None,
-            ended: CancellationToken::new(),
-        });
-    }
-    agent.emit_row(true).await;
+        .unwrap();
+    let agent = harness.registry.agent("task", "codex-1").await.unwrap();
+    wait_for(|| agent.turn_id()).await;
     let running = harness.registry.live_revision("task").await;
     assert!(running > 0);
     assert_eq!(harness.registry.live_rows("task").await.len(), 1);
-    agent.finish_turn(TurnOutcome::Completed, None).await;
+    harness.registry.cancel("task", "codex-1").await.unwrap();
     let finished = harness.registry.live_revision("task").await;
     assert!(finished > running);
     assert!(harness.registry.live_rows("task").await.is_empty());
@@ -627,14 +607,7 @@ async fn cancelling_the_run_interrupts_the_turn_and_shutdown_kills_the_process()
         .agent("session-3", "codex-1")
         .await
         .unwrap();
-    wait_for(|| {
-        agent
-            .state
-            .try_lock()
-            .ok()
-            .and_then(|state| state.turn.as_ref()?.turn_id.as_ref().map(|_| ()))
-    })
-    .await;
+    wait_for(|| agent.turn_id()).await;
     cancel.cancel();
     let result = turn.await.unwrap();
     let text = result_text(&result);
@@ -761,6 +734,7 @@ async fn registry_rejects_unknown_providers_bad_cwd_and_too_many_agents() {
                     "idle".into(),
                     harness.project.clone(),
                     harness.host.clone(),
+                    Arc::clone(&harness.registry.admission),
                 )),
             );
         }

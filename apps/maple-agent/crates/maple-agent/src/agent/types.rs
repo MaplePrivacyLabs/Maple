@@ -673,16 +673,6 @@ pub struct AgentRenameSessionRequest {
     pub title: String,
 }
 
-/// An approval request raised by an external agent (Codex, Claude Code).
-/// Maple accepts every one; the shape is kept for the activity log.
-#[derive(Debug, Clone, PartialEq)]
-pub(crate) struct AgentPermissionRequest {
-    pub request_id: String,
-    pub tool_name: String,
-    pub arguments: serde_json::Map<String, Value>,
-    pub prompt: Option<String>,
-}
-
 /// Maple's answer to an external agent's approval request: accepted at
 /// once, or cancelled once the agent or its turn has ended.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
