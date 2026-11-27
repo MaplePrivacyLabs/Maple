@@ -119,10 +119,7 @@ impl Request {
     }
 
     fn identifier(&self) -> Option<ashpd::WindowIdentifier> {
-        match self.parent.parse().ok()? {
-            ashpd::WindowIdentifierType::Wayland(handle) if handle.is_empty() => None,
-            parent => Some(ashpd::WindowIdentifier::from(parent)),
-        }
+        parent_identifier(&self.parent)
     }
 
     async fn open(&self) -> Outcome {
@@ -146,6 +143,14 @@ impl Request {
             Err(ashpd::Error::PortalNotFound(_)) => Outcome::Missing,
             Err(error) => Outcome::Failed(error.to_string()),
         }
+    }
+}
+
+/// The portal's parent identifier, or `None` for one it cannot use.
+fn parent_identifier(parent: &str) -> Option<ashpd::WindowIdentifier> {
+    match parent.parse().ok()? {
+        ashpd::WindowIdentifierType::Wayland(handle) if handle.is_empty() => None,
+        parent => Some(ashpd::WindowIdentifier::from(parent)),
     }
 }
 
@@ -270,7 +275,7 @@ pub(crate) fn prompt_for_paths(
             // Package resolution reads filesystem metadata; keep it and the
             // subprocess off the UI thread.
             let command = super::portal::helper_command(request.arguments())
-                .map_err(|_| HELPER_FAILED.to_owned())?;
+                .map_err(|error| failed("Could not prepare the desktop file chooser", error))?;
             run(command).await
         }));
         let picked = (&mut helper.0)
@@ -290,12 +295,17 @@ impl<T> Drop for AbortOnDrop<T> {
     }
 }
 
+/// Log the cause; the person sees only the generic notice.
+fn failed(context: &str, error: impl std::fmt::Display) -> String {
+    log::warn!("{context}: {error}");
+    HELPER_FAILED.to_owned()
+}
+
 async fn run(command: std::process::Command) -> PickedPaths {
-    let failed = |_| HELPER_FAILED.to_owned();
     let mut child = tokio::process::Command::from(command)
         .kill_on_drop(true)
         .spawn()
-        .map_err(failed)?;
+        .map_err(|error| failed("Could not start the desktop file chooser", error))?;
     // Held open until the answer is read: closing it cancels the dialog.
     let lifetime = child.stdin.take();
     let output = child.stdout.take().ok_or(HELPER_FAILED)?;
@@ -304,14 +314,17 @@ async fn run(command: std::process::Command) -> PickedPaths {
         .take(MAX_RESPONSE as u64 + 1)
         .read_to_end(&mut response)
         .await
-        .map_err(failed)?;
+        .map_err(|error| failed("Could not read the desktop file chooser's answer", error))?;
     if response.len() > MAX_RESPONSE {
         return Err(TOO_MANY.to_owned());
     }
-    let status = child.wait().await.map_err(failed)?;
+    let status = child
+        .wait()
+        .await
+        .map_err(|error| failed("Could not wait for the desktop file chooser", error))?;
     drop(lifetime);
     if !status.success() {
-        return Err(HELPER_FAILED.to_owned());
+        return Err(failed("The desktop file chooser failed", status));
     }
     decode(&response)
 }
@@ -330,7 +343,7 @@ impl Parent {
         let Ok(handle) = HasWindowHandle::window_handle(window) else {
             return Self::default();
         };
-        Self(match handle.as_raw() {
+        Self::new(match handle.as_raw() {
             RawWindowHandle::Xcb(handle) => Some(ashpd::WindowIdentifier::from_xid(
                 handle.window.get().into(),
             )),
@@ -359,6 +372,14 @@ impl Parent {
             }
             _ => None,
         })
+    }
+
+    /// Keep only a parent the helper accepts. ashpd reports an empty Wayland
+    /// handle when the compositor sends none; that dialog opens unparented
+    /// rather than failing. A dropped export is unexported here, on GPUI's
+    /// thread.
+    fn new(identifier: Option<ashpd::WindowIdentifier>) -> Self {
+        Self(identifier.filter(|identifier| parent_identifier(&identifier.to_string()).is_some()))
     }
 
     fn argument(&self) -> String {
@@ -449,6 +470,19 @@ mod tests {
             Request::from_arguments(&arguments(["files", "", "Open", ""])[..3]),
             None
         );
+    }
+
+    #[test]
+    fn unusable_parents_open_the_dialog_unparented() {
+        let empty =
+            ashpd::WindowIdentifier::from(ashpd::WindowIdentifierType::Wayland(String::new()));
+        assert_eq!(Parent::new(Some(empty)).argument(), "");
+        assert_eq!(Parent::new(None).argument(), "");
+        for parent in ["x11:3a00004", "wayland:2c5e8f1a-handle"] {
+            let kept = Parent::new(parent_identifier(parent));
+            assert_eq!(kept.argument(), parent);
+            kept.release();
+        }
     }
 
     #[test]
