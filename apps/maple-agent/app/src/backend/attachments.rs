@@ -311,6 +311,89 @@ pub(crate) mod tests {
     }
 
     #[tokio::test]
+    async fn task_file_links_open_here_and_download_only_through_reads() {
+        use crate::backend::paging::{ReadTaskFileRequest, TaskFileRequest};
+        use base64::Engine as _;
+        use maple_agent::store::{TaskFileLocation, TaskFileRange};
+
+        let root = tempfile::tempdir().unwrap();
+        let backend = fixture(root.path());
+        std::fs::create_dir(root.path().join("out")).unwrap();
+        std::fs::write(root.path().join("out/report.txt"), b"task file").unwrap();
+        let task = "01234567-89ab-7def-8123-456789abcdef";
+        let locate = |link: &str| Request {
+            id: 1,
+            method: "locate_task_file".into(),
+            send_id: None,
+            params: serde_json::json!([
+                "account",
+                TaskFileRequest {
+                    task: task.into(),
+                    link: link.into(),
+                }
+            ]),
+        };
+        let read = |link: &str| Request {
+            id: 2,
+            method: crate::remote::wire::Method::ReadTaskFile.name(),
+            send_id: None,
+            params: serde_json::json!([
+                "account",
+                ReadTaskFileRequest {
+                    task: task.into(),
+                    link: link.into(),
+                    offset: 0,
+                    len: 1024 * 1024,
+                    version: None,
+                }
+            ]),
+        };
+
+        let located: TaskFileLocation = serde_json::from_value(
+            super::super::dispatch(&backend, locate("out/report.txt"))
+                .await
+                .unwrap(),
+        )
+        .unwrap();
+        assert_eq!(
+            located.path,
+            std::fs::canonicalize(root.path().join("out/report.txt")).unwrap()
+        );
+        assert!(!located.folder);
+        // A paired viewer has no method for a path on this computer.
+        let refused =
+            crate::backend::dispatch_remote_inner_presented(&backend, locate("out/report.txt"))
+                .await
+                .unwrap_err();
+        assert_eq!(refused.code, "local-desktop-required");
+
+        let range: TaskFileRange = serde_json::from_value(
+            crate::backend::dispatch_remote_inner_presented(&backend, read("out/report.txt"))
+                .await
+                .unwrap(),
+        )
+        .unwrap();
+        assert_eq!(
+            base64::engine::general_purpose::STANDARD
+                .decode(range.data)
+                .unwrap(),
+            b"task file"
+        );
+        assert_eq!(range.size, 9);
+        assert!(range.sha256.is_some());
+        for (link, code) in [
+            ("out/missing.txt", "task-file-missing"),
+            ("../", "task-file-outside"),
+            ("out", "task-file-folder"),
+        ] {
+            let refused = crate::backend::dispatch_remote_inner_presented(&backend, read(link))
+                .await
+                .unwrap_err();
+            assert_eq!(refused.code, code, "{link}");
+        }
+    }
+
+    #[tokio::test]
     async fn local_import_publishes_a_stable_copy_and_keeps_only_ids_for_send() {
         let root = tempfile::tempdir().unwrap();
         let backend = fixture(root.path());

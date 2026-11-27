@@ -84,6 +84,20 @@ impl ChatScreen {
         // The call a permission request on screen is about.
         let waiting_step = self.waiting_step();
         let entity = cx.entity().downgrade();
+        // A link to a file of the task opens that file; others open the
+        // browser. Bound to the task on screen now, so a click that lands
+        // after a switch does nothing.
+        let open_link = self.selected_session.clone().map(|task| {
+            let target = entity.clone();
+            let generation = self.pages.generation;
+            Rc::new(move |link: String, _: &mut Window, cx: &mut gpui::App| {
+                if let Some(chat) = target.upgrade() {
+                    chat.update(cx, |chat, cx| {
+                        chat.open_task_link(&task, generation, link, cx);
+                    });
+                }
+            }) as rich_text::LinkHandler
+        });
         let selection = self.selection.clone();
         let transcript_focus = self.transcript_focus.clone();
         // Rows note when they paint in view, so a wheel elsewhere in the
@@ -119,6 +133,7 @@ impl ChatScreen {
                     focus: transcript_focus.clone(),
                     id_seed: item.id.clone(),
                     view: Some(window.current_view()),
+                    on_link: open_link.clone(),
                 };
                 let transcript = TranscriptCtx {
                     messages: &chat.messages,
@@ -1408,6 +1423,7 @@ fn render_message(item: &AgentTimelineItem, revision: u64, transcript: &Transcri
             focus: ctx.focus.clone(),
             id_seed: format!("{}#user", ctx.id_seed),
             view: ctx.view,
+            on_link: None,
         };
         let ordinal = user_ctx.base_ordinal;
         div()

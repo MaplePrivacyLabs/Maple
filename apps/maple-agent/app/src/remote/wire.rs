@@ -125,6 +125,8 @@ pub enum Method {
     TaskFacts,
     ReadRow,
     ReadAttachment,
+    /// Only sent to a host advertising `task_files_v1`.
+    ReadTaskFile,
     UploadAttachment,
     AttachmentUploadStatus,
     CancelAttachmentUpload,
@@ -235,6 +237,7 @@ impl Method {
                 | Self::TaskFacts
                 | Self::ReadRow
                 | Self::ReadAttachment
+                | Self::ReadTaskFile
                 | Self::QueuedMessage
         ) {
             4 * 1024 * 1024

@@ -1468,6 +1468,13 @@ chat-wait-project = Wait for the project selection to finish, then try again
 chat-choose-project = Choose a project before creating a task
 chat-compacting = Compacting…
 chat-compacted = Conversation compacted
+chat-file-busy = Wait for the other file to finish opening
+# $name is the name of the file being downloaded.
+chat-file-downloading = Downloading { $name }…
+# $name is the file's name as saved in the Downloads folder.
+chat-file-saved = Saved { $name } to Downloads
+chat-file-damaged = The file did not arrive intact. Try again.
+chat-file-not-saved = The file could not be saved to Downloads.
 chat-thinking-still-saving = The thinking level is still being saved
 chat-runtime-starting = Agent runtime is still starting
 chat-task-creating = The task is still being created
@@ -1973,6 +1980,14 @@ runtime-error-remote-permissions-unsupported = Update Maple on the remote comput
 runtime-error-remote-permissions-unconfirmed = Could not check the remote computer. Try again, or update Maple there.
 runtime-error-remote-tools-unsupported = Update Maple on the remote computer to choose its tools from here.
 runtime-error-remote-tools-unconfirmed = Could not check the remote computer's tools. Try again, or update Maple there.
+runtime-error-remote-task-files-unsupported = Update Maple on the remote computer to download files from it.
+runtime-error-remote-task-files-unconfirmed = Could not check whether the remote computer can send files. Try again, or update Maple there.
+runtime-error-task-file-missing = Maple could not find this file in the task's folder.
+runtime-error-task-file-outside = Maple opens only files inside the task's folder.
+runtime-error-task-file-folder = A folder cannot be downloaded from another computer.
+# $limit_mb is a whole number of megabytes.
+runtime-error-task-file-too-large = Files larger than { $limit_mb } MB cannot be downloaded from another computer.
+runtime-error-task-file-changed = The file changed while it downloaded. Try again.
 
 # $name is a model name, not translated.
 runtime-timeline-model-switched = Switched to { $name }

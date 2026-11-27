@@ -53,6 +53,7 @@ mod speech;
 mod staging;
 mod step;
 mod summaries;
+mod task_files;
 #[cfg(test)]
 mod tests;
 mod thinking;
@@ -848,6 +849,8 @@ pub struct ChatScreen {
     drawn_pictures: std::cell::RefCell<HashSet<usize>>,
     /// Finished replies whose saved row was read for its picture list.
     picture_rows_read: HashSet<String>,
+    /// A link to a task's file is being opened or downloaded.
+    file_link_pending: bool,
     /// The small picture a draft had, for the attachments of a message that
     /// was just sent, until the stored picture loads: the row that takes
     /// over from the message being sent shows what that message showed.
@@ -1754,6 +1757,7 @@ impl ChatScreen {
             released_pictures: Vec::new(),
             drawn_pictures: Default::default(),
             picture_rows_read: HashSet::new(),
+            file_link_pending: false,
             attachment_previews: HashMap::new(),
             attachment_requests: HashSet::new(),
             attachment_failures: HashSet::new(),

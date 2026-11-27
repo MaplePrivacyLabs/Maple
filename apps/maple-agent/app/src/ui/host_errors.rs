@@ -20,6 +20,7 @@ pub(crate) fn failure_text(failure: &HostFailure) -> UiText {
         "account-password-length" => Some(("runtime-error-account-password-length", "count")),
         "credit-minimum" => Some(("runtime-error-credit-minimum", "amount")),
         "credit-maximum" => Some(("runtime-error-credit-maximum", "amount")),
+        "task-file-too-large" => Some(("runtime-error-task-file-too-large", "limit_mb")),
         _ => None,
     };
     if let Some((key, name)) = argument {
@@ -60,6 +61,12 @@ pub(crate) fn failure_text(failure: &HostFailure) -> UiText {
         "remote-permissions-unconfirmed" => "runtime-error-remote-permissions-unconfirmed",
         "remote-tools-unsupported" => "runtime-error-remote-tools-unsupported",
         "remote-tools-unconfirmed" => "runtime-error-remote-tools-unconfirmed",
+        "remote-task-files-unsupported" => "runtime-error-remote-task-files-unsupported",
+        "remote-task-files-unconfirmed" => "runtime-error-remote-task-files-unconfirmed",
+        "task-file-missing" => "runtime-error-task-file-missing",
+        "task-file-outside" => "runtime-error-task-file-outside",
+        "task-file-folder" => "runtime-error-task-file-folder",
+        "task-file-changed" => "runtime-error-task-file-changed",
         "request-encoding" => "runtime-error-request-encoding",
         "request-parameters" => "runtime-error-request-parameters",
         "response-encoding" => "runtime-error-response-encoding",

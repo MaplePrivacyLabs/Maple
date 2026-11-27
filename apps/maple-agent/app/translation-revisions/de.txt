@@ -75,7 +75,12 @@ chat-feedback-privacy 4be573a3f90ca88b
 chat-feedback-send 1ba751df9eb29b5a
 chat-feedback-sending d0417854c72462d3
 chat-feedback-thanks 78c2ae3449bf834d
+chat-file-busy 98be40679f133cd8
+chat-file-damaged 65736cb556a51529
 chat-file-dialog-failed 59f459a478adf869
+chat-file-downloading 82b94bf95b0b57b9
+chat-file-not-saved e803b68624bae4ee
+chat-file-saved bafb69759db01eb5
 chat-files b94ce2002d4f89dd
 chat-files-preparing 405cee8e85278052
 chat-folder-cancel-new a7011c56c4eefddf
@@ -875,6 +880,8 @@ runtime-error-refusal-schema 386cf62ab178ac7b
 runtime-error-refusal-unavailable fb3fc41a113af831
 runtime-error-remote-permissions-unconfirmed c47f9b1d52fffe9a
 runtime-error-remote-permissions-unsupported ac424e62f3b88f2e
+runtime-error-remote-task-files-unconfirmed c3525d5fa8a2a10f
+runtime-error-remote-task-files-unsupported e83411b389d04102
 runtime-error-remote-tools-unconfirmed f8ead60c787bde84
 runtime-error-remote-tools-unsupported 8b85f070ff346c76
 runtime-error-repair-busy b120888272be72ea
@@ -919,6 +926,11 @@ runtime-error-store-busy d5297f463f4bc980
 runtime-error-store-damaged 50c95c6945168b8a
 runtime-error-store-locked bc01ca8e50e32db5
 runtime-error-store-setup 2f497cbd8734030d
+runtime-error-task-file-changed 6244fd4bd040b8e2
+runtime-error-task-file-folder 6daaee4d90e0e4f7
+runtime-error-task-file-missing c2aeefaa58fabaaa
+runtime-error-task-file-outside f1bb2a851cdd009b
+runtime-error-task-file-too-large ebd896833fe1ea85
 runtime-error-updater-response-encoding e4f96af1bce3ccd7
 runtime-error-verification-connection adbb27a1afa247af
 runtime-error-verification-status e57f2e0658f4d789

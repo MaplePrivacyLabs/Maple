@@ -1417,6 +1417,11 @@ chat-wait-project = 프로젝트 선택이 완료될 때까지 기다린 후 다
 chat-choose-project = 작업을 만들기 전에 프로젝트를 선택하세요
 chat-compacting = 압축하는 중…
 chat-compacted = 대화가 압축됨
+chat-file-busy = 다른 파일이 열릴 때까지 기다리세요
+chat-file-downloading = { $name } 다운로드하는 중…
+chat-file-saved = { $name }을(를) 다운로드 폴더에 저장했어요
+chat-file-damaged = 파일이 온전하게 도착하지 않았어요. 다시 시도하세요.
+chat-file-not-saved = 파일을 다운로드 폴더에 저장하지 못했어요.
 chat-thinking-still-saving = 사고 수준을 아직 저장하는 중이에요
 chat-runtime-starting = 에이전트 런타임이 아직 시작하는 중이에요
 chat-task-creating = 작업을 아직 생성하는 중이에요
@@ -1910,6 +1915,13 @@ runtime-error-remote-permissions-unsupported = 먼저 원격 컴퓨터의 Maple�
 runtime-error-remote-permissions-unconfirmed = 원격 컴퓨터를 확인하지 못했어요. 다시 시도하거나 해당 컴퓨터의 Maple을 업데이트하세요.
 runtime-error-remote-tools-unsupported = 여기에서 원격 컴퓨터의 도구를 선택하려면 해당 컴퓨터의 Maple을 업데이트하세요.
 runtime-error-remote-tools-unconfirmed = 원격 컴퓨터의 도구를 확인하지 못했어요. 다시 시도하거나 해당 컴퓨터의 Maple을 업데이트하세요.
+runtime-error-remote-task-files-unsupported = 원격 컴퓨터에서 파일을 다운로드하려면 해당 컴퓨터의 Maple을 업데이트하세요.
+runtime-error-remote-task-files-unconfirmed = 원격 컴퓨터가 파일을 보낼 수 있는지 확인하지 못했어요. 다시 시도하거나 해당 컴퓨터의 Maple을 업데이트하세요.
+runtime-error-task-file-missing = 작업 폴더에서 이 파일을 찾지 못했어요.
+runtime-error-task-file-outside = Maple은 작업 폴더 안의 파일만 열어요.
+runtime-error-task-file-folder = 다른 컴퓨터의 폴더는 다운로드할 수 없어요.
+runtime-error-task-file-too-large = { $limit_mb }MB보다 큰 파일은 다른 컴퓨터에서 다운로드할 수 없어요.
+runtime-error-task-file-changed = 다운로드하는 동안 파일이 바뀌었어요. 다시 시도하세요.
 
 # $name is a model name, not translated.
 runtime-timeline-model-switched = 모델 전환됨: { $name }

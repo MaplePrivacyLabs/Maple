@@ -377,7 +377,13 @@ pub struct RenderCtx {
     /// The view whose render this is, so a copy button can ask for one
     /// repaint of that view instead of refreshing the whole window.
     pub view: Option<gpui::EntityId>,
+    /// Who opens a clicked link instead of the web browser. The transcript
+    /// opens links to a task's files with it.
+    pub on_link: Option<LinkHandler>,
 }
+
+/// Opens a clicked link.
+pub type LinkHandler = std::rc::Rc<dyn Fn(String, &mut Window, &mut App)>;
 
 impl RenderCtx {
     /// Ordinal of block `index` when text blocks are interactive.
@@ -406,6 +412,7 @@ pub struct RichText {
     selection: Option<Entity<TextSelection>>,
     focus: Option<FocusHandle>,
     styled: Option<StyledText>,
+    on_link: Option<LinkHandler>,
 }
 
 type HighlightStyleT = gpui::HighlightStyle;
@@ -691,6 +698,7 @@ impl Element for RichText {
         {
             let entity = entity.clone();
             let links = self.links.clone();
+            let on_link = self.on_link.clone();
             window.on_mouse_event(
                 move |event: &gpui::MouseUpEvent, phase, window: &mut Window, cx: &mut App| {
                     if phase != gpui::DispatchPhase::Bubble || event.button != MouseButton::Left {
@@ -728,7 +736,10 @@ impl Element for RichText {
                         url
                     });
                     if let Some(url) = url {
-                        open_link(&url);
+                        match &on_link {
+                            Some(on_link) => on_link(url, window, cx),
+                            None => open_link(&url),
+                        }
                     }
                 },
             );
@@ -744,14 +755,29 @@ impl IntoElement for RichText {
     }
 }
 
-/// Open a URL in the system browser off the UI thread.
+/// Open a web link in the system browser off the UI thread. Any other link
+/// is ignored: handed to the system, a path or another scheme could open a
+/// local file or start another program.
 pub fn open_link(url: &str) {
+    if !is_web_link(url) {
+        log::debug!("ignored a link that is not a web link");
+        return;
+    }
     let url = url.to_string();
     std::thread::spawn(move || {
         if let Err(error) = webbrowser::open(&url) {
             log::debug!("failed to open {url}: {error}");
         }
     });
+}
+
+/// An `http` or `https` link to a host, or a `mailto` link.
+pub fn is_web_link(url: &str) -> bool {
+    url::Url::parse(url).is_ok_and(|url| match url.scheme() {
+        "http" | "https" => url.host().is_some(),
+        "mailto" => true,
+        _ => false,
+    })
 }
 
 /// A styled paragraph. `ordinal` exposes it to accessibility clients, and
@@ -785,6 +811,7 @@ pub fn paragraph(
         selection: ctx.selection.clone(),
         focus: ctx.focus.clone(),
         styled: None,
+        on_link: ctx.on_link.clone(),
     })
 }
 
@@ -857,6 +884,7 @@ pub fn code_block(
                     selection: ctx.selection.clone(),
                     focus: ctx.focus.clone(),
                     styled: None,
+                    on_link: None,
                 }),
         )
 }
@@ -879,6 +907,32 @@ mod tests {
             selection: None,
             focus: None,
             styled: None,
+            on_link: None,
+        }
+    }
+
+    #[test]
+    fn only_web_links_reach_the_browser() {
+        for link in [
+            "https://maple.ai/docs",
+            "HTTP://example.com",
+            "mailto:support@example.com",
+        ] {
+            assert!(is_web_link(link), "{link}");
+        }
+        for link in [
+            "file:///etc/passwd",
+            "file:/etc/passwd",
+            "file://host/share/a.exe",
+            "out/report.pdf",
+            "/Applications/Calculator.app",
+            r"C:\Windows\notepad.exe",
+            "vscode://file/a",
+            "javascript:alert(1)",
+            "",
+            "#top",
+        ] {
+            assert!(!is_web_link(link), "{link}");
         }
     }
 

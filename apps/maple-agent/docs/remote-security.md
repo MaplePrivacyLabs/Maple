@@ -85,7 +85,9 @@ and computer use. Each task's [permission mode](permissions.md) applies as it do
 locally, and a controller can answer its prompts and, on a host that
 advertises `permission_modes_v1`, change the mode. On a host that advertises
 `tool_switches_v1`, it can turn the account's tools on or off, with the
-account and pairing checks of integration switches. Remote
+account and pairing checks of integration switches. On a host that advertises
+`task_files_v1`, it can download a file a task's reply links, only from inside
+that task's project folder; the shell already reaches those files. Remote
 API account/auth/billing/API-key/host-stop commands are excluded. Protocol versions,
 identity scope, grant checks and account fences are checked before dispatch;
 account-local receipt lookup cannot expose another account's outcome.
