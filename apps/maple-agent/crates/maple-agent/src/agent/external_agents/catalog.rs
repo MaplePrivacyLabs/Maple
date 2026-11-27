@@ -48,6 +48,8 @@ pub(crate) struct CatalogEntry {
     /// The app asset the Settings card shows.
     pub(crate) icon: String,
     pub(crate) transport: Transport,
+    /// Who decides what the agent may do when it asks.
+    pub(crate) approvals: Approvals,
     /// The command found on the login PATH.
     pub(crate) executable: String,
     /// The oldest version Maple works with, when there is one.
@@ -134,6 +136,18 @@ pub(crate) enum SignInProbe {
     ClaudeAuthStatus,
     /// Maple cannot tell without starting the agent.
     None,
+}
+
+/// Who decides what an agent may do when it asks Maple.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize)]
+#[serde(rename_all = "kebab-case")]
+pub(crate) enum Approvals {
+    /// The agent's own sandbox and approval settings; Maple accepts each
+    /// request once.
+    Agent,
+    /// The task's permission gate judges each request by the task's mode,
+    /// as it does the task's own calls.
+    Task,
 }
 
 /// How Maple speaks to an agent's process.
@@ -320,6 +334,11 @@ mod tests {
                 "{}",
                 entry.id
             );
+            // An agent Maple puts in the task's mode has what it still asks
+            // judged by the task too.
+            if entry.mode(AgentPermissionMode::ReadOnly).is_some() {
+                assert_eq!(entry.approvals, Approvals::Task, "{}", entry.id);
+            }
             for name in entry.environment.keys() {
                 assert!(
                     name.contains("TELEMETRY") || name.contains("UPDATE"),

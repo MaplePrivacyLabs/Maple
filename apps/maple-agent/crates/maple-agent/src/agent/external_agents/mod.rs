@@ -25,6 +25,8 @@ pub(in crate::agent) mod catalog;
 mod claude;
 mod codex;
 mod driver;
+mod machine;
+mod owner;
 mod records;
 mod skills;
 mod task;
@@ -44,18 +46,18 @@ use std::path::{Path, PathBuf};
 use std::process::Stdio;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Weak};
-use std::time::{Duration, Instant};
+use std::time::Duration;
 
 use pi_agent_core::AgentToolResult;
 use pi_coding_agent::Delivery;
-use pi_coding_agent::extensions::{CustomMessageDraft, ExtensionContext};
+use pi_coding_agent::extensions::CustomMessageDraft;
 use serde::Deserialize;
 use serde_json::{Value, json};
-use tokio::sync::{Mutex, Notify, mpsc, oneshot};
+use tokio::sync::Mutex;
 use tokio_util::sync::CancellationToken;
 
 use super::config::unix_ms;
-use super::permissions::{PermissionGate, Refusal, card_action};
+use super::permissions::PermissionGate;
 use super::runtime::AgentRuntime;
 use super::timeline::{
     MAPLE_NOTICE_ENTRY, MAX_AGENT_SESSION_TITLE_CHARS, bounded_timeline_text, notice_item,
@@ -65,16 +67,12 @@ pub(crate) use super::types::{
     ActivityCommand, ActivityFileChange, ActivityQuestion, ActivityTodo, ExternalAgentActivity,
 };
 use super::{
-    AgentEventDispatcher, AgentPermissionDecision, AgentPermissionMode, AgentPermissionRequest,
-    AgentQuestion, AgentRunEvent, AgentRuntimeHandle, AgentServiceEvent, AgentSubagent,
-    AgentTimelineItem, AgentTimelineLabel, ExternalAgentRef, emit_agent_event,
+    AgentEventDispatcher, AgentQuestion, AgentRuntimeHandle, AgentServiceEvent, AgentSubagent,
+    AgentTimelineItem, AgentTimelineLabel, emit_agent_event,
 };
-use app_server::AgentClient;
 use catalog::CatalogEntry;
-use driver::{
-    AgentEvent, AgentItem, AgentReply, AgentRequest, DriverMessage, FileChangeEntry, TodoEntry,
-    TurnOutcome, TurnRequest,
-};
+use driver::{FileChangeEntry, TodoEntry};
+use owner::{Admission, ExternalAgent};
 
 pub(crate) const AGENT_START_TOOL: &str = "agent_start";
 pub(crate) const AGENT_SEND_TOOL: &str = "agent_send";
@@ -123,116 +121,6 @@ const INTERRUPT_SETTLE_TIMEOUT: Duration = Duration::from_secs(5);
 const INTERRUPT_REQUEST_TIMEOUT: Duration = Duration::from_secs(2);
 /// How long an agent process has to start and answer its handshake.
 const LAUNCH_TIMEOUT: Duration = Duration::from_secs(30);
-/// How long a forced kill waits for an agent's state.
-const KILL_LOCK_TIMEOUT: Duration = Duration::from_millis(500);
-
-impl From<&AgentQuestion> for ActivityQuestion {
-    fn from(question: &AgentQuestion) -> Self {
-        Self {
-            id: question.id.clone(),
-            question: question.question.clone(),
-            options: question
-                .options
-                .iter()
-                .map(|option| option.label.clone())
-                .collect(),
-            multi_select: question.multi_select,
-        }
-    }
-}
-
-impl ExternalAgentActivity {
-    fn record_command_started(&mut self, id: String, command: String) {
-        let command = bounded_timeline_text(&command, MAX_ACTIVITY_COMMAND_CHARS);
-        if let Some(existing) = self.commands.iter_mut().find(|entry| entry.id == id) {
-            existing.command = command;
-            return;
-        }
-        self.commands.push(ActivityCommand {
-            id,
-            command,
-            exit_code: None,
-            status: "running".to_string(),
-        });
-        let overflow = self.commands.len().saturating_sub(MAX_ACTIVITY_COMMANDS);
-        if overflow > 0 {
-            self.commands.drain(..overflow);
-        }
-    }
-
-    fn record_command_finished(
-        &mut self,
-        id: &str,
-        command: String,
-        exit_code: Option<i64>,
-        status: Option<String>,
-    ) {
-        let status = match (status.as_deref(), exit_code) {
-            (Some("failed" | "error"), _) => "failed",
-            (_, Some(code)) if code != 0 => "failed",
-            _ => "completed",
-        }
-        .to_string();
-        match self.commands.iter_mut().find(|entry| entry.id == id) {
-            Some(existing) => {
-                existing.exit_code = exit_code;
-                existing.status = status;
-            }
-            None => {
-                self.record_command_started(id.to_string(), command);
-                if let Some(existing) = self.commands.last_mut() {
-                    existing.exit_code = exit_code;
-                    existing.status = status;
-                }
-            }
-        }
-    }
-
-    fn record_file_changes(&mut self, changes: Vec<FileChangeEntry>) {
-        for change in changes {
-            if let Some(existing) = self
-                .file_changes
-                .iter_mut()
-                .find(|entry| entry.path == change.path)
-            {
-                existing.kind = change.kind;
-                continue;
-            }
-            self.file_changes.push(ActivityFileChange {
-                path: change.path,
-                kind: change.kind,
-            });
-        }
-        let overflow = self
-            .file_changes
-            .len()
-            .saturating_sub(MAX_ACTIVITY_FILE_CHANGES);
-        if overflow > 0 {
-            self.file_changes.drain(..overflow);
-        }
-    }
-
-    fn record_todos(&mut self, items: Vec<TodoEntry>) {
-        self.todos = items
-            .into_iter()
-            .take(MAX_ACTIVITY_TODOS)
-            .map(|item| ActivityTodo {
-                text: item.text,
-                completed: item.completed,
-            })
-            .collect();
-    }
-
-    fn begin_turn(&mut self) {
-        self.status = "running".to_string();
-        self.text.clear();
-        self.questions.clear();
-        self.error = None;
-        self.pending_permission = None;
-        self.declined.clear();
-        self.turns = self.turns.saturating_add(1);
-    }
-}
 
 /// A lock that a panic elsewhere does not poison.
 fn lock<T>(mutex: &std::sync::Mutex<T>) -> std::sync::MutexGuard<'_, T> {
@@ -450,6 +338,8 @@ struct SessionAgents {
 pub(crate) struct ExternalAgentRegistry {
     host: ExternalAgentHost,
     sessions: Mutex<HashMap<String, SessionAgents>>,
+    /// Which tasks' agents are working, for maintenance to wait out.
+    admission: Arc<Admission>,
     next_agent: AtomicU64,
     /// Where a test's fake agents are, in place of the login PATH.
     #[cfg(test)]
@@ -461,87 +351,31 @@ impl ExternalAgentRegistry {
         Self {
             host,
             sessions: Mutex::new(HashMap::new()),
+            admission: Arc::default(),
             next_agent: AtomicU64::new(1),
             #[cfg(test)]
             test_search_path: std::sync::Mutex::new(None),
         }
     }
 
-    /// Hold launch/state locks across a bounded maintenance mutation. The caller
-    /// first holds the task's normal run-admission guard. Contention fails closed.
+    /// Run a bounded maintenance mutation while no agent of the task is
+    /// starting a turn, in one, or stopping; none starts meanwhile. The
+    /// caller first holds the task's normal run-admission guard.
     pub(crate) fn while_session_idle<T>(
         &self,
         session_id: &str,
         action: impl FnOnce() -> Result<T, String>,
     ) -> Result<T, String> {
-        let sessions = self
-            .sessions
-            .try_lock()
-            .map_err(|_| "External agent state is busy".to_string())?;
-        let agents = sessions
-            .get(session_id)
-            .map(|session| session.agents.values().collect::<Vec<_>>())
-            .unwrap_or_default();
-        let _launches = agents
-            .iter()
-            .map(|agent| {
-                agent
-                    .launch
-                    .try_lock()
-                    .map_err(|_| "An external agent is starting".to_string())
-            })
-            .collect::<Result<Vec<_>, _>>()?;
-        let states = agents
-            .iter()
-            .map(|agent| {
-                agent
-                    .state
-                    .try_lock()
-                    .map_err(|_| "External agent state is busy".to_string())
-            })
-            .collect::<Result<Vec<_>, _>>()?;
-        if states.iter().any(|state| state.turn.is_some()) {
-            return Err("An external agent is working".to_string());
-        }
-        action()
+        self.admission.while_idle(Some(session_id), action)
     }
 
     /// Admit one short profile-wide maintenance effect only while every
-    /// autonomous agent is idle, retaining the same launch/state guards.
+    /// autonomous agent is idle; none starts meanwhile.
     pub(crate) fn while_all_idle<T>(
         &self,
         action: impl FnOnce() -> Result<T, String>,
     ) -> Result<T, String> {
-        let sessions = self
-            .sessions
-            .try_lock()
-            .map_err(|_| "External agent state is busy".to_string())?;
-        let agents = sessions
-            .values()
-            .flat_map(|session| session.agents.values())
-            .collect::<Vec<_>>();
-        let _launches = agents
-            .iter()
-            .map(|agent| {
-                agent
-                    .launch
-                    .try_lock()
-                    .map_err(|_| "An external agent is starting".to_string())
-            })
-            .collect::<Result<Vec<_>, _>>()?;
-        let states = agents
-            .iter()
-            .map(|agent| {
-                agent
-                    .state
-                    .try_lock()
-                    .map_err(|_| "External agent state is busy".to_string())
-            })
-            .collect::<Result<Vec<_>, _>>()?;
-        if states.iter().any(|state| state.turn.is_some()) {
-            return Err("An external agent is working".to_string());
-        }
-        action()
+        self.admission.while_idle(None, action)
     }
 
     /// Find and start the agents of every task on `path`, as a test's fake
@@ -610,6 +444,7 @@ impl ExternalAgentRegistry {
             session_id.to_string(),
             record,
             self.host.clone(),
+            Arc::clone(&self.admission),
         ));
         let mut sessions = self.sessions.lock().await;
         let agents = &mut sessions.entry(session_id.to_string()).or_default().agents;
@@ -794,7 +629,7 @@ impl ExternalAgentRegistry {
                         Some(false) => entry.text.sign_in_hint.as_str(),
                         None => "Sign-in state unknown.",
                     };
-                    let approvals = if entry.mode(AgentPermissionMode::ReadOnly).is_some() {
+                    let approvals = if entry.approvals == catalog::Approvals::Task {
                         "What it asks to do follows this task's permission mode."
                     } else {
                         "It runs under its own approval settings, and Maple accepts its requests."
@@ -853,6 +688,7 @@ impl ExternalAgentRegistry {
                 first_line_label(&prompt),
                 cwd,
                 self.host.clone(),
+                Arc::clone(&self.admission),
             ));
             session.agents.insert(agent_id, Arc::clone(&agent));
             agent
@@ -871,7 +707,7 @@ impl ExternalAgentRegistry {
         // An agent that never got to work, as when its command is missing or
         // it refused the model asked for, does not keep one of the task's
         // places, nor a process nobody can reach.
-        if result.is_err() && agent.never_ran().await {
+        if result.is_err() && agent.never_ran() {
             if let Some(session) = self.sessions.lock().await.get_mut(&call.session_id) {
                 session.agents.remove(&agent.agent_id);
             }
@@ -894,17 +730,17 @@ impl ExternalAgentRegistry {
             .agent_of(&call, &params.provider, &params.agent_id)
             .await?;
         // A question holds the agent's turn: this call answers it.
-        if let Some(turn) = agent
+        if let Some(wait) = agent
             .answer_question(&prompt, &params.answers, params.background)
             .await?
         {
             if params.background {
-                let activity = agent.activity().await;
+                let activity = agent.activity();
                 return Ok(activity_result(&activity, &background_guidance()));
             }
-            return Ok(agent.wait_for_turn(&call, turn).await);
+            return Ok(agent.wait_for_turn(&call, wait).await);
         }
-        let prompt = agent.next_prompt(prompt, &params.answers).await?;
+        let prompt = agent.next_prompt(prompt, &params.answers)?;
         agent
             .run_turn(
                 &call,
@@ -926,7 +762,7 @@ impl ExternalAgentRegistry {
         let agent = self
             .agent_of(call, &params.provider, &params.agent_id)
             .await?;
-        let activity = agent.activity().await;
+        let activity = agent.activity();
         let guidance = if activity.status == "running" {
             background_guidance()
         } else {
@@ -956,8 +792,8 @@ impl ExternalAgentRegistry {
         let Some(agent) = self.agent(session_id, agent_id).await else {
             return Err(unknown_agent(agent_id));
         };
-        agent.stop_turn().await;
-        Ok(agent.activity().await)
+        agent.stop().await;
+        Ok(agent.activity())
     }
 
     /// The agents of a task that are still working, for a caller that
@@ -967,12 +803,10 @@ impl ExternalAgentRegistry {
             Some(session) => session.agents.values().cloned().collect::<Vec<_>>(),
             None => return Vec::new(),
         };
-        let mut rows = Vec::new();
-        for agent in agents {
-            if let Some(row) = agent.subagent_row().await {
-                rows.push(row);
-            }
-        }
+        let mut rows = agents
+            .iter()
+            .filter_map(|agent| agent.subagent_row())
+            .collect::<Vec<_>>();
         rows.sort_by_key(|row| std::cmp::Reverse(row.elapsed_ms));
         rows
     }
@@ -985,13 +819,7 @@ impl ExternalAgentRegistry {
             Some(session) => session.agents.values().cloned().collect::<Vec<_>>(),
             None => return Vec::new(),
         };
-        let mut rows = Vec::new();
-        for agent in agents {
-            if let Some(row) = agent.live_row().await {
-                rows.push(row);
-            }
-        }
-        rows
+        agents.iter().filter_map(|agent| agent.live_row()).collect()
     }
 
     pub(crate) async fn live_revision(&self, session_id: &str) -> u64 {
@@ -999,11 +827,11 @@ impl ExternalAgentRegistry {
             Some(session) => session.agents.values().cloned().collect::<Vec<_>>(),
             None => return 0,
         };
-        let mut revision = 0;
-        for agent in agents {
-            revision = revision.max(agent.state.lock().await.last_row_revision);
-        }
-        revision
+        agents
+            .iter()
+            .map(|agent| agent.last_row_revision())
+            .max()
+            .unwrap_or(0)
     }
 
     pub(crate) async fn shutdown_session(&self, session_id: &str) {
@@ -1017,19 +845,30 @@ impl ExternalAgentRegistry {
         futures_util::future::join_all(agents.iter().map(|agent| agent.shutdown())).await;
     }
 
+    /// End every agent: each stops its turn and its process, within
+    /// `graceful_timeout` all told. An agent's owner that runs out of time is
+    /// aborted, which drops its processes and kills their process groups.
     pub(crate) async fn shutdown_all(&self, graceful_timeout: Duration) {
         let agents = std::mem::take(&mut *self.sessions.lock().await)
             .into_values()
             .flat_map(|session| session.agents.into_values())
             .collect::<Vec<_>>();
-        let shutdown = futures_util::future::join_all(agents.iter().map(|agent| agent.shutdown()));
-        if tokio::time::timeout(graceful_timeout, shutdown)
+        for agent in &agents {
+            agent.cancel.cancel();
+        }
+        let mut owners = agents
+            .iter()
+            .filter_map(|agent| agent.take_owner())
+            .collect::<Vec<_>>();
+        let graceful = futures_util::future::join_all(owners.iter_mut());
+        if tokio::time::timeout(graceful_timeout, graceful)
             .await
             .is_err()
         {
-            // The agents' own tasks hold them, so nothing is dropped by
-            // giving up on the shutdown: kill what is left here.
-            futures_util::future::join_all(agents.iter().map(|agent| agent.kill_now())).await;
+            for owner in &owners {
+                owner.abort();
+            }
+            let _ = futures_util::future::join_all(owners).await;
             log::warn!(
                 "External agents did not shut down in time; their process groups were killed"
             );
@@ -1054,1425 +893,6 @@ struct TurnInput {
     background: bool,
     model: Option<String>,
     effort: Option<String>,
-}
-
-struct ActiveTurn {
-    turn_id: Option<String>,
-    row_id: String,
-    /// Which of the agent's turns this is: its activity's turn count.
-    number: u32,
-    background: bool,
-    /// Tool calls waiting on the turn. A turn nobody waits on reports its
-    /// end to the caller as a notice.
-    waiters: usize,
-    ends: Option<oneshot::Sender<TurnEnd>>,
-    /// Cancelled when the turn ends, so a request the agent left open
-    /// (an approval, a question) stops waiting.
-    ended: CancellationToken,
-}
-
-/// How a turn ended, for the task that reports it.
-struct TurnEnd {
-    outcome: TurnOutcome,
-    /// No tool call waited on the turn, so the caller learns of its end by
-    /// a notice.
-    report: bool,
-}
-
-/// An agent's process, in its own process group, which goes with it.
-struct ContainedChild {
-    child: tokio::process::Child,
-}
-
-impl ContainedChild {
-    /// End the process and everything it started, and reap it.
-    async fn kill_and_wait(&mut self) {
-        if let Some(pid) = self.child.id() {
-            pi_coding_agent::tools::kill_process_tree(pid);
-        }
-        let _ = self.child.start_kill();
-        let _ = self.child.wait().await;
-    }
-}
-
-impl Drop for ContainedChild {
-    /// A process dropped while it runs takes everything it started with it.
-    /// One that exited is left alone: its id may name another process by now.
-    fn drop(&mut self) {
-        if matches!(self.child.try_wait(), Ok(None))
-            && let Some(pid) = self.child.id()
-        {
-            pi_coding_agent::tools::kill_process_tree(pid);
-        }
-    }
-}
-
-struct AgentProcess {
-    thread_id: String,
-    /// The arguments that set the agent's own mode at launch.
-    mode_args: Vec<String>,
-    child: ContainedChild,
-    client: Arc<AgentClient>,
-    reader: tokio::task::JoinHandle<()>,
-    events: tokio::task::JoinHandle<()>,
-}
-
-struct AgentState {
-    process: Option<AgentProcess>,
-    thread_id: Option<String>,
-    turn: Option<ActiveTurn>,
-    activity: ExternalAgentActivity,
-    /// Streamed agent messages of the current turn, in order.
-    messages: Vec<(String, String)>,
-    /// Where the caller's answer goes while a question holds the turn. The
-    /// questions are in the activity.
-    question: Option<oneshot::Sender<String>>,
-    last_row_emit: Option<Instant>,
-    last_row_revision: u64,
-    /// The transcript row of the latest turn, for the notice that lands
-    /// after the turn is gone.
-    last_row_id: Option<String>,
-}
-
-struct ExternalAgent {
-    /// The agent's catalog entry.
-    entry: &'static CatalogEntry,
-    /// Its id, as tools and results name it.
-    provider: String,
-    launch: Mutex<()>,
-    agent_id: String,
-    session_id: String,
-    task: String,
-    cwd: PathBuf,
-    started: Instant,
-    /// Ends the agent. Derived from the runtime lifetime so logout and
-    /// runtime stop end it too.
-    cancel: CancellationToken,
-    host: ExternalAgentHost,
-    state: Mutex<AgentState>,
-    /// Woken when a question arrives or a turn ends, for the calls that
-    /// wait on a turn.
-    wake: Notify,
-    /// Held while a question waits for its answer: an agent asks one at a
-    /// time.
-    asking: Mutex<()>,
-    /// The task's permission gate, from the latest call that ran a turn.
-    gate: std::sync::Mutex<Option<PermissionGate>>,
-}
-
-impl ExternalAgent {
-    fn provider_name(&self) -> &str {
-        &self.entry.name
-    }
-
-    fn new(
-        entry: &'static CatalogEntry,
-        agent_id: String,
-        session_id: String,
-        task: String,
-        cwd: PathBuf,
-        host: ExternalAgentHost,
-    ) -> Self {
-        let cancel = host.lifetime.child_token();
-        let provider = entry.id.clone();
-        Self {
-            entry,
-            state: Mutex::new(AgentState {
-                process: None,
-                thread_id: None,
-                turn: None,
-                activity: ExternalAgentActivity {
-                    provider: provider.clone(),
-                    agent_id: agent_id.clone(),
-                    status: "idle".to_string(),
-                    ..Default::default()
-                },
-                messages: Vec::new(),
-                question: None,
-                last_row_emit: None,
-                last_row_revision: 0,
-                last_row_id: None,
-            }),
-            provider,
-            launch: Mutex::new(()),
-            agent_id,
-            session_id,
-            task,
-            cwd,
-            started: Instant::now(),
-            cancel,
-            host,
-            wake: Notify::new(),
-            asking: Mutex::new(()),
-            gate: std::sync::Mutex::new(None),
-        }
-    }
-
-    /// An agent of the task opened again from its record, as after Maple
-    /// restarted: its process is gone, its session is not, and the next
-    /// turn resumes it.
-    fn from_record(
-        entry: &'static CatalogEntry,
-        session_id: String,
-        record: records::AgentRecord,
-        host: ExternalAgentHost,
-    ) -> Self {
-        let mut agent = Self::new(
-            entry,
-            record.activity.agent_id.clone(),
-            session_id,
-            record.task,
-            record.cwd,
-            host,
-        );
-        let state = agent.state.get_mut();
-        state.thread_id = record.activity.thread_id.clone();
-        state.activity = records::after_restart(record.activity);
-        agent
-    }
-
-    /// Leave the agent's record in its task's session, so that after a
-    /// restart its session can be opened again. An agent shut down with its
-    /// task or the runtime leaves none: its last record stands, and one left
-    /// mid-turn reads as cut short.
-    async fn record(&self) {
-        if self.cancel.is_cancelled() {
-            return;
-        }
-        let Some(runtime) = self.host.runtime.upgrade() else {
-            return;
-        };
-        let record = records::AgentRecord {
-            task: self.task.clone(),
-            cwd: self.cwd.clone(),
-            activity: self.activity().await,
-        };
-        let Ok(data) = serde_json::to_value(&record) else {
-            return;
-        };
-        match runtime.side_question_session(&self.session_id).await {
-            Ok(session) => session
-                .extension_context()
-                .append_entry(records::AGENT_RECORD_ENTRY, Some(data)),
-            Err(error) => log::warn!(
-                "External agent {} could not record itself in its task: {error}",
-                self.agent_id
-            ),
-        }
-    }
-
-    /// Whether no turn of the agent ever started.
-    async fn never_ran(&self) -> bool {
-        let state = self.state.lock().await;
-        state.activity.turns == 0 && state.turn.is_none()
-    }
-
-    async fn activity(&self) -> ExternalAgentActivity {
-        let mut state = self.state.lock().await;
-        self.refresh_elapsed(&mut state);
-        state.activity.clone()
-    }
-
-    fn refresh_elapsed(&self, state: &mut AgentState) {
-        state.activity.elapsed_ms = self.started.elapsed().as_millis().min(u64::MAX as u128) as u64;
-    }
-
-    async fn subagent_row(&self) -> Option<AgentSubagent> {
-        let state = self.state.lock().await;
-        let turn = state.turn.as_ref()?;
-        Some(AgentSubagent {
-            id: subagent_row_id(&self.agent_id),
-            task: self.task.clone(),
-            background: turn.background,
-            elapsed_ms: self.started.elapsed().as_millis().min(u64::MAX as u128) as u64,
-            activity: latest_activity_label(&state.activity),
-            external: Some(ExternalAgentRef {
-                provider: self.provider.clone(),
-                agent_id: self.agent_id.clone(),
-            }),
-        })
-    }
-
-    /// The row of the turn in progress, as it stands.
-    async fn live_row(&self) -> Option<AgentTimelineItem> {
-        let mut state = self.state.lock().await;
-        let row_id = state.turn.as_ref().map(|turn| turn.row_id.clone())?;
-        self.refresh_elapsed(&mut state);
-        let mut item = activity_row_item(&row_id, &state.activity, unix_ms());
-        item.revision = state.last_row_revision;
-        item.live = Some(super::AgentLiveRowIdentity {
-            run_id: external_run_id(&self.agent_id),
-            occurrence: u64::from(state.activity.turns),
-        });
-        self.decorate_live_item(&mut item);
-        Some(item)
-    }
-
-    /// Run one turn: start the process if needed, send the prompt, and
-    /// either wait for the end or hand the wait to a background task.
-    async fn run_turn(
-        self: &Arc<Self>,
-        call: &ExternalAgentCall,
-        input: TurnInput,
-    ) -> Result<AgentToolResult, String> {
-        let launch = self.launch.lock().await;
-        if let Some(runtime) = self.host.runtime.upgrade() {
-            runtime.host.cancel_integrity_check();
-        }
-        if self.cancel.is_cancelled() {
-            return Err("This external agent has been shut down.".to_string());
-        }
-        if self.state.lock().await.turn.is_some() {
-            return Err(self.busy());
-        }
-        *lock(&self.gate) = Some(call.permissions.clone());
-        tokio::select! {
-            biased;
-            _ = self.cancel.cancelled() => Err("This external agent has been shut down.".to_string()),
-            _ = call.cancel_token.cancelled() => Err("The external agent launch was cancelled.".to_string()),
-            result = tokio::time::timeout(self.entry.startup_timeout().unwrap_or(LAUNCH_TIMEOUT), self.ensure_process(call, input.model.as_deref(), input.effort.as_deref())) =>
-                result.unwrap_or_else(|_| Err("The external agent did not initialize in time.".to_string())),
-        }?;
-        let (client, thread_id) = {
-            let state = self.state.lock().await;
-            if state.turn.is_some() {
-                return Err(self.busy());
-            }
-            let Some(process) = state.process.as_ref() else {
-                return Err("The agent process is not running.".to_string());
-            };
-            (Arc::clone(&process.client), process.thread_id.clone())
-        };
-        let request = TurnRequest {
-            thread_id: &thread_id,
-            prompt: &input.prompt,
-            cwd: &self.cwd,
-            model: input.model.as_deref(),
-            effort: input.effort.as_deref(),
-            mode: call.permissions.mode.get(),
-        };
-        // A model or effort the agent refuses starts no turn: the agent's
-        // last turn stands as it was. Stop and a slow agent end the wait as
-        // they end a launch.
-        tokio::select! {
-            biased;
-            _ = self.cancel.cancelled() => Err("This external agent has been shut down.".to_string()),
-            _ = call.cancel_token.cancelled() => Err("The external agent launch was cancelled.".to_string()),
-            result = tokio::time::timeout(
-                self.entry.startup_timeout().unwrap_or(LAUNCH_TIMEOUT),
-                client.configure_turn(&request),
-            ) => result.unwrap_or_else(|_| Err("The external agent did not apply its options in time.".to_string())),
-        }?;
-        let (number, end_rx) = {
-            let mut state = self.state.lock().await;
-            if state.turn.is_some() {
-                return Err(self.busy());
-            }
-            let (end_tx, end_rx) = oneshot::channel();
-            state.messages.clear();
-            state.activity.begin_turn();
-            let number = state.activity.turns;
-            let row_id = call
-                .row_id
-                .clone()
-                .unwrap_or_else(|| format!("external-{}-turn-{number}", self.agent_id));
-            state.turn = Some(ActiveTurn {
-                turn_id: None,
-                row_id,
-                number,
-                background: input.background,
-                // A blocking call waits from the start, so a turn that ends
-                // at once is not also reported as a notice.
-                waiters: usize::from(!input.background),
-                ends: Some(end_tx),
-                ended: CancellationToken::new(),
-            });
-            state.last_row_revision = super::runs::next_timeline_revision();
-            (number, end_rx)
-        };
-        log::info!("External agent {} turn starts", self.agent_id);
-        self.emit_subagent_started(input.background);
-        self.emit_row(true).await;
-        self.record().await;
-
-        if let Err(error) = client.start_turn(&request).await {
-            self.finish_turn(TurnOutcome::Failed, Some(error.clone()))
-                .await;
-            return Err(error);
-        }
-
-        drop(launch);
-        let agent = Arc::clone(self);
-        tokio::spawn(async move {
-            if let Ok(end) = end_rx.await
-                && end.report
-            {
-                agent.report_background_turn_end(end.outcome).await;
-            }
-        });
-        if input.background {
-            let activity = self.activity().await;
-            // A short turn can be over before this returns; say so rather
-            // than promising a notice that already went out.
-            if activity.status == "running" {
-                return Ok(AgentToolResult::text(render_activity(
-                    &activity,
-                    &background_guidance(),
-                )));
-            }
-            return Ok(activity_result(&activity, &completion_guidance(&activity)));
-        }
-        Ok(self.wait_for_turn(call, number).await)
-    }
-
-    /// Wait, for a blocking call, until turn `number` ends, the agent asks
-    /// a question, or the call's run is cancelled; then say where the agent
-    /// stands. The call must be counted among the turn's waiters.
-    async fn wait_for_turn(&self, call: &ExternalAgentCall, number: u32) -> AgentToolResult {
-        loop {
-            let woken = self.wake.notified();
-            tokio::pin!(woken);
-            woken.as_mut().enable();
-            {
-                let mut state = self.state.lock().await;
-                let asked = state.question.is_some();
-                match state.turn.as_mut() {
-                    Some(turn) if turn.number == number => {
-                        if asked {
-                            // The caller answers with its next call. Until
-                            // then nobody waits on the turn.
-                            turn.waiters = turn.waiters.saturating_sub(1);
-                            break;
-                        }
-                    }
-                    _ => break,
-                }
-            }
-            tokio::select! {
-                biased;
-                _ = call.cancel_token.cancelled() => {
-                    // The Maple turn ended; the agent keeps its thread but
-                    // stops working on this prompt, and its process goes so
-                    // a sandboxed command cannot outlive the stop.
-                    self.stop_turn().await;
-                    break;
-                }
-                _ = &mut woken => {}
-            }
-        }
-        let activity = self.activity().await;
-        activity_result(&activity, &completion_guidance(&activity))
-    }
-
-    /// Answer the question that holds the agent's turn, if one does, and
-    /// return the turn's number. A blocking call then waits on the turn.
-    async fn answer_question(
-        &self,
-        prompt: &str,
-        answers: &BTreeMap<String, String>,
-        background: bool,
-    ) -> Result<Option<u32>, String> {
-        let number = {
-            let mut state = self.state.lock().await;
-            if state.question.is_none() {
-                return Ok(None);
-            }
-            let Some(number) = state.turn.as_ref().map(|turn| turn.number) else {
-                return Ok(None);
-            };
-            let response = caller_answers(&state.activity.questions, prompt, answers)?;
-            let Some(reply) = state.question.take() else {
-                return Ok(None);
-            };
-            state.activity.questions.clear();
-            state.activity.status = "running".to_string();
-            if let Some(turn) = state.turn.as_mut() {
-                turn.waiters += usize::from(!background);
-                turn.background = background;
-            }
-            let _ = reply.send(response);
-            number
-        };
-        log::info!("External agent {} has its answer", self.agent_id);
-        self.emit_subagent_activity("Working".to_string());
-        self.emit_row(true).await;
-        Ok(Some(number))
-    }
-
-    /// The next turn's input. Answers to questions the agent ended its last
-    /// turn with lead it.
-    async fn next_prompt(
-        &self,
-        prompt: String,
-        answers: &BTreeMap<String, String>,
-    ) -> Result<String, String> {
-        if answers.is_empty() {
-            return Ok(prompt);
-        }
-        let state = self.state.lock().await;
-        if state.activity.questions.is_empty() {
-            return Err(
-                "This agent has no open question. Send instructions in prompt instead of answers."
-                    .to_string(),
-            );
-        }
-        answered_prompt(&state.activity.questions, &prompt, answers)
-    }
-
-    fn busy(&self) -> String {
-        format!(
-            "Agent {} is still working on its previous turn. Wait for Maple's notice, or check with {AGENT_STATUS_TOOL}.",
-            self.agent_id
-        )
-    }
-
-    async fn ensure_process(
-        self: &Arc<Self>,
-        call: &ExternalAgentCall,
-        model: Option<&str>,
-        effort: Option<&str>,
-    ) -> Result<(), String> {
-        let mode = call.permissions.mode.get();
-        let mode_args = self.entry.mode_args(mode);
-        {
-            let mut state = self.state.lock().await;
-            if let Some(process) = state.process.as_ref()
-                && !process.client.closed().is_cancelled()
-            {
-                if process.mode_args == mode_args {
-                    return Ok(());
-                }
-                // The task's mode changed, and the agent takes its own only
-                // at launch: a new process resumes the session in it.
-                log::info!("External agent {} restarts in another mode", self.agent_id);
-                if let Some(mut process) = state.process.take() {
-                    drop(state);
-                    process.child.kill_and_wait().await;
-                    process.reader.abort();
-                    process.events.abort();
-                }
-            }
-        }
-        let existing_thread = self.state.lock().await.thread_id.clone();
-        let search_path = call.login_path.as_deref();
-        let executable = super::integrations::find_executable(&self.entry.executable, search_path)
-            .ok_or_else(|| self.entry.text.launch_missing.clone())?;
-        let launch = self
-            .entry
-            .launch(existing_thread.as_deref(), model, effort, mode);
-        let mut command = agent_command(
-            &executable,
-            &launch.args,
-            &self.cwd,
-            call.login_path.as_deref(),
-            &self.session_id,
-        )?;
-        self.entry.apply_environment(&mut command);
-        if call.cancel_token.is_cancelled() {
-            return Err("Agent run was cancelled before command launch".to_string());
-        }
-        let mut child = ContainedChild {
-            child: command
-                .spawn()
-                .map_err(|error| format!("Failed to start {}: {error}", self.provider_name()))?,
-        };
-        let stdin = child
-            .child
-            .stdin
-            .take()
-            .ok_or_else(|| "Failed to open the agent stdin".to_string())?;
-        let stdout = child
-            .child
-            .stdout
-            .take()
-            .ok_or_else(|| "Failed to open the agent stdout".to_string())?;
-        let (client, receiver, reader) = self.entry.connect(stdin, stdout, launch);
-        client.initialize().await?;
-        let opened = client
-            .open_thread(existing_thread.as_deref(), &self.cwd, model)
-            .await?;
-        let events = tokio::spawn(Arc::clone(self).consume_server_messages(receiver));
-        let mut state = self.state.lock().await;
-        if let Some(previous) = state.process.take() {
-            previous.reader.abort();
-            previous.events.abort();
-        }
-        // A thread the agent has not confirmed is provisional: a launch that
-        // fails before the confirmation starts fresh on retry.
-        if opened.confirmed {
-            state.thread_id = Some(opened.thread_id.clone());
-            state.activity.thread_id = Some(opened.thread_id.clone());
-        }
-        state.process = Some(AgentProcess {
-            thread_id: opened.thread_id,
-            mode_args: mode_args.to_vec(),
-            child,
-            client,
-            reader,
-            events,
-        });
-        Ok(())
-    }
-
-    async fn consume_server_messages(self: Arc<Self>, mut receiver: mpsc::Receiver<DriverMessage>) {
-        while let Some(message) = receiver.recv().await {
-            match message {
-                DriverMessage::Event(event) => {
-                    if self.entry.transport.one_turn_per_process()
-                        && let AgentEvent::TurnCompleted { outcome, .. } = event
-                    {
-                        // The process served its turn. Reclaim it before
-                        // reporting completion, including on protocol failure.
-                        // On success stdin is closed: give session writes time
-                        // to flush, then clean up any remaining descendants.
-                        // Hold the lifecycle lock through cleanup so shutdown
-                        // cannot return while this task still owns a child.
-                        let mut state = self.state.lock().await;
-                        if let Some(mut process) = state.process.take() {
-                            if outcome == TurnOutcome::Completed {
-                                let _ = tokio::time::timeout(
-                                    Duration::from_secs(2),
-                                    process.child.child.wait(),
-                                )
-                                .await;
-                            }
-                            process.child.kill_and_wait().await;
-                            process.reader.abort();
-                            // Do not abort process.events: it is this task.
-                        }
-                        drop(state);
-                        self.handle_event(event).await;
-                        return;
-                    }
-                    self.handle_event(event).await;
-                }
-                DriverMessage::Request { id, request } => {
-                    // An approval waits on the user. It must not stall the
-                    // events behind it, so it runs on its own task.
-                    let agent = Arc::clone(&self);
-                    tokio::spawn(async move {
-                        agent.handle_request(id, request).await;
-                    });
-                }
-            }
-        }
-        // The process ended. A turn it owed an answer to is over.
-        let had_turn = self.state.lock().await.turn.is_some();
-        if had_turn {
-            self.finish_turn(
-                TurnOutcome::Failed,
-                Some(format!(
-                    "The {} process exited before the turn finished.",
-                    self.provider_name()
-                )),
-            )
-            .await;
-        }
-    }
-
-    async fn handle_event(self: &Arc<Self>, event: AgentEvent) {
-        match event {
-            AgentEvent::ThreadStarted { thread_id } => {
-                let first = {
-                    let mut state = self.state.lock().await;
-                    let first = state.thread_id.is_none();
-                    state.thread_id.get_or_insert(thread_id.clone());
-                    state.activity.thread_id.get_or_insert(thread_id);
-                    first
-                };
-                // An agent that names its session only once its turn runs,
-                // as Claude Code does, is recorded once it has.
-                if first {
-                    self.record().await;
-                }
-            }
-            AgentEvent::TurnStarted { turn_id } => {
-                let mut state = self.state.lock().await;
-                if let Some(turn) = state.turn.as_mut() {
-                    turn.turn_id = turn_id;
-                }
-            }
-            AgentEvent::TurnCompleted { outcome, error } => {
-                self.finish_turn(outcome, error).await;
-            }
-            AgentEvent::AgentMessageDelta { item_id, delta } => {
-                {
-                    let mut state = self.state.lock().await;
-                    match state.messages.iter_mut().find(|(id, _)| *id == item_id) {
-                        Some((_, text)) => text.push_str(&delta),
-                        None => state.messages.push((item_id, delta)),
-                    }
-                    Self::refresh_text(&mut state);
-                }
-                self.emit_row(false).await;
-            }
-            AgentEvent::ItemStarted(item) => {
-                let label = {
-                    let mut state = self.state.lock().await;
-                    match item {
-                        AgentItem::CommandExecution { id, command, .. } => {
-                            let label = format!("Running: {command}");
-                            state.activity.record_command_started(id, command);
-                            Some(label)
-                        }
-                        AgentItem::TodoList { items, .. } => {
-                            state.activity.record_todos(items);
-                            None
-                        }
-                        AgentItem::FileChange { changes, .. } => {
-                            let label = changes
-                                .first()
-                                .map(|change| format!("Editing: {}", change.path));
-                            state.activity.record_file_changes(changes);
-                            label
-                        }
-                        _ => None,
-                    }
-                };
-                if let Some(label) = label {
-                    self.emit_subagent_activity(label);
-                }
-                self.emit_row(true).await;
-            }
-            AgentEvent::ItemCompleted(item) => {
-                let label = {
-                    let mut state = self.state.lock().await;
-                    match item {
-                        AgentItem::AgentMessage { id, text } => {
-                            match state
-                                .messages
-                                .iter_mut()
-                                .find(|(item_id, _)| *item_id == id)
-                            {
-                                Some((_, existing)) if !text.is_empty() => *existing = text,
-                                Some(_) => {}
-                                None => state.messages.push((id, text)),
-                            }
-                            Self::refresh_text(&mut state);
-                            None
-                        }
-                        AgentItem::CommandExecution {
-                            id,
-                            command,
-                            exit_code,
-                            status,
-                        } => {
-                            state
-                                .activity
-                                .record_command_finished(&id, command, exit_code, status);
-                            None
-                        }
-                        AgentItem::FileChange { changes, .. } => {
-                            let label = changes
-                                .first()
-                                .map(|change| format!("Edited: {}", change.path));
-                            state.activity.record_file_changes(changes);
-                            label
-                        }
-                        AgentItem::TodoList { items, .. } => {
-                            state.activity.record_todos(items);
-                            None
-                        }
-                        AgentItem::AsyncQuestion { questions, .. } => {
-                            // The question rides the agent's message and does
-                            // not hold the turn: the turn's result carries it,
-                            // and the caller's next send answers it.
-                            state.activity.questions = driver::async_question_prompts(&questions)
-                                .iter()
-                                .map(ActivityQuestion::from)
-                                .collect();
-                            Some("Asked a question".to_string())
-                        }
-                        AgentItem::Other { .. } => None,
-                    }
-                };
-                if let Some(label) = label {
-                    self.emit_subagent_activity(label);
-                }
-                self.emit_row(true).await;
-            }
-            AgentEvent::Other => {}
-        }
-    }
-
-    fn refresh_text(state: &mut AgentState) {
-        let joined = state
-            .messages
-            .iter()
-            .map(|(_, text)| text.as_str())
-            .filter(|text| !text.trim().is_empty())
-            .collect::<Vec<_>>()
-            .join("\n\n");
-        state.activity.text = tail_bounded(&joined, MAX_RESULT_TEXT_CHARS);
-    }
-
-    /// A token that fires when the current turn ends; already fired when
-    /// no turn is running.
-    async fn turn_ended(&self) -> CancellationToken {
-        let state = self.state.lock().await;
-        match state.turn.as_ref() {
-            Some(turn) => turn.ended.clone(),
-            None => {
-                let ended = CancellationToken::new();
-                ended.cancel();
-                ended
-            }
-        }
-    }
-
-    async fn handle_request(self: Arc<Self>, id: Value, request: AgentRequest) {
-        let kind = request.kind().to_string();
-        log::info!("External agent {} asks: {kind}", self.agent_id);
-        let client = {
-            let state = self.state.lock().await;
-            match state.process.as_ref() {
-                Some(process) => Arc::clone(&process.client),
-                None => return,
-            }
-        };
-        let reply = match request {
-            AgentRequest::Approval {
-                item_id,
-                tool_name,
-                arguments,
-                prompt,
-            } => {
-                let request = AgentPermissionRequest {
-                    request_id: format!("{}-{item_id}", self.agent_id),
-                    tool_name,
-                    arguments,
-                    prompt,
-                };
-                AgentReply::Decision(self.request_permission(&item_id, request).await)
-            }
-            AgentRequest::ModeChange { .. } => {
-                // Maple sets the agent's mode from the task's; the caller
-                // hears that the agent asked.
-                self.state.lock().await.activity.declined.push(
-                    "Changing its own mode: Maple keeps the agent in the task's permission mode."
-                        .to_string(),
-                );
-                self.emit_row(true).await;
-                AgentReply::Decision(AgentPermissionDecision::Cancel)
-            }
-            AgentRequest::UserInput { questions } => {
-                if questions.is_empty() {
-                    AgentReply::Answers(String::new())
-                } else {
-                    AgentReply::Answers(self.ask_caller(questions).await)
-                }
-            }
-            AgentRequest::Unknown { method } => {
-                client
-                    .refuse(id, &format!("{method} is not supported by this client"))
-                    .await;
-                return;
-            }
-        };
-        log::info!(
-            "External agent {} answered {kind}: {}",
-            self.agent_id,
-            reply.label()
-        );
-        if let Err(error) = client.reply(id, reply).await {
-            log::warn!("Failed to answer an external agent request: {error}");
-        }
-    }
-
-    /// Put the agent's questions to the model that called it and wait for
-    /// the answers JSON of [`AgentReply::Answers`]. A blocking call returns
-    /// with them; a background agent's caller gets a notice. Nothing comes
-    /// back when the turn ends first or the caller declines.
-    async fn ask_caller(self: &Arc<Self>, questions: Vec<AgentQuestion>) -> String {
-        let Some((number, ended)) = self
-            .state
-            .lock()
-            .await
-            .turn
-            .as_ref()
-            .map(|turn| (turn.number, turn.ended.clone()))
-        else {
-            return String::new();
-        };
-        // One question at a time; another waits for the first's answer.
-        let _asking = tokio::select! {
-            biased;
-            _ = self.cancel.cancelled() => return String::new(),
-            _ = ended.cancelled() => return String::new(),
-            asking = self.asking.lock() => asking,
-        };
-        let (reply, answer) = oneshot::channel();
-        let notify = {
-            let mut state = self.state.lock().await;
-            let Some(turn) = state.turn.as_ref().filter(|turn| turn.number == number) else {
-                return String::new();
-            };
-            let notify = turn.waiters == 0;
-            state.question = Some(reply);
-            state.activity.status = "waiting".to_string();
-            state.activity.questions = questions.iter().map(ActivityQuestion::from).collect();
-            // The row shows what was asked, as the agent's own words.
-            let id = format!("maple-question-{}", state.messages.len());
-            state.messages.push((id, question_text(&questions)));
-            Self::refresh_text(&mut state);
-            notify
-        };
-        log::info!(
-            "External agent {} asks its caller {} question(s)",
-            self.agent_id,
-            questions.len()
-        );
-        self.wake.notify_waiters();
-        self.emit_subagent_activity("Asked a question".to_string());
-        self.emit_row(true).await;
-        if notify {
-            let agent = Arc::clone(self);
-            tokio::spawn(async move { agent.report_question().await });
-        }
-        tokio::select! {
-            biased;
-            _ = self.cancel.cancelled() => String::new(),
-            _ = ended.cancelled() => String::new(),
-            answer = answer => answer.unwrap_or_default(),
-        }
-    }
-
-    /// Answer what the agent asks to do, its action `item_id`. An agent Maple
-    /// sets the mode of has it judged by the task's permission gate, which
-    /// may ask the user; any other is accepted once, as it runs in its own
-    /// approval mode. A request that arrives after the agent or its turn has
-    /// ended is cancelled.
-    async fn request_permission(
-        &self,
-        item_id: &str,
-        request: AgentPermissionRequest,
-    ) -> AgentPermissionDecision {
-        let ended = self.turn_ended().await;
-        if self.cancel.is_cancelled() || ended.is_cancelled() {
-            return AgentPermissionDecision::Cancel;
-        }
-        let gate = lock(&self.gate)
-            .clone()
-            .filter(|_| self.entry.mode(AgentPermissionMode::ReadOnly).is_some());
-        let Some(gate) = gate else {
-            log::info!(
-                "External agent {} approval accepted for {}",
-                self.agent_id,
-                request.tool_name
-            );
-            return AgentPermissionDecision::AllowOnce;
-        };
-        let input = Value::Object(request.arguments);
-        let action = card_action(&request.tool_name, &input);
-        self.set_pending_permission(Some(format!("approve {action}")))
-            .await;
-        // Only the tool, its input and the folder reach the classifier: the
-        // agent's own title for the action could argue it through.
-        let cwd = self.cwd.display().to_string();
-        let stop = self.cancel.child_token();
-        let verdict = tokio::select! {
-            biased;
-            () = ended.cancelled() => Err(Refusal::Stopped),
-            verdict = gate.check_request(&request.tool_name, None, &input, &cwd, &stop) => verdict,
-        };
-        let declined = match &verdict {
-            Ok(()) | Err(Refusal::Stopped) => None,
-            Err(Refusal::Declined(None)) => Some(format!("{action}: the user declined it.")),
-            Err(Refusal::Declined(Some(note))) => {
-                Some(format!("{action}: the user declined it and said: {note}"))
-            }
-            Err(Refusal::NobodyToAsk) => Some(format!(
-                "{action}: it needed the user's approval and no connected interface could ask."
-            )),
-        };
-        {
-            let mut state = self.state.lock().await;
-            state.activity.declined.extend(declined);
-            // A command that was not allowed did not run, whether or not
-            // the agent says so.
-            if verdict.is_err() {
-                for command in &mut state.activity.commands {
-                    if command.id == item_id && command.status == "running" {
-                        command.status = "failed".to_string();
-                    }
-                }
-            }
-        }
-        self.set_pending_permission(None).await;
-        log::info!(
-            "External agent {} approval for {}: {}",
-            self.agent_id,
-            request.tool_name,
-            if verdict.is_ok() {
-                "allowed"
-            } else {
-                "refused"
-            }
-        );
-        match verdict {
-            Ok(()) => AgentPermissionDecision::AllowOnce,
-            Err(_) => AgentPermissionDecision::Cancel,
-        }
-    }
-
-    /// Record the approval the agent waits for, or that it no longer waits,
-    /// on its transcript row and its line in the agents panel.
-    async fn set_pending_permission(&self, pending: Option<String>) {
-        let label = {
-            let mut state = self.state.lock().await;
-            state.activity.pending_permission = pending;
-            latest_activity_label(&state.activity)
-        };
-        self.emit_row(true).await;
-        self.emit_subagent_activity(label.unwrap_or_else(|| "Working".to_string()));
-    }
-
-    /// Ask the agent to stop its current turn. The thread stays open.
-    async fn interrupt(&self) {
-        let (client, thread_id, turn_id) = {
-            let state = self.state.lock().await;
-            let Some(process) = state.process.as_ref() else {
-                return;
-            };
-            let Some(turn) = state.turn.as_ref() else {
-                return;
-            };
-            (
-                Arc::clone(&process.client),
-                process.thread_id.clone(),
-                turn.turn_id.clone(),
-            )
-        };
-        // Claude and ACP agents stop without the turn's id, which can still
-        // be on its way when Stop comes.
-        let request = client.interrupt(&thread_id, turn_id.as_deref());
-        if let Ok(Err(error)) = tokio::time::timeout(INTERRUPT_REQUEST_TIMEOUT, request).await {
-            log::debug!("External agent interrupt was refused: {error}");
-        }
-    }
-
-    /// Stop what the agent is doing now and reclaim its process. Codex
-    /// does not always end a sandboxed command on `turn/interrupt`, so the
-    /// process group goes too; the thread is on disk and the next send
-    /// resumes it in a fresh process.
-    async fn stop_turn(&self) {
-        let had_turn = self.state.lock().await.turn.is_some();
-        if !had_turn {
-            return;
-        }
-        self.interrupt().await;
-        let settled = tokio::time::timeout(INTERRUPT_SETTLE_TIMEOUT, async {
-            loop {
-                if self.state.lock().await.turn.is_none() {
-                    break;
-                }
-                tokio::time::sleep(Duration::from_millis(50)).await;
-            }
-        })
-        .await
-        .is_ok();
-        let process = self.state.lock().await.process.take();
-        if let Some(mut process) = process {
-            process.child.kill_and_wait().await;
-            process.reader.abort();
-            process.events.abort();
-        }
-        if !settled {
-            self.finish_turn(TurnOutcome::Cancelled, None).await;
-        }
-    }
-
-    /// Kill the agent's process group now, when its shutdown ran out of time.
-    async fn kill_now(&self) {
-        self.cancel.cancel();
-        let Ok(mut state) = tokio::time::timeout(KILL_LOCK_TIMEOUT, self.state.lock()).await else {
-            log::warn!(
-                "External agent {} could not be reached to kill it",
-                self.agent_id
-            );
-            return;
-        };
-        if let Some(mut process) = state.process.take() {
-            process.reader.abort();
-            process.events.abort();
-            if let Some(pid) = process.child.child.id() {
-                pi_coding_agent::tools::kill_process_tree(pid);
-            }
-            let _ = process.child.child.start_kill();
-        }
-    }
-
-    /// End the agent: stop its turn as Stop does, then kill its process
-    /// group. Interrupting first and waiting for the turn to end lets the
-    /// agent end its own commands: Grok runs each in a process group of its
-    /// own, which killing the agent's group does not reach.
-    async fn shutdown(&self) {
-        self.cancel.cancel();
-        self.stop_turn().await;
-        let process = self.state.lock().await.process.take();
-        if let Some(mut process) = process {
-            process.child.kill_and_wait().await;
-            process.reader.abort();
-            process.events.abort();
-        }
-    }
-
-    async fn finish_turn(&self, outcome: TurnOutcome, error: Option<String>) {
-        let end = {
-            let mut state = self.state.lock().await;
-            let Some(mut turn) = state.turn.take() else {
-                return;
-            };
-            state.activity.status = outcome.status().to_string();
-            state.activity.pending_permission = None;
-            // A command a stopped or failed turn left running did not
-            // finish; some agents never say so.
-            if outcome != TurnOutcome::Completed {
-                for command in &mut state.activity.commands {
-                    if command.status == "running" {
-                        command.status = "failed".to_string();
-                    }
-                }
-            }
-            // A question that held the turn went with it.
-            if state.question.take().is_some() {
-                state.activity.questions.clear();
-            }
-            if error.is_some() {
-                state.activity.error = error;
-            }
-            self.refresh_elapsed(&mut state);
-            let mut row = activity_row_item(&turn.row_id, &state.activity, unix_ms());
-            state.last_row_revision = super::runs::next_timeline_revision();
-            row.revision = state.last_row_revision;
-            row.live = Some(super::AgentLiveRowIdentity {
-                run_id: external_run_id(&self.agent_id),
-                occurrence: u64::from(state.activity.turns),
-            });
-            state.last_row_id = Some(turn.row_id.clone());
-            state.last_row_emit = Some(Instant::now());
-            turn.ended.cancel();
-            log::info!(
-                "External agent {} turn ended: {}",
-                self.agent_id,
-                outcome.status()
-            );
-            // The turn is gone from the state, so emit its last row here.
-            self.emit_item(row);
-            let report = turn.waiters == 0;
-            turn.ends
-                .take()
-                .map(|ends| (ends, TurnEnd { outcome, report }))
-        };
-        // Recorded before anyone waiting on the turn hears it ended, so the
-        // record never trails the next turn's or a shutdown.
-        self.record().await;
-        self.wake.notify_waiters();
-        emit_agent_event(
-            &self.host.events,
-            AgentServiceEvent::Run {
-                session_id: self.session_id.clone(),
-                run_id: external_run_id(&self.agent_id),
-                event: AgentRunEvent::SubagentFinished {
-                    id: subagent_row_id(&self.agent_id),
-                },
-            },
-        );
-        if let Some((ends, end)) = end {
-            let _ = ends.send(end);
-        }
-    }
-
-    /// A background turn ended: leave the result in the transcript and
-    /// tell the model, behind the task's run or in a run of its own.
-    async fn report_background_turn_end(&self, outcome: TurnOutcome) {
-        // An agent shut down went with its task or the runtime: nobody is
-        // left to tell.
-        if self.cancel.is_cancelled() {
-            return;
-        }
-        let Some(runtime) = self.host.runtime.upgrade() else {
-            return;
-        };
-        let activity = self.activity().await;
-        let result_text = render_activity(&activity, &completion_guidance(&activity));
-        let row_id = self.last_row_id().await;
-        let for_model = background_result_message(
-            "A background agent has finished. Its result is included below; continue the task using this result without fetching it again.",
-            &format!("external agent {} ({})", self.agent_id, self.provider),
-            outcome.status(),
-            &result_text,
-            &format!(
-                "Use {AGENT_STATUS_TOOL}(provider: \"{}\", agent_id: \"{}\") only if you need to inspect its current state again.",
-                self.provider, self.agent_id
-            ),
-        );
-        // The task's session takes the notices; a task closed meanwhile is
-        // opened again, one deleted is gone with its agents.
-        let session = match runtime.side_question_session(&self.session_id).await {
-            Ok(session) => session,
-            Err(error) => {
-                log::warn!(
-                    "External agent {} could not report to its task: {error}",
-                    self.agent_id
-                );
-                return;
-            }
-        };
-        // The notices first, so a run the result starts follows them.
-        let context = session.extension_context();
-        context.append_entry(
-            TURN_END_ENTRY,
-            Some(json!({
-                ACTIVITY_KEY: activity,
-                NOTICE_ROW_KEY: row_id,
-                NOTICE_RESULT_KEY: result_text,
-            })),
-        );
-        let mut row = activity_row_item(&row_id, &activity, unix_ms());
-        row.live = Some(super::AgentLiveRowIdentity {
-            run_id: external_run_id(&self.agent_id),
-            occurrence: u64::from(activity.turns),
-        });
-        row.output = Some(json!({
-            "text": result_text,
-            "structuredContent": { ACTIVITY_KEY: activity },
-            "content": [],
-        }));
-        self.emit_item(row);
-        self.notice(
-            &context,
-            "end",
-            &format!(
-                "External agent {} ({}) {}.",
-                self.agent_id,
-                self.provider_name(),
-                outcome.verb()
-            ),
-            AgentTimelineLabel {
-                kind: format!("external-{}", outcome.status()),
-                name: Some(self.agent_id.clone()),
-                detail: Some(self.provider_name().into()),
-            },
-        );
-        self.deliver(&runtime, &context, BACKGROUND_RESULT_MESSAGE, for_model)
-            .await;
-    }
-
-    /// A background agent asked a question: hand it to the model that
-    /// called the agent, which answers with its next send.
-    async fn report_question(&self) {
-        if self.cancel.is_cancelled() {
-            return;
-        }
-        let Some(runtime) = self.host.runtime.upgrade() else {
-            return;
-        };
-        let activity = self.activity().await;
-        if activity.questions.is_empty() {
-            return;
-        }
-        let for_model = background_result_message(
-            "A background agent asked a question and is waiting for your answer. Its questions are included below.",
-            &format!("external agent {} ({})", self.agent_id, self.provider),
-            &activity.status,
-            &render_activity(&activity, &completion_guidance(&activity)),
-            &format!(
-                "Answer with {AGENT_SEND_TOOL}(provider: \"{}\", agent_id: \"{}\").",
-                self.provider, self.agent_id
-            ),
-        );
-        let session = match runtime.side_question_session(&self.session_id).await {
-            Ok(session) => session,
-            Err(error) => {
-                log::warn!(
-                    "External agent {} could not ask its task: {error}",
-                    self.agent_id
-                );
-                return;
-            }
-        };
-        let context = session.extension_context();
-        self.deliver(&runtime, &context, BACKGROUND_QUESTION_MESSAGE, for_model)
-            .await;
-    }
-
-    /// Hand the model a message it did not ask for, behind the task's run
-    /// or in a run of its own. A task that cannot be resumed reads it with
-    /// its next prompt.
-    async fn deliver(
-        &self,
-        runtime: &Arc<AgentRuntime>,
-        context: &ExtensionContext,
-        custom_type: &'static str,
-        for_model: String,
-    ) {
-        let Err(error) = runtime
-            .deliver_hidden(&self.session_id, custom_type, for_model.clone())
-            .await
-        else {
-            return;
-        };
-        log::warn!(
-            "External agent {} could not reach its task: {error}",
-            self.agent_id
-        );
-        context.send_message(
-            CustomMessageDraft {
-                custom_type: custom_type.to_string(),
-                content: vec![pi_ai::Content::text(for_model)],
-                display: false,
-                details: None,
-            },
-            Delivery::Append,
-        );
-        self.notice(
-            context,
-            "undelivered",
-            "The task could not be resumed. Send a message to read the agent's result.",
-            super::timeline::label("external-undelivered"),
-        );
-    }
-
-    /// Leave a notice in the task's transcript.
-    fn notice(
-        &self,
-        context: &ExtensionContext,
-        kind: &str,
-        text: &str,
-        label: AgentTimelineLabel,
-    ) {
-        let id = format!("external-{}-{kind}-{}", self.agent_id, unix_ms());
-        context.append_entry(
-            MAPLE_NOTICE_ENTRY,
-            Some(json!({"id": id, "text": text, "label": label})),
-        );
-        let mut item = notice_item(id, "Agent notice", text, pi_ai::now_ms());
-        item.label = Some(label);
-        self.emit_item(item);
-    }
-
-    async fn last_row_id(&self) -> String {
-        let state = self.state.lock().await;
-        state
-            .turn
-            .as_ref()
-            .map(|turn| turn.row_id.clone())
-            .unwrap_or_else(|| self.row_id_hint(&state))
-    }
-
-    fn row_id_hint(&self, state: &AgentState) -> String {
-        state
-            .last_row_id
-            .clone()
-            .unwrap_or_else(|| format!("external-{}-turn-{}", self.agent_id, state.activity.turns))
-    }
-
-    fn emit_subagent_started(&self, background: bool) {
-        emit_agent_event(
-            &self.host.events,
-            AgentServiceEvent::Run {
-                session_id: self.session_id.clone(),
-                run_id: external_run_id(&self.agent_id),
-                event: AgentRunEvent::SubagentStarted {
-                    id: subagent_row_id(&self.agent_id),
-                    task: self.task.clone(),
-                    background,
-                    external: Some(ExternalAgentRef {
-                        provider: self.provider.clone(),
-                        agent_id: self.agent_id.clone(),
-                    }),
-                },
-            },
-        );
-    }
-
-    fn emit_subagent_activity(&self, tool: String) {
-        emit_agent_event(
-            &self.host.events,
-            AgentServiceEvent::Run {
-                session_id: self.session_id.clone(),
-                run_id: external_run_id(&self.agent_id),
-                event: AgentRunEvent::SubagentActivity {
-                    id: subagent_row_id(&self.agent_id),
-                    tool,
-                },
-            },
-        );
-    }
-
-    fn emit_item(&self, mut item: AgentTimelineItem) {
-        if item.revision == 0 {
-            item.revision = super::runs::next_timeline_revision();
-        }
-        self.decorate_live_item(&mut item);
-        emit_agent_event(
-            &self.host.events,
-            AgentServiceEvent::TimelineItem {
-                session_id: self.session_id.clone(),
-                run_id: None,
-                item,
-            },
-        );
-    }
-
-    fn decorate_live_item(&self, item: &mut AgentTimelineItem) {
-        if item.live.is_none() {
-            return;
-        }
-        let Some(runtime) = self.host.runtime.upgrade() else {
-            return;
-        };
-        match runtime.store.store().external_repaint_target(
-            runtime.store.account(),
-            &self.session_id,
-            &item.id,
-        ) {
-            Ok(Some(row)) => {
-                item.persisted = Some(super::AgentPersistedRowIdentity {
-                    task_id: self.session_id.clone(),
-                    rows_epoch: row.epoch,
-                    row_seq: row.row_seq,
-                    update_seq: row.update_seq,
-                })
-            }
-            Ok(None) => {}
-            Err(error) => {
-                log::warn!("Could not resolve the external agent's committed row: {error}")
-            }
-        }
-    }
-
-    /// Repaint the transcript row of the current turn with the activity so
-    /// far. Streamed text is throttled; structural changes are not.
-    async fn emit_row(&self, force: bool) {
-        let item = {
-            let mut state = self.state.lock().await;
-            let Some(row_id) = state.turn.as_ref().map(|turn| turn.row_id.clone()) else {
-                return;
-            };
-            let now = Instant::now();
-            if !force
-                && state
-                    .last_row_emit
-                    .is_some_and(|last| now.duration_since(last) < LIVE_ROW_INTERVAL)
-            {
-                return;
-            }
-            state.last_row_emit = Some(now);
-            state.last_row_revision = super::runs::next_timeline_revision();
-            state.last_row_id = Some(row_id.clone());
-            self.refresh_elapsed(&mut state);
-            let mut item = activity_row_item(&row_id, &state.activity, unix_ms());
-            item.revision = state.last_row_revision;
-            item.live = Some(super::AgentLiveRowIdentity {
-                run_id: external_run_id(&self.agent_id),
-                occurrence: u64::from(state.activity.turns),
-            });
-            item
-        };
-        self.emit_item(item);
-    }
 }
 
 impl AgentRuntimeHandle {

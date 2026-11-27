@@ -229,9 +229,11 @@ classifier.
 While the card waits, the agent's status says what it waits on. A refusal
 answers `reject_once`, and the agent's activity lists it under "Not
 allowed", with the user's note, so the model that called the agent knows. A
-request with no connected interface to ask is refused the same way. Agents
-without modes, Codex and Claude Code among them, have every request accepted
-once.
+request with no connected interface to ask is refused the same way, as is
+one that arrives after its turn or while Stop ends it. Which agents go to
+the gate is the catalog entry's `approvals`: `task` for Grok Build and
+Antigravity, `agent` for Codex and Claude Code, whose requests are accepted
+once under their own settings.
 
 ## Questions
 
@@ -302,10 +304,30 @@ Stopping an agent, from its row or with `agent_cancel`, sends
 `turn/interrupt` (translated to Claude’s native `interrupt` control request), waits
 briefly for confirmation, then kills the
 process group. Codex does not always end a sandboxed command on interrupt,
-so the kill is what guarantees nothing keeps running. Stopping Maple or
-deleting the task stops each working agent the same way before killing it:
-Grok runs each command in a process group of its own, which the kill does
-not reach, so Grok has to end the command itself.
+so the kill is what guarantees nothing keeps running. A prompt still on its
+way goes first, so the interrupt never overtakes it. Stop while an agent is
+starting gives the start up, and the half-started process goes. Stopping
+Maple or deleting the task stops each working agent the same way before
+killing it: Grok runs each command in a process group of its own, which the
+kill does not reach, so Grok has to end the command itself. When stopping
+Maple runs out of time, what is left is killed.
+
+## How an agent is run
+
+Each agent has one owner task (`external_agents/owner.rs`) that holds its
+processes and everything it waits on, over a state machine
+(`external_agents/machine.rs`) that decides what happens next. Tools, Stop
+and the interface reach the owner by message and read what it publishes,
+so nothing waits on a lock another path holds: the agent's messages, a
+caller's Stop and the end of its own work are taken one at a time, in the
+order they come. The machine does no waiting and starts nothing; it answers
+each event with effects for the owner, and its tests drive every transition
+directly. Slow work (starting a process, applying options, an approval)
+runs beside the owner and reports back, tagged with the process or turn it
+was for, so news about a process or turn that is gone is dropped.
+Maintenance that must not run under a working agent waits until none of the
+task's agents is starting a turn, in one or stopping, and none starts
+meanwhile.
 
 ## Limits
 
@@ -333,7 +355,8 @@ not reach, so Grok has to end the command itself.
 Providers are data: one entry in `agent/external_agents/catalog.json` gives
 the stable ID, name, Settings description and icon, the command to find,
 the oldest version Maple accepts, which sign-in probe to run, the transport,
-and every sentence Maple says about the provider. Settings cards, detection,
+who decides on its requests (`approvals`), and every sentence Maple says
+about the provider. Settings cards, detection,
 `list_agent_providers`, the tool descriptions' examples, composer rows and
 task choices all read the catalog. A difference between providers is a
 catalog key or a named behaviour a key selects (`signInProbe`, `transport`);
