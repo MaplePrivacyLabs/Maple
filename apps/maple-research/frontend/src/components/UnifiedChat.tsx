@@ -205,7 +205,7 @@ import {
   isChatResponseDefinitelyRejectedError,
   isImageDescriptionUnavailableError
 } from "@/services/chatResponseErrors";
-import { handleChatAccessError } from "@/services/chatAccessError";
+import { handleChatAccessError, handleChatStreamLimitFailure } from "@/services/chatAccessError";
 import { isChatAccountCredentialMismatchError } from "@/services/chatAccountCredential";
 import { chatCursorAfterSendFailure } from "@/services/chatSendFailureRecovery";
 import { normalizeChatPollingPage } from "@/services/chatPollingPage";
@@ -4699,7 +4699,9 @@ export function UnifiedChat({ isVisible = true }: { isVisible?: boolean }) {
       runtimeKey: ChatRuntimeKey,
       runToken: number,
       optimisticMessageId: string,
-      onResponseCreated: (responseId: string) => Promise<boolean>
+      onResponseCreated: (responseId: string) => Promise<boolean>,
+      // Returns the message for a known terminal failure, or null for the generic one.
+      describeStreamFailure: (event: unknown) => string | null
     ): Promise<ChatStreamTerminalState> => {
       const messageTextBuffers = new Map<string, Map<number, string>>();
       const reasoningTextBuffers = new Map<string, Map<number, string>>();
@@ -5050,6 +5052,7 @@ export function UnifiedChat({ isVisible = true }: { isVisible?: boolean }) {
           } else if (isTerminalChatStreamErrorEvent(eventType)) {
             terminalState = "error";
             console.error("Streaming error:", summarizeStreamEventForLog(eventType, event));
+            const failureMessage = describeStreamFailure(event);
             runtimeStore.updateForRun(runtimeKey, runToken, (snapshot) => ({
               ...snapshot,
               messages: updateActiveItemStatuses(
@@ -5057,7 +5060,7 @@ export function UnifiedChat({ isVisible = true }: { isVisible?: boolean }) {
                 "error",
                 ownedItemIds
               ),
-              error: "Failed to generate response. Please try again."
+              error: failureMessage ?? "Failed to generate response. Please try again."
             }));
             break;
           } else if (eventType === "response.cancelled") {
@@ -5334,6 +5337,18 @@ export function UnifiedChat({ isVisible = true }: { isVisible?: boolean }) {
           }));
         };
 
+        // A plan or context limit opens its dialog whether it rejected the
+        // request or ended the accepted Response.
+        const limitDialogs = {
+          isRunCurrent: () => runtimeStore.isRunCurrent(runtimeKey, run.token),
+          isRuntimeSelected: () => isRuntimeSelected(runtimeKey),
+          showUpgradeDialog: (feature: "usage" | "tokens") => {
+            setUpgradeFeature(feature);
+            setUpgradeDialogOpen(true);
+          },
+          showContextLimitDialog: () => setContextLimitDialogOpen(true)
+        };
+
         const unregisterCurrentTurn = registerChatCurrentTurn(runtimeStore, run.token, {
           responseRequestStarted: () => responseRequestStarted,
           serverRequestInFlight: () => conversationCreateInFlight,
@@ -5407,7 +5422,13 @@ export function UnifiedChat({ isVisible = true }: { isVisible?: boolean }) {
                 async (responseId) => {
                   if (!isRuntimeStopping(run.token)) return false;
                   return cancelKnownChatResponse(runtimeKey, run.token, responseId, localMessageId);
-                }
+                },
+                (event) =>
+                  handleChatStreamLimitFailure({
+                    event,
+                    productName: billingStatus?.product_name,
+                    ...limitDialogs
+                  })
               );
             } finally {
               runtimeStore.setAssistantStreaming(runtimeKey, run.token, false);
@@ -5634,13 +5655,7 @@ export function UnifiedChat({ isVisible = true }: { isVisible?: boolean }) {
               error,
               productName: billingStatus?.product_name,
               restoreTurn,
-              isRunCurrent: () => runtimeStore.isRunCurrent(runtimeKey, run.token),
-              isRuntimeSelected: () => isRuntimeSelected(runtimeKey),
-              showUpgradeDialog: (feature) => {
-                setUpgradeFeature(feature);
-                setUpgradeDialogOpen(true);
-              },
-              showContextLimitDialog: () => setContextLimitDialogOpen(true)
+              ...limitDialogs
             })
           ) {
             return false;
