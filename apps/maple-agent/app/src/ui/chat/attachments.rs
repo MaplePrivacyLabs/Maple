@@ -567,14 +567,212 @@ pub(super) fn image_format_from_bytes(bytes: &[u8]) -> Option<gpui::ImageFormat>
         Some(gpui::ImageFormat::Jpeg)
     } else if bytes.len() > 12 && &bytes[0..4] == b"RIFF" && &bytes[8..12] == b"WEBP" {
         Some(gpui::ImageFormat::Webp)
+    } else if bytes.starts_with(b"GIF87a") || bytes.starts_with(b"GIF89a") {
+        Some(gpui::ImageFormat::Gif)
     } else {
         None
+    }
+}
+
+const MAX_PICTURE_EDGE: u32 = 16_384;
+// GPUI decodes every frame of a GIF at full size and keeps all of them while
+// the picture is cached, so a GIF is admitted by its decoded size: at most
+// 300 frames and 32 Mi frame pixels (128 MiB of RGBA) in all.
+pub(super) const MAX_GIF_FRAMES: usize = 300;
+pub(super) const MAX_GIF_FRAME_PIXELS: u64 = 32 * 1024 * 1024;
+
+/// What a loaded picture costs beyond its bytes.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(super) struct PictureShape {
+    /// Pixel size, when the header says it.
+    pub(super) size: Option<(u32, u32)>,
+    /// Pixels of every decoded frame of an animation; 0 for a still.
+    pub(super) animation_pixels: u64,
+}
+
+/// Read a picture's size from its header, off the UI thread. A still that
+/// GPUI can draw is never refused here; a GIF must fit its frame budget.
+pub(super) fn picture_shape(bytes: &[u8]) -> Result<PictureShape, String> {
+    if image_format_from_bytes(bytes) == Some(gpui::ImageFormat::Gif) {
+        let (width, height, animation_pixels) = gif_shape(bytes)?;
+        return Ok(PictureShape {
+            size: Some((width, height)),
+            animation_pixels,
+        });
+    }
+    let size = image::ImageReader::new(std::io::Cursor::new(bytes))
+        .with_guessed_format()
+        .ok()
+        .and_then(|reader| reader.into_dimensions().ok())
+        .filter(|(width, height)| *width > 0 && *height > 0);
+    Ok(PictureShape {
+        size,
+        animation_pixels: 0,
+    })
+}
+
+/// Walk a GIF's blocks without decoding: its canvas size and the pixels of
+/// all its frames, each of which GPUI composes at canvas size.
+fn gif_shape(bytes: &[u8]) -> Result<(u32, u32, u64), String> {
+    fn error() -> String {
+        "The GIF is invalid or too large to play".into()
+    }
+    fn word(bytes: &[u8], offset: usize) -> Option<u32> {
+        Some(u32::from(u16::from_le_bytes([
+            *bytes.get(offset)?,
+            *bytes.get(offset + 1)?,
+        ])))
+    }
+    fn color_table(packed: u8) -> usize {
+        if packed & 0x80 == 0 {
+            0
+        } else {
+            3 * (1usize << ((packed & 7) + 1))
+        }
+    }
+    fn sub_blocks(bytes: &[u8], offset: &mut usize) -> Result<(), String> {
+        loop {
+            let size = usize::from(*bytes.get(*offset).ok_or_else(error)?);
+            *offset += 1 + size;
+            if *offset > bytes.len() {
+                return Err(error());
+            }
+            if size == 0 {
+                return Ok(());
+            }
+        }
+    }
+    let width = word(bytes, 6).ok_or_else(error)?;
+    let height = word(bytes, 8).ok_or_else(error)?;
+    let packed = *bytes.get(10).ok_or_else(error)?;
+    if width == 0 || height == 0 || width > MAX_PICTURE_EDGE || height > MAX_PICTURE_EDGE {
+        return Err(error());
+    }
+    let canvas = u64::from(width) * u64::from(height);
+    let mut offset = 13 + color_table(packed);
+    let (mut frames, mut pixels) = (0usize, 0u64);
+    loop {
+        match *bytes.get(offset).ok_or_else(error)? {
+            0x3b if frames > 0 => return Ok((width, height, pixels)),
+            0x21 => {
+                offset += 2;
+                sub_blocks(bytes, &mut offset)?;
+            }
+            0x2c => {
+                // A frame decodes at its own size before it is drawn on the
+                // canvas, so it counts at the larger of the two.
+                let frame_width = word(bytes, offset + 5).ok_or_else(error)?;
+                let frame_height = word(bytes, offset + 7).ok_or_else(error)?;
+                if frame_width > MAX_PICTURE_EDGE || frame_height > MAX_PICTURE_EDGE {
+                    return Err(error());
+                }
+                let frame = canvas.max(u64::from(frame_width) * u64::from(frame_height));
+                let packed = *bytes.get(offset + 9).ok_or_else(error)?;
+                // Descriptor, local colors, then the LZW code size byte.
+                offset += 10 + color_table(packed) + 1;
+                if offset > bytes.len() {
+                    return Err(error());
+                }
+                sub_blocks(bytes, &mut offset)?;
+                frames += 1;
+                pixels += frame;
+                if frames > MAX_GIF_FRAMES || pixels > MAX_GIF_FRAME_PIXELS {
+                    return Err(error());
+                }
+            }
+            _ => return Err(error()),
+        }
     }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn gif_with_frames(width: u16, height: u16, frames: usize) -> Vec<u8> {
+        gif_with_frame_size(width, height, frames, 1, 1)
+    }
+
+    fn gif_with_frame_size(
+        width: u16,
+        height: u16,
+        frames: usize,
+        frame_width: u16,
+        frame_height: u16,
+    ) -> Vec<u8> {
+        let (width, height) = (width.to_le_bytes(), height.to_le_bytes());
+        let (fw, fh) = (frame_width.to_le_bytes(), frame_height.to_le_bytes());
+        let mut bytes = vec![
+            b'G', b'I', b'F', b'8', b'9', b'a', width[0], width[1], height[0], height[1], 0x80, 0,
+            0, 0, 0, 0, 0xff, 0xff, 0xff,
+        ];
+        for _ in 0..frames {
+            // A frame at the origin with one LZW sub-block.
+            bytes.extend_from_slice(&[
+                0x2c, 0, 0, 0, 0, fw[0], fw[1], fh[0], fh[1], 0, 2, 2, 0x44, 1, 0,
+            ]);
+        }
+        bytes.push(0x3b);
+        bytes
+    }
+
+    #[test]
+    fn gifs_are_admitted_by_structure_and_decoded_size() {
+        let gif = gif_with_frames(4, 2, 3);
+        assert_eq!(image_format_from_bytes(&gif), Some(gpui::ImageFormat::Gif));
+        assert_eq!(
+            picture_shape(&gif),
+            Ok(PictureShape {
+                size: Some((4, 2)),
+                animation_pixels: 24,
+            })
+        );
+        assert!(picture_shape(&gif_with_frames(1, 1, 0)).is_err());
+        assert!(picture_shape(&gif_with_frames(1, 1, MAX_GIF_FRAMES + 1)).is_err());
+        // 3 frames of 4096x4096 is 48 Mi pixels, over the budget.
+        assert!(picture_shape(&gif_with_frames(4096, 4096, 3)).is_err());
+        // A tiny canvas does not hide frames that decode large: 3 frames of
+        // 4096x4096 on a 1x1 canvas are over the budget too.
+        assert!(picture_shape(&gif_with_frame_size(1, 1, 3, 4096, 4096)).is_err());
+        assert!(picture_shape(&gif_with_frame_size(1, 1, 1, 20_000, 1)).is_err());
+        assert_eq!(
+            picture_shape(&gif_with_frame_size(2, 2, 2, 3, 3)).map(|shape| shape.animation_pixels),
+            Ok(18)
+        );
+        assert!(picture_shape(&gif[..gif.len() - 2]).is_err());
+        assert!(picture_shape(&gif[..12]).is_err());
+    }
+
+    #[test]
+    fn large_stills_are_never_refused() {
+        // A 24 MP camera photo shows today; reading its size must not stop it.
+        // Encode a small JPEG and write the photo's size into its frame header.
+        let mut jpeg = std::io::Cursor::new(Vec::new());
+        image::RgbImage::new(8, 8)
+            .write_to(&mut jpeg, image::ImageFormat::Jpeg)
+            .unwrap();
+        let mut jpeg = jpeg.into_inner();
+        let frame = jpeg
+            .windows(2)
+            .position(|marker| marker == [0xff, 0xc0])
+            .unwrap();
+        jpeg[frame + 5..frame + 7].copy_from_slice(&4000u16.to_be_bytes());
+        jpeg[frame + 7..frame + 9].copy_from_slice(&6000u16.to_be_bytes());
+        assert_eq!(
+            picture_shape(&jpeg),
+            Ok(PictureShape {
+                size: Some((6000, 4000)),
+                animation_pixels: 0,
+            })
+        );
+        assert_eq!(
+            picture_shape(b"\x89PNG broken"),
+            Ok(PictureShape {
+                size: None,
+                animation_pixels: 0,
+            })
+        );
+    }
 
     #[test]
     fn staged_failure_reformats_after_returning_from_worker() {

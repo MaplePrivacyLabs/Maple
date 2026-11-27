@@ -286,6 +286,9 @@ pub(super) struct PreparedEntryImages {
     account: AccountId,
     task_uuid: String,
     attachments: Vec<String>,
+    /// Copies of the pictures a reply names in Markdown. Pinned with the
+    /// entry, but not image blocks: `has_images` and salvage ignore them.
+    markdown: Vec<String>,
 }
 pub(super) struct PreparedEntriesImages {
     pub(super) entries: Vec<PreparedEntryImages>,
@@ -298,7 +301,19 @@ impl PreparedEntryImages {
         if active_task(tx, self.account, &self.task_uuid)? != task_id {
             return Err(StoreError::NotFound);
         }
-        pin_tx(tx, task_id, &self.attachments)
+        pin_tx(tx, task_id, &self.attachments)?;
+        // A picture copy must never fail the reply's save: pin what is ready.
+        let ready: Vec<String> = self
+            .markdown
+            .iter()
+            .filter(|id| lookup_ready(tx, task_id, id).is_ok())
+            .cloned()
+            .collect();
+        pin_tx(tx, task_id, &ready)
+    }
+    /// Copy the pictures a new reply names; see `markdown_images`.
+    pub(super) fn import_markdown(&mut self, store: &Store) {
+        self.markdown = store.import_markdown_images(self.account, &self.task_uuid, &self.entry);
     }
 }
 
@@ -322,6 +337,9 @@ impl Store {
         operation_id: &str,
         metadata: &AttachmentUploadMetadata,
     ) -> StoreResult<AttachmentUploadStart> {
+        if is_reply_picture(operation_id) {
+            return Err(StoreError::InvalidInput);
+        }
         self.begin_attachment_upload_inner(account, task_uuid, operation_id, metadata, false)
     }
 
@@ -355,7 +373,10 @@ impl Store {
                 if stored_task != task || row.metadata != metadata || row.state == "cancelled" { return Err(StoreError::Conflict); }
                 return Ok(row);
             }
-            let (count,bytes,task_count):(i64,i64,i64) = tx.query_row("SELECT coalesce(sum(state!='cancelled'),0),coalesce(sum(size),0),coalesce(sum(task_id=?1 AND state!='cancelled'),0) FROM file_attachments WHERE bound=0 AND account_id=?2", params![task,account.0], |row| Ok((row.get(0)?,row.get(1)?,row.get(2)?)))?;
+            // Reply pictures waiting for their reply's save are the store's
+            // own copies, not uploads: they never take the composer's room.
+            // `substr`, not LIKE, which ignores case: `Markdown-` is an upload.
+            let (count,bytes,task_count):(i64,i64,i64) = tx.query_row("SELECT coalesce(sum(state!='cancelled'),0),coalesce(sum(size),0),coalesce(sum(task_id=?1 AND state!='cancelled'),0) FROM file_attachments WHERE bound=0 AND account_id=?2 AND substr(operation_id,1,9)!='markdown-'", params![task,account.0], |row| Ok((row.get(0)?,row.get(1)?,row.get(2)?)))?;
             if !source_image && (count >= MAX_PENDING_FILES as i64 || task_count >= MAX_ATTACHMENTS as i64 || bytes as u64 + metadata.size > MAX_PENDING_BYTES) { return Err(StoreError::Busy); }
             let tombstones:i64=tx.query_row("SELECT count(*) FROM file_attachments WHERE account_id=?1 AND state='cancelled'",[account.0],|row|row.get(0))?;
             if !source_image && tombstones>=MAX_CANCELLATION_TOMBSTONES {return Err(StoreError::Busy);}
@@ -440,6 +461,9 @@ impl Store {
         operation_id: &str,
     ) -> StoreResult<()> {
         validate_operation(operation_id)?;
+        if is_reply_picture(operation_id) {
+            return Err(StoreError::InvalidInput);
+        }
         self.write(Durability::Durable,|tx| {
             let task=active_task(tx,account,task_uuid)?;
             let existing:Option<(i64,bool)>=tx.query_row("SELECT task_id,bound FROM file_attachments WHERE account_id=?1 AND operation_id=?2",params![account.0,operation_id],|row|Ok((row.get(0)?,row.get(1)?))).optional()?;
@@ -842,6 +866,7 @@ impl Store {
                 account,
                 task_uuid: task_uuid.to_owned(),
                 attachments: ids,
+                markdown: Vec::new(),
             });
         }
         Ok(PreparedEntriesImages { entries: prepared })
@@ -1071,6 +1096,11 @@ impl Store {
 
 fn operation_key(account: AccountId, operation: &str) -> String {
     format!("{}:{operation}", account.0)
+}
+/// The store's own reply-picture copies. Uploads may neither begin nor
+/// cancel one; the comparison is exact, like the composer's count.
+fn is_reply_picture(operation_id: &str) -> bool {
+    operation_id.starts_with("markdown-")
 }
 fn validate_operation(value: &str) -> StoreResult<()> {
     if value.is_empty()
@@ -1492,6 +1522,9 @@ fn visit_images(
     }
     Ok(())
 }
+
+#[path = "markdown_images.rs"]
+pub(super) mod markdown_images;
 
 #[cfg(test)]
 #[path = "attachment_tests.rs"]

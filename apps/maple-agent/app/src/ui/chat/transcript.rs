@@ -126,6 +126,8 @@ impl ChatScreen {
                     markdown_cache: &chat.markdown_cache,
                     derived: &chat.derived,
                     attachment_images: &chat.attachment_images,
+                    drawn_pictures: &chat.drawn_pictures,
+                    attachment_dimensions: &chat.attachment_dimensions,
                     attachment_previews: &chat.attachment_previews,
                     attachment_failures: &chat.attachment_failures,
                     chat: &entity,
@@ -1066,6 +1068,33 @@ pub(super) fn attachment_refs(item: &AgentTimelineItem) -> impl Iterator<Item = 
     attachment_metadata(item).map(|attachment| (attachment.id, attachment.name))
 }
 
+/// Every picture a row draws: its image attachments and the pictures a
+/// reply names in Markdown, which its row lists under `markdownImages`.
+pub(super) fn picture_ids(item: &AgentTimelineItem) -> impl Iterator<Item = &str> {
+    image_attachment_refs(item)
+        .map(|(id, _)| id)
+        .chain(markdown_pictures(item).map(|(_, id)| id))
+}
+
+/// `(destination, attachment)` of each picture a reply names in Markdown.
+pub(super) fn markdown_pictures(item: &AgentTimelineItem) -> impl Iterator<Item = (&str, &str)> {
+    item.input
+        .as_ref()
+        .filter(|_| item.item_type == "message" && item.role.as_deref() != Some("user"))
+        .and_then(|input| input.get(maple_agent::store::MARKDOWN_IMAGES_KEY))
+        .and_then(|pictures| pictures.as_array())
+        .into_iter()
+        .flatten()
+        .filter_map(|picture| {
+            let mime = picture.get("mimeType")?.as_str()?;
+            mime.starts_with("image/").then_some(())?;
+            Some((
+                picture.get("source")?.as_str()?,
+                picture.get("id")?.as_str()?,
+            ))
+        })
+}
+
 /// Only renderable image references need bytes. Generic files and known retired
 /// images never occupy the thumbnail request queue.
 pub(super) fn image_attachment_refs(
@@ -1177,6 +1206,97 @@ pub(super) fn attachment_thumbnail(image: Arc<gpui::Image>) -> Div {
         )
 }
 
+/// Widest a reply's picture shows, and tallest.
+const MARKDOWN_PICTURE_WIDTH: f32 = 720.;
+const MARKDOWN_PICTURE_HEIGHT: f32 = 480.;
+
+/// A picture a reply names in Markdown, whole and in its own shape: as wide
+/// as the message allows up to 720pt, at most 480pt tall, never enlarged
+/// past its own pixels. Until its copy loads, its alternative text shows.
+fn render_markdown_picture(
+    source: &SharedString,
+    alt: &SharedString,
+    ordinal: u64,
+    pictures: &HashMap<String, String>,
+    transcript: &TranscriptCtx,
+) -> Div {
+    let picture = pictures
+        .get(source.as_str())
+        .and_then(|id| Some((id, transcript.attachment_images.get(id)?)));
+    let Some((id, image)) = picture else {
+        return rich_text::plain_paragraph(
+            alt.clone(),
+            transcript.render.for_block(ordinal as usize),
+            transcript.render,
+        );
+    };
+    transcript
+        .drawn_pictures
+        .borrow_mut()
+        .insert(Arc::as_ptr(image) as usize);
+    let (ratio, width) = match transcript.attachment_dimensions.get(id) {
+        Some(&(width, height)) if width > 0 && height > 0 => {
+            let ratio = width as f32 / height as f32;
+            (
+                ratio,
+                MARKDOWN_PICTURE_WIDTH
+                    .min(MARKDOWN_PICTURE_HEIGHT * ratio)
+                    .min(width as f32),
+            )
+        }
+        // A picture whose header gave no size letterboxes in a wide box.
+        _ => (16. / 9., MARKDOWN_PICTURE_WIDTH),
+    };
+    let shown = Arc::clone(image);
+    let attachment_id = id.clone();
+    let chat = transcript.chat.clone();
+    let label = if alt.is_empty() {
+        tr("chat-attachment-image")
+    } else {
+        alt.clone()
+    };
+    let key = format!("{}-{ordinal}", transcript.render.id_seed);
+    let card = div()
+        // The box, not the picture, takes the shape: GPUI gives a picture
+        // its own pixel height whenever its width is a fraction.
+        .w_full()
+        .max_w(px(width))
+        .aspect_ratio(ratio)
+        .rounded(theme::RADIUS_MD)
+        .overflow_hidden()
+        .bg(gpui::rgb(theme::bg_elevated()))
+        .border_1()
+        .border_color(gpui::rgb(theme::border()))
+        .child(
+            gpui::img(gpui::ImageSource::Image(Arc::clone(image)))
+                // GPUI plays a GIF's frames only for an image with an id.
+                .id(SharedString::from(format!("markdown-picture-{key}")))
+                .size_full()
+                .object_fit(gpui::ObjectFit::Contain)
+                .rounded(theme::RADIUS_MD),
+        )
+        .id(SharedString::from(format!("markdown-image-{key}")))
+        .debug_selector({
+            let id = id.clone();
+            move || format!("markdown-image-{id}")
+        })
+        .role(gpui::Role::Button)
+        .aria_label(label)
+        .key_context("Button")
+        .tab_index(0)
+        .focus_visible(widgets::focus_ring)
+        .hover_bg(theme::overlay_hover())
+        .hover(|style| style.cursor_pointer())
+        .on_click(move |_event, _window, cx| {
+            chat.update(cx, |chat, cx| {
+                chat.open_attachment(&attachment_id, Arc::clone(&shown), cx);
+            })
+            .ok();
+        })
+        .on_key_down(ChatScreen::sidebar_button_key_down);
+    div().w_full().child(card)
+}
+
 /// An attachment with no picture to show: its name and what it is. Long
 /// file names stay within the message.
 pub(super) fn attachment_chip(name: SharedString, detail: SharedString) -> Div {
@@ -1220,6 +1340,10 @@ fn render_attachment(
         .get(id)
         .or_else(|| transcript.attachment_previews.get(id));
     if let Some(image) = image {
+        transcript
+            .drawn_pictures
+            .borrow_mut()
+            .insert(Arc::as_ptr(image) as usize);
         let shown = Arc::clone(image);
         let attachment_id = attachment.id.clone();
         let chat = transcript.chat.clone();
@@ -1341,11 +1465,14 @@ fn render_message(item: &AgentTimelineItem, revision: u64, transcript: &Transcri
             .flex_col()
             .gap_0p5()
             .text_color(gpui::rgb(theme::text_primary()))
-            .child(markdown::render_with(
+            .child(markdown::render_with_media(
                 &transcript
                     .markdown_cache
                     .get(&item.id, MarkdownKind::Body, revision, text),
                 ctx,
+                |source, alt, ordinal| {
+                    render_markdown_picture(source, alt, ordinal, &derived.pictures, transcript)
+                },
             ))
             .children(copy.map(|button| {
                 div()

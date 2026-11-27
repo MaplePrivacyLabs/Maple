@@ -9,11 +9,11 @@ use gpui::{Context, SharedString};
 use maple_agent::agent::AgentTimelineItem;
 
 use super::ChatScreen;
-use super::transcript::{has_tool_input, image_attachment_refs, tool_output_markdown};
+use super::transcript::{has_tool_input, picture_ids, tool_output_markdown};
 use crate::backend::{
     AgentBackend, ReadAttachmentRequest, StoreToolSummaryRequest, ToolStartSummary,
 };
-use crate::ui::chat::attachments::image_format_from_bytes;
+use crate::ui::chat::attachments::{PictureShape, image_format_from_bytes, picture_shape};
 
 /// A thinking block shorter than this reads faster than its summary;
 /// skip the model call.
@@ -23,6 +23,8 @@ const ATTACHMENT_CHUNK_BYTES: usize = 1024 * 1024;
 const MAX_ATTACHMENT_BYTES: usize = 20 * 1024 * 1024;
 const MAX_CACHED_ATTACHMENT_BYTES: usize = 32 * 1024 * 1024;
 const MAX_CACHED_ATTACHMENTS: usize = 64;
+/// Decoded GIF frames kept beyond the visible rows: 64 Mi pixels (256 MiB).
+const MAX_CACHED_ANIMATION_PIXELS: u64 = 64 * 1024 * 1024;
 const MAX_ATTACHMENT_READS: usize = 4;
 const ATTACHMENT_OVERDRAW_ROWS: usize = 5;
 const INITIAL_ATTACHMENT_ROWS: usize = 20;
@@ -380,8 +382,8 @@ impl ChatScreen {
         self.attachment_viewport = start..end;
         let visible: HashSet<String> = self.timeline[start..end]
             .iter()
-            .flat_map(image_attachment_refs)
-            .map(|(id, _)| id.to_string())
+            .flat_map(picture_ids)
+            .map(str::to_string)
             .collect();
         // A fast scroll must not leave a backlog downloading distant pages.
         // Reads already in flight keep their slots until their completion.
@@ -420,8 +422,8 @@ impl ChatScreen {
                 return;
             }
         }
-        let wanted: Vec<String> = image_attachment_refs(item)
-            .map(|(id, _)| id.to_string())
+        let wanted: Vec<String> = picture_ids(item)
+            .map(str::to_string)
             .filter(|id| {
                 !self.attachment_images.contains_key(id) && !self.attachment_requests.contains(id)
             })
@@ -465,12 +467,12 @@ impl ChatScreen {
                     this.pending_attachments = this.pending_attachments.saturating_sub(1);
                     if this.selection_generation == generation && this.is_selected(&target) {
                         match result {
-                            Ok(image) => this.insert_attachment_image(&id, image, cx),
+                            Ok((image, shape)) => this.insert_picture(&id, image, shape, cx),
                             Err(_) => {
-                                this.attachment_previews.remove(&id);
+                                this.forget_preview(&id);
                                 this.attachment_failures.insert(id.clone());
                                 let rows: Vec<_> = this.timeline.iter().enumerate().filter(|(_, item)|
-                                    image_attachment_refs(item).any(|(candidate, _)| candidate == id))
+                                    picture_ids(item).any(|candidate| candidate == id))
                                     .map(|(index, _)| index).collect();
                                 for index in rows { this.remeasure_item(index); }
                                 cx.notify();
@@ -485,10 +487,27 @@ impl ChatScreen {
         }
     }
 
+    #[cfg(test)]
     pub(super) fn insert_attachment_image(
         &mut self,
         id: &str,
         image: Arc<gpui::Image>,
+        cx: &mut Context<Self>,
+    ) {
+        let shape = PictureShape {
+            size: None,
+            animation_pixels: 0,
+        };
+        self.insert_picture(id, image, shape, cx);
+    }
+
+    /// Cache a loaded picture. Evicted pictures go to `released_pictures`,
+    /// whose decoded frames and textures the next render frees.
+    pub(super) fn insert_picture(
+        &mut self,
+        id: &str,
+        image: Arc<gpui::Image>,
+        shape: PictureShape,
         cx: &mut Context<Self>,
     ) {
         let start = self.attachment_viewport.start.min(self.timeline.len());
@@ -499,10 +518,19 @@ impl ChatScreen {
             .min(self.timeline.len());
         let visible: HashSet<String> = self.timeline[start..end]
             .iter()
-            .flat_map(image_attachment_refs)
-            .map(|(id, _)| id.to_string())
+            .flat_map(picture_ids)
+            .map(str::to_string)
             .collect();
-        self.attachment_images.remove(id);
+        if let Some(replaced) = self.attachment_images.remove(id)
+            && !Arc::ptr_eq(&replaced, &image)
+        {
+            self.released_pictures.push(replaced);
+        }
+        self.attachment_animation_pixels.remove(id);
+        match shape.size {
+            Some(size) => self.attachment_dimensions.insert(id.to_string(), size),
+            None => self.attachment_dimensions.remove(id),
+        };
         let mut cached: usize = self
             .attachment_images
             .values()
@@ -529,13 +557,40 @@ impl ChatScreen {
             }
             if let Some(evicted) = self.attachment_images.remove(&candidate) {
                 cached = cached.saturating_sub(evicted.bytes.capacity());
-                self.attachment_requests.remove(&candidate);
+                self.forget_picture(&candidate, evicted);
                 changed.insert(candidate);
             }
         }
+        // Decoded animations have their own budget. Off-screen ones go first;
+        // the rows on screen keep theirs even past it.
+        let mut animated: u64 = self.attachment_animation_pixels.values().sum();
+        if shape.animation_pixels > 0 {
+            let offscreen: Vec<String> = self
+                .attachment_animation_pixels
+                .keys()
+                .filter(|candidate| !visible.contains(*candidate))
+                .cloned()
+                .collect();
+            for candidate in offscreen {
+                if animated.saturating_add(shape.animation_pixels) <= MAX_CACHED_ANIMATION_PIXELS {
+                    break;
+                }
+                let pixels = self
+                    .attachment_animation_pixels
+                    .remove(&candidate)
+                    .unwrap_or(0);
+                animated = animated.saturating_sub(pixels);
+                if let Some(evicted) = self.attachment_images.remove(&candidate) {
+                    self.forget_picture(&candidate, evicted);
+                    changed.insert(candidate);
+                }
+            }
+            self.attachment_animation_pixels
+                .insert(id.to_string(), shape.animation_pixels);
+        }
         // The stored picture replaces the draft's stand-in, in the row and
         // in the open preview.
-        self.attachment_previews.remove(id);
+        self.forget_preview(id);
         if self.lightbox.is_some() && self.lightbox_attachment.as_deref() == Some(id) {
             self.lightbox = Some(Arc::clone(&image));
         }
@@ -544,14 +599,41 @@ impl ChatScreen {
         // requested and measured when that row becomes visible again.
         let rows: Vec<usize> = (start..end)
             .filter(|&index| {
-                image_attachment_refs(&self.timeline[index])
-                    .any(|(candidate, _)| changed.contains(candidate))
+                picture_ids(&self.timeline[index]).any(|candidate| changed.contains(candidate))
             })
             .collect();
         for index in rows {
             self.remeasure_item(index);
         }
         cx.notify();
+    }
+
+    fn forget_picture(&mut self, id: &str, picture: Arc<gpui::Image>) {
+        self.attachment_requests.remove(id);
+        self.attachment_dimensions.remove(id);
+        self.attachment_animation_pixels.remove(id);
+        self.released_pictures.push(picture);
+    }
+
+    /// Drop a draft's stand-in picture. It may have been drawn, so it goes
+    /// to the release queue like any other: every picture `drawn_pictures`
+    /// names must, or a later picture at its address would count as drawn.
+    pub(super) fn forget_preview(&mut self, id: &str) {
+        if let Some(preview) = self.attachment_previews.remove(id) {
+            self.released_pictures.push(preview);
+        }
+    }
+
+    /// Move every cached picture and draft stand-in to the release queue (a
+    /// task switch or a replaced page): GPUI would otherwise keep their
+    /// decoded frames.
+    pub(super) fn release_all_pictures(&mut self) {
+        self.released_pictures
+            .extend(self.attachment_images.drain().map(|(_, picture)| picture));
+        self.released_pictures
+            .extend(self.attachment_previews.drain().map(|(_, picture)| picture));
+        self.attachment_dimensions.clear();
+        self.attachment_animation_pixels.clear();
     }
 }
 
@@ -560,7 +642,7 @@ async fn read_attachment_image(
     user: String,
     task: String,
     attachment: String,
-) -> Result<Arc<gpui::Image>, String> {
+) -> Result<(Arc<gpui::Image>, PictureShape), String> {
     let mut bytes = Vec::new();
     let mut expected = None;
     let mut mime = None;
@@ -588,7 +670,7 @@ async fn read_attachment_image(
         }
         if !matches!(
             reply.mime.as_str(),
-            "image/png" | "image/jpeg" | "image/webp"
+            "image/png" | "image/jpeg" | "image/webp" | "image/gif"
         ) {
             return Err("Attachment is not a supported image".into());
         }
@@ -624,7 +706,8 @@ async fn read_attachment_image(
         bytes.shrink_to_fit();
         let format = image_format_from_bytes(&bytes)
             .ok_or_else(|| "Attachment is not a supported image".to_string())?;
-        Ok::<_, String>(Arc::new(gpui::Image::from_bytes(format, bytes)))
+        let shape = picture_shape(&bytes)?;
+        Ok::<_, String>((Arc::new(gpui::Image::from_bytes(format, bytes)), shape))
     })
     .await
     .map_err(|_| "Image preparation did not complete".to_string())?

@@ -13,6 +13,19 @@ use std::collections::{HashMap, HashSet};
 
 const MAX_ROWS: usize = 2000;
 const MAX_BYTES: usize = 32 * 1024 * 1024;
+/// A finished reply that streamed in and names a picture, but has no list
+/// of saved pictures yet: rows read from history already carry theirs.
+pub(super) fn wants_reply_pictures(item: &AgentTimelineItem) -> bool {
+    item.item_type == "message"
+        && item.role.as_deref() != Some("user")
+        && item.live.is_some()
+        && item.persisted.is_some()
+        && item.input.is_none()
+        && item.text.as_deref().is_some_and(|text| text.contains("!["))
+}
+
+/// Largest saved reply row read for its picture list.
+const REPLY_PICTURES_ROW_BYTES: u64 = 4 * 1024 * 1024;
 
 #[derive(Default)]
 pub(super) struct TranscriptPages {
@@ -418,8 +431,7 @@ impl ChatScreen {
             changed = true;
         }
         if changed {
-            self.attachment_images.clear();
-            self.attachment_previews.clear();
+            self.release_all_pictures();
             self.attachment_requests.clear();
             self.attachment_failures.clear();
             self.attachment_queue.clear();
@@ -550,6 +562,120 @@ impl ChatScreen {
                 cx.notify();
             },
         );
+    }
+
+    /// A reply that streamed in carries no picture list: the execution
+    /// computer copies its pictures as it saves the reply. Read that saved
+    /// row once, for a reply that names a picture, and take its list.
+    pub(super) fn read_reply_pictures(&mut self, index: usize, cx: &mut Context<Self>) {
+        let Some(item) = self.timeline.get(index) else {
+            return;
+        };
+        let Some(identity) = item.persisted.clone() else {
+            return;
+        };
+        if !wants_reply_pictures(item) || !self.picture_rows_read.insert(item.id.clone()) {
+            return;
+        }
+        let backend = self.backend.clone();
+        let user = self.user_id.clone();
+        let key = item.id.clone();
+        let target = identity.task_id.clone();
+        let generation = self.pages.generation;
+        self.call_semantic(
+            async move {
+                let mut request = RowRangeRequest {
+                    task: identity.task_id.clone(),
+                    rows_epoch: identity.rows_epoch,
+                    row_seq: identity.row_seq,
+                    update_seq: Some(identity.update_seq),
+                    offset: 0,
+                    len: 0,
+                };
+                let meta = backend
+                    .call_presented::<maple_agent::store::RowRange>(
+                        "read_row",
+                        (&user, request.clone()),
+                    )
+                    .await
+                    .map_err(UiFailure::from)?;
+                // A reply this long is shown truncated anyway.
+                if meta.total > REPLY_PICTURES_ROW_BYTES {
+                    return Ok(None);
+                }
+                let mut bytes = Vec::with_capacity(meta.total as usize);
+                while (bytes.len() as u64) < meta.total {
+                    request.offset = bytes.len() as u64;
+                    request.len = 1024 * 1024;
+                    let range = backend
+                        .call_presented::<maple_agent::store::RowRange>(
+                            "read_row",
+                            (&user, request.clone()),
+                        )
+                        .await
+                        .map_err(UiFailure::from)?;
+                    let part = base64::engine::general_purpose::STANDARD
+                        .decode(range.data)
+                        .ok()
+                        .filter(|part| {
+                            !part.is_empty()
+                                && range.update_seq == meta.update_seq
+                                && range.total == meta.total
+                        });
+                    let Some(part) = part else {
+                        return Ok(None);
+                    };
+                    bytes.extend(part);
+                }
+                let saved: Option<AgentTimelineItem> = serde_json::from_slice(&bytes).ok();
+                Ok::<_, UiFailure>(
+                    saved.and_then(|saved| saved.input).filter(|input| {
+                        input.get(maple_agent::store::MARKDOWN_IMAGES_KEY).is_some()
+                    }),
+                )
+            },
+            cx,
+            move |this, result, cx| {
+                let input = match result {
+                    Ok(Some(input)) => input,
+                    Ok(None) => return,
+                    // A failed read is tried again on the row's next update.
+                    Err(_) => {
+                        this.picture_rows_read.remove(&key);
+                        return;
+                    }
+                };
+                if this.pages.generation == generation && this.is_selected(&target) {
+                    this.apply_reply_pictures(&key, &target, input, cx);
+                }
+            },
+        );
+    }
+
+    /// Give a streamed reply the picture list of its saved row.
+    pub(super) fn apply_reply_pictures(
+        &mut self,
+        key: &str,
+        task: &str,
+        input: serde_json::Value,
+        cx: &mut Context<Self>,
+    ) {
+        let Some((index, revision)) = self.timeline_index.get_mut(key) else {
+            return;
+        };
+        let index = *index;
+        let row = &mut self.timeline[index];
+        if row.persisted.as_ref().map(|saved| saved.task_id.as_str()) != Some(task)
+            || row.input.is_some()
+        {
+            return;
+        }
+        *revision += 1;
+        row.input = Some(input);
+        let row = row.clone();
+        self.remeasure_item(index);
+        self.load_attachment_images_for(&row, cx);
+        cx.notify();
     }
 
     /// Explicit Jump-to-latest recovery may replace the reader's window.

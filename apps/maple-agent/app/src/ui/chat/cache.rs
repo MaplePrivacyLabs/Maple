@@ -280,6 +280,8 @@ pub(super) struct ItemDerived {
     pub(super) external_agent: Option<Arc<ExternalAgentActivity>>,
     /// The list of a todo_write call.
     pub(super) plan: Option<Vec<PlanEntry>>,
+    /// A reply's Markdown pictures: destination to saved attachment.
+    pub(super) pictures: HashMap<String, String>,
 }
 
 pub(super) const MAX_DIFF_LINES: usize = 200;
@@ -318,6 +320,9 @@ impl ItemDerived {
             diff_lines: Arc::new(diff_lines_for(item)),
             external_agent: external_agent_activity(item).map(Arc::new),
             plan: plan_entries(item),
+            pictures: super::transcript::markdown_pictures(item)
+                .map(|(source, id)| (source.to_owned(), id.to_owned()))
+                .collect(),
         }
     }
 }

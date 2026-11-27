@@ -525,9 +525,10 @@ impl SqliteSessionStore {
         {
             return Err(StoreError::InvalidInput);
         }
-        let images = self
+        let mut images = self
             .store
             .prepare_entry_images(self.account, &self.uuid, entry)?;
+        images.import_markdown(&self.store);
         let json = serde_json::to_vec(&images.entry).map_err(|_| StoreError::InvalidInput)?;
         let (codec, payload) = codec::encode(&json)?;
         let projection = self.prepare_projection(&images.entry, seq)?;
@@ -546,11 +547,18 @@ impl SqliteSessionStore {
         entry: &SessionEntry,
         seq: i64,
     ) -> StoreResult<super::projector::PreparedProjection> {
-        let sizes = self.store.read(|tx| {
+        let (sizes, pictures) = self.store.read(|tx| {
             self.guard(tx)?;
-            super::attachments::entry_image_sizes_tx(tx, self.task, entry)
+            Ok((
+                super::attachments::entry_image_sizes_tx(tx, self.task, entry)?,
+                super::attachments::markdown_images::entry_markdown_images_tx(
+                    tx,
+                    self.task.0,
+                    entry,
+                )?,
+            ))
         })?;
-        super::projector::prepare_stored_entry(entry, seq, &sizes)
+        super::projector::prepare_stored_entry(entry, seq, &sizes, &pictures)
     }
 
     fn guard(&self, tx: &Transaction<'_>) -> StoreResult<()> {
@@ -782,7 +790,7 @@ impl SqliteSessionStore {
         if (last > 0 && stored_len == 0) || stored_len > entries.len() {
             return Err(StoreError::Conflict);
         }
-        let images = self
+        let mut images = self
             .store
             .prepare_entries_images(self.account, &self.uuid, entries)?;
         for (offset, value) in images.entries.iter().take(stored_len).enumerate() {
@@ -796,6 +804,11 @@ impl SqliteSessionStore {
             {
                 return Err(StoreError::Conflict);
             }
+        }
+        // Only new replies copy their pictures. A stored reply keeps the
+        // copies it was saved with, or none: today's file is not its picture.
+        for value in images.entries.iter_mut().skip(stored_len) {
+            value.import_markdown(&self.store);
         }
         let prepared = images
             .entries

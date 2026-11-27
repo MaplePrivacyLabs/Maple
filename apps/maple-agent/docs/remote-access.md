@@ -303,6 +303,12 @@ keep the tools they have. The host needs the same account and pairing
 authority for these calls as for listing and switching integrations, and the
 controller rechecks it after this discovery.
 
+Pictures in replies need no capability or method. The execution computer copies
+them as it saves the reply and lists them in the reply's row; a controller reads
+the row and the copies with the ordinary row and attachment reads. A host that
+predates this lists no pictures, and a controller that predates it ignores the
+list, so either side shows the reply's alternative text.
+
 Four pre-admission handshakes and eight paired control connections have capacity
 separate from local IPC. Each control connection bounds ordinary calls and keeps
 separate capacity for cancellation/questions. Each request/reply uses an

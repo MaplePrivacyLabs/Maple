@@ -236,8 +236,13 @@ impl ChatScreen {
         }
         if self.is_selected(session) {
             for (id, picture) in pictures {
-                if !self.attachment_images.contains_key(&id) {
-                    self.attachment_previews.insert(id, picture);
+                if self.attachment_images.contains_key(&id) {
+                    continue;
+                }
+                if let Some(replaced) = self.attachment_previews.insert(id, Arc::clone(&picture))
+                    && !Arc::ptr_eq(&replaced, &picture)
+                {
+                    self.released_pictures.push(replaced);
                 }
             }
         }

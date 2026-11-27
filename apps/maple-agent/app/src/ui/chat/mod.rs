@@ -214,6 +214,11 @@ struct TranscriptCtx<'a> {
     markdown_cache: &'a MarkdownCache,
     derived: &'a DerivedCache,
     attachment_images: &'a HashMap<String, Arc<gpui::Image>>,
+    /// Pictures handed to GPUI to draw, so a release frees only what GPUI
+    /// decoded.
+    drawn_pictures: &'a std::cell::RefCell<HashSet<usize>>,
+    /// Pixel size of loaded pictures, read from their headers off the UI thread.
+    attachment_dimensions: &'a HashMap<String, (u32, u32)>,
     attachment_previews: &'a HashMap<String, Arc<gpui::Image>>,
     attachment_failures: &'a HashSet<String>,
     chat: &'a gpui::WeakEntity<ChatScreen>,
@@ -830,6 +835,19 @@ pub struct ChatScreen {
     /// Decoded images for sent attachments, keyed by attachment id, so the
     /// transcript shows the picture instead of only its file name.
     attachment_images: HashMap<String, Arc<gpui::Image>>,
+    /// Pixel size of each cached picture, for its shape before it decodes.
+    attachment_dimensions: HashMap<String, (u32, u32)>,
+    /// Decoded pixels of every frame of each cached GIF.
+    attachment_animation_pixels: HashMap<String, u64>,
+    /// Pictures dropped from the cache whose decoded frames and textures
+    /// GPUI still holds; the next render frees them (it needs the window).
+    released_pictures: Vec<Arc<gpui::Image>>,
+    /// Pictures GPUI was asked to draw, by address while they are alive. A
+    /// picture never drawn holds nothing to free, and asking for its frames
+    /// would decode it.
+    drawn_pictures: std::cell::RefCell<HashSet<usize>>,
+    /// Finished replies whose saved row was read for its picture list.
+    picture_rows_read: HashSet<String>,
     /// The small picture a draft had, for the attachments of a message that
     /// was just sent, until the stored picture loads: the row that takes
     /// over from the message being sent shows what that message showed.
@@ -1731,6 +1749,11 @@ impl ChatScreen {
             reload_generation: 0,
             reload_pending: false,
             attachment_images: HashMap::new(),
+            attachment_dimensions: HashMap::new(),
+            attachment_animation_pixels: HashMap::new(),
+            released_pictures: Vec::new(),
+            drawn_pictures: Default::default(),
+            picture_rows_read: HashSet::new(),
             attachment_previews: HashMap::new(),
             attachment_requests: HashSet::new(),
             attachment_failures: HashSet::new(),
@@ -3879,8 +3902,8 @@ impl ChatScreen {
         self.subagent_epoch += 1;
         self.subagents.clear();
         self.tool_summaries.clear();
-        self.attachment_images.clear();
-        self.attachment_previews.clear();
+        self.release_all_pictures();
+        self.picture_rows_read.clear();
         self.attachment_requests.clear();
         self.attachment_failures.clear();
         self.attachment_queue.clear();
@@ -5111,6 +5134,33 @@ impl ChatScreen {
         }
         self.open_lightbox(stored.unwrap_or(shown), cx);
         self.lightbox_attachment = Some(id.to_owned());
+    }
+
+    /// Free what GPUI still holds for pictures dropped from the cache: their
+    /// decoded frames and the textures of frames already drawn. A picture
+    /// that is still on screen, such as the open preview, decodes again.
+    fn release_pictures(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let mut shown = Vec::new();
+        for picture in std::mem::take(&mut self.released_pictures) {
+            // The open preview still draws it: release it once it closes.
+            if self
+                .lightbox
+                .as_ref()
+                .is_some_and(|open| Arc::ptr_eq(open, &picture))
+            {
+                shown.push(picture);
+                continue;
+            }
+            let drawn = self
+                .drawn_pictures
+                .get_mut()
+                .remove(&(Arc::as_ptr(&picture) as usize));
+            if drawn && let Some(decoded) = Arc::clone(&picture).get_render_image(window, cx) {
+                cx.drop_image(decoded, Some(window));
+            }
+            picture.remove_asset(cx);
+        }
+        self.released_pictures = shown;
     }
 
     fn close_lightbox(&mut self, cx: &mut Context<Self>) {
@@ -6703,6 +6753,8 @@ impl ChatScreen {
                 return;
             }
         };
+        // A finished reply that names pictures learns their saved copies.
+        self.read_reply_pictures(index, cx);
         // The turn's line (or the sent message's status) leaves the slot
         // under the transcript as this row arrives: the row opens from that
         // height, so nothing above it jumps.
@@ -7696,6 +7748,7 @@ fn fit_within(
 
 impl Render for ChatScreen {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        self.release_pictures(window, cx);
         self.refresh_locale(cx);
         // Refreshed every frame; activation changes force a redraw, so
         // this tracks focus closely enough to gate notifications.
@@ -7981,6 +8034,9 @@ impl Render for ChatScreen {
                     ),
             )
             .when_some(self.lightbox.clone(), |root, image| {
+                self.drawn_pictures
+                    .borrow_mut()
+                    .insert(Arc::as_ptr(&image) as usize);
                 // The card is the picture and nothing more, so a click
                 // beside it lands on the backdrop and closes the preview.
                 // Until the picture has decoded its shape is unknown and
@@ -8035,6 +8091,8 @@ impl Render for ChatScreen {
                                 .on_click(|_, _, cx| cx.stop_propagation())
                                 .child(
                                     gpui::img(gpui::ImageSource::Image(image))
+                                        // GPUI plays a GIF only for an image with an id.
+                                        .id("lightbox-image")
                                         .debug_selector(|| "lightbox-image".to_string())
                                         .size_full()
                                         .aspect_ratio(card.width / card.height)

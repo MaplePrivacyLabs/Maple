@@ -1105,8 +1105,9 @@ impl AgentRuntime {
     /// models, from the catalog and the New Task pick.
     fn settings(&self) -> Settings {
         let appended = format!(
-            "{}\n\n{}",
+            "{}\n\n{}\n\n{}",
             tools::shell::GUIDANCE,
+            crate::store::REPLY_PICTURES_GUIDANCE,
             self.host.harness_instructions().trim()
         );
         Settings {
