@@ -178,6 +178,12 @@ still answers. Validation needs a successful main Response and a later reuse or 
 completed helper or saved checkpoint alone proves neither. Attribute slow helpers
 with `responses.compaction.helper_timing`, not total preparation time.
 
+Paid accounts prepare compaction after durable acceptance and stream its progress.
+Free accounts prepare before acceptance, so a conversation over the Free token
+limit stays an HTTP 403 `free_tier_token_limit_exceeded`, which shipped clients
+turn into the upgrade prompt. A failed Response after acceptance would show only
+a generic error.
+
 A model's window is not its only limit. Continuum's proxy refuses content past
 4,000,000 bytes before forwarding anything, as an HTTP 500, because its shard key
 cannot grow further. Helpers measure their request and narrow rather than send
