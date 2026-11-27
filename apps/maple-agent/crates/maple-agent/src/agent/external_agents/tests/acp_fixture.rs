@@ -166,6 +166,8 @@ fn run() {
                 // As some agents do, history keeps arriving after the reply.
                 agent.say("Earlier reply.");
             }
+            // An agent that never applies its options.
+            "session/set_config_option" if mode == "acp-config-hangs" => {}
             "session/set_config_option" => {
                 let value = params["value"].as_str().unwrap_or_default().to_string();
                 match params["configId"].as_str() {

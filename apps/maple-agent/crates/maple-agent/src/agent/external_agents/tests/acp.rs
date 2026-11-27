@@ -403,6 +403,34 @@ async fn a_command_that_was_not_allowed_does_not_stay_running() {
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn stop_ends_the_wait_on_an_agent_that_never_applies_its_options() {
+    let harness = Harness::new("acp-config-hangs");
+    harness.install_fixture("agy", "acp-config-hangs");
+    let call = harness.call("acp-18", "row-1");
+    let stop = call.cancel_token.clone();
+    tokio::spawn(async move {
+        tokio::time::sleep(Duration::from_millis(300)).await;
+        stop.cancel();
+    });
+    let started = Instant::now();
+    // Antigravity's mode is set before every prompt; this agent never
+    // answers that.
+    let result = tokio::time::timeout(
+        Duration::from_secs(10),
+        harness.registry.start(call, acp_start("antigravity", "Go")),
+    )
+    .await
+    .expect("Stop did not end the wait");
+    assert_eq!(
+        result.unwrap_err(),
+        "The external agent launch was cancelled."
+    );
+    assert!(started.elapsed() < Duration::from_secs(5));
+    assert!(sent(&harness.log(), "session/prompt").is_empty());
+    harness.registry.shutdown_all(Duration::from_secs(5)).await;
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn a_signed_out_acp_agent_says_how_to_sign_in() {
     let harness = Harness::new("acp-signed-out");
     harness.install_fixture("agy", "acp-signed-out");

@@ -363,6 +363,19 @@ impl RpcClient {
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner)
             .insert(id, Pending::InOrder(on_response));
+        // The reader may have ended between the check above and the insert,
+        // after taking what was pending: nothing would answer this request.
+        // When the reader took it after all, it has reported the end itself.
+        if self.closed.is_cancelled()
+            && self
+                .pending
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner)
+                .remove(&id)
+                .is_some()
+        {
+            return Err(RpcFailure::exited());
+        }
         if let Err(error) = self
             .write(json!({ "id": id, "method": method, "params": params }))
             .await

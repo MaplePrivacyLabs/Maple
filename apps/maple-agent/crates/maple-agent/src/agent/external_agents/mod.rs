@@ -1155,8 +1155,17 @@ impl ExternalAgent {
             mode: call.permissions.mode.get(),
         };
         // A model or effort the agent refuses starts no turn: the agent's
-        // last turn stands as it was.
-        client.configure_turn(&request).await?;
+        // last turn stands as it was. Stop and a slow agent end the wait as
+        // they end a launch.
+        tokio::select! {
+            biased;
+            _ = self.cancel.cancelled() => Err("This external agent has been shut down.".to_string()),
+            _ = call.cancel_token.cancelled() => Err("The external agent launch was cancelled.".to_string()),
+            result = tokio::time::timeout(
+                self.entry.startup_timeout().unwrap_or(LAUNCH_TIMEOUT),
+                client.configure_turn(&request),
+            ) => result.unwrap_or_else(|_| Err("The external agent did not apply its options in time.".to_string())),
+        }?;
         let (number, end_rx) = {
             let mut state = self.state.lock().await;
             if state.turn.is_some() {
