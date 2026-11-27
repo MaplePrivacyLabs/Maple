@@ -2292,14 +2292,18 @@ impl ChatScreen {
         // Linux portal. It is asynchronous and closes with the application.
         self.root_picker_open = true;
         let generation = self.selection_generation;
-        let receiver = cx.prompt_for_paths(gpui::PathPromptOptions {
-            files: false,
-            directories: true,
-            multiple: false,
-            prompt: None,
-        });
+        let picker = crate::platform::prompt_for_paths(
+            &self.backend,
+            gpui::PathPromptOptions {
+                files: false,
+                directories: true,
+                multiple: false,
+                prompt: None,
+            },
+            cx,
+        );
         let bridge = cx.spawn(async move |this, cx| {
-            let picked = receiver.await;
+            let picked = picker.await;
             this.update(cx, |this, cx| {
                 this.root_picker_open = false;
                 if this.selection_generation != generation || !this.visible {
@@ -2307,7 +2311,7 @@ impl ChatScreen {
                     return;
                 }
                 match picked {
-                    Ok(Ok(Some(paths))) => {
+                    Ok(Some(paths)) => {
                         if let Some(path) = paths.into_iter().next() {
                             let Some(path) = path.to_str().map(str::to_owned) else {
                                 this.notice = Some(UiText::key("chat-invalid-unicode-path"));
@@ -2346,9 +2350,9 @@ impl ChatScreen {
                         }
                     }
                     // Cancellation leaves the task, project and draft untouched.
-                    Ok(Ok(None)) | Err(_) => {}
+                    Ok(None) => {}
                     // A Linux desktop without a portal still has a usable chooser.
-                    Ok(Err(_)) => this.show_folder_browser(draft_on_confirm, cx),
+                    Err(_) => this.show_folder_browser(draft_on_confirm, cx),
                 }
                 cx.notify();
             })

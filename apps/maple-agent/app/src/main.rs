@@ -86,6 +86,10 @@ struct Cli {
     #[cfg(all(feature = "desktop", target_os = "linux"))]
     #[arg(long, hide = true, conflicts_with_all = ["build_info", "internal_store_integrity_check"])]
     internal_theme_watch: bool,
+    /// Internal Linux file-chooser portal request; never opens application state.
+    #[cfg(all(feature = "desktop", target_os = "linux"))]
+    #[arg(long, hide = true, num_args = 4, allow_hyphen_values = true, value_names = ["KIND", "PARENT", "TITLE", "ACCEPT_LABEL"], conflicts_with_all = ["build_info", "internal_store_integrity_check", "internal_theme_watch"])]
+    internal_file_chooser: Vec<String>,
     /// Credential-free native installer admission before any installed write.
     #[cfg(all(feature = "desktop", target_os = "windows"))]
     #[arg(long, hide = true, value_name = "INSTALL_ROOT", conflicts_with_all = ["build_info", "internal_store_integrity_check", "internal_windows_installer_activate", "internal_windows_uninstall_cleanup", "internal_windows_restart"])]
@@ -559,6 +563,16 @@ fn main() {
         // identifiable to the portal, but never reaches normal app startup.
         if platform::portal::run_helper().is_err() {
             eprintln!("Desktop theme watcher unavailable.");
+            std::process::exit(1);
+        }
+        return;
+    }
+    #[cfg(all(feature = "desktop", target_os = "linux"))]
+    if !cli.internal_file_chooser.is_empty() {
+        // Like the theme watcher: one portal request from a credential-free
+        // process the portal can identify. It never reaches normal startup.
+        if platform::file_chooser::run_helper(&cli.internal_file_chooser).is_err() {
+            eprintln!("Desktop file chooser unavailable.");
             std::process::exit(1);
         }
         return;

@@ -1899,6 +1899,8 @@ chat-message-date = { $day }. { $month }, { $time }
 chat-project-integration-save-failed = { $name } für { $project } konnte nicht gespeichert werden: { $error }
 # $error is an untranslated diagnostic.
 chat-file-dialog-failed = Dateidialog konnte nicht geöffnet werden: { $error }
+file-dialog-open-files = Dateien öffnen
+file-dialog-open-folder = Ordner öffnen
 chat-sidebar-order-too-large = Diese Seitenleistenreihenfolge ist zu groß zum Speichern
 
 # Attachment preparation; name is the original filename, error is an external diagnostic.

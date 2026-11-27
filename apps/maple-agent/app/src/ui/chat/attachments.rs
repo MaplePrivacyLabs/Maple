@@ -322,23 +322,27 @@ impl ChatScreen {
         self.attachment_picking = true;
         self.notice = None;
         cx.notify();
-        let receiver = cx.prompt_for_paths(gpui::PathPromptOptions {
-            files: true,
-            directories: false,
-            multiple: true,
-            prompt: None,
-        });
+        let picker = crate::platform::prompt_for_paths(
+            &self.backend,
+            gpui::PathPromptOptions {
+                files: true,
+                directories: false,
+                multiple: true,
+                prompt: None,
+            },
+            cx,
+        );
         let bridge = cx.spawn(async move |this, cx| {
-            let picked = receiver.await;
+            let picked = picker.await;
             this.update(cx, |this, cx| {
                 this.attachment_picking = false;
                 match picked {
-                    Ok(Ok(Some(paths))) => this.add_attachment_paths(paths, cx),
-                    Ok(Ok(None)) | Err(_) => {}
-                    Ok(Err(error)) => {
+                    Ok(Some(paths)) => this.add_attachment_paths(paths, cx),
+                    Ok(None) => {}
+                    Err(error) => {
                         this.notice = Some(UiText::message(
                             "chat-file-dialog-failed",
-                            [("error", error.to_string().into())],
+                            [("error", error.into())],
                         ))
                     }
                 }

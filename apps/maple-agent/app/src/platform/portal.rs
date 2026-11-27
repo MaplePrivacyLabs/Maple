@@ -108,21 +108,23 @@ pub(crate) fn run_helper() -> io::Result<()> {
     })
 }
 
-fn helper_command() -> io::Result<std::process::Command> {
+/// A credential-free child of this executable for one portal job, shared with
+/// the file chooser. `arguments` select its startup branch in `main.rs`.
+pub(super) fn helper_command<S: AsRef<std::ffi::OsStr>>(
+    arguments: impl IntoIterator<Item = S>,
+) -> io::Result<std::process::Command> {
     // Resolve the bundled loader/payload before clearing package environment.
     let mut command = crate::self_launch::child_command().map_err(io::Error::other)?;
-    configure_helper(&mut command, |name| std::env::var_os(name));
+    configure_helper(&mut command, arguments, |name| std::env::var_os(name));
     Ok(command)
 }
 
-fn configure_helper(
+fn configure_helper<S: AsRef<std::ffi::OsStr>>(
     command: &mut std::process::Command,
+    arguments: impl IntoIterator<Item = S>,
     mut environment: impl FnMut(&str) -> Option<std::ffi::OsString>,
 ) {
-    command
-        .env_clear()
-        .current_dir("/")
-        .arg("--internal-theme-watch");
+    command.env_clear().current_dir("/").args(arguments);
     for name in DESKTOP_ENVIRONMENT {
         if let Some(value) = environment(name) {
             command.env(name, value);
@@ -135,7 +137,8 @@ fn configure_helper(
     // The helper stays dumpable, so same-user processes can open its
     // /proc/<pid>/fd entries. Native GUI libraries may leak descriptors without
     // CLOEXEC; close everything past stdio before exec. Kernels without
-    // close_range fail the spawn and the GUI keeps its native appearance.
+    // close_range fail the spawn; the theme keeps its native appearance and
+    // the file chooser reports the failure.
     // SAFETY: the closure makes one async-signal-safe syscall and allocates nothing.
     unsafe {
         use std::os::unix::process::CommandExt as _;
@@ -155,7 +158,7 @@ pub(crate) fn start(backend: &crate::backend::AgentBackend, cx: &mut gpui::App) 
         // Package resolution can read filesystem metadata. Keep that off the
         // UI thread along with subprocess startup and pipe reads.
         let result = async {
-            let command = helper_command()?;
+            let command = helper_command(["--internal-theme-watch"])?;
             monitor(command, sender).await
         }
         .await;
@@ -312,7 +315,9 @@ mod tests {
     fn helper_receives_only_desktop_bus_environment() {
         let mut command = std::process::Command::new("maple-agent");
         command.env("MAPLE_THEME_TEST_SECRET", "must-not-reach-helper");
-        configure_helper(&mut command, |key| Some(format!("fixture-{key}").into()));
+        configure_helper(&mut command, ["--internal-theme-watch"], |key| {
+            Some(format!("fixture-{key}").into())
+        });
         let environment: Vec<_> = command
             .get_envs()
             .map(|(key, value)| (key.to_str().unwrap(), value.unwrap().to_str().unwrap()))
@@ -344,7 +349,7 @@ mod tests {
         command.arg("-c").arg(format!(
             "if [ -e /proc/self/fd/{leaked} ]; then echo leaked; else echo closed; fi"
         ));
-        configure_helper(&mut command, |_| None);
+        configure_helper(&mut command, ["--internal-theme-watch"], |_| None);
         let output = command.output().unwrap();
         unsafe { libc::close(leaked) };
         assert!(output.status.success());

@@ -1749,6 +1749,8 @@ chat-message-date = { $day } { $month }, { $time }
 # Local operation errors; error is an unmodified underlying diagnostic.
 chat-project-integration-save-failed = No se pudo guardar { $name } para { $project }: { $error }
 chat-file-dialog-failed = No se pudo abrir el selector de archivos: { $error }
+file-dialog-open-files = Abrir archivos
+file-dialog-open-folder = Abrir carpeta
 chat-sidebar-order-too-large = El orden de esta barra lateral es demasiado grande para guardarlo
 
 # Attachment preparation; name is the original filename, error is an external diagnostic.

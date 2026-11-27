@@ -189,6 +189,11 @@ agent runtime; its desktop Agent page points users to Maple Work.
   closes. Only the child remains debugger-accessible for portal identification.
   Setup has a two-second background deadline; unavailable portals do not block
   launch. Explicit Dark/Light settings override system updates.
+- Native file and folder dialogs for attachments and project folders. On
+  Linux the same kind of child (`--internal-file-chooser`) makes the one portal
+  request and prints only the chosen `file:` URIs; the GUI reads the files
+  itself. The dialog is parented to the Maple window and closes if the child's
+  parent pipe closes.
 - Billing status from the Maple billing API.
 - Desktop notifications when a task finishes or asks a question while the
   window is not focused.
