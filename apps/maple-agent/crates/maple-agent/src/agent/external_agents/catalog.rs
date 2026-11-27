@@ -160,7 +160,6 @@ pub(crate) fn entries() -> &'static [CatalogEntry] {
     &ENTRIES
 }
 
-/// The agent with this id.
 impl CatalogEntry {
     /// Give a command that runs this agent, to work or only to answer a
     /// probe, the agent's environment: without the variables of another
