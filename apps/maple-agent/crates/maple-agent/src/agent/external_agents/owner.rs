@@ -339,8 +339,9 @@ impl ExternalAgent {
         view.activity.turns == 0 && view.turn.is_none()
     }
 
-    /// The agent's id for the turn in progress, once it gave one.
-    #[cfg(test)]
+    /// The agent's id for the turn in progress, once it gave one, for the
+    /// fake agents' tests, which run on Unix.
+    #[cfg(all(test, unix))]
     pub(super) fn turn_id(&self) -> Option<String> {
         self.view.borrow().turn.as_ref()?.turn_id.clone()
     }
