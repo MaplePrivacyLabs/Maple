@@ -36,6 +36,45 @@ function limitFailureForCode(status: unknown, code: unknown): ChatLimitFailure |
   return null;
 }
 
+/** The HTTP status each limit uses when it rejects a turn before acceptance. */
+const LIMIT_REJECTION_STATUS = new Map<string, 403 | 413>([
+  ["usage_limit_reached", 403],
+  ["free_tier_token_limit_exceeded", 403],
+  ["message_exceeds_context_limit", 413]
+]);
+
+type StreamFailureMetadata = {
+  response?: unknown;
+  opensecret?: unknown;
+};
+
+/**
+ * Classify a limit that ended an accepted Responses turn. The server reports it
+ * as `response.failed` carrying the same code as the HTTP rejection. As with
+ * headers, the error contract is required and every supplied code must agree;
+ * a plain or unknown stream failure stays generic.
+ */
+export function classifyChatStreamLimitFailure(event: unknown): ChatLimitFailure | null {
+  if (typeof event !== "object" || event === null) return null;
+  const { response, opensecret } = event as StreamFailureMetadata;
+  if (typeof opensecret !== "object" || opensecret === null) return null;
+  const contract = opensecret as { error_contract?: unknown; error_code?: unknown };
+  if (contract.error_contract !== ERROR_CONTRACT_VERSION) return null;
+  const code = contract.error_code;
+  if (typeof code !== "string") return null;
+  const responseError =
+    typeof response === "object" && response !== null
+      ? (response as { error?: unknown }).error
+      : undefined;
+  const responseCode =
+    typeof responseError === "object" && responseError !== null
+      ? (responseError as { code?: unknown }).code
+      : undefined;
+  if (responseCode !== undefined && responseCode !== null && responseCode !== code) return null;
+  const status = LIMIT_REJECTION_STATUS.get(code);
+  return status === undefined ? null : limitFailureForCode(status, code);
+}
+
 type LegacyStatusFailure = {
   status: 403 | 413;
   message: string;
