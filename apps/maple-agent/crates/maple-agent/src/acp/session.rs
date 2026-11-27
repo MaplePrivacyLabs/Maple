@@ -12,7 +12,7 @@ use crate::agent::{
     CatalogEntry,
 };
 
-use agent_client_protocol::schema::v1::{McpServer, SessionConfigOption, SessionId};
+use agent_client_protocol::v1::schema::{McpServer, SessionConfigOption, SessionId};
 use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
 use std::sync::Arc;

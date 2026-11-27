@@ -4,7 +4,8 @@
 use super::convert::client_supports_form_elicitation;
 use super::session::AcpConnectionContext;
 use agent_client_protocol::schema::ProtocolVersion;
-use agent_client_protocol::schema::v1::{
+use agent_client_protocol::util::MatchDispatchFrom;
+use agent_client_protocol::v1::schema::{
     AgentCapabilities, CancelNotification, CloseSessionRequest, CloseSessionResponse,
     DeleteSessionRequest, DeleteSessionResponse, Implementation, InitializeRequest,
     InitializeResponse, ListSessionsRequest, ListSessionsResponse, McpCapabilities,
@@ -12,7 +13,6 @@ use agent_client_protocol::schema::v1::{
     SessionDeleteCapabilities, SessionListCapabilities, SetSessionConfigOptionRequest,
     SetSessionConfigOptionResponse, SetSessionModeRequest, SetSessionModeResponse,
 };
-use agent_client_protocol::util::MatchDispatchFrom;
 use agent_client_protocol::{
     Client, ConnectionTo, Dispatch, HandleDispatchFrom, Handled, JsonRpcResponse, Responder,
 };

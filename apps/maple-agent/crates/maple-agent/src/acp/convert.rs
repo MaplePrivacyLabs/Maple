@@ -6,7 +6,7 @@ use super::transport::AcpOutboundSendError;
 use crate::agent::{
     AgentImageUpload, AgentRunTerminal, AgentRunUsage, AgentSlashCommand, AgentTimelineItem,
 };
-use agent_client_protocol::schema::v1::{
+use agent_client_protocol::v1::schema::{
     AvailableCommand, AvailableCommandsUpdate, BooleanPropertySchema, ContentBlock, ContentChunk,
     CreateElicitationRequest, ElicitationFormMode, ElicitationSchema, ElicitationSessionScope,
     InitializeRequest, PermissionOption, PermissionOptionKind, PromptResponse,

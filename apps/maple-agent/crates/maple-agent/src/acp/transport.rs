@@ -1,7 +1,7 @@
 //! The ACP transport: framing limits on the way in, and credit-tracked
 //! backpressure on the way out.
 
-use agent_client_protocol::schema::v1::SessionNotification;
+use agent_client_protocol::v1::schema::SessionNotification;
 use agent_client_protocol::{Client, ConnectionTo};
 use std::collections::VecDeque;
 use std::sync::Arc;

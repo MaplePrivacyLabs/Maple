@@ -44,7 +44,7 @@ use crate::agent::{
     AgentRunTerminal, AgentRuntimeHandle, AgentSendMessageRequest, AgentTaskState,
     AgentTimelineItem, CatalogEntry, NOTHING_TO_COMPACT_ERROR,
 };
-use agent_client_protocol::schema::v1::{
+use agent_client_protocol::v1::schema::{
     CancelNotification, ConfigOptionUpdate, ContentBlock, DeleteSessionRequest,
     DeleteSessionResponse, ElicitationAction, ElicitationContentValue, ListSessionsRequest,
     ListSessionsResponse, LoadSessionRequest, LoadSessionResponse, NewSessionRequest,
@@ -54,7 +54,9 @@ use agent_client_protocol::schema::v1::{
     SetSessionModeResponse, StopReason, TextContent, ToolCall, ToolCallContent, ToolCallStatus,
     ToolKind, UsageUpdate,
 };
-use agent_client_protocol::{Agent as AcpAgent, Client, ConnectionTo, JsonRpcMessage, Lines};
+use agent_client_protocol::{
+    Agent as AcpAgent, Builder, Client, ConnectionTo, JsonRpcMessage, Lines,
+};
 use futures_util::StreamExt as _;
 use std::collections::HashMap;
 use std::path::Path;
@@ -132,8 +134,11 @@ where
             result.map_err(|error| std::io::Error::new(std::io::ErrorKind::InvalidData, error))
         });
     let outgoing = tracked_outgoing_lines(output, Arc::clone(&context.outbound));
-    let serving = AcpAgent
-        .builder()
+    // `Builder::new` applies no protocol-version guard, as 2.2.0's agent
+    // builder did not: the handler sees `initialize` as the client sent it,
+    // so T3 Code's version-2 request still gets Maple's v1 reply and its v1
+    // capabilities are read.
+    let serving = Builder::new(AcpAgent)
         .name("maple-acp")
         .with_handler(MapleAcpHandler {
             context: Arc::clone(&context),
@@ -1039,7 +1044,7 @@ impl AcpConnectionContext {
         &self,
         session_id: &str,
     ) -> Result<
-        Vec<agent_client_protocol::schema::v1::SessionConfigOption>,
+        Vec<agent_client_protocol::v1::schema::SessionConfigOption>,
         agent_client_protocol::Error,
     > {
         let summary = self
@@ -1049,9 +1054,9 @@ impl AcpConnectionContext {
             .map_err(internal_acp_error)?;
         let model = {
             let mut sessions = self.sessions.lock().await;
-            let session = sessions.get_mut(session_id).ok_or_else(|| {
-                agent_client_protocol::Error::resource_not_found(Some(session_id.into()))
-            })?;
+            let session = sessions
+                .get_mut(session_id)
+                .ok_or_else(|| resource_not_found(Some(session_id.into())))?;
             if let Some(model) = summary.model
                 && session.model != model
             {
@@ -1066,9 +1071,9 @@ impl AcpConnectionContext {
             .await
             .map_err(internal_acp_error)?;
         let mut sessions = self.sessions.lock().await;
-        let session = sessions.get_mut(session_id).ok_or_else(|| {
-            agent_client_protocol::Error::resource_not_found(Some(session_id.into()))
-        })?;
+        let session = sessions
+            .get_mut(session_id)
+            .ok_or_else(|| resource_not_found(Some(session_id.into())))?;
         session.thinking = Some(thinking);
         Ok(session.config_options())
     }
@@ -1079,14 +1084,11 @@ impl AcpConnectionContext {
     ) -> Result<SetSessionConfigOptionResponse, agent_client_protocol::Error> {
         let session_id = canonical_session_id(&request.session_id)?;
         if self.closed.load(Ordering::SeqCst) {
-            return Err(
-                agent_client_protocol::Error::resource_not_found(Some(session_id.clone()))
-                    .data("ACP session is closing"),
-            );
+            return Err(resource_not_found(Some(session_id.clone())).data("ACP session is closing"));
         }
         let mut sessions = self.sessions.lock().await;
         let session = sessions.get_mut(&session_id).ok_or_else(|| {
-            agent_client_protocol::Error::resource_not_found(Some(session_id.clone()))
+            resource_not_found(Some(session_id.clone()))
                 .data("ACP session is not owned by this connection")
         })?;
         let selected_value = request.value.as_value_id().ok_or_else(|| {
@@ -1161,7 +1163,7 @@ impl AcpConnectionContext {
             .get(&session_id)
             .cloned()
             .ok_or_else(|| {
-                agent_client_protocol::Error::resource_not_found(Some(session_id.clone()))
+                resource_not_found(Some(session_id.clone()))
                     .data("ACP session is not owned by this connection")
             })?;
         let _operation_guard = Arc::clone(&operation.gate).lock_owned().await;
@@ -1169,10 +1171,8 @@ impl AcpConnectionContext {
             || operation.cancellation.is_cancelled()
             || !self.sessions.lock().await.contains_key(&session_id)
         {
-            return Err(
-                agent_client_protocol::Error::resource_not_found(Some(session_id))
-                    .data("ACP session is not available on this connection"),
-            );
+            return Err(resource_not_found(Some(session_id))
+                .data("ACP session is not available on this connection"));
         }
         Err(agent_client_protocol::Error::invalid_params().data(format!(
             "Maple ACP has no session modes ('{}' cannot be selected): every tool call runs without asking",
@@ -1200,16 +1200,14 @@ impl AcpConnectionContext {
             .get(&session_id)
             .cloned()
             .ok_or_else(|| {
-                agent_client_protocol::Error::resource_not_found(Some(session_id.clone()))
+                resource_not_found(Some(session_id.clone()))
                     .data("ACP session is not owned by this connection")
             })?;
         if operation.cancellation.is_cancelled()
             || !self.sessions.lock().await.contains_key(&session_id)
         {
-            return Err(
-                agent_client_protocol::Error::resource_not_found(Some(session_id.clone()))
-                    .data("ACP session is not available on this connection"),
-            );
+            return Err(resource_not_found(Some(session_id.clone()))
+                .data("ACP session is not available on this connection"));
         }
         let mut states = self.prompt_states.lock().await;
         if states.contains_key(&session_id) {
@@ -1462,7 +1460,7 @@ impl AcpConnectionContext {
         let (project_root, configured_decision, access) = {
             let sessions = self.sessions.lock().await;
             let session = sessions.get(session_id).ok_or_else(|| {
-                agent_client_protocol::Error::resource_not_found(Some(session_id.to_string()))
+                resource_not_found(Some(session_id.to_string()))
                     .data("ACP session is no longer owned by this connection")
             })?;
             (
@@ -1603,7 +1601,7 @@ impl AcpConnectionContext {
         let (access, model, project_root) = {
             let sessions = self.sessions.lock().await;
             let session = sessions.get(session_id).ok_or_else(|| {
-                agent_client_protocol::Error::resource_not_found(Some(session_id.to_string()))
+                resource_not_found(Some(session_id.to_string()))
                     .data("ACP session is no longer owned by this connection")
             })?;
             (
@@ -1702,10 +1700,8 @@ impl AcpConnectionContext {
             }
             Err(error) if error == AGENT_SURFACE_INACTIVE_ERROR => {
                 self.retire_session(session_id).await;
-                return Err(agent_client_protocol::Error::resource_not_found(Some(
-                    session_id.to_string(),
-                ))
-                .data("The Maple Work task was removed outside this ACP connection"));
+                return Err(resource_not_found(Some(session_id.to_string()))
+                    .data("The Maple Work task was removed outside this ACP connection"));
             }
             Err(error) => return Err(internal_acp_error(error)),
         };
@@ -2095,6 +2091,11 @@ fn notice_id() -> String {
         "maple-acp-notice-{}",
         NEXT_ACP_MESSAGE_ID.fetch_add(1, Ordering::Relaxed)
     )
+}
+
+/// `-32002` with the v1 `uri` data clients read, as the SDK's error.
+fn resource_not_found(uri: Option<String>) -> agent_client_protocol::Error {
+    agent_client_protocol::v1::schema::Error::resource_not_found(uri).into()
 }
 
 fn retain_cancelled_caller_request<F, T>(response: F, reservation: AcpOutboundReservation)

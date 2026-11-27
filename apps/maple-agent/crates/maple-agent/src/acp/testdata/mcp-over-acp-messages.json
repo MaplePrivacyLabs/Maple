@@ -1,0 +1,41 @@
+[
+  {
+    "method": "mcp/connect",
+    "params": {
+      "serverId": "t3-code"
+    }
+  },
+  {
+    "method": "mcp/message",
+    "params": {
+      "connectionId": "conn-1",
+      "method": "tools/call",
+      "params": {
+        "name": "echo",
+        "arguments": {
+          "text": "hi"
+        }
+      }
+    }
+  },
+  {
+    "method": "mcp/message",
+    "params": {
+      "connectionId": "conn-1",
+      "method": "tools/list"
+    }
+  },
+  {
+    "method": "mcp/message",
+    "params": {
+      "connectionId": "conn-1",
+      "method": "notifications/initialized"
+    }
+  },
+  {
+    "method": "mcp/disconnect",
+    "params": {
+      "connectionId": "conn-1"
+    }
+  }
+]
