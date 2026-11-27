@@ -432,7 +432,6 @@ impl ChatScreen {
         }
         if changed {
             self.release_all_pictures();
-            self.attachment_previews.clear();
             self.attachment_requests.clear();
             self.attachment_failures.clear();
             self.attachment_queue.clear();

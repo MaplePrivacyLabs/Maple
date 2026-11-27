@@ -337,8 +337,7 @@ impl Store {
         operation_id: &str,
         metadata: &AttachmentUploadMetadata,
     ) -> StoreResult<AttachmentUploadStart> {
-        // That prefix names the store's own reply-picture copies.
-        if operation_id.starts_with("markdown-") {
+        if is_reply_picture(operation_id) {
             return Err(StoreError::InvalidInput);
         }
         self.begin_attachment_upload_inner(account, task_uuid, operation_id, metadata, false)
@@ -376,7 +375,8 @@ impl Store {
             }
             // Reply pictures waiting for their reply's save are the store's
             // own copies, not uploads: they never take the composer's room.
-            let (count,bytes,task_count):(i64,i64,i64) = tx.query_row("SELECT coalesce(sum(state!='cancelled'),0),coalesce(sum(size),0),coalesce(sum(task_id=?1 AND state!='cancelled'),0) FROM file_attachments WHERE bound=0 AND account_id=?2 AND operation_id NOT LIKE 'markdown-%'", params![task,account.0], |row| Ok((row.get(0)?,row.get(1)?,row.get(2)?)))?;
+            // `substr`, not LIKE, which ignores case: `Markdown-` is an upload.
+            let (count,bytes,task_count):(i64,i64,i64) = tx.query_row("SELECT coalesce(sum(state!='cancelled'),0),coalesce(sum(size),0),coalesce(sum(task_id=?1 AND state!='cancelled'),0) FROM file_attachments WHERE bound=0 AND account_id=?2 AND substr(operation_id,1,9)!='markdown-'", params![task,account.0], |row| Ok((row.get(0)?,row.get(1)?,row.get(2)?)))?;
             if !source_image && (count >= MAX_PENDING_FILES as i64 || task_count >= MAX_ATTACHMENTS as i64 || bytes as u64 + metadata.size > MAX_PENDING_BYTES) { return Err(StoreError::Busy); }
             let tombstones:i64=tx.query_row("SELECT count(*) FROM file_attachments WHERE account_id=?1 AND state='cancelled'",[account.0],|row|row.get(0))?;
             if !source_image && tombstones>=MAX_CANCELLATION_TOMBSTONES {return Err(StoreError::Busy);}
@@ -461,6 +461,9 @@ impl Store {
         operation_id: &str,
     ) -> StoreResult<()> {
         validate_operation(operation_id)?;
+        if is_reply_picture(operation_id) {
+            return Err(StoreError::InvalidInput);
+        }
         self.write(Durability::Durable,|tx| {
             let task=active_task(tx,account,task_uuid)?;
             let existing:Option<(i64,bool)>=tx.query_row("SELECT task_id,bound FROM file_attachments WHERE account_id=?1 AND operation_id=?2",params![account.0,operation_id],|row|Ok((row.get(0)?,row.get(1)?))).optional()?;
@@ -1093,6 +1096,11 @@ impl Store {
 
 fn operation_key(account: AccountId, operation: &str) -> String {
     format!("{}:{operation}", account.0)
+}
+/// The store's own reply-picture copies. Uploads may neither begin nor
+/// cancel one; the comparison is exact, like the composer's count.
+fn is_reply_picture(operation_id: &str) -> bool {
+    operation_id.starts_with("markdown-")
 }
 fn validate_operation(value: &str) -> StoreResult<()> {
     if value.is_empty()

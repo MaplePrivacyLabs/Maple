@@ -115,10 +115,29 @@ fn reply_picture_copies_never_take_the_composers_room() {
         "11111111-1111-4111-8111-111111111111",
         b"composer",
     );
-    // Nobody else may claim that name for an upload.
+    // Nobody else may claim or cancel that name for an upload.
     assert!(matches!(
         store.begin_attachment_upload(alice, task, "markdown-upload", &metadata(b"x")),
         Err(StoreError::InvalidInput)
+    ));
+    assert!(matches!(
+        store.cancel_attachment_upload(alice, task, &format!("markdown-{:064x}", 0)),
+        Err(StoreError::InvalidInput)
+    ));
+    // Another case is an ordinary upload and takes the composer's room.
+    for n in 1..MAX_ATTACHMENTS {
+        store
+            .begin_attachment_upload(
+                alice,
+                task,
+                &format!("Markdown-{n}"),
+                &metadata(n.to_string().as_bytes()),
+            )
+            .unwrap();
+    }
+    assert!(matches!(
+        store.begin_attachment_upload(alice, task, "MARKDOWN-last", &metadata(b"last")),
+        Err(StoreError::Busy)
     ));
 }
 

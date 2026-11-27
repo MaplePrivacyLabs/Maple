@@ -469,7 +469,7 @@ impl ChatScreen {
                         match result {
                             Ok((image, shape)) => this.insert_picture(&id, image, shape, cx),
                             Err(_) => {
-                                this.attachment_previews.remove(&id);
+                                this.forget_preview(&id);
                                 this.attachment_failures.insert(id.clone());
                                 let rows: Vec<_> = this.timeline.iter().enumerate().filter(|(_, item)|
                                     picture_ids(item).any(|candidate| candidate == id))
@@ -590,7 +590,7 @@ impl ChatScreen {
         }
         // The stored picture replaces the draft's stand-in, in the row and
         // in the open preview.
-        self.attachment_previews.remove(id);
+        self.forget_preview(id);
         if self.lightbox.is_some() && self.lightbox_attachment.as_deref() == Some(id) {
             self.lightbox = Some(Arc::clone(&image));
         }
@@ -615,11 +615,23 @@ impl ChatScreen {
         self.released_pictures.push(picture);
     }
 
-    /// Move every cached picture to the release queue (a task switch or a
-    /// replaced page): GPUI would otherwise keep their decoded frames.
+    /// Drop a draft's stand-in picture. It may have been drawn, so it goes
+    /// to the release queue like any other: every picture `drawn_pictures`
+    /// names must, or a later picture at its address would count as drawn.
+    pub(super) fn forget_preview(&mut self, id: &str) {
+        if let Some(preview) = self.attachment_previews.remove(id) {
+            self.released_pictures.push(preview);
+        }
+    }
+
+    /// Move every cached picture and draft stand-in to the release queue (a
+    /// task switch or a replaced page): GPUI would otherwise keep their
+    /// decoded frames.
     pub(super) fn release_all_pictures(&mut self) {
         self.released_pictures
             .extend(self.attachment_images.drain().map(|(_, picture)| picture));
+        self.released_pictures
+            .extend(self.attachment_previews.drain().map(|(_, picture)| picture));
         self.attachment_dimensions.clear();
         self.attachment_animation_pixels.clear();
     }

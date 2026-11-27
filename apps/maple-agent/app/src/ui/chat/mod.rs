@@ -3900,7 +3900,6 @@ impl ChatScreen {
         self.tool_summaries.clear();
         self.release_all_pictures();
         self.picture_rows_read.clear();
-        self.attachment_previews.clear();
         self.attachment_requests.clear();
         self.attachment_failures.clear();
         self.attachment_queue.clear();

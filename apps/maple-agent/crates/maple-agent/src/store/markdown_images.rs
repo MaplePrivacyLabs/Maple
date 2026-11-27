@@ -452,8 +452,9 @@ fn open_confined(root: &ProjectRoot, candidate: &Path) -> Option<(PathBuf, File)
     #[cfg(unix)]
     {
         use std::os::unix::fs::OpenOptionsExt;
-        // A FIFO must not hold the saving thread.
-        options.custom_flags(libc::O_NONBLOCK);
+        // A FIFO must not hold the saving thread. The path is canonical, so
+        // a link here was swapped in after the check: refuse to follow it.
+        options.custom_flags(libc::O_NONBLOCK | libc::O_NOFOLLOW);
     }
     let file = options.open(&path).ok()?;
     let opened = file.metadata().ok()?;
@@ -609,8 +610,16 @@ mod tests {
             &root,
             &[
                 (r"out\a.png", Some(r"\\?\C:\work\project\out\a.png")),
+                // Joining onto a `\\?\` path splits `/` and works out `.`
+                // and `..` too.
+                ("out/a.png", Some(r"\\?\C:\work\project\out\a.png")),
+                ("./out/../b.png", Some(r"\\?\C:\work\project\b.png")),
                 (r"C:\work\project\c.png", Some(r"C:\work\project\c.png")),
+                ("C:/work/project/f.png", Some(r"C:\work\project\f.png")),
+                // Drive letters compare in either case.
+                (r"c:\work\project\d.png", Some(r"C:\work\project\d.png")),
                 (r"..\e.png", None),
+                ("../e.png", None),
                 (r"C:\Windows\win.ini", None),
                 (r"\\attacker.example\share\a.png", None),
                 ("//attacker.example/share/a.png", None),

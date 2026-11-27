@@ -12519,14 +12519,23 @@ mod state_tests {
         assert_eq!(sent_picture.left(), sending_picture.left());
         assert!(cx.debug_bounds("message-bubble-second").is_none());
 
-        // The stored picture replaces the stand-in when it loads.
+        // The stored picture replaces the stand-in when it loads, and the
+        // stand-in goes to the release queue. (This draft's pictures are
+        // one picture, which "shot" still draws.)
         let stored = sized_image(1600, 900);
         chat.update(cx, |this, cx| {
-            assert!(this.attachment_previews.contains_key("only"));
+            let stand_in = this.attachment_previews["only"].clone();
             this.insert_attachment_image("only", stored.clone(), cx);
             assert!(!this.attachment_previews.contains_key("only"));
             assert!(Arc::ptr_eq(&this.attachment_images["only"], &stored));
+            assert!(
+                this.released_pictures
+                    .iter()
+                    .any(|picture| Arc::ptr_eq(picture, &stand_in))
+            );
         });
+        cx.run_until_parked();
+        chat.update(cx, |this, _| assert!(this.released_pictures.is_empty()));
     }
 
     /// With motion on, the frame on which the row takes over draws its
