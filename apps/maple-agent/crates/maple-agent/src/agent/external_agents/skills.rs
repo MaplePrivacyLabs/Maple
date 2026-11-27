@@ -11,6 +11,8 @@ use crate::agent::config::account_generated_resource_dir;
 /// Frontmatter line that marks a skill file as Maple's, so switching the
 /// agents off removes only what switching them on wrote.
 const MARKER: &str = "maple: external-agents";
+/// Where a skill names the agents Maple can start.
+const AGENTS: &str = "{agents}";
 
 const SKILLS: [(&str, &str); 3] = [
     (
@@ -44,6 +46,7 @@ pub(in crate::agent) fn sync(
     let root = skills_dir(paths, user_id)?;
     for (name, content) in SKILLS {
         debug_assert!(content.contains(MARKER));
+        let content = content.replace(AGENTS, &super::catalog::example_names());
         let dir = root.join(name);
         let file = dir.join("SKILL.md");
         // This namespace is new and app-owned. Never follow a planted link
@@ -88,7 +91,7 @@ pub(in crate::agent) fn sync(
         }
         if enabled {
             let current = fs::read_to_string(&file).ok();
-            if current.as_deref() == Some(content) {
+            if current.as_deref() == Some(content.as_str()) {
                 continue;
             }
             if current.is_some_and(|current| !current.contains(MARKER)) {
@@ -147,6 +150,9 @@ mod tests {
         sync(&paths, "user", true).unwrap();
         let handoff = fs::read_to_string(root.join("handoff").join("SKILL.md")).unwrap();
         assert!(handoff.contains(MARKER));
+        // The skills name the agents of the catalog.
+        assert!(!handoff.contains(AGENTS));
+        assert!(handoff.contains("Grok Build or Antigravity"), "{handoff}");
         assert!(root.join("committee").join("SKILL.md").is_file());
         assert_eq!(
             fs::read_to_string(&own).unwrap(),

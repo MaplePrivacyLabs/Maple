@@ -43,6 +43,10 @@ assets!(
     "icons/apps/xcode.png",
     "icons/apps/ynab.png",
     "icons/apps/zapier.png",
+    // Agent marks: one-colour copies of the mark in each vendor's favicon
+    // (grok.com/images/favicon.svg, antigravity.google/favicon.svg), fetched
+    // 2026-11-26. Each is a trademark of its owner, used only to name the agent.
+    "icons/antigravity-mark.svg",
     "icons/archive-restore.svg",
     "icons/archive.svg",
     "icons/arrow-down.svg",
@@ -72,6 +76,7 @@ assets!(
     "icons/folder.svg",
     "icons/gauge.svg",
     "icons/globe.svg",
+    "icons/grok-mark.svg",
     "icons/image.svg",
     "icons/info.svg",
     "icons/keyboard.svg",

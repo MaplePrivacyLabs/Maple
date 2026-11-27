@@ -20,6 +20,9 @@ use super::*;
 use crate::agent::AgentEventSink;
 use crate::agent::test_executable::write_executable;
 
+mod acp;
+mod acp_fixture;
+mod acp_live;
 mod claude_fixture;
 mod end_to_end;
 
@@ -53,6 +56,45 @@ impl RecordingSink {
     }
 }
 
+/// Answer every card the task's gate shows with `answer`; the cards shown
+/// collect in what this returns.
+fn answer_cards(harness: &Harness, answer: &'static str) -> Arc<StdMutex<Vec<AgentQuestion>>> {
+    let sink = Arc::clone(&harness.sink);
+    let broker = harness.gate.questions.clone();
+    let shown = Arc::new(StdMutex::new(Vec::new()));
+    let seen = Arc::clone(&shown);
+    tokio::spawn(async move {
+        let mut answered = std::collections::HashSet::new();
+        loop {
+            for event in sink.events() {
+                if let AgentServiceEvent::Question {
+                    request_id,
+                    questions,
+                    ..
+                } = event
+                    && answered.insert(request_id.clone())
+                {
+                    seen.lock().unwrap().extend(questions);
+                    broker.answer(&request_id, answer.to_string()).await;
+                }
+            }
+            tokio::time::sleep(Duration::from_millis(20)).await;
+        }
+    });
+    shown
+}
+
+/// A task's permission gate in `mode`, with no classifier, whose cards go
+/// to `events`.
+fn task_gate(mode: AgentPermissionMode, events: AgentEventDispatcher) -> PermissionGate {
+    PermissionGate {
+        session_id: "task".to_string(),
+        mode: crate::agent::permissions::TaskPermissions::new(mode),
+        models: pi_coding_agent::ModelRegistry::new(Arc::new(crate::agent::provider::NoKeys)),
+        questions: crate::agent::questions::QuestionBroker::new(events),
+    }
+}
+
 /// Fake CLIs on a private PATH, where they log what they get.
 struct Fixtures {
     _temp: tempfile::TempDir,
@@ -83,6 +125,7 @@ impl Fixtures {
     fn install(&self, provider: &str, mode: &str) {
         let test = match provider {
             "codex" => "fake_codex_app_server",
+            "grok" | "agy" => "acp_fixture::run",
             "claude" => "claude_fixture::run",
             _ => panic!("unknown fixture provider"),
         };
@@ -120,9 +163,10 @@ struct Harness {
     fixtures: Fixtures,
     project: PathBuf,
     sink: Arc<RecordingSink>,
-    questions: QuestionBroker,
     host: ExternalAgentHost,
     registry: Arc<ExternalAgentRegistry>,
+    /// The task's gate, in full access unless a test sets another mode.
+    gate: PermissionGate,
 }
 
 impl Harness {
@@ -132,21 +176,20 @@ impl Harness {
         fs::create_dir_all(&project).unwrap();
         let sink = Arc::new(RecordingSink::default());
         let events = AgentEventDispatcher::new(sink.clone());
-        let questions = QuestionBroker::new(events.clone());
         let host = ExternalAgentHost {
-            events,
-            questions: questions.clone(),
+            events: events.clone(),
             runtime: Weak::new(),
             lifetime: CancellationToken::new(),
         };
         let registry = Arc::new(ExternalAgentRegistry::new(host.clone()));
+        let gate = task_gate(AgentPermissionMode::FullAccess, events.clone());
         Self {
             fixtures,
             project,
             sink,
-            questions,
             host,
             registry,
+            gate,
         }
     }
 
@@ -157,6 +200,7 @@ impl Harness {
             row_id: Some(row_id.to_string()),
             login_path: Some(self.fixtures.search_path()),
             cancel_token: CancellationToken::new(),
+            permissions: self.gate.clone(),
         }
     }
 
@@ -222,9 +266,10 @@ async fn live_revision_changes_on_finish_and_is_retained_without_a_live_row() {
         state.turn = Some(ActiveTurn {
             turn_id: None,
             row_id: "tool-row".into(),
-            synthetic: false,
+            number: state.activity.turns,
             background: true,
-            done: None,
+            waiters: 0,
+            ends: None,
             ended: CancellationToken::new(),
         });
     }
@@ -381,10 +426,19 @@ fn fake_codex_app_server() {
                         "questions": [{ "id": "style", "header": "Style", "question": "Tabs or spaces?", "options": [{ "label": "Tabs", "description": "t" }, { "label": "Spaces", "description": "s" }] }] } }),
                     );
                     let mut chosen = String::from("none");
+                    let mut interrupted = false;
                     for line in lines.by_ref().map_while(Result::ok) {
                         let Ok(message) = serde_json::from_str::<Value>(&line) else {
                             continue;
                         };
+                        if message.get("method").and_then(Value::as_str) == Some("turn/interrupt") {
+                            send(json!({ "id": message["id"], "result": {} }));
+                            send(
+                                json!({ "method": "turn/completed", "params": { "threadId": "thread-1", "turn": { "id": "turn-1", "status": "interrupted" } } }),
+                            );
+                            interrupted = true;
+                            break;
+                        }
                         if message.get("id").and_then(Value::as_u64) == Some(200) {
                             chosen = message["result"]["answers"]["style"]["answers"][0]
                                 .as_str()
@@ -392,6 +446,9 @@ fn fake_codex_app_server() {
                                 .to_string();
                             break;
                         }
+                    }
+                    if interrupted {
+                        continue;
                     }
                     send(
                         json!({ "method": "item/completed", "params": { "threadId": "thread-1", "item": { "id": "msg-q", "type": "agentMessage", "text": format!("Chosen: {chosen}") } } }),
@@ -608,6 +665,7 @@ async fn cancelling_the_run_interrupts_the_turn_and_shutdown_kills_the_process()
                 provider: "codex".into(),
                 agent_id: "codex-1".into(),
                 prompt: "Carry on".into(),
+                answers: BTreeMap::new(),
                 background: true,
                 model: None,
                 effort: None,
@@ -724,50 +782,161 @@ async fn registry_rejects_unknown_providers_bad_cwd_and_too_many_agents() {
     assert!(result_text(&missing).contains("No external agent 'codex-9'"));
 }
 
+/// A send to an agent of the test's Codex fixture.
+fn codex_send(prompt: &str, answers: &[(&str, &str)], background: bool) -> AgentSendParams {
+    AgentSendParams {
+        provider: "codex".into(),
+        agent_id: "codex-1".into(),
+        prompt: prompt.into(),
+        answers: answers
+            .iter()
+            .map(|(id, answer)| (id.to_string(), answer.to_string()))
+            .collect(),
+        background,
+        model: None,
+        effort: None,
+    }
+}
+
+fn no_question_card(harness: &Harness) -> bool {
+    !harness
+        .sink
+        .events()
+        .iter()
+        .any(|event| matches!(event, AgentServiceEvent::Question { .. }))
+}
+
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn a_question_from_the_agent_goes_through_the_question_card() {
+async fn a_question_from_the_agent_comes_back_to_the_caller() {
     let harness = Harness::new("question");
-    let registry = Arc::clone(&harness.registry);
-    let call = harness.call("session-6", "row-6");
-    let turn = tokio::spawn(async move {
-        registry
-            .start(call, codex_start("Ask me something", false))
-            .await
-    });
-    let sink = Arc::clone(&harness.sink);
-    let (request_id, questions) = wait_for(|| {
-        sink.events().iter().find_map(|event| match event {
-            AgentServiceEvent::Question {
-                session_id,
-                request_id,
-                questions,
-            } if session_id == "session-6" => Some((request_id.clone(), questions.clone())),
-            _ => None,
-        })
-    })
-    .await;
-    assert_eq!(questions.len(), 1);
-    assert_eq!(questions[0].id, "style");
-    assert_eq!(questions[0].options[1].label, "Spaces");
+    let asked = harness
+        .registry
+        .start(
+            harness.call("session-6", "row-6"),
+            codex_start("Ask me something", false),
+        )
+        .await;
+    let text = result_text(&asked);
+    assert!(text.starts_with("Status: waiting"), "{text}");
     assert!(
-        harness
-            .questions
-            .answer(
-                &request_id,
-                r#"{"answers":{"style":{"answers":["Spaces"]}}}"#.to_string(),
-            )
-            .await
+        text.contains("- style: Tabs or spaces? Options: Tabs | Spaces."),
+        "{text}"
     );
-    let result = turn.await.unwrap();
-    let text = result_text(&result);
+    assert!(
+        text.contains("The agent is waiting for your answer"),
+        "{text}"
+    );
+    // The row shows the question; the user's card does not.
+    assert!(
+        text.contains("Tabs or spaces?\n- Tabs: t\n- Spaces: s"),
+        "{text}"
+    );
+    assert_eq!(activity_of(&asked)["questions"][0]["id"], "style");
+    assert!(no_question_card(&harness));
+
+    // Several answers need their question ids.
+    let unknown = harness
+        .registry
+        .send(
+            harness.call("session-6", "row-6b"),
+            codex_send("", &[("colour", "red")], false),
+        )
+        .await;
+    assert!(
+        result_text(&unknown).contains("no question 'colour'"),
+        "{}",
+        result_text(&unknown)
+    );
+
+    // An option's label in any case chooses it.
+    let answered = harness
+        .registry
+        .send(
+            harness.call("session-6", "row-6c"),
+            codex_send("spaces", &[], false),
+        )
+        .await;
+    let text = result_text(&answered);
+    assert!(text.starts_with("Status: completed"), "{text}");
     assert!(text.contains("Chosen: Spaces"), "{text}");
+    assert!(!text.contains("Questions for you"), "{text}");
     let log = harness.log();
     assert!(log.contains("default_mode_request_user_input"), "{log}");
     harness.registry.shutdown_all(Duration::from_secs(5)).await;
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn an_async_question_is_answered_in_a_turn_of_maples_own() {
+async fn a_background_agents_question_waits_for_the_callers_answer() {
+    let harness = Harness::new("question");
+    let started = harness
+        .registry
+        .start(
+            harness.call("session-8", "row-8"),
+            codex_start("Ask me something", true),
+        )
+        .await;
+    assert!(started.is_ok(), "{}", result_text(&started));
+    let deadline = Instant::now() + WAIT;
+    loop {
+        let status = harness
+            .registry
+            .status(
+                &harness.call("session-8", "row-8b"),
+                AgentRefParams {
+                    provider: "codex".into(),
+                    agent_id: "codex-1".into(),
+                },
+            )
+            .await;
+        if result_text(&status).starts_with("Status: waiting") {
+            break;
+        }
+        assert!(Instant::now() < deadline, "{}", result_text(&status));
+        tokio::time::sleep(Duration::from_millis(25)).await;
+    }
+    let answered = harness
+        .registry
+        .send(
+            harness.call("session-8", "row-8c"),
+            codex_send("Tabs", &[], false),
+        )
+        .await;
+    assert!(
+        result_text(&answered).contains("Chosen: Tabs"),
+        "{}",
+        result_text(&answered)
+    );
+    assert!(no_question_card(&harness));
+    harness.registry.shutdown_all(Duration::from_secs(5)).await;
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn cancelling_declines_a_waiting_question() {
+    let harness = Harness::new("question");
+    let call = harness.call("session-9", "row-9");
+    let asked = harness
+        .registry
+        .start(call, codex_start("Ask me something", false))
+        .await;
+    assert!(result_text(&asked).starts_with("Status: waiting"));
+    let cancelled = harness
+        .registry
+        .cancel_tool(
+            &harness.call("session-9", "row-9b"),
+            AgentRefParams {
+                provider: "codex".into(),
+                agent_id: "codex-1".into(),
+            },
+        )
+        .await;
+    let text = result_text(&cancelled);
+    assert!(text.starts_with("Status: cancelled"), "{text}");
+    assert!(!text.contains("Questions for you"), "{text}");
+    harness.registry.shutdown_all(Duration::from_secs(5)).await;
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn an_async_question_rides_the_turn_result() {
     let harness = Harness::new("async-question");
     let result = harness
         .registry
@@ -778,73 +947,28 @@ async fn an_async_question_is_answered_in_a_turn_of_maples_own() {
         .await;
     let text = result_text(&result);
     assert!(text.starts_with("Status: completed"), "{text}");
-    // The turn ended, but the question is still open.
     assert!(
-        text.contains("Waiting for the user to decide: answer a question"),
+        text.contains("- q0: Tabs or spaces? Options: Tabs | Spaces."),
         "{text}"
     );
+    assert!(
+        text.contains("The agent ended its turn with these questions."),
+        "{text}"
+    );
+    assert!(no_question_card(&harness));
 
-    let sink = Arc::clone(&harness.sink);
-    let request_id = wait_for(|| {
-        sink.events().iter().find_map(|event| match event {
-            AgentServiceEvent::Question {
-                session_id,
-                request_id,
-                questions,
-            } if session_id == "session-7" && questions[0].question == "Tabs or spaces?" => {
-                Some(request_id.clone())
-            }
-            _ => None,
-        })
-    })
-    .await;
-    assert!(
-        harness
-            .questions
-            .answer(
-                &request_id,
-                r#"{"answers":{"q0":{"answers":["Tabs"]}}}"#.to_string()
-            )
-            .await
-    );
-    // The answer starts a turn of Maple's own, with its own row.
-    let sink = Arc::clone(&harness.sink);
-    let row = wait_for(|| {
-        sink.events().iter().find_map(|event| match event {
-            AgentServiceEvent::TimelineItem { item, .. }
-                if item.id == "external-codex-1-turn-2"
-                    && item.status.as_deref() == Some("completed") =>
-            {
-                Some(item.clone())
-            }
-            _ => None,
-        })
-    })
-    .await;
-    assert_eq!(row.title.as_deref(), Some(SYNTHETIC_TURN_TITLE));
-    assert!(
-        row.output.as_ref().unwrap()["structuredContent"][ACTIVITY_KEY]["text"]
-            .as_str()
-            .unwrap()
-            .contains("Got: Tabs")
-    );
-    let log = harness.log();
-    assert!(log.contains("Answers to your questions"), "{log}");
-    let status = harness
+    let answered = harness
         .registry
-        .status(
-            &harness.call("session-7", "row-7b"),
-            AgentRefParams {
-                provider: "codex".into(),
-                agent_id: "codex-1".into(),
-            },
+        .send(
+            harness.call("session-7", "row-7b"),
+            codex_send("", &[("q0", "tabs")], false),
         )
         .await;
-    let status_text = result_text(&status);
-    assert!(
-        !status_text.contains("Waiting for the user"),
-        "{status_text}"
-    );
+    let text = result_text(&answered);
+    assert!(text.contains("Got: Tabs"), "{text}");
+    assert!(!text.contains("Questions for you"), "{text}");
+    let log = harness.log();
+    assert!(log.contains("Answers to your questions"), "{log}");
     harness.registry.shutdown_all(Duration::from_secs(5)).await;
 }
 
@@ -914,6 +1038,7 @@ async fn claude_native_streams_resumes_and_binds_the_provider() {
                 provider: "claude".into(),
                 agent_id: agent_id.clone(),
                 prompt: "Continue".into(),
+                answers: BTreeMap::new(),
                 background: false,
                 model: None,
                 effort: None,
@@ -1008,6 +1133,7 @@ async fn claude_native_retries_only_resume_confirmed_sessions() {
                         provider: "claude".into(),
                         agent_id: agent_id.clone(),
                         prompt: "Try again".into(),
+                        answers: BTreeMap::new(),
                         background: false,
                         model: None,
                         effort: None,
@@ -1094,6 +1220,7 @@ async fn claude_native_cancellation_kills_cli_and_descendants() {
                 provider: "claude".into(),
                 agent_id: "claude-1".into(),
                 prompt: "Resume".into(),
+                answers: BTreeMap::new(),
                 background: false,
                 model: None,
                 effort: None,
@@ -1113,45 +1240,44 @@ async fn claude_native_cancellation_kills_cli_and_descendants() {
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn claude_questions_still_use_the_question_card() {
+async fn claude_questions_come_back_to_the_caller() {
     for mode in ["approve", "question", "multi-question"] {
         let harness = Harness::new(mode);
         fs::create_dir(harness.project.join("sub")).unwrap();
-        let registry = harness.registry.clone();
-        let call = harness.call("claude-input", "r1");
-        let turn = tokio::spawn(async move { registry.start(call, claude_start(false)).await });
-        if mode != "approve" {
-            let (request_id, questions) = wait_for(|| {
-                harness.sink.events().iter().find_map(|event| match event {
-                    AgentServiceEvent::Question {
-                        session_id,
-                        request_id,
-                        questions,
-                    } if session_id == "claude-input" => {
-                        Some((request_id.clone(), questions.clone()))
-                    }
-                    _ => None,
-                })
-            })
+        let mut result = harness
+            .registry
+            .start(harness.call("claude-input", "r1"), claude_start(false))
             .await;
-            assert_eq!(questions[0].question, "Tabs or spaces?");
-            assert_eq!(questions[0].multi_select, mode == "multi-question");
-            assert!(
-                harness
-                    .questions
-                    .answer(
-                        &request_id,
-                        if mode == "multi-question" {
-                            r#"{"answers":{"q0":{"answers":["Spaces","Tabs"]}}}"#
-                        } else {
-                            r#"{"answers":{"q0":{"answers":["Spaces"]}}}"#
-                        }
-                        .into()
-                    )
-                    .await
+        if mode != "approve" {
+            let text = result_text(&result);
+            assert!(text.starts_with("Status: waiting"), "{mode}: {text}");
+            assert!(text.contains("- q0: Tabs or spaces?"), "{mode}: {text}");
+            assert_eq!(
+                text.contains("Several may be chosen"),
+                mode == "multi-question",
+                "{text}"
             );
+            result = harness
+                .registry
+                .send(
+                    harness.call("claude-input", "r2"),
+                    AgentSendParams {
+                        provider: "claude".into(),
+                        agent_id: "claude-1".into(),
+                        prompt: if mode == "multi-question" {
+                            "spaces, tabs"
+                        } else {
+                            "Spaces"
+                        }
+                        .into(),
+                        answers: BTreeMap::new(),
+                        background: false,
+                        model: None,
+                        effort: None,
+                    },
+                )
+                .await;
         }
-        let result = tokio::time::timeout(WAIT, turn).await.unwrap().unwrap();
         let text = result_text(&result);
         assert!(
             text.contains(if mode == "approve" {
@@ -1167,6 +1293,7 @@ async fn claude_questions_still_use_the_question_card() {
         if mode == "approve" {
             assert!(harness.log().contains("\"behavior\":\"allow\""));
         }
+        assert!(no_question_card(&harness));
         harness.registry.shutdown_all(Duration::from_secs(5)).await;
     }
 }

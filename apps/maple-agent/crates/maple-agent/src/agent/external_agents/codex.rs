@@ -44,8 +44,8 @@ pub(super) fn initialize_params() -> Value {
 
 /// Configuration Maple sets for every thread and turn. Codex offers its
 /// `request_user_input` tool only in plan mode unless this feature is on;
-/// Maple answers those questions through its question card, so it turns
-/// the feature on for the default mode too.
+/// Maple hands those questions to the model that called the agent, so it
+/// turns the feature on for the default mode too.
 fn session_config() -> Value {
     json!({
         "features": {
@@ -312,14 +312,6 @@ fn parse_async_question(question: &Value) -> Option<AsyncQuestion> {
     })
 }
 
-pub(super) fn turn_steer_params(thread_id: &str, turn_id: &str, text: &str) -> Value {
-    json!({
-        "threadId": thread_id,
-        "expectedTurnId": turn_id,
-        "input": [{ "type": "text", "text": text, "text_elements": [] }],
-    })
-}
-
 /// A request Codex makes of its client mid-turn.
 #[derive(Debug, Clone, PartialEq)]
 enum CodexServerRequest {
@@ -432,8 +424,8 @@ pub(super) fn approval_response(decision: AgentPermissionDecision) -> Value {
     json!({ "decision": decision })
 }
 
-/// The answer to a question. The question card composes Codex's own
-/// response shape, so an answer that already is one passes through.
+/// The answer to a question. Maple's answers JSON is Codex's own response
+/// shape, so it passes through.
 pub(super) fn user_input_response(answer: &str) -> Value {
     card_answers(answer)
 }
@@ -442,6 +434,7 @@ pub(super) fn user_input_response(answer: &str) -> Value {
 mod tests {
     use super::*;
 
+    use crate::agent::AgentPermissionMode;
     use crate::agent::external_agents::driver::TodoEntry;
 
     #[test]
@@ -452,6 +445,7 @@ mod tests {
             cwd: Path::new("/p/sub"),
             model: Some("gpt-5.4"),
             effort: Some("high"),
+            mode: AgentPermissionMode::ReadOnly,
         });
         assert_eq!(params["threadId"], "t1");
         assert_eq!(params["input"][0]["text"], "fix it");
@@ -471,6 +465,7 @@ mod tests {
             cwd: Path::new("/p"),
             model: None,
             effort: None,
+            mode: AgentPermissionMode::ReadOnly,
         });
         assert!(bare.get("model").is_none());
         assert!(bare.get("effort").is_none());
@@ -623,7 +618,7 @@ mod tests {
     }
 
     #[test]
-    fn parses_async_questions_and_builds_the_answer_turn() {
+    fn parses_async_questions() {
         let event = parse_notification(
             "item/completed",
             &json!({"item": {"id": "aq", "type": "agentMessage", "text": "Tabs or spaces?", "delivery": "async",
@@ -638,19 +633,6 @@ mod tests {
         assert_eq!(prompts[0].id, "q0");
         assert_eq!(prompts[0].options[1].label, "Spaces");
         assert!(prompts[1].options.is_empty());
-        let prompt = super::super::driver::async_answer_prompt(
-            &questions,
-            r#"{"answers":{"q0":{"answers":["Spaces"]},"q1":{"answers":["habit"]}}}"#,
-        )
-        .unwrap();
-        assert_eq!(
-            prompt,
-            "Answers to your questions:\n\nTabs or spaces?\nSpaces\n\nWhy?\nhabit"
-        );
-        assert!(super::super::driver::async_answer_prompt(&questions, "").is_none());
-        assert!(
-            super::super::driver::async_answer_prompt(&questions, r#"{"answers":{}}"#).is_none()
-        );
         // A plain message keeps being a message.
         assert!(matches!(
             parse_notification(

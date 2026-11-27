@@ -921,7 +921,8 @@ pub struct ExternalAgentActivity {
     pub agent_id: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub thread_id: Option<String>,
-    /// `running`, `completed`, `failed`, `cancelled`, or `idle`.
+    /// `running`, `waiting` (on its caller's answer), `completed`,
+    /// `failed`, `cancelled`, or `idle`.
     pub status: String,
     /// The agent's messages in the current turn, tail-kept.
     pub text: String,
@@ -940,6 +941,25 @@ pub struct ExternalAgentActivity {
     /// What the agent is waiting on the user for, while it waits.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub pending_permission: Option<String>,
+    /// Questions the agent asked that wait for its caller's answer.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub questions: Vec<ActivityQuestion>,
+    /// What the agent asked to do this turn and was not allowed, and why.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub declined: Vec<String>,
+}
+
+/// A question an agent asked, as its caller answers it.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ActivityQuestion {
+    pub id: String,
+    pub question: String,
+    /// The labels of its options; any answer is taken when there are none.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub options: Vec<String>,
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub multi_select: bool,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]

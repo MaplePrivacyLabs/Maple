@@ -1,8 +1,10 @@
 # External agents
 
 A Maple task can hand work to an external coding agent that is installed on
-the same computer. Supported providers are Codex (`codex`) and Claude Code
-(`claude`). Both use the same delegation tools and task controls.
+the same computer. Supported providers are Codex (`codex`), Claude Code
+(`claude`), Grok Build (`grok`) and Antigravity (`antigravity`, its command
+is `agy`). All use the same
+delegation tools and task controls.
 
 ## What the task sees
 
@@ -33,7 +35,8 @@ The tools are:
 | `agent_status` | Read an agent's status, last message, changed files, and commands. |
 | `agent_cancel` | Stop an agent's current turn and its process. The thread stays on disk; the next `agent_send` resumes it in a fresh process. |
 
-All tools except `list_agent_providers` take `provider` (`"codex"` or `"claude"`). `agent_start` also takes optional
+All tools except `list_agent_providers` take `provider` (`"codex"`,
+`"claude"`, `"grok"` or `"antigravity"`). `agent_start` also takes optional
 `model`, `effort`, and `cwd`. `cwd` must be inside the project root.
 
 A result has Paseo's shape: a status line, the agent ID and thread ID, the
@@ -41,9 +44,11 @@ files changed and commands run, the agent's last message inside an
 `<agent-response>` block cut at 4,000 characters, and one line of guidance.
 
 Starting an agent is an ordinary tool call, judged by the task's
-[permission mode](permissions.md). The agent's own sandbox and approval
-settings decide what it may do; Maple accepts the approval requests it
-sends back.
+[permission mode](permissions.md). Codex and Claude Code keep their own
+sandbox and approval settings, and Maple accepts the approval requests they
+send back. An ACP agent runs in its own mode matching the task's, and what it
+asks to approve goes through the task's permission gate (see
+[Approvals](#approvals)).
 
 ## Skills
 
@@ -67,7 +72,7 @@ and speaks its JSON-RPC protocol over stdio. Codex uses the user's own
 sign-in and `~/.codex` configuration, including its `sandbox_mode` and
 `approval_policy`. Maple sends only the prompt, the working directory, and
 one feature flag, `features.default_mode_request_user_input`, so Codex can
-ask the user questions outside plan mode.
+ask questions outside plan mode.
 
 Maple does not change what Codex may do; Codex's sandbox does that. When
 Codex asks to run a command or change a file, Maple sends `accept` without
@@ -75,9 +80,8 @@ asking. A request that arrives after the agent or its turn has ended gets
 `cancel`, and so does stopping the agent. Maple never grants
 `acceptForSession`.
 A question from Codex, blocking in plan mode or asynchronous in the
-default mode, opens Maple's question card and the answer goes back in
-Codex's own shape; an asynchronous answer that arrives after the turn
-ended starts a follow-up turn on the same thread.
+default mode, goes to the model that called the agent (see
+[Questions](#questions)), and the answer goes back in Codex's own shape.
 
 The child runs in the requested project directory, on the user's login PATH, with the
 task's id as the shell tool has it, in its own process group (on
@@ -120,12 +124,10 @@ Claude keeps its normal system prompt and configuration. Maple passes
 `--permission-mode default` and `--permission-prompt-tool stdio`, never a
 bypass-permissions flag. Claude's rules decide which actions need approval;
 Maple answers every `can_use_tool` request with allow, except after Stop,
-when it declines. `AskUserQuestion` uses Maple's question card, including
-multiple choices when
-Claude sets `multiSelect`. Click options or use numbered shortcuts to toggle
-them, then choose Answer (or Next in a batch). Vim navigation moves the cursor;
-Enter toggles the current choice. Answers change only that call's input; Maple
-never persists an allow rule in Claude's settings.
+when it declines. `AskUserQuestion` goes to the model that called the agent
+(see [Questions](#questions)), including multiple choices when Claude sets
+`multiSelect`. Answers change only that call's input; Maple never persists an
+allow rule in Claude's settings.
 
 Each turn starts a contained Claude CLI process using `--session-id` initially
 and `--resume` after the CLI confirms the session with `system/init` or a
@@ -146,14 +148,112 @@ forwarding potentially sensitive exception text or CLI stderr.
 
 The `claude_native_*` runtime tests use a Rust CLI fixture, including a Rust
 sleeping child for descendant cleanup; they need no installed `sleep` program
-or Claude account. On Linux, the ignored `native_question_card_fixture` app
-test mounts the real chat screen with multi-select and single-select questions
-for interactive checks on a private desktop. Build it with `cargo test -p
-maple-agent-app native_question_card_fixture --no-run` through the component build
-environment, then launch the reported test binary on the private display with
-`native_question_card_fixture --ignored --nocapture --test-threads=1` and
-isolated XDG directories. It supplies fixture questions without authenticating
-or starting inference; runtime broker tests cover delivery of the answer.
+or Claude account.
+
+## How ACP agents are driven
+
+Grok Build and Antigravity speak the
+[Agent Client Protocol](https://agentclientprotocol.com) over stdio, and Maple
+drives them the way Paseo does, as a client at protocol version 1
+(`external_agents/acp_client.rs`). Their catalog entries say how each starts
+(`grok agent stdio`, `agy acp --disable-telemetry`), what goes in
+`initialize._meta` and `session/cancel._meta`, and how long start-up may
+take.
+
+The user installs the CLI, signs in and configures it beforehand, as for
+Codex and Claude Code. Maple never calls `authenticate`, never writes the
+agent's configuration, and reads none of its files. The one thing it sets is
+each entry's `environment`, which only switches off telemetry and
+self-updates for the process it starts (`GROK_TELEMETRY_ENABLED=false`,
+`GROK_TELEMETRY_TRACE_UPLOAD=false`, `GROK_DISABLE_AUTOUPDATER=1`,
+`AGY_CLI_DISABLE_AUTO_UPDATE=true`). Settings cannot tell whether these agents
+are signed in without starting them; a signed-out agent's first call returns
+the entry's sign-in hint.
+
+- `initialize` offers no file system and no terminal, so the agent uses its
+  own tools under its own configuration, and offers form elicitation.
+- `session/new` opens a session in the folder, with no MCP servers. A later
+  process reopens it with `session/resume`, or `session/load` with the
+  replay dropped.
+- A turn's `model` and `effort` are set with `session/set_config_option`,
+  the model first; a value the agent did not offer is refused before the
+  prompt, with the ones it offers.
+- The prompt goes as one text block, and its reply ends the turn:
+  `end_turn` completes, `cancelled` cancels, an error or an unusual stop
+  reason fails.
+- Session updates are read leniently and merged per tool call: `execute`
+  calls are commands, finished `edit`, `delete` and `move` calls are file
+  changes, and `plan` entries are the to-do list.
+- A permission request is judged by the task's gate (see
+  [Approvals](#approvals)): allowed with its `allow_once` option, refused
+  with `reject_once`. Options that outlive the turn are never chosen; with
+  neither option, the request is cancelled. However many ways to allow a
+  request offers, it is an approval for the gate, never a question for the
+  calling model.
+- A form elicitation goes to the caller as questions (see
+  [Questions](#questions)). Grok asks only through its own
+  `_x.ai/ask_user_question`, which Maple refuses like every request it does
+  not know (`-32601`); Grok then writes the question in its reply.
+- Stop sends `session/cancel`, answers whatever the agent still waits on as
+  cancelled, and ends the process; the next `agent_send` resumes the session.
+
+### Approvals
+
+Each ACP entry's `acp.modes` names the agent's own mode for each of the
+task's, following Paseo:
+
+| Agent | Read only | Auto | Full access |
+| --- | --- | --- | --- |
+| Grok Build | `--permission-mode default` | `--permission-mode auto` | `--always-approve` |
+| Antigravity | `default` | `auto` | `auto` |
+
+Grok takes its mode only as launch arguments, before `agent stdio`; when the
+task's mode changes, the next turn starts a new process that resumes the
+session. Antigravity's is the session's `mode` option, set before each
+prompt, even when it reads as set already, and Maple follows the mode and
+options the agent reports. A request from the agent to change its own mode
+is refused and listed under "Not allowed" for the calling model.
+
+What the agent still asks about goes to the task's gate, as the task's own
+calls do, with the tool named `<agent> <kind>` (such as `grok edit`) and the
+request's input; the agent's title for the action never reaches the
+classifier.
+
+- **Full access** allows it once.
+- **Auto** puts it to the user: the agent's own auto review already let
+  through what it judged safe. The classifier only names the reason on the
+  card.
+- **Read only** runs what the classifier finds clearly harmless and puts
+  the rest to the user.
+
+While the card waits, the agent's status says what it waits on. A refusal
+answers `reject_once`, and the agent's activity lists it under "Not
+allowed", with the user's note, so the model that called the agent knows. A
+request with no connected interface to ask is refused the same way. Agents
+without modes, Codex and Claude Code among them, have every request accepted
+once.
+
+## Questions
+
+An agent's questions are for the model that started it. That model may answer
+them itself, ask the user first with Maple's own question tool, or decline;
+the agent's question never opens the user's question card.
+
+- A blocking `agent_start` or `agent_send` returns as soon as the agent asks,
+  with status `waiting` and each question's ID, text, and option labels. The
+  transcript row shows the question.
+- A background agent's question reaches the model as a message the user does
+  not see, as a background result does.
+- While a question holds the turn, `agent_send` answers it. Its prompt answers
+  a single question; `answers` maps question IDs to answers when there are
+  several. An answer that names an option's label, in any case, chooses it; a
+  comma-separated list of labels chooses several where the question allows
+  it. Anything else is sent as the answer's own words. The call then waits for
+  the turn's end or the next question, or returns at once with
+  `background: true`.
+- `agent_cancel` and Stop decline the question and stop the turn.
+- Codex's asynchronous questions do not hold the turn. The turn's result lists
+  them, and the next `agent_send` answers them as the next turn's input.
 
 ## Transcript
 
@@ -178,7 +278,10 @@ Stopping an agent, from its row or with `agent_cancel`, sends
 `turn/interrupt` (translated to Claude’s native `interrupt` control request), waits
 briefly for confirmation, then kills the
 process group. Codex does not always end a sandboxed command on interrupt,
-so the kill is what guarantees nothing keeps running.
+so the kill is what guarantees nothing keeps running. Stopping Maple or
+deleting the task stops each working agent the same way before killing it:
+Grok runs each command in a process group of its own, which the kill does
+not reach, so Grok has to end the command itself.
 
 ## Limits
 
@@ -191,6 +294,14 @@ so the kill is what guarantees nothing keeps running.
   missing; run `codex login` in a terminal.
 - Windows compiles and runs the same code, with `codex.exe` preferred over
   the npm `codex.cmd` shim, but the desktop smoke has not been run there.
+- A command Grok moves to the background is reported done, and its turn
+  ends, while the command still runs. When the command finishes, Grok starts
+  a turn of its own: its text is added to the agent's activity as a separate
+  message, which `agent_status` shows, but the caller is not told. Paseo
+  behaves the same way. Antigravity keeps its turn open until its background
+  commands end.
+- A refused request ends Grok's whole turn, which reports as cancelled; the
+  result still lists what was not allowed.
 
 ## Adding a provider
 
@@ -216,9 +327,11 @@ without `kind` continue to mean MCP.
 
 A transport owns its protocol: it turns its wire into the host's terms in
 `external_agents/driver.rs` (events, items, requests and replies) and serves
-the client operations in `app_server.rs` (initialize, open a thread, start,
-steer and interrupt a turn, reply). A new protocol is a `Transport` variant in
-the catalog module and its arm of `AgentClient`; the host does not change. Every desktop task's Pi session has
+the client operations in `app_server.rs` (initialize, open a thread, start
+and interrupt a turn, reply). A new protocol is a `Transport` variant in the
+catalog module and its arm of `AgentClient`; the host does not change. An
+agent that speaks ACP needs no new transport: its entry sets `transport` to
+`acp` and gives its `acp` settings and off switches. Every desktop task's Pi session has
 the five tools; each run declares them to the model only while the task may
 use a provider, and the tools reject calls for any other provider. Keep
 listing filtered by that same selection when more adapters are added.
@@ -229,8 +342,21 @@ background result reaching the model and the call's row, and agents ending
 with their task. Extend them with each adapter's admission behavior.
 
 The `claude_native_*` tests exercise the Rust transport against a deterministic
-fake CLI, without network requests. Both providers' fixtures re-execute the
+fake CLI, without network requests. `external_agents::tests::acp` drives a fake
+ACP agent the same way, and `acp_client::tests` read the message shapes Grok
+Build 1.0.92 and Antigravity 1.5.17 sent in recorded runs. The fixtures re-execute the
 Rust test binary through CLI shims on a private search PATH. They cover
 streamed activity, accepted approvals, questions, resumption,
 provider/session isolation, errors, and process-group cancellation. Live
-inference and platform packaging remain separate checks.
+inference and platform packaging remain separate checks: the ignored
+`external_agents::tests::acp_live` drives the installed ACP agents with real
+prompts on their own accounts when run by hand with
+`MAPLE_LIVE_ACP=grok,antigravity` and `--ignored --nocapture`:
+
+- an edit and a command in read only with every card allowed, a question in
+  full access, Stop, and resume in auto;
+- Stop during a long command, which must leave no command running;
+- a command left running in the background, printing what the caller saw;
+- an edit denied with a note, which must not happen and must reach the
+  caller;
+- both agents at once, and an unknown model refused with the agent's list.

@@ -153,7 +153,6 @@ impl AgentRuntime {
         Arc::new_cyclic(|runtime| Self {
             external_agents: Arc::new(ExternalAgentRegistry::new(ExternalAgentHost {
                 events: parts.host.events.clone(),
-                questions: parts.questions.clone(),
                 runtime: runtime.clone(),
                 lifetime: lifetime.clone(),
             })),
@@ -866,6 +865,14 @@ impl AgentRuntime {
         options.tools = tools.maple;
         options.extensions.push(tools.extension);
         let agents = TaskProviders::default();
+        // One gate judges the task's own calls and what its agents ask to do.
+        let permissions = TaskPermissions::new(row.permission_mode());
+        let gate = PermissionGate {
+            session_id: row.id.clone(),
+            mode: permissions.clone(),
+            models: self.models.clone(),
+            questions: self.questions.clone(),
+        };
         options
             .tools
             .extend(external_agent_tools(ExternalAgentToolsFor {
@@ -874,6 +881,7 @@ impl AgentRuntime {
                 working_dir: PathBuf::from(&row.project_root),
                 login_path: search_path.clone(),
                 providers: agents.clone(),
+                permissions: gate.clone(),
             }));
         if let Some(workers) = &self.python {
             let python = workers.task(
@@ -899,15 +907,7 @@ impl AgentRuntime {
         options.extensions.push(mcp.extension());
         let task_cua = TaskCua::new(&self.account_scope, &row.id, self.models.clone());
         options.extensions.push(task_cua.extension());
-        let permissions = TaskPermissions::new(row.permission_mode());
-        options
-            .extensions
-            .push(permission_extension(PermissionGate {
-                session_id: row.id.clone(),
-                mode: permissions.clone(),
-                models: self.models.clone(),
-                questions: self.questions.clone(),
-            }));
+        options.extensions.push(permission_extension(gate));
         // After a switch to a smaller window, the previous model summarizes.
         options
             .extensions

@@ -3263,7 +3263,10 @@ async fn integrations_list_and_refuse_what_cannot_be_enabled() {
     let harness = Harness::new().await;
     let cards = harness.handle.list_integrations().await.unwrap();
     let ids: Vec<&str> = cards.iter().map(|card| card.id.as_str()).collect();
-    assert_eq!(ids, ["cua-driver", "codex", "claude"]);
+    assert_eq!(
+        ids,
+        ["cua-driver", "codex", "claude", "grok", "antigravity"]
+    );
     // Built-in CUA reads as this device has it: not available without the
     // SDK, and needing setup until every permission is granted.
     let readiness = cua::readiness();

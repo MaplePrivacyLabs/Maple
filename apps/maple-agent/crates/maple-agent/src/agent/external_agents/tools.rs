@@ -13,6 +13,7 @@ use pi_coding_agent::extensions::{RegisteredTool, ToolPrompt};
 use serde::de::DeserializeOwned;
 use serde_json::{Value, json};
 
+use super::super::permissions::PermissionGate;
 use super::{
     AGENT_CANCEL_TOOL, AGENT_SEND_TOOL, AGENT_START_TOOL, AGENT_STATUS_TOOL, AgentRefParams,
     AgentSendParams, AgentStartParams, EXTERNAL_AGENT_TOOLS, ExternalAgentCall,
@@ -48,6 +49,8 @@ pub(crate) struct ExternalAgentToolsFor {
     pub(crate) working_dir: PathBuf,
     pub(crate) login_path: Option<String>,
     pub(crate) providers: TaskProviders,
+    /// The task's permission gate, which judges what its agents ask to do.
+    pub(in crate::agent) permissions: PermissionGate,
 }
 
 #[derive(Clone, Copy)]
@@ -177,6 +180,7 @@ impl ExternalAgentTool {
                 .registry
                 .search_path(self.task.login_path.as_deref()),
             cancel_token: invocation.cancel.clone(),
+            permissions: self.task.permissions.clone(),
         }
     }
 
@@ -228,8 +232,9 @@ fn declarations() -> [(Action, Tool, String); 5] {
                 format!(
                     "Hand a self-contained piece of work to an external coding agent (an installed harness such as {names}) that runs in the project with its own context and its own account. \
 The new agent knows nothing about this conversation: write a complete briefing with the task, relevant files, current state, what was tried, decisions made, acceptance criteria, and constraints. \
-It runs under its own sandbox and approval settings; Maple accepts its approval requests, and its questions still come to the user through Maple. \
+Some agents run under their own sandbox and approval settings, and Maple accepts their approval requests; others follow this task's permission mode, so the user or Maple may refuse what they ask, and the result lists what was not allowed. {LIST_AGENT_PROVIDERS_TOOL} says which. \
 Blocking by default: the call returns the agent's result. With background=true the call returns at once and Maple tells you when the agent finishes; do not poll. \
+When the agent asks a question, the call returns with status waiting and the question; answer it with {AGENT_SEND_TOOL}, deciding yourself when you can and asking the user only when the answer is theirs to give. \
 Call {LIST_AGENT_PROVIDERS_TOOL} first when unsure what is installed."
                 ),
                 json!({
@@ -272,22 +277,28 @@ Call {LIST_AGENT_PROVIDERS_TOOL} first when unsure what is installed."
             Tool::new(
                 AGENT_SEND_TOOL,
                 format!(
-                    "Give an external agent you started with {AGENT_START_TOOL} more instructions in the same thread, with its context intact. Use it to follow up, correct, or continue that agent's work."
+                    "Give an external agent you started with {AGENT_START_TOOL} more instructions in the same thread, with its context intact. Use it to follow up, correct, or continue that agent's work. \
+When the agent asked a question, this answers it: the prompt answers a single question, and naming an option's label chooses that option; for several questions pass `answers`, keyed by question ID."
                 ),
                 json!({
                     "type": "object",
                     "properties": {
                         "provider": { "type": "string", "description": "The agent's provider" },
                         "agent_id": { "type": "string", "description": "The agent ID that agent_start returned" },
-                        "prompt": { "type": "string", "description": "The next instructions for the agent" },
+                        "prompt": { "type": "string", "description": "The next instructions for the agent, or the answer to its one question" },
+                        "answers": {
+                            "type": "object",
+                            "additionalProperties": { "type": "string" },
+                            "description": "Answers to the agent's questions, keyed by question ID; an option's label chooses that option"
+                        },
                         "background": {
                             "type": "boolean",
                             "description": "Return at once and let the agent work on; Maple reports when it finishes (default false)"
                         },
-                        "model": { "type": "string", "description": "Optional model override" },
-                        "effort": { "type": "string", "description": "Optional reasoning effort" }
+                        "model": { "type": "string", "description": "Optional model override for a new turn" },
+                        "effort": { "type": "string", "description": "Optional reasoning effort for a new turn" }
                     },
-                    "required": ["provider", "agent_id", "prompt"]
+                    "required": ["provider", "agent_id"]
                 }),
             ),
             "Continue an external agent's thread with more instructions".to_string(),
@@ -306,7 +317,7 @@ Call {LIST_AGENT_PROVIDERS_TOOL} first when unsure what is installed."
             Tool::new(
                 AGENT_CANCEL_TOOL,
                 format!(
-                    "Interrupt what an external agent is doing now. The agent keeps its thread, so {AGENT_SEND_TOOL} can continue it later."
+                    "Interrupt what an external agent is doing now, declining any question it waits on. The agent keeps its thread, so {AGENT_SEND_TOOL} can continue it later."
                 ),
                 reference(),
             ),

@@ -32,5 +32,97 @@
       "signInHint": "Claude Code is not signed in. Run `claude auth login` in a terminal, then try again.",
       "signInUnknown": "Could not check sign-in. Run `claude auth status` in a terminal."
     }
+  },
+  {
+    "id": "grok",
+    "name": "Grok Build",
+    "description": "Let a task hand work to the Grok Build CLI installed on this computer, with its own account.",
+    "summary": "Runs `grok agent stdio` with the user's own Grok account and configuration",
+    "icon": "icons/grok-mark.svg",
+    "transport": "acp",
+    "executable": "grok",
+    "minimumVersion": "1.0.13",
+    "signInProbe": "none",
+    "environment": {
+      "GROK_DISABLE_AUTOUPDATER": "1",
+      "GROK_TELEMETRY_ENABLED": "false",
+      "GROK_TELEMETRY_TRACE_UPLOAD": "false"
+    },
+    "acp": {
+      "args": [
+        "agent",
+        "stdio"
+      ],
+      "initializeMeta": {
+        "clientType": "extension"
+      },
+      "cancelMeta": {
+        "cancelTrigger": "ctrl_c"
+      },
+      "startupSeconds": 20,
+      "modes": {
+        "readOnly": {
+          "args": [
+            "--permission-mode",
+            "default"
+          ]
+        },
+        "auto": {
+          "args": [
+            "--permission-mode",
+            "auto"
+          ]
+        },
+        "fullAccess": {
+          "args": [
+            "--always-approve"
+          ]
+        }
+      }
+    },
+    "text": {
+      "notInstalled": "Install Grok Build and make sure `grok` is on your PATH, then reopen this page.",
+      "launchMissing": "Grok Build is not installed, or `grok` is not on PATH. Ask the user to install Grok Build.",
+      "versionFailed": "Maple could not run `grok --version`: {error}",
+      "signInHint": "Grok Build is not signed in. Run `grok login` in a terminal, then try again."
+    }
+  },
+  {
+    "id": "antigravity",
+    "name": "Antigravity",
+    "description": "Let a task hand work to the Antigravity CLI installed on this computer, with its own account.",
+    "summary": "Runs `agy acp` with the user's own Antigravity account and configuration",
+    "icon": "icons/antigravity-mark.svg",
+    "transport": "acp",
+    "executable": "agy",
+    "minimumVersion": "1.5.12",
+    "signInProbe": "none",
+    "environment": {
+      "AGY_CLI_DISABLE_AUTO_UPDATE": "true"
+    },
+    "acp": {
+      "args": [
+        "acp",
+        "--disable-telemetry"
+      ],
+      "startupSeconds": 20,
+      "modes": {
+        "readOnly": {
+          "option": "default"
+        },
+        "auto": {
+          "option": "auto"
+        },
+        "fullAccess": {
+          "option": "auto"
+        }
+      }
+    },
+    "text": {
+      "notInstalled": "Install the Antigravity CLI and make sure `agy` is on your PATH, then reopen this page.",
+      "launchMissing": "Antigravity is not installed, or `agy` is not on PATH. Ask the user to install the Antigravity CLI.",
+      "versionFailed": "Maple could not run `agy --version`: {error}",
+      "signInHint": "Antigravity is not signed in. Sign in to Antigravity on this computer, then try again."
+    }
   }
 ]

@@ -1061,11 +1061,10 @@ settings-acp-troubleshoot ff485098e1b6ee49
 settings-acp-zed-config decacb428155684a
 settings-acp-zed-open 94b8632df82d6e80
 settings-acp-zed-start 522070cc6843e91d
+settings-advanced-agent-keeps-its-own-copy-of-the-work-maple-hands-it fd6df728f7b4e15b
 settings-advanced-cancel 5e50208cc4cfc391
 settings-advanced-change-password 1faaba76a156f6cc
 settings-advanced-changes-need-saving c69d956cb9e56cb9
-settings-advanced-claude-code-keeps-its-own-copy-of-the-work-maple-hands-it-in-its 94af789c5db621eb
-settings-advanced-codex-keeps-its-own-copy-of-the-work-maple-hands-it-in-its-own-fo d1ad47f1164edbc5
 settings-advanced-dismiss 550f0c1a62abdb2b
 settings-advanced-dismissing 048dcf65ad78a8bb
 settings-advanced-encryption-enabled-on-this-computer 4125b816bafd7b89

@@ -1,10 +1,14 @@
-//! The Codex app-server client, and the client interface the external-agent
-//! host drives every transport through.
+//! The JSON-RPC client that Codex's app-server and ACP agents are spoken to
+//! through, and the client interface the external-agent host drives every
+//! transport through.
 //!
 //! One reader task owns the child's stdout. It resolves responses to the
-//! requests this client sent, and hands the owner Codex's notifications and
-//! requests, in Maple's terms, through one channel. The owner answers a
-//! request with [`AgentClient::reply`].
+//! requests this client sent, and hands the owner the agent's notifications
+//! and requests, decoded into Maple's terms by the transport, through one
+//! channel. A response that means something to the owner, such as the one
+//! that ends an ACP turn, is turned into messages on that channel too, before
+//! the next line is read, so the owner sees everything in the order the agent
+//! sent it. The owner answers a request with [`AgentClient::reply`].
 
 use super::super::AgentPermissionDecision;
 use super::codex;
@@ -26,9 +30,9 @@ const MAX_LINE_BYTES: usize = 4 * 1024 * 1024;
 /// long: requests run on their own tasks.
 const SERVER_MESSAGE_CAPACITY: usize = 256;
 
-/// A message the app-server initiated, as it arrived.
+/// A message the agent initiated, as it arrived.
 #[derive(Debug)]
-enum ServerMessage {
+pub(super) enum ServerMessage {
     Notification {
         method: String,
         params: Value,
@@ -41,10 +45,25 @@ enum ServerMessage {
     },
 }
 
+/// Turns the agent's messages into Maple's terms, in the order they arrive.
+pub(super) type Decoder = Box<dyn FnMut(ServerMessage) -> Vec<DriverMessage> + Send>;
+
+/// Turns the response to a request into Maple's terms, on the reader, before
+/// the agent's next message is read.
+pub(super) type InOrder = Box<dyn FnOnce(Result<Value, RpcFailure>) -> Vec<DriverMessage> + Send>;
+
+/// What waits for the response to a request.
+enum Pending {
+    /// A caller awaiting it.
+    Caller(oneshot::Sender<Result<Value, RpcFailure>>),
+    /// Messages for the owner, in wire order.
+    InOrder(InOrder),
+}
+
 impl ServerMessage {
-    /// The message in Maple's terms.
-    fn decode(self) -> DriverMessage {
-        match self {
+    /// A Codex app-server message in Maple's terms.
+    pub(super) fn decode_codex(self) -> Vec<DriverMessage> {
+        vec![match self {
             Self::Notification { method, params } => {
                 DriverMessage::Event(codex::parse_notification(&method, &params))
             }
@@ -52,6 +71,31 @@ impl ServerMessage {
                 id,
                 request: codex::agent_request(&method, &params),
             },
+        }]
+    }
+}
+
+/// How one agent's JSON-RPC differs from another's.
+#[derive(Debug, Clone, Copy)]
+pub(super) struct Dialect {
+    /// Whether messages carry `"jsonrpc": "2.0"`. Codex's app-server leaves
+    /// it out; ACP requires it.
+    pub(super) jsonrpc: bool,
+}
+
+/// A request the agent answered with an error.
+#[derive(Debug, Clone, PartialEq)]
+pub(super) struct RpcFailure {
+    pub(super) code: Option<i64>,
+    pub(super) message: String,
+}
+
+impl RpcFailure {
+    /// The failure of a request whose agent process is gone.
+    pub(super) fn exited() -> Self {
+        Self {
+            code: None,
+            message: "the agent process has exited".to_string(),
         }
     }
 }
@@ -59,8 +103,9 @@ impl ServerMessage {
 /// A connected agent process, whichever transport speaks to it. The host
 /// drives every agent through these operations and nothing else.
 pub(super) enum AgentClient {
-    Codex(Arc<AppServerClient>),
+    Codex(Arc<RpcClient>),
     Claude(Arc<super::claude::Client>),
+    Acp(Arc<super::acp_client::Client>),
 }
 
 impl AgentClient {
@@ -68,6 +113,7 @@ impl AgentClient {
         match self {
             Self::Codex(client) => client.closed(),
             Self::Claude(client) => client.closed(),
+            Self::Acp(client) => client.closed(),
         }
     }
 
@@ -81,6 +127,7 @@ impl AgentClient {
                 client.notify("initialized", json!({})).await
             }
             Self::Claude(client) => client.initialize().await,
+            Self::Acp(client) => client.initialize().await,
         }
     }
 
@@ -115,6 +162,16 @@ impl AgentClient {
                 }
             },
             Self::Claude(client) => client.open_thread(),
+            Self::Acp(client) => client.open_session(existing, cwd).await,
+        }
+    }
+
+    /// Apply what the turn asks for that the agent can refuse, before the
+    /// turn starts. Codex and Claude Code take their options with the turn.
+    pub(super) async fn configure_turn(&self, request: &TurnRequest<'_>) -> Result<(), String> {
+        match self {
+            Self::Acp(client) => client.configure(request).await,
+            Self::Codex(_) | Self::Claude(_) => Ok(()),
         }
     }
 
@@ -125,38 +182,33 @@ impl AgentClient {
                 .await
                 .map(drop),
             Self::Claude(client) => client.start_turn(request.prompt).await,
+            Self::Acp(client) => client.prompt(request).await,
         }
     }
 
-    /// Add input to the turn in progress.
-    pub(super) async fn steer(
+    /// Ask the agent to stop its current turn. Only Codex names the turn,
+    /// whose id can arrive after the turn starts; without it nothing is sent
+    /// and the caller's settle timeout ends the wait.
+    pub(super) async fn interrupt(
         &self,
         thread_id: &str,
-        turn_id: &str,
-        text: &str,
+        turn_id: Option<&str>,
     ) -> Result<(), String> {
         match self {
-            Self::Codex(client) => client
-                .request(
-                    "turn/steer",
-                    codex::turn_steer_params(thread_id, turn_id, text),
-                )
-                .await
-                .map(drop),
-            Self::Claude(_) => Err("Claude does not support steering an active turn".into()),
-        }
-    }
-
-    pub(super) async fn interrupt(&self, thread_id: &str, turn_id: &str) -> Result<(), String> {
-        match self {
-            Self::Codex(client) => client
-                .request(
-                    "turn/interrupt",
-                    codex::turn_interrupt_params(thread_id, turn_id),
-                )
-                .await
-                .map(drop),
+            Self::Codex(client) => {
+                let Some(turn_id) = turn_id else {
+                    return Ok(());
+                };
+                client
+                    .request(
+                        "turn/interrupt",
+                        codex::turn_interrupt_params(thread_id, turn_id),
+                    )
+                    .await
+                    .map(drop)
+            }
             Self::Claude(client) => client.interrupt().await,
+            Self::Acp(client) => client.cancel().await,
         }
     }
 
@@ -171,13 +223,15 @@ impl AgentClient {
                 client.respond(id, result).await
             }
             Self::Claude(client) => client.reply(id, reply).await,
+            Self::Acp(client) => client.reply(id, reply).await,
         }
     }
 
     /// Refuse a request Maple does not serve.
     pub(super) async fn refuse(&self, id: Value, message: &str) {
         match self {
-            Self::Codex(client) => client.respond_error(id, message).await,
+            Self::Codex(client) => client.respond_error(id, -32000, message).await,
+            Self::Acp(client) => client.refuse(id).await,
             Self::Claude(client) => {
                 let _ = client
                     .reply(id, AgentReply::Decision(AgentPermissionDecision::Cancel))
@@ -187,9 +241,11 @@ impl AgentClient {
     }
 }
 
-type PendingResponses = Arc<StdMutex<HashMap<u64, oneshot::Sender<Result<Value, String>>>>>;
+type PendingResponses = Arc<StdMutex<HashMap<u64, Pending>>>;
 
-pub(super) struct AppServerClient {
+/// A JSON-RPC peer over a child's stdio, one message per line.
+pub(super) struct RpcClient {
+    dialect: Dialect,
     writer: Mutex<ChildStdin>,
     pending: PendingResponses,
     next_id: AtomicU64,
@@ -198,11 +254,9 @@ pub(super) struct AppServerClient {
     closed: CancellationToken,
 }
 
-impl AppServerClient {
-    /// Wrap the child's pipes. The returned receiver carries every server
-    /// message; the join handle is the reader task, which ends when stdout
-    /// closes.
-    pub(super) fn new(
+impl RpcClient {
+    /// Codex's app-server over the child's pipes.
+    pub(super) fn codex(
         stdin: ChildStdin,
         stdout: ChildStdout,
     ) -> (
@@ -211,7 +265,28 @@ impl AppServerClient {
         tokio::task::JoinHandle<()>,
     ) {
         let (sender, receiver) = mpsc::channel(SERVER_MESSAGE_CAPACITY);
+        let (client, reader) = Self::new(
+            stdin,
+            stdout,
+            Dialect { jsonrpc: false },
+            Box::new(ServerMessage::decode_codex),
+            sender,
+        );
+        (client, receiver, reader)
+    }
+
+    /// Wrap the child's pipes. `decode` turns each message the agent starts
+    /// into what `sender` carries; the join handle is the reader task, which
+    /// ends when stdout closes.
+    pub(super) fn new(
+        stdin: ChildStdin,
+        stdout: ChildStdout,
+        dialect: Dialect,
+        decode: Decoder,
+        sender: mpsc::Sender<DriverMessage>,
+    ) -> (Arc<Self>, tokio::task::JoinHandle<()>) {
         let client = Arc::new(Self {
+            dialect,
             writer: Mutex::new(stdin),
             pending: Arc::new(StdMutex::new(HashMap::new())),
             next_id: AtomicU64::new(1),
@@ -221,9 +296,10 @@ impl AppServerClient {
             stdout,
             Arc::clone(&client.pending),
             client.closed.clone(),
+            decode,
             sender,
         ));
-        (client, receiver, reader)
+        (client, reader)
     }
 
     pub(super) fn closed(&self) -> &CancellationToken {
@@ -232,15 +308,23 @@ impl AppServerClient {
 
     /// Send a request and wait for its response.
     pub(super) async fn request(&self, method: &str, params: Value) -> Result<Value, String> {
+        self.call(method, params)
+            .await
+            .map_err(|failure| format!("{method} failed: {}", failure.message))
+    }
+
+    /// Send a request and wait for its response, keeping an error's code.
+    pub(super) async fn call(&self, method: &str, params: Value) -> Result<Value, RpcFailure> {
+        let exited = RpcFailure::exited;
         if self.closed.is_cancelled() {
-            return Err(format!("{method} failed: the agent process has exited"));
+            return Err(exited());
         }
         let id = self.next_id.fetch_add(1, Ordering::Relaxed);
         let (tx, rx) = oneshot::channel();
         self.pending
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner)
-            .insert(id, tx);
+            .insert(id, Pending::Caller(tx));
         if let Err(error) = self
             .write(json!({ "id": id, "method": method, "params": params }))
             .await
@@ -249,19 +333,63 @@ impl AppServerClient {
                 .lock()
                 .unwrap_or_else(std::sync::PoisonError::into_inner)
                 .remove(&id);
-            return Err(format!("{method} failed: {error}"));
+            return Err(RpcFailure {
+                code: None,
+                message: error.to_string(),
+            });
         }
         tokio::select! {
             biased;
-            response = rx => match response {
-                Ok(Ok(result)) => Ok(result),
-                Ok(Err(error)) => Err(format!("{method} failed: {error}")),
-                Err(_) => Err(format!("{method} failed: the agent process has exited")),
-            },
-            _ = self.closed.cancelled() => {
-                Err(format!("{method} failed: the agent process has exited"))
-            }
+            response = rx => response.unwrap_or_else(|_| Err(exited())),
+            _ = self.closed.cancelled() => Err(exited()),
         }
+    }
+
+    /// Send a request whose response the reader turns into messages for the
+    /// owner with `on_response`, in the order the agent sends everything.
+    /// Returns once the request is written, so whatever is written after it,
+    /// such as a cancel, reaches the agent after it.
+    pub(super) async fn send_in_order(
+        &self,
+        method: &str,
+        params: Value,
+        on_response: InOrder,
+    ) -> Result<(), RpcFailure> {
+        if self.closed.is_cancelled() {
+            return Err(RpcFailure::exited());
+        }
+        let id = self.next_id.fetch_add(1, Ordering::Relaxed);
+        self.pending
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .insert(id, Pending::InOrder(on_response));
+        // The reader may have ended between the check above and the insert,
+        // after taking what was pending: nothing would answer this request.
+        // When the reader took it after all, it has reported the end itself.
+        if self.closed.is_cancelled()
+            && self
+                .pending
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner)
+                .remove(&id)
+                .is_some()
+        {
+            return Err(RpcFailure::exited());
+        }
+        if let Err(error) = self
+            .write(json!({ "id": id, "method": method, "params": params }))
+            .await
+        {
+            self.pending
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner)
+                .remove(&id);
+            return Err(RpcFailure {
+                code: None,
+                message: error.to_string(),
+            });
+        }
+        Ok(())
     }
 
     pub(super) async fn notify(&self, method: &str, params: Value) -> Result<(), String> {
@@ -277,13 +405,18 @@ impl AppServerClient {
             .map_err(|error| format!("response failed: {error}"))
     }
 
-    pub(super) async fn respond_error(&self, id: Value, message: &str) {
+    pub(super) async fn respond_error(&self, id: Value, code: i64, message: &str) {
         let _ = self
-            .write(json!({ "id": id, "error": { "code": -32000, "message": message } }))
+            .write(json!({ "id": id, "error": { "code": code, "message": message } }))
             .await;
     }
 
-    async fn write(&self, message: Value) -> std::io::Result<()> {
+    async fn write(&self, mut message: Value) -> std::io::Result<()> {
+        if self.dialect.jsonrpc
+            && let Value::Object(fields) = &mut message
+        {
+            fields.insert("jsonrpc".to_string(), json!("2.0"));
+        }
         let mut line = serde_json::to_vec(&message)?;
         line.push(b'\n');
         let mut writer = self.writer.lock().await;
@@ -296,6 +429,7 @@ async fn read_server_messages(
     stdout: ChildStdout,
     pending: PendingResponses,
     closed: CancellationToken,
+    mut decode: Decoder,
     sender: mpsc::Sender<DriverMessage>,
 ) {
     use futures_util::StreamExt;
@@ -321,17 +455,31 @@ async fn read_server_messages(
         };
         match classify(message) {
             Classified::Response { id, result } => {
-                let sender = pending
+                let waiting = pending
                     .lock()
                     .unwrap_or_else(std::sync::PoisonError::into_inner)
                     .remove(&id);
-                if let Some(sender) = sender {
-                    let _ = sender.send(result);
+                match waiting {
+                    Some(Pending::Caller(caller)) => {
+                        let _ = caller.send(result);
+                    }
+                    Some(Pending::InOrder(on_response)) => {
+                        for message in on_response(result) {
+                            if sender.send(message).await.is_err() {
+                                closed.cancel();
+                                return;
+                            }
+                        }
+                    }
+                    None => {}
                 }
             }
             Classified::Server(message) => {
-                if sender.send(message.decode()).await.is_err() {
-                    break;
+                for message in decode(message) {
+                    if sender.send(message).await.is_err() {
+                        closed.cancel();
+                        return;
+                    }
                 }
             }
             Classified::Ignored => {}
@@ -343,15 +491,25 @@ async fn read_server_messages(
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner),
     );
-    for (_, sender) in stale {
-        let _ = sender.send(Err("the agent process has exited".to_string()));
+    for (_, waiting) in stale {
+        match waiting {
+            Pending::Caller(caller) => {
+                let _ = caller.send(Err(RpcFailure::exited()));
+            }
+            // The owner still hears how the request ended.
+            Pending::InOrder(on_response) => {
+                for message in on_response(Err(RpcFailure::exited())) {
+                    let _ = sender.send(message).await;
+                }
+            }
+        }
     }
 }
 
 enum Classified {
     Response {
         id: u64,
-        result: Result<Value, String>,
+        result: Result<Value, RpcFailure>,
     },
     Server(ServerMessage),
     Ignored,
@@ -381,11 +539,14 @@ fn classify(message: Value) -> Classified {
                 return Classified::Ignored;
             };
             let result = match fields.remove("error") {
-                Some(error) if !error.is_null() => Err(error
-                    .get("message")
-                    .and_then(Value::as_str)
-                    .map(str::to_string)
-                    .unwrap_or_else(|| error.to_string())),
+                Some(error) if !error.is_null() => Err(RpcFailure {
+                    code: error.get("code").and_then(Value::as_i64),
+                    message: error
+                        .get("message")
+                        .and_then(Value::as_str)
+                        .map(str::to_string)
+                        .unwrap_or_else(|| error.to_string()),
+                }),
                 _ => Ok(fields.remove("result").unwrap_or(Value::Null)),
             };
             Classified::Response { id, result }
@@ -410,7 +571,13 @@ mod tests {
         match classify(json!({"id": 4, "error": {"code": 1, "message": "nope"}})) {
             Classified::Response { id, result } => {
                 assert_eq!(id, 4);
-                assert_eq!(result.unwrap_err(), "nope");
+                assert_eq!(
+                    result.unwrap_err(),
+                    RpcFailure {
+                        code: Some(1),
+                        message: "nope".into()
+                    }
+                );
             }
             _ => panic!("expected an error response"),
         }

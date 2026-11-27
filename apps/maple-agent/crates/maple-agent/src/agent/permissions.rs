@@ -44,6 +44,9 @@ pub(super) const CLASSIFIER_MODEL: &str = "decision-small";
 pub(super) const FALLBACK_CLASSIFIER_MODEL: &str = SYSTEM_ONE_MODEL_ID;
 const CLASSIFIER_TIMEOUT_MS: u64 = 4_000;
 const FALLBACK_CLASSIFIER_TIMEOUT_MS: u64 = 10_000;
+/// How long the classifier has to name the reason for a card Maple shows
+/// whatever it says, as for what an agent's own auto review passed on.
+const REASON_TIMEOUT_MS: u64 = 2_000;
 
 /// Auto runs what doesn't look dangerous: the no-hazard answer must reach
 /// this. The hazards count together, so a call split between two of them
@@ -422,12 +425,20 @@ pub(super) async fn classify(
     models: &ModelRegistry,
     mode: AgentPermissionMode,
     context: &ClassifierContext,
+    reason_only: bool,
     cancel: &CancellationToken,
 ) -> Option<Verdict> {
-    for (id, timeout_ms) in [
-        (CLASSIFIER_MODEL, CLASSIFIER_TIMEOUT_MS),
-        (FALLBACK_CLASSIFIER_MODEL, FALLBACK_CLASSIFIER_TIMEOUT_MS),
-    ] {
+    // A card Maple shows anyway only waits on the reason it names, so that
+    // gets one short try.
+    let attempts: &[(&str, u64)] = if reason_only {
+        &[(CLASSIFIER_MODEL, REASON_TIMEOUT_MS)]
+    } else {
+        &[
+            (CLASSIFIER_MODEL, CLASSIFIER_TIMEOUT_MS),
+            (FALLBACK_CLASSIFIER_MODEL, FALLBACK_CLASSIFIER_TIMEOUT_MS),
+        ]
+    };
+    for &(id, timeout_ms) in attempts {
         let Some(model) = models.find_classifier(MAPLE_PROVIDER, id) else {
             log::warn!("Permission classifier {id} is not registered");
             continue;
@@ -466,8 +477,14 @@ const STOPPED: &str = "The run was stopped before this tool call was approved.";
 
 /// The card's question for a call. Its text is for interfaces that do not
 /// know `permission`; Maple's own cards word it from the fields there.
-fn card_question(call: &ToolCall, reason: AgentPermissionReason) -> AgentQuestion {
-    let action = card_action(&call.tool_name, &call.input);
+/// `call_id` is the model's id for the call, when the call is the model's.
+fn card_question(
+    tool: &str,
+    input: &Value,
+    call_id: Option<&str>,
+    reason: AgentPermissionReason,
+) -> AgentQuestion {
+    let action = card_action(tool, input);
     AgentQuestion {
         multi_select: false,
         id: CARD_QUESTION_ID.to_string(),
@@ -481,16 +498,16 @@ fn card_question(call: &ToolCall, reason: AgentPermissionReason) -> AgentQuestio
             .to_vec(),
         permission: Some(AgentPermissionPrompt {
             reason,
-            tool: call.tool_name.clone(),
+            tool: tool.to_string(),
             action,
-            call_id: Some(call.tool_call_id.clone()),
+            call_id: call_id.map(str::to_string),
         }),
     }
 }
 
 /// What the card shows of a call: its command or path where it has one.
-fn card_action(tool: &str, input: &Value) -> String {
-    let named = ["command", "path", "url", "query"]
+pub(super) fn card_action(tool: &str, input: &Value) -> String {
+    let named = ["command", "path", "file_path", "url", "query"]
         .into_iter()
         .find_map(|field| input.get(field)?.as_str());
     let action = match named {
@@ -539,9 +556,9 @@ pub fn permission_answer_allows(answer: &str) -> bool {
     answer_values(answer).first().map(String::as_str) == Some(ALLOW_ONCE)
 }
 
-/// Whether the card's answer lets the call run, or what to tell the model
-/// when it does not.
-fn read_answer(answer: &str) -> Result<(), String> {
+/// Whether the card's answer lets the call run, or the user's note when it
+/// does not.
+fn read_answer(answer: &str) -> Result<(), Option<String>> {
     if permission_answer_allows(answer) {
         return Ok(());
     }
@@ -557,11 +574,30 @@ fn read_answer(answer: &str) -> Result<(), String> {
         .filter(|value| !value.is_empty() && *value != DENY && *value != "(no answer provided)")
         .collect::<Vec<_>>()
         .join("\n");
-    Err(if note.is_empty() {
-        DENIED.to_string()
-    } else {
-        format!("{DENIED} The user said: {note}")
-    })
+    Err((!note.is_empty()).then_some(note))
+}
+
+/// Why a call that was not cleared did not run.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(super) enum Refusal {
+    /// The user declined it, with their note if they left one.
+    Declined(Option<String>),
+    /// No connected interface could show the card.
+    NobodyToAsk,
+    /// The run stopped before anyone answered.
+    Stopped,
+}
+
+impl Refusal {
+    /// What the model that made the call is told.
+    pub(super) fn for_model(&self) -> String {
+        match self {
+            Self::Declined(None) => DENIED.to_string(),
+            Self::Declined(Some(note)) => format!("{DENIED} The user said: {note}"),
+            Self::NobodyToAsk => NOBODY_TO_ASK.to_string(),
+            Self::Stopped => STOPPED.to_string(),
+        }
+    }
 }
 
 /// What a task's gate needs.
@@ -575,7 +611,8 @@ pub(super) struct PermissionGate {
 }
 
 impl PermissionGate {
-    /// Gate one call: nothing to let it run, or a decision blocking it.
+    /// Gate one of the task's own calls: nothing to let it run, or a
+    /// decision blocking it.
     pub(super) async fn check(
         &self,
         call: &ToolCall,
@@ -589,28 +626,84 @@ impl PermissionGate {
         {
             return None;
         }
-        let reason = match classifier_context(&call.tool_name, description, &call.input, cwd) {
+        self.judge(
+            mode,
+            &call.tool_name,
+            description,
+            &call.input,
+            Some(&call.tool_call_id),
+            cwd,
+            false,
+            cancel,
+        )
+        .await
+        .err()
+        .map(|refusal| BeforeToolCallResult::block(refusal.for_model()))
+    }
+
+    /// Gate what an external agent asks to do. The agent runs in its own
+    /// mode matching the task's, so in Auto its own auto review has already
+    /// let through what it judged safe: what it still asks about goes to the
+    /// user, and the classifier only names the reason. Read only clears what
+    /// is clearly harmless first, as for the task's own calls. The request
+    /// is the agent's, not a call of the model's, so it names no call.
+    pub(super) async fn check_request(
+        &self,
+        tool: &str,
+        description: Option<&str>,
+        input: &Value,
+        cwd: &str,
+        cancel: &CancellationToken,
+    ) -> Result<(), Refusal> {
+        let mode = self.mode.get();
+        if mode == AgentPermissionMode::FullAccess {
+            return Ok(());
+        }
+        let reviewed = mode == AgentPermissionMode::Auto;
+        self.judge(mode, tool, description, input, None, cwd, reviewed, cancel)
+            .await
+    }
+
+    /// Run a call the classifier clears, unless `reviewed` says another
+    /// review already passed it to Maple, and put the rest to the user.
+    #[allow(clippy::too_many_arguments)]
+    async fn judge(
+        &self,
+        mode: AgentPermissionMode,
+        tool: &str,
+        description: Option<&str>,
+        input: &Value,
+        call_id: Option<&str>,
+        cwd: &str,
+        reviewed: bool,
+        cancel: &CancellationToken,
+    ) -> Result<(), Refusal> {
+        let reason = match classifier_context(tool, description, input, cwd) {
             None => AgentPermissionReason::TooLong,
-            Some(context) => match classify(&self.models, mode, &context, cancel).await {
-                Some(Verdict::Allow) => return None,
+            Some(context) => match classify(&self.models, mode, &context, reviewed, cancel).await {
+                Some(Verdict::Allow) if !reviewed => return Ok(()),
+                Some(Verdict::Allow) => AgentPermissionReason::Uncertain,
                 Some(Verdict::Ask(reason)) => reason,
+                // Another review passed it on; Maple only could not say why
+                // it might not be safe.
+                None if reviewed => AgentPermissionReason::Uncertain,
                 None => AgentPermissionReason::Unavailable,
             },
         };
         if cancel.is_cancelled() {
-            return Some(BeforeToolCallResult::block(STOPPED));
+            return Err(Refusal::Stopped);
         }
-        let question = card_question(call, reason);
+        let question = card_question(tool, input, call_id, reason);
         let answer = tokio::select! {
             biased;
-            () = cancel.cancelled() => return Some(BeforeToolCallResult::block(STOPPED)),
+            () = cancel.cancelled() => return Err(Refusal::Stopped),
             answer = self.questions.try_ask(&self.session_id, vec![question]) => answer,
         };
         match answer {
-            Ok(answer) => read_answer(&answer).err().map(BeforeToolCallResult::block),
+            Ok(answer) => read_answer(&answer).map_err(Refusal::Declined),
             Err(refused) => {
                 log::info!("A permission request could not be shown: {refused}");
-                Some(BeforeToolCallResult::block(NOBODY_TO_ASK))
+                Err(Refusal::NobodyToAsk)
             }
         }
     }
