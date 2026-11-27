@@ -76,6 +76,21 @@ fn bytes(range: &TaskFileRange) -> Vec<u8> {
     STANDARD.decode(&range.data).unwrap()
 }
 
+/// `path` as an agent would link it: `file:///C:/…` on Windows,
+/// `file:///…` elsewhere, with spaces percent-encoded.
+fn file_url(path: &Path) -> String {
+    let path = path
+        .to_str()
+        .unwrap()
+        .replace('\\', "/")
+        .replace(' ', "%20");
+    if path.starts_with('/') {
+        format!("file://{path}")
+    } else {
+        format!("file:///{path}")
+    }
+}
+
 #[test]
 fn links_lead_only_inside_the_task_folder() {
     let fixture = fixture();
@@ -86,7 +101,7 @@ fn links_lead_only_inside_the_task_folder() {
         "out/My%20Report.pdf",
         "./out/../out/My Report.pdf",
         report.to_str().unwrap(),
-        &format!("file://{}", report.to_str().unwrap().replace(' ', "%20")),
+        &file_url(&fixture.project.path().join("out").join("My Report.pdf")),
     ] {
         assert_eq!(
             fixture.locate(link),
