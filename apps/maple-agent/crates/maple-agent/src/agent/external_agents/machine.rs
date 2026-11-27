@@ -42,6 +42,7 @@ pub(super) type TimerId = u64;
 
 pub(super) const SHUT_DOWN: &str = "This external agent has been shut down.";
 pub(super) const LAUNCH_CANCELLED: &str = "The external agent launch was cancelled.";
+pub(super) const NOT_RUNNING: &str = "The agent process is not running.";
 
 /// What a caller asks a turn for.
 #[derive(Debug, Clone, PartialEq)]
@@ -81,6 +82,18 @@ pub(super) struct Opened {
     pub(super) confirmed: bool,
 }
 
+/// What a Stop is about.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(super) enum StopScope {
+    /// Whatever the agent is doing: Stop from its row, `agent_cancel`.
+    Any,
+    /// The start a caller asked for, or the turn it became: the caller gave
+    /// up. Another caller's turn is left alone.
+    Start(CallId),
+    /// This turn: a caller waiting on it gave up.
+    Turn(u32),
+}
+
 /// Why a caller waiting on a turn stops waiting.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(super) enum Wake {
@@ -103,8 +116,8 @@ pub(super) enum Input {
         answers: BTreeMap<String, String>,
         background: bool,
     },
-    /// A caller stops what the agent is doing.
-    Stop { call: CallId },
+    /// A caller stops what the agent is doing, or what `scope` names.
+    Stop { call: CallId, scope: StopScope },
     /// A caller waiting on the turn went away.
     Unwait { call: CallId },
     /// The agent's lifetime ended, with its task or the runtime.
@@ -251,10 +264,12 @@ pub(super) enum Effect {
     Stopped {
         calls: Vec<CallId>,
     },
-    /// These callers stop waiting on the turn.
+    /// These callers stop waiting on the turn. When none of them is still
+    /// there to hear it, `unheard` tells the model instead.
     Wake {
         calls: Vec<CallId>,
         why: Wake,
+        unheard: Option<Box<Effect>>,
     },
     /// The agent is gone; its owner exits.
     Exit,
@@ -343,6 +358,8 @@ struct Process {
 #[derive(Debug)]
 struct Turn {
     number: u32,
+    /// The call whose start it is.
+    started_by: CallId,
     row_id: String,
     turn_id: Option<String>,
     background: bool,
@@ -384,6 +401,9 @@ pub(super) struct AgentMachine {
     /// Questions asked while another waits.
     queued: VecDeque<Asked>,
     gated: bool,
+    /// Requests the gate is judging: the process that asked, its id, and
+    /// what the row says the agent waits for.
+    judging: Vec<(ProcessId, Value, String)>,
     shutting_down: bool,
     /// Callers whose Stop is not done yet.
     stop_calls: Vec<CallId>,
@@ -423,6 +443,7 @@ impl AgentMachine {
             question: None,
             queued: VecDeque::new(),
             gated: false,
+            judging: Vec::new(),
             shutting_down: false,
             stop_calls: Vec::new(),
             last_row_emit: None,
@@ -456,6 +477,16 @@ impl AgentMachine {
         !matches!(self.phase, Phase::Idle | Phase::Gone)
     }
 
+    /// The settle timer the agent waits on, if it waits on one.
+    pub(super) fn armed_timer(&self) -> Option<TimerId> {
+        match self.phase {
+            Phase::Stopping(
+                Stopping::AwaitingPrompt { timer } | Stopping::Settling { timer, .. },
+            ) => Some(timer),
+            _ => None,
+        }
+    }
+
     /// Whether `call`'s start was taken up, rather than refused.
     pub(super) fn is_starting(&self, call: CallId) -> bool {
         matches!(&self.phase, Phase::Starting { call: starting, .. } if *starting == call)
@@ -485,7 +516,13 @@ impl AgentMachine {
                 answers,
                 background,
             } => self.answer(call, &prompt, &answers, background),
-            Input::Stop { call } => self.stop(Some(call)),
+            Input::Stop { call, scope } => {
+                if self.concerns(scope) {
+                    self.stop(Some(call));
+                } else {
+                    self.push(Effect::Stopped { calls: vec![call] });
+                }
+            }
             Input::Unwait { call } => {
                 if let Some(turn) = self.turn.as_mut() {
                     turn.waiters.retain(|waiter| *waiter != call);
@@ -515,6 +552,27 @@ impl AgentMachine {
 
     fn push(&mut self, effect: Effect) {
         self.effects.push(effect);
+    }
+
+    /// Whether a Stop about `scope` is about what the agent does now.
+    fn concerns(&self, scope: StopScope) -> bool {
+        match scope {
+            StopScope::Any => true,
+            StopScope::Start(call) => match &self.phase {
+                Phase::Starting { call: starting, .. } => *starting == call,
+                _ => self
+                    .turn
+                    .as_ref()
+                    .is_some_and(|turn| turn.started_by == call),
+            },
+            StopScope::Turn(number) => self.turn.as_ref().is_some_and(|turn| turn.number == number),
+        }
+    }
+
+    /// Say on the row which approval the agent waits for: the latest still
+    /// being judged.
+    fn show_judging(&mut self) {
+        self.activity.pending_permission = self.judging.last().map(|(_, _, label)| label.clone());
     }
 
     fn busy_message(&self) -> String {
@@ -648,9 +706,14 @@ impl AgentMachine {
         let Some(thread_id) = self
             .process
             .as_ref()
-            .map(|process| process.thread_id.clone())
+            .filter(|current| current.id == process)
+            .map(|current| current.thread_id.clone())
         else {
-            return;
+            self.push(Effect::Started {
+                call,
+                result: Err(NOT_RUNNING.to_string()),
+            });
+            return self.rest();
         };
         self.messages.clear();
         self.activity.begin_turn();
@@ -661,6 +724,7 @@ impl AgentMachine {
             .unwrap_or_else(|| format!("external-{}-turn-{number}", self.agent_id));
         self.turn = Some(Turn {
             number,
+            started_by: call,
             row_id,
             turn_id: None,
             background: spec.background,
@@ -977,6 +1041,24 @@ impl AgentMachine {
             process: process.id,
             flush: false,
         });
+        // A process that exits while the turn's options are applied ends
+        // the start: the options' answer, if one still comes, is stale.
+        if matches!(
+            self.phase,
+            Phase::Starting { step: Step::Configuring(configuring), .. } if configuring == process.id
+        ) {
+            let Phase::Starting { call, .. } = mem::replace(&mut self.phase, Phase::Idle) else {
+                return;
+            };
+            self.push(Effect::Started {
+                call,
+                result: Err(format!(
+                    "The {} process exited before the turn started.",
+                    self.name
+                )),
+            });
+            return self.rest();
+        }
         if self.turn.is_none() {
             return;
         }
@@ -1190,7 +1272,9 @@ impl AgentMachine {
                 // argue it through.
                 let input = Value::Object(arguments);
                 let action = card_action(&tool_name, &input);
-                self.activity.pending_permission = Some(format!("approve {action}"));
+                self.judging
+                    .push((process, id.clone(), format!("approve {action}")));
+                self.show_judging();
                 self.emit_row(true);
                 self.push_activity_label();
                 self.push(Effect::Judge {
@@ -1270,19 +1354,20 @@ impl AgentMachine {
             asked.questions.len()
         );
         self.question = Some(asked);
-        let report = waiters.is_empty();
-        if !report {
+        let report = (!self.shutting_down).then(|| Effect::ReportQuestion {
+            activity: self.activity_now(),
+        });
+        if waiters.is_empty() {
+            self.effects.extend(report);
+        } else {
             self.push(Effect::Wake {
                 calls: waiters,
                 why: Wake::Asked,
+                unheard: report.map(Box::new),
             });
         }
         self.push(Effect::SubagentActivity("Asked a question".to_string()));
         self.emit_row(true);
-        if report && !self.shutting_down {
-            let activity = self.activity_now();
-            self.push(Effect::ReportQuestion { activity });
-        }
     }
 
     fn judged(
@@ -1294,7 +1379,10 @@ impl AgentMachine {
         action: &str,
         verdict: Result<(), Refusal>,
     ) {
-        if self.turn.as_ref().is_some_and(|open| open.number == turn) {
+        self.judging
+            .retain(|(asking, asked, _)| !(*asking == process && *asked == id));
+        let current = self.turn.as_ref().is_some_and(|open| open.number == turn);
+        if current {
             let declined = match &verdict {
                 Ok(()) | Err(Refusal::Stopped) => None,
                 Err(Refusal::Declined(None)) => Some(format!("{action}: the user declined it.")),
@@ -1315,22 +1403,26 @@ impl AgentMachine {
                     }
                 }
             }
-            self.activity.pending_permission = None;
+            self.show_judging();
             self.emit_row(true);
             self.push_activity_label();
         }
+        // Allowed only into the turn it was asked in, while it runs on the
+        // process that asked: an answer that comes as the turn ends or
+        // stops is a refusal.
+        let allowed = verdict.is_ok()
+            && current
+            && matches!(self.phase, Phase::Running)
+            && self.process.as_ref().is_some_and(|open| open.id == process);
         log::info!(
             "External agent {} approval for {action}: {}",
             self.agent_id,
-            if verdict.is_ok() {
-                "allowed"
-            } else {
-                "refused"
-            }
+            if allowed { "allowed" } else { "refused" }
         );
-        let decision = match verdict {
-            Ok(()) => AgentPermissionDecision::AllowOnce,
-            Err(_) => AgentPermissionDecision::Cancel,
+        let decision = if allowed {
+            AgentPermissionDecision::AllowOnce
+        } else {
+            AgentPermissionDecision::Cancel
         };
         self.push(Effect::Reply {
             process,
@@ -1347,6 +1439,7 @@ impl AgentMachine {
         };
         self.activity.status = outcome.status().to_string();
         self.activity.pending_permission = None;
+        self.judging.clear();
         // A command a stopped or failed turn left running did not finish;
         // some agents never say so.
         if outcome != TurnOutcome::Completed {
@@ -1388,24 +1481,24 @@ impl AgentMachine {
         );
         self.push(Effect::TurnEnded { turn: turn.number });
         self.push(Effect::Row(row));
-        // Recorded before anyone waiting on the turn hears it ended.
+        // Recorded before anyone waiting on the turn hears it ended: the
+        // owner holds what callers hear until the record is written.
         self.record();
-        let report = turn.waiters.is_empty();
-        if !report {
-            self.push(Effect::Wake {
-                calls: turn.waiters,
-                why: Wake::Ended,
-            });
-        }
         self.push(Effect::SubagentFinished);
         // An agent shut down went with its task or the runtime: nobody is
         // left to tell.
-        if report && !self.shutting_down {
-            let activity = self.activity_now();
-            self.push(Effect::ReportEnd {
-                activity,
-                row_id: turn.row_id,
-                outcome,
+        let report = (!self.shutting_down).then(|| Effect::ReportEnd {
+            activity: self.activity_now(),
+            row_id: turn.row_id,
+            outcome,
+        });
+        if turn.waiters.is_empty() {
+            self.effects.extend(report);
+        } else {
+            self.push(Effect::Wake {
+                calls: turn.waiters,
+                why: Wake::Ended,
+                unheard: report.map(Box::new),
             });
         }
     }

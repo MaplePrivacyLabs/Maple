@@ -121,6 +121,9 @@ const INTERRUPT_SETTLE_TIMEOUT: Duration = Duration::from_secs(5);
 const INTERRUPT_REQUEST_TIMEOUT: Duration = Duration::from_secs(2);
 /// How long an agent process has to start and answer its handshake.
 const LAUNCH_TIMEOUT: Duration = Duration::from_secs(30);
+/// How long ending a task's agents may take before what is left is killed:
+/// past the longest Stop (the prompt, the interrupt and the settle).
+const SESSION_SHUTDOWN_TIMEOUT: Duration = Duration::from_secs(15);
 
 /// A lock that a panic elsewhere does not poison.
 fn lock<T>(mutex: &std::sync::Mutex<T>) -> std::sync::MutexGuard<'_, T> {
@@ -834,6 +837,7 @@ impl ExternalAgentRegistry {
             .unwrap_or(0)
     }
 
+    /// End a task's agents, as when the task is deleted.
     pub(crate) async fn shutdown_session(&self, session_id: &str) {
         let agents = self
             .sessions
@@ -842,37 +846,37 @@ impl ExternalAgentRegistry {
             .remove(session_id)
             .map(|session| session.agents.into_values().collect::<Vec<_>>())
             .unwrap_or_default();
-        futures_util::future::join_all(agents.iter().map(|agent| agent.shutdown())).await;
+        end_agents(agents, SESSION_SHUTDOWN_TIMEOUT).await;
     }
 
-    /// End every agent: each stops its turn and its process, within
-    /// `graceful_timeout` all told. An agent's owner that runs out of time is
-    /// aborted, which drops its processes and kills their process groups.
+    /// End every agent, within `graceful_timeout` all told.
     pub(crate) async fn shutdown_all(&self, graceful_timeout: Duration) {
         let agents = std::mem::take(&mut *self.sessions.lock().await)
             .into_values()
             .flat_map(|session| session.agents.into_values())
             .collect::<Vec<_>>();
-        for agent in &agents {
-            agent.cancel.cancel();
+        end_agents(agents, graceful_timeout).await;
+    }
+}
+
+/// End `agents`: each stops its turn and its process, within `timeout` all
+/// told. An agent's owner that runs out of time is aborted, which drops its
+/// processes and kills their process groups.
+async fn end_agents(agents: Vec<Arc<ExternalAgent>>, timeout: Duration) {
+    for agent in &agents {
+        agent.cancel.cancel();
+    }
+    let mut owners = agents
+        .iter()
+        .filter_map(|agent| agent.take_owner())
+        .collect::<Vec<_>>();
+    let graceful = futures_util::future::join_all(owners.iter_mut());
+    if tokio::time::timeout(timeout, graceful).await.is_err() {
+        for owner in &owners {
+            owner.abort();
         }
-        let mut owners = agents
-            .iter()
-            .filter_map(|agent| agent.take_owner())
-            .collect::<Vec<_>>();
-        let graceful = futures_util::future::join_all(owners.iter_mut());
-        if tokio::time::timeout(graceful_timeout, graceful)
-            .await
-            .is_err()
-        {
-            for owner in &owners {
-                owner.abort();
-            }
-            let _ = futures_util::future::join_all(owners).await;
-            log::warn!(
-                "External agents did not shut down in time; their process groups were killed"
-            );
-        }
+        let _ = futures_util::future::join_all(owners).await;
+        log::warn!("External agents did not shut down in time; their process groups were killed");
     }
 }
 

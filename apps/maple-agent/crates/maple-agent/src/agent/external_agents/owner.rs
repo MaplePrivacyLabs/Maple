@@ -13,6 +13,7 @@
 use std::collections::{BTreeMap, HashMap, VecDeque};
 use std::ops::Deref;
 use std::path::PathBuf;
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex as StdMutex};
 use std::time::{Duration, Instant};
 
@@ -37,8 +38,8 @@ use super::app_server::AgentClient;
 use super::catalog::{Approvals, CatalogEntry};
 use super::driver::{DriverMessage, OpenedThread, TurnOutcome, TurnRequest};
 use super::machine::{
-    self, AgentMachine, AgentView, CallId, Effect, Input, LAUNCH_CANCELLED, Opened, ProcessId,
-    SHUT_DOWN, StartSpec, TimerId, TurnSpec, Wake,
+    self, AgentMachine, AgentView, CallId, Effect, Input, LAUNCH_CANCELLED, NOT_RUNNING, Opened,
+    ProcessId, SHUT_DOWN, StartSpec, StopScope, TimerId, TurnSpec, Wake,
 };
 use super::{
     ACTIVITY_KEY, AGENT_SEND_TOOL, AGENT_STATUS_TOOL, BACKGROUND_QUESTION_MESSAGE,
@@ -49,7 +50,6 @@ use super::{
     external_run_id, latest_activity_label, lock, records, render_activity, subagent_row_id,
 };
 
-const NOT_RUNNING: &str = "The agent process is not running.";
 /// How long a process that finished its turn gets to exit by itself and
 /// flush its session before it is killed.
 const FLUSH_TIMEOUT: Duration = Duration::from_secs(2);
@@ -129,15 +129,20 @@ impl Drop for Working {
     }
 }
 
+/// What a caller asks of the agent's owner. Each request carries the id its
+/// caller gave it, so a later Stop can say which start or turn it is about.
 enum Command {
     Start(Box<StartCommand>),
     Answer {
+        call: CallId,
         prompt: String,
         answers: BTreeMap<String, String>,
         background: bool,
         reply: oneshot::Sender<Result<Option<TurnReply>, String>>,
     },
     Stop {
+        call: CallId,
+        scope: StopScope,
         reply: oneshot::Sender<()>,
     },
     Unwait {
@@ -146,22 +151,25 @@ enum Command {
 }
 
 struct StartCommand {
+    call: CallId,
     spec: StartSpec,
     gate: PermissionGate,
     login_path: Option<String>,
     reply: oneshot::Sender<Result<TurnReply, String>>,
 }
 
-/// A turn a caller started or answered: the caller's wait on it, if the
-/// caller waits.
+/// A turn a caller started or answered: its number, and the caller's wait
+/// on it if the caller waits.
 struct TurnReply {
-    wait: Option<(CallId, oneshot::Receiver<Wake>)>,
+    number: u32,
+    wait: Option<oneshot::Receiver<Wake>>,
 }
 
 /// A caller's wait on a turn. One dropped before the turn wakes it leaves
 /// the turn, which then reports its end to the model as a notice.
 pub(super) struct Wait {
     call: CallId,
+    turn: u32,
     woken: oneshot::Receiver<Wake>,
     inbox: mpsc::UnboundedSender<Command>,
     settled: bool,
@@ -191,6 +199,7 @@ impl Drop for Wait {
 pub(super) struct ExternalAgent {
     info: Arc<AgentInfo>,
     inbox: mpsc::UnboundedSender<Command>,
+    next_call: AtomicU64,
     view: watch::Receiver<AgentView>,
     owner: StdMutex<Option<JoinHandle<()>>>,
 }
@@ -284,7 +293,8 @@ impl ExternalAgent {
         let (view_sender, view) = watch::channel(machine.view());
         let (inbox, commands) = mpsc::unbounded_channel();
         let (recorder, recordings) = mpsc::unbounded_channel();
-        let recording = tokio::spawn(record_agent(Arc::clone(&info), recordings));
+        let (written, writes) = mpsc::unbounded_channel();
+        let recording = tokio::spawn(record_agent(Arc::clone(&info), recordings, written));
         let owner = Owner {
             info: Arc::clone(&info),
             machine,
@@ -303,7 +313,6 @@ impl ExternalAgent {
             login_path: None,
             start_context: HashMap::new(),
             turns: HashMap::new(),
-            next_call: 1,
             starts: HashMap::new(),
             answers: HashMap::new(),
             stops: HashMap::new(),
@@ -311,15 +320,24 @@ impl ExternalAgent {
             woken: HashMap::new(),
             inputs: VecDeque::new(),
             recorder: Some(recorder),
-            recording,
+            recording: AbortOnDrop(Some(recording)),
+            recorded: 0,
+            written: 0,
+            writes,
+            held: VecDeque::new(),
         };
         let owner = tokio::spawn(owner.run());
         Self {
             info,
             inbox,
+            next_call: AtomicU64::new(1),
             view,
             owner: StdMutex::new(Some(owner)),
         }
+    }
+
+    fn next_call(&self) -> CallId {
+        self.next_call.fetch_add(1, Ordering::Relaxed)
     }
 
     /// What the agent last published, with its age as of now.
@@ -423,9 +441,11 @@ impl ExternalAgent {
             row_id: call.row_id.clone(),
             gated: self.entry.approvals == Approvals::Task,
         };
+        let id = self.next_call();
         let (reply, started) = oneshot::channel();
         self.inbox
             .send(Command::Start(Box::new(StartCommand {
+                call: id,
                 spec,
                 gate: call.permissions.clone(),
                 login_path: call.login_path.clone(),
@@ -435,12 +455,14 @@ impl ExternalAgent {
         let started = tokio::select! {
             biased;
             _ = call.cancel_token.cancelled() => {
-                self.stop().await;
+                // Only this call's own start, or the turn it became: a start
+                // refused as busy leaves the other turn alone.
+                self.stop_scoped(StopScope::Start(id)).await;
                 return Err(LAUNCH_CANCELLED.to_string());
             }
             started = started => started.unwrap_or_else(|_| Err(SHUT_DOWN.to_string()))?,
         };
-        let wait = self.wait(started);
+        let wait = self.wait(id, started);
         if input.background {
             let activity = self.activity();
             // A short turn can be over before this returns; say so rather
@@ -464,9 +486,11 @@ impl ExternalAgent {
         answers: &BTreeMap<String, String>,
         background: bool,
     ) -> Result<Option<Option<Wait>>, String> {
+        let id = self.next_call();
         let (reply, answered) = oneshot::channel();
         self.inbox
             .send(Command::Answer {
+                call: id,
                 prompt: prompt.to_string(),
                 answers: answers.clone(),
                 background,
@@ -476,12 +500,13 @@ impl ExternalAgent {
         let answered = answered
             .await
             .unwrap_or_else(|_| Err(SHUT_DOWN.to_string()))?;
-        Ok(answered.map(|turn| self.wait(turn)))
+        Ok(answered.map(|turn| self.wait(id, turn)))
     }
 
-    fn wait(&self, turn: TurnReply) -> Option<Wait> {
-        turn.wait.map(|(call, woken)| Wait {
+    fn wait(&self, call: CallId, turn: TurnReply) -> Option<Wait> {
+        turn.wait.map(|woken| Wait {
             call,
+            turn: turn.number,
             woken,
             inbox: self.inbox.clone(),
             settled: false,
@@ -504,7 +529,7 @@ impl ExternalAgent {
                     // stops working on this prompt, and its process goes so
                     // a sandboxed command cannot outlive the stop.
                     wait.stay();
-                    self.stop().await;
+                    self.stop_scoped(StopScope::Turn(wait.turn)).await;
                 }
                 () = wait.woken() => {}
             }
@@ -516,8 +541,18 @@ impl ExternalAgent {
     /// Stop the agent's turn and reclaim its process. The thread stays, and
     /// the next send resumes it in a fresh process.
     pub(super) async fn stop(&self) {
+        self.stop_scoped(StopScope::Any).await;
+    }
+
+    /// Stop what `scope` names, if the agent is still on it.
+    async fn stop_scoped(&self, scope: StopScope) {
         let (reply, stopped) = oneshot::channel();
-        if self.inbox.send(Command::Stop { reply }).is_ok() {
+        let call = self.next_call();
+        if self
+            .inbox
+            .send(Command::Stop { call, scope, reply })
+            .is_ok()
+        {
             let _ = stopped.await;
         }
     }
@@ -793,35 +828,53 @@ async fn report_question(info: Arc<AgentInfo>, activity: ExternalAgentActivity) 
 }
 
 /// Write the agent's records into its task's session, in the order they
-/// come. Only the latest counts, so one a newer one replaces is skipped.
+/// come, and say how far it got. Only the latest counts, so one a newer one
+/// replaces is skipped.
 async fn record_agent(
     info: Arc<AgentInfo>,
-    mut recordings: mpsc::UnboundedReceiver<ExternalAgentActivity>,
+    mut recordings: mpsc::UnboundedReceiver<(u64, ExternalAgentActivity)>,
+    written: mpsc::UnboundedSender<u64>,
 ) {
-    while let Some(mut activity) = recordings.recv().await {
-        while let Ok(newer) = recordings.try_recv() {
+    while let Some((mut count, mut activity)) = recordings.recv().await {
+        while let Ok((newer_count, newer)) = recordings.try_recv() {
+            count = newer_count;
             activity = newer;
         }
-        let Some(runtime) = info.host.runtime.upgrade() else {
-            continue;
-        };
-        let record = records::AgentRecord {
-            task: info.task.clone(),
-            cwd: info.cwd.clone(),
-            activity,
-        };
-        let Ok(data) = serde_json::to_value(&record) else {
-            continue;
-        };
-        match runtime.side_question_session(&info.session_id).await {
-            Ok(session) => session
-                .extension_context()
-                .append_entry(records::AGENT_RECORD_ENTRY, Some(data)),
-            Err(error) => log::warn!(
-                "External agent {} could not record itself in its task: {error}",
-                info.agent_id
-            ),
-        }
+        write_record(&info, activity).await;
+        let _ = written.send(count);
+    }
+}
+
+async fn write_record(info: &AgentInfo, activity: ExternalAgentActivity) {
+    let Some(runtime) = info.host.runtime.upgrade() else {
+        return;
+    };
+    let record = records::AgentRecord {
+        task: info.task.clone(),
+        cwd: info.cwd.clone(),
+        activity,
+    };
+    let Ok(data) = serde_json::to_value(&record) else {
+        return;
+    };
+    // An agent going away writes only into a task still open: one being
+    // deleted was closed first and must not be opened again.
+    let session = if info.cancel.is_cancelled() {
+        runtime
+            .loaded_session(&info.session_id)
+            .await
+            .ok_or_else(|| "the task is closed".to_string())
+    } else {
+        runtime.side_question_session(&info.session_id).await
+    };
+    match session {
+        Ok(session) => session
+            .extension_context()
+            .append_entry(records::AGENT_RECORD_ENTRY, Some(data)),
+        Err(error) => log::warn!(
+            "External agent {} could not record itself in its task: {error}",
+            info.agent_id
+        ),
     }
 }
 
@@ -890,6 +943,8 @@ enum Done {
 /// What the owner waits on next.
 enum Next {
     Shutdown,
+    /// The record writer wrote records up to this count.
+    Written(Option<u64>),
     Done(Result<Done, JoinError>),
     Settle,
     Message(Option<DriverMessage>),
@@ -922,7 +977,6 @@ struct Owner {
     start_context: HashMap<CallId, (PermissionGate, Option<String>)>,
     /// Fires when its turn ends, so an approval still waiting stops.
     turns: HashMap<u32, CancellationToken>,
-    next_call: CallId,
     starts: HashMap<CallId, oneshot::Sender<Result<TurnReply, String>>>,
     answers: HashMap<CallId, oneshot::Sender<Result<Option<TurnReply>, String>>>,
     stops: HashMap<CallId, oneshot::Sender<()>>,
@@ -931,8 +985,27 @@ struct Owner {
     woken: HashMap<CallId, oneshot::Receiver<Wake>>,
     /// Inputs the owner raised itself, taken before anything new.
     inputs: VecDeque<Input>,
-    recorder: Option<mpsc::UnboundedSender<ExternalAgentActivity>>,
-    recording: JoinHandle<()>,
+    recorder: Option<mpsc::UnboundedSender<(u64, ExternalAgentActivity)>>,
+    /// The record writer, aborted with the owner.
+    recording: AbortOnDrop,
+    /// How many records were taken, and how many of them are written.
+    recorded: u64,
+    written: u64,
+    writes: mpsc::UnboundedReceiver<u64>,
+    /// What callers hear, held until the records taken before it are
+    /// written: each batch with the count it waits for.
+    held: VecDeque<(u64, Vec<Effect>)>,
+}
+
+/// A task aborted when this is dropped.
+struct AbortOnDrop(Option<JoinHandle<()>>);
+
+impl Drop for AbortOnDrop {
+    fn drop(&mut self) {
+        if let Some(task) = &self.0 {
+            task.abort();
+        }
+    }
 }
 
 impl Owner {
@@ -957,9 +1030,13 @@ impl Owner {
             }
         }
         // The records taken before the agent went are written; nothing
-        // after its shutdown is added.
+        // after its shutdown is added. Then callers still held hear back.
         self.recorder = None;
-        let _ = (&mut self.recording).await;
+        if let Some(recording) = self.recording.0.take() {
+            let _ = recording.await;
+        }
+        self.written = self.recorded;
+        self.release();
     }
 
     /// What happens next; an error when nothing can.
@@ -973,14 +1050,19 @@ impl Owner {
                 ops,
                 settle,
                 current,
+                writes,
+                recorded,
+                written,
                 ..
             } = self;
+            let unwritten = *written < *recorded;
             let deadline = settle.map(|(_, deadline)| deadline);
             tokio::select! {
                 biased;
                 () = info.cancel.cancelled(), if !*shutdown_seen => Next::Shutdown,
                 Some(done) = ops.join_next(), if !ops.is_empty() => Next::Done(done),
                 () = sleep_until(deadline), if deadline.is_some() => Next::Settle,
+                write = writes.recv(), if unwritten => Next::Written(write),
                 message = recv(current), if current.is_some() => Next::Message(message),
                 command = inbox.recv(), if *inbox_open => Next::Command(command),
                 else => Next::Stalled,
@@ -988,6 +1070,13 @@ impl Owner {
         };
         Ok(match next {
             Next::Stalled => return Err(()),
+            Next::Written(write) => {
+                // A writer that is gone wrote all it will.
+                self.written = write.unwrap_or(self.recorded).max(self.written);
+                self.release();
+                self.update_working();
+                None
+            }
             Next::Shutdown => {
                 self.shutdown_seen = true;
                 Some(Input::Shutdown)
@@ -1029,15 +1118,14 @@ impl Owner {
     }
 
     fn command(&mut self, command: Command) -> Option<Input> {
-        if let Command::Unwait { call } = command {
-            self.waits.remove(&call);
-            return Some(Input::Unwait { call });
-        }
-        let call = self.next_call;
-        self.next_call += 1;
         match command {
+            Command::Unwait { call } => {
+                self.waits.remove(&call);
+                Some(Input::Unwait { call })
+            }
             Command::Start(start) => {
                 let StartCommand {
+                    call,
                     spec,
                     gate,
                     login_path,
@@ -1054,6 +1142,7 @@ impl Owner {
                 None
             }
             Command::Answer {
+                call,
                 prompt,
                 answers,
                 background,
@@ -1070,11 +1159,10 @@ impl Owner {
                     background,
                 })
             }
-            Command::Stop { reply } => {
+            Command::Stop { call, scope, reply } => {
                 self.stops.insert(call, reply);
-                Some(Input::Stop { call })
+                Some(Input::Stop { call, scope })
             }
-            Command::Unwait { .. } => None,
         }
     }
 
@@ -1146,11 +1234,7 @@ impl Owner {
         }
         // Counted as working before any work starts, so maintenance that
         // holds the admission keeps it from starting.
-        match (self.machine.working(), self.working.is_some()) {
-            (true, false) => self.working = Some(self.admission.enter(&self.info.session_id)),
-            (false, true) => self.working = None,
-            _ => {}
-        }
+        self.update_working();
         let mut replies = Vec::new();
         let mut exit = false;
         for effect in effects {
@@ -1158,18 +1242,59 @@ impl Owner {
                 Effect::Started { .. }
                 | Effect::Answered { .. }
                 | Effect::Stopped { .. }
-                | Effect::Wake { .. } => replies.push(effect),
+                | Effect::Wake { .. }
+                | Effect::ReportEnd { .. }
+                | Effect::ReportQuestion { .. } => replies.push(effect),
                 Effect::Exit => exit = true,
                 effect => self.apply(effect),
             }
         }
+        // A settle timer the machine no longer waits on is dropped.
+        if self
+            .settle
+            .is_some_and(|(timer, _)| Some(timer) != self.machine.armed_timer())
+        {
+            self.settle = None;
+        }
         // Published before any caller hears back, so what it reads next is
         // at least as new as what it heard.
         self.view.send_replace(self.machine.view());
-        for reply in replies {
-            self.reply(reply);
+        // Callers and the model hear back once the records taken so far are
+        // written, so a record never trails what they act on.
+        if !replies.is_empty() {
+            self.held.push_back((self.recorded, replies));
+            self.release();
         }
+        self.update_working();
         exit
+    }
+
+    /// Working, for maintenance, while the machine works or its records
+    /// and what waits on them are not through yet.
+    fn update_working(&mut self) {
+        let working =
+            self.machine.working() || self.written < self.recorded || !self.held.is_empty();
+        match (working, self.working.is_some()) {
+            (true, false) => self.working = Some(self.admission.enter(&self.info.session_id)),
+            (false, true) => self.working = None,
+            _ => {}
+        }
+    }
+
+    /// Deliver what is held, in order, as far as the records allow.
+    fn release(&mut self) {
+        while self
+            .held
+            .front()
+            .is_some_and(|(needs, _)| *needs <= self.written)
+        {
+            let Some((_, replies)) = self.held.pop_front() else {
+                break;
+            };
+            for reply in replies {
+                self.reply(reply);
+            }
+        }
     }
 
     fn client(&self, process: ProcessId) -> Option<Arc<AgentClient>> {
@@ -1376,8 +1501,65 @@ impl Owner {
             Effect::SubagentActivity(label) => self.info.emit_subagent_activity(label),
             Effect::SubagentFinished => self.info.emit_subagent_finished(),
             Effect::Record(activity) => {
-                if let Some(recorder) = &self.recorder {
-                    let _ = recorder.send(activity);
+                if let Some(recorder) = &self.recorder
+                    && recorder.send((self.recorded + 1, activity)).is_ok()
+                {
+                    self.recorded += 1;
+                }
+            }
+            Effect::Started { .. }
+            | Effect::Answered { .. }
+            | Effect::Stopped { .. }
+            | Effect::Wake { .. }
+            | Effect::ReportEnd { .. }
+            | Effect::ReportQuestion { .. }
+            | Effect::Exit => {}
+        }
+    }
+
+    fn reply(&mut self, effect: Effect) {
+        match effect {
+            Effect::Started { call, result } => {
+                let wait = self.woken.remove(&call);
+                let joined = result.is_ok();
+                let reply = result.map(|number| TurnReply { number, wait });
+                let heard = self
+                    .starts
+                    .remove(&call)
+                    .is_some_and(|sender| sender.send(reply).is_ok());
+                self.leave_unless(heard && joined, call);
+            }
+            Effect::Answered { call, result } => {
+                let wait = self.woken.remove(&call);
+                let joined = matches!(result, Ok(Some(_)));
+                let reply = result.map(|turn| turn.map(|number| TurnReply { number, wait }));
+                let heard = self
+                    .answers
+                    .remove(&call)
+                    .is_some_and(|sender| sender.send(reply).is_ok());
+                self.leave_unless(heard && joined, call);
+            }
+            Effect::Stopped { calls } => {
+                for call in calls {
+                    if let Some(sender) = self.stops.remove(&call) {
+                        let _ = sender.send(());
+                    }
+                }
+            }
+            Effect::Wake {
+                calls,
+                why,
+                unheard,
+            } => {
+                let mut heard = false;
+                for call in calls {
+                    if let Some(sender) = self.waits.remove(&call) {
+                        heard |= sender.send(why).is_ok();
+                    }
+                }
+                // Every caller went away: the model hears it as a notice.
+                if !heard && let Some(report) = unheard {
+                    self.reply(*report);
                 }
             }
             Effect::ReportEnd {
@@ -1395,61 +1577,15 @@ impl Owner {
             Effect::ReportQuestion { activity } => {
                 tokio::spawn(report_question(Arc::clone(&self.info), activity));
             }
-            Effect::Started { .. }
-            | Effect::Answered { .. }
-            | Effect::Stopped { .. }
-            | Effect::Wake { .. }
-            | Effect::Exit => {}
+            _ => {}
         }
     }
 
-    fn reply(&mut self, effect: Effect) {
-        match effect {
-            Effect::Started { call, result } => {
-                let wait = self.woken.remove(&call);
-                let reply = match result {
-                    Ok(_) => Ok(TurnReply {
-                        wait: wait.map(|woken| (call, woken)),
-                    }),
-                    Err(error) => {
-                        self.waits.remove(&call);
-                        Err(error)
-                    }
-                };
-                if let Some(sender) = self.starts.remove(&call) {
-                    let _ = sender.send(reply);
-                }
-            }
-            Effect::Answered { call, result } => {
-                let wait = self.woken.remove(&call);
-                let reply = match result {
-                    Ok(Some(_)) => Ok(Some(TurnReply {
-                        wait: wait.map(|woken| (call, woken)),
-                    })),
-                    other => {
-                        self.waits.remove(&call);
-                        other.map(|_| None)
-                    }
-                };
-                if let Some(sender) = self.answers.remove(&call) {
-                    let _ = sender.send(reply);
-                }
-            }
-            Effect::Stopped { calls } => {
-                for call in calls {
-                    if let Some(sender) = self.stops.remove(&call) {
-                        let _ = sender.send(());
-                    }
-                }
-            }
-            Effect::Wake { calls, why } => {
-                for call in calls {
-                    if let Some(sender) = self.waits.remove(&call) {
-                        let _ = sender.send(why);
-                    }
-                }
-            }
-            _ => {}
+    /// A caller that went away before hearing it joined the turn leaves it,
+    /// so the turn tells the model instead.
+    fn leave_unless(&mut self, stays: bool, call: CallId) {
+        if !stays && self.waits.remove(&call).is_some() {
+            self.inputs.push_back(Input::Unwait { call });
         }
     }
 }

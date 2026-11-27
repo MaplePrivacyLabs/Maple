@@ -148,12 +148,12 @@ fn a_turn_ends_once_recorded_before_its_caller_hears() {
     let effects = step(&mut machine, completed());
     assert_eq!(
         kinds(&effects),
-        ["turn-ended", "row", "record", "wake", "finished"],
-        "the record is written before the waiting caller wakes, and nobody is sent a notice"
+        ["turn-ended", "row", "record", "finished", "wake"],
+        "the record is taken before the waiting caller wakes, and nobody is sent a notice"
     );
     assert!(matches!(
-        &effects[3],
-        Effect::Wake { calls, why: Wake::Ended } if calls == &[1]
+        &effects[4],
+        Effect::Wake { calls, why: Wake::Ended, unheard: Some(_) } if calls == &[1]
     ));
     assert!(!machine.working());
     assert_eq!(machine.view().activity.status, "completed");
@@ -299,7 +299,13 @@ fn another_mode_replaces_the_process_and_resumes_the_thread() {
 fn stop_waits_for_the_prompt_so_the_interrupt_cannot_overtake_it() {
     let mut machine = machine();
     prompting(&mut machine, false);
-    let effects = step(&mut machine, Input::Stop { call: 2 });
+    let effects = step(
+        &mut machine,
+        Input::Stop {
+            call: 2,
+            scope: StopScope::Any,
+        },
+    );
     assert_eq!(kinds(&effects), ["settle"], "nothing goes to the agent yet");
     let effects = step(
         &mut machine,
@@ -315,7 +321,13 @@ fn stop_waits_for_the_prompt_so_the_interrupt_cannot_overtake_it() {
 fn stop_interrupts_then_takes_the_process_once_the_turn_ends() {
     let mut machine = machine();
     running(&mut machine, false);
-    let effects = step(&mut machine, Input::Stop { call: 2 });
+    let effects = step(
+        &mut machine,
+        Input::Stop {
+            call: 2,
+            scope: StopScope::Any,
+        },
+    );
     assert!(matches!(
         effects[..],
         [Effect::Interrupt { process: 1, .. }]
@@ -357,7 +369,13 @@ fn a_stop_that_lands_as_the_turn_ends_cannot_cut_the_end_short() {
     assert_eq!(count(&ended, "record"), 1);
     assert_eq!(count(&ended, "finished"), 1);
     // Stop then finds nothing to stop.
-    let effects = step(&mut machine, Input::Stop { call: 2 });
+    let effects = step(
+        &mut machine,
+        Input::Stop {
+            call: 2,
+            scope: StopScope::Any,
+        },
+    );
     assert!(matches!(&effects[..], [Effect::Stopped { calls }] if calls == &[2]));
     assert_eq!(machine.view().activity.status, "completed");
 }
@@ -366,7 +384,13 @@ fn a_stop_that_lands_as_the_turn_ends_cannot_cut_the_end_short() {
 fn an_agent_that_never_ends_its_turn_is_killed_and_the_turn_cancelled() {
     let mut machine = machine();
     running(&mut machine, false);
-    step(&mut machine, Input::Stop { call: 2 });
+    step(
+        &mut machine,
+        Input::Stop {
+            call: 2,
+            scope: StopScope::Any,
+        },
+    );
     step(&mut machine, Input::Interrupted { process: 1 });
     let effects = step(&mut machine, Input::SettleExpired { timer: 1 });
     assert_eq!(kinds(&effects), ["kill"]);
@@ -377,7 +401,7 @@ fn an_agent_that_never_ends_its_turn_is_killed_and_the_turn_cancelled() {
     let effects = step(&mut machine, Input::Killed { process: 1 });
     assert_eq!(
         kinds(&effects),
-        ["turn-ended", "row", "record", "wake", "finished", "stopped"]
+        ["turn-ended", "row", "record", "finished", "wake", "stopped"]
     );
     assert_eq!(machine.view().activity.status, "cancelled");
 }
@@ -386,7 +410,13 @@ fn an_agent_that_never_ends_its_turn_is_killed_and_the_turn_cancelled() {
 fn a_settle_timer_from_an_earlier_stop_is_ignored() {
     let mut machine = machine();
     prompting(&mut machine, false);
-    step(&mut machine, Input::Stop { call: 2 });
+    step(
+        &mut machine,
+        Input::Stop {
+            call: 2,
+            scope: StopScope::Any,
+        },
+    );
     step(
         &mut machine,
         Input::Prompted {
@@ -413,7 +443,13 @@ fn stop_while_launching_gives_the_launch_up() {
             spec: spec(false),
         },
     );
-    let effects = step(&mut machine, Input::Stop { call: 2 });
+    let effects = step(
+        &mut machine,
+        Input::Stop {
+            call: 2,
+            scope: StopScope::Any,
+        },
+    );
     assert!(matches!(
         &effects[..],
         [
@@ -451,7 +487,13 @@ fn stop_while_applying_options_takes_the_process() {
             result: opened(),
         },
     );
-    let effects = step(&mut machine, Input::Stop { call: 2 });
+    let effects = step(
+        &mut machine,
+        Input::Stop {
+            call: 2,
+            scope: StopScope::Any,
+        },
+    );
     assert_eq!(kinds(&effects), ["started", "kill"]);
     // The options' late answer changes nothing.
     assert!(
@@ -826,7 +868,7 @@ fn a_question_wakes_the_waiting_caller_and_its_answer_goes_back() {
     let effects = step(&mut machine, asks("colour"));
     assert!(matches!(
         &effects[0],
-        Effect::Wake { calls, why: Wake::Asked } if calls == &[1]
+        Effect::Wake { calls, why: Wake::Asked, .. } if calls == &[1]
     ));
     assert!(!has(&effects, "report-question"));
     assert_eq!(machine.view().activity.status, "waiting");
@@ -855,7 +897,7 @@ fn a_question_wakes_the_waiting_caller_and_its_answer_goes_back() {
     let effects = step(&mut machine, completed());
     assert!(matches!(
         effects.iter().find(|effect| matches!(effect, Effect::Wake { .. })),
-        Some(Effect::Wake { calls, why: Wake::Ended }) if calls == &[2]
+        Some(Effect::Wake { calls, why: Wake::Ended, .. }) if calls == &[2]
     ));
 }
 
@@ -926,11 +968,20 @@ fn a_one_turn_process_finishes_before_its_turn_ends() {
     ));
     assert!(machine.view().turn.is_some());
     // Stop now only waits for it.
-    assert!(step(&mut machine, Input::Stop { call: 2 }).is_empty());
+    assert!(
+        step(
+            &mut machine,
+            Input::Stop {
+                call: 2,
+                scope: StopScope::Any
+            }
+        )
+        .is_empty()
+    );
     let effects = step(&mut machine, Input::Killed { process: 1 });
     assert_eq!(
         kinds(&effects),
-        ["turn-ended", "row", "record", "wake", "finished", "stopped"]
+        ["turn-ended", "row", "record", "finished", "wake", "stopped"]
     );
     assert_eq!(machine.view().activity.status, "completed");
     // The next turn resumes the thread in a new process.
@@ -1054,4 +1105,174 @@ fn a_restored_agent_resumes_its_thread_on_its_next_turn() {
         },
     );
     assert_eq!(machine.view().activity.turns, 4, "numbering goes on");
+}
+
+#[test]
+fn a_process_that_exits_while_options_apply_ends_the_start() {
+    let mut machine = machine();
+    step(
+        &mut machine,
+        Input::Start {
+            call: 1,
+            spec: spec(false),
+        },
+    );
+    step(
+        &mut machine,
+        Input::Launched {
+            process: 1,
+            result: opened(),
+        },
+    );
+    // Codex and Claude answer the options without the process, so its exit
+    // can come first.
+    let effects = step(&mut machine, Input::Closed);
+    assert!(matches!(
+        &effects[..],
+        [
+            Effect::Kill { process: 1, .. },
+            Effect::Started { call: 1, result: Err(error) },
+        ] if error.contains("exited before the turn started")
+    ));
+    assert!(
+        step(
+            &mut machine,
+            Input::Configured {
+                process: 1,
+                result: Ok(())
+            }
+        )
+        .is_empty()
+    );
+    assert!(!machine.working());
+    assert_eq!(machine.view().activity.turns, 0);
+}
+
+#[test]
+fn an_allow_that_comes_as_stop_ends_the_turn_is_a_refusal() {
+    let judged = |verdict| Input::Judged {
+        process: 1,
+        turn: 1,
+        id: json!("call-1"),
+        item_id: "call-1".to_string(),
+        action: "make".to_string(),
+        verdict,
+    };
+    let refused = |effects: &[Effect]| {
+        matches!(
+            effects.last(),
+            Some(Effect::Reply {
+                reply: AgentReply::Decision(AgentPermissionDecision::Cancel),
+                ..
+            })
+        )
+    };
+    // While Stop ends the turn.
+    let mut machine = machine();
+    running(&mut machine, false);
+    step(&mut machine, approval("call-1", "make"));
+    step(
+        &mut machine,
+        Input::Stop {
+            call: 2,
+            scope: StopScope::Any,
+        },
+    );
+    assert!(refused(&step(&mut machine, judged(Ok(())))));
+    // After the turn ended.
+    let mut machine = self::machine();
+    running(&mut machine, true);
+    step(&mut machine, approval("call-1", "make"));
+    step(&mut machine, completed());
+    assert!(refused(&step(&mut machine, judged(Ok(())))));
+}
+
+#[test]
+fn a_caller_giving_up_stops_only_its_own_start_or_turn() {
+    let mut machine = machine();
+    running(&mut machine, false);
+    // Call 2's start is refused as busy; its caller then gives up.
+    step(
+        &mut machine,
+        Input::Start {
+            call: 2,
+            spec: spec(false),
+        },
+    );
+    let effects = step(
+        &mut machine,
+        Input::Stop {
+            call: 3,
+            scope: StopScope::Start(2),
+        },
+    );
+    assert!(matches!(&effects[..], [Effect::Stopped { calls }] if calls == &[3]));
+    let effects = step(
+        &mut machine,
+        Input::Stop {
+            call: 4,
+            scope: StopScope::Turn(7),
+        },
+    );
+    assert!(matches!(&effects[..], [Effect::Stopped { calls }] if calls == &[4]));
+    assert!(machine.view().turn.is_some(), "the running turn goes on");
+    // Call 1's own turn, or the turn a waiter waits on, is stopped.
+    let effects = step(
+        &mut machine,
+        Input::Stop {
+            call: 5,
+            scope: StopScope::Start(1),
+        },
+    );
+    assert_eq!(kinds(&effects), ["interrupt"]);
+}
+
+#[test]
+fn the_row_names_an_approval_still_waiting_when_another_is_decided() {
+    let mut machine = machine();
+    running(&mut machine, false);
+    step(&mut machine, approval("a", "make"));
+    step(&mut machine, approval("b", "make test"));
+    let pending = |machine: &AgentMachine| machine.view().activity.pending_permission;
+    assert_eq!(pending(&machine).as_deref(), Some("approve make test"));
+    let judged = |id: &str| Input::Judged {
+        process: 1,
+        turn: 1,
+        id: json!(id),
+        item_id: id.to_string(),
+        action: id.to_string(),
+        verdict: Ok(()),
+    };
+    step(&mut machine, judged("b"));
+    assert_eq!(pending(&machine).as_deref(), Some("approve make"));
+    step(&mut machine, judged("a"));
+    assert_eq!(pending(&machine), None);
+}
+
+#[test]
+fn a_wake_carries_the_notice_for_when_nobody_hears_it() {
+    let mut machine = machine();
+    running(&mut machine, false);
+    let effects = step(&mut machine, asks("colour"));
+    assert!(matches!(
+        &effects[0],
+        Effect::Wake { unheard: Some(report), .. }
+            if matches!(**report, Effect::ReportQuestion { .. })
+    ));
+    let effects = step(
+        &mut machine,
+        Input::Answer {
+            call: 2,
+            prompt: "red".to_string(),
+            answers: BTreeMap::new(),
+            background: false,
+        },
+    );
+    assert!(has(&effects, "answered"));
+    let effects = step(&mut machine, completed());
+    assert!(effects.iter().any(|effect| matches!(
+        effect,
+        Effect::Wake { unheard: Some(report), .. }
+            if matches!(**report, Effect::ReportEnd { .. })
+    )));
 }

@@ -324,10 +324,14 @@ order they come. The machine does no waiting and starts nothing; it answers
 each event with effects for the owner, and its tests drive every transition
 directly. Slow work (starting a process, applying options, an approval)
 runs beside the owner and reports back, tagged with the process or turn it
-was for, so news about a process or turn that is gone is dropped.
-Maintenance that must not run under a working agent waits until none of the
-task's agents is starting a turn, in one or stopping, and none starts
-meanwhile.
+was for, so news about a process or turn that is gone is dropped. Callers
+and the model hear back only once the agent's records taken so far are
+written, so a record never trails what they act on. A caller that gives up
+stops only its own start or the turn it waits on. Maintenance that must not
+run under a working agent waits until none of the task's agents is starting
+a turn, in one or stopping, and none starts meanwhile. Deleting a task ends
+its agents within 15 seconds, and an agent going away never reopens a task
+that was closed.
 
 ## Limits
 
