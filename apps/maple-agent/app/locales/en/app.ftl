@@ -1897,6 +1897,9 @@ chat-message-date = { $month } { $day }, { $time }
 chat-project-integration-save-failed = Could not save { $name } for { $project }: { $error }
 # $error is an untranslated diagnostic.
 chat-file-dialog-failed = Could not open the file dialog: { $error }
+# Titles of the system file dialog on Linux.
+file-dialog-open-files = Open Files
+file-dialog-open-folder = Open Folder
 chat-sidebar-order-too-large = This sidebar order is too large to save
 
 # Attachment preparation; name is the original filename, error is an external diagnostic.

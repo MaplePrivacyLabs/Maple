@@ -1835,6 +1835,8 @@ chat-message-date = { $month } { $day }일 { $time }
 chat-project-integration-save-failed = { $project } 프로젝트에 { $name } 연동을 저장하지 못했어요: { $error }
 # $error is an untranslated diagnostic.
 chat-file-dialog-failed = 파일 대화 상자를 열지 못했어요: { $error }
+file-dialog-open-files = 파일 열기
+file-dialog-open-folder = 폴더 열기
 chat-sidebar-order-too-large = 사이드바 순서가 너무 커서 저장할 수 없어요
 
 # Attachment preparation; name is the original filename, error is an external diagnostic.

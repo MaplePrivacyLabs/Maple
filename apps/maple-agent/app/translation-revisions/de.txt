@@ -476,6 +476,8 @@ chat-waiting-response-progress fb45dda5b74cdca3
 chat-you 4fbc5041ab48743d
 common-copied 2debccd90271eaae
 common-copy d94e835beea03810
+file-dialog-open-files 4e6d8edf490ceaab
+file-dialog-open-folder 3cea22bdf46b4077
 flows-login-account-id fd26f02afda4ce1b
 flows-login-anon 7a9ca50c10bd85a8
 flows-login-anonymous 48af1bafdc6c57ef
