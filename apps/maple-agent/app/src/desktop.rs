@@ -6052,7 +6052,7 @@ mod tests {
 
     fn project_shell_locked(
         cx: &mut gpui::TestAppContext,
-        settings: &parking_lot::MutexGuard<'_, ()>,
+        settings: &parking_lot::ReentrantMutexGuard<'_, ()>,
     ) -> Entity<MapleApp> {
         let backend =
             Arc::new(AgentBackend::for_test("http://127.0.0.1:9".into(), String::new()).unwrap());
@@ -6062,7 +6062,7 @@ mod tests {
     pub(super) fn project_shell_with_backend(
         cx: &mut gpui::TestAppContext,
         backend: Arc<AgentBackend>,
-        _settings: &parking_lot::MutexGuard<'_, ()>,
+        _settings: &parking_lot::ReentrantMutexGuard<'_, ()>,
     ) -> Entity<MapleApp> {
         cx.executor().allow_parking();
         let mut chat = |name: &str| {
@@ -6158,7 +6158,7 @@ mod tests {
     fn password_settings_shell_locked(
         cx: &mut gpui::TestAppContext,
         busy: bool,
-        settings: &parking_lot::MutexGuard<'_, ()>,
+        settings: &parking_lot::ReentrantMutexGuard<'_, ()>,
     ) -> Entity<MapleApp> {
         let app = project_shell_locked(cx, settings);
         install_password_settings_shell(app, cx, busy)
@@ -6168,7 +6168,7 @@ mod tests {
         cx: &mut gpui::TestAppContext,
         busy: bool,
         backend: Arc<AgentBackend>,
-        settings: &parking_lot::MutexGuard<'_, ()>,
+        settings: &parking_lot::ReentrantMutexGuard<'_, ()>,
     ) -> Entity<MapleApp> {
         let app = project_shell_with_backend(cx, backend, settings);
         install_password_settings_shell(app, cx, busy)

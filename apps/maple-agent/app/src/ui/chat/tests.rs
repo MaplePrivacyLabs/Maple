@@ -201,6 +201,7 @@ mod state_tests {
 
     #[gpui::test]
     fn computer_projects_keep_identical_paths_and_task_ids_separate(cx: &mut TestAppContext) {
+        let _settings = crate::settings::SETTINGS_IO_LOCK.lock();
         use super::super::computers::{Computer, Destination, Navigate, Project};
         use super::super::sidebar::SidebarEntry;
         let chat = screen(cx);
@@ -2709,6 +2710,7 @@ mod state_tests {
     /// the next new task; a task's own chip changes only that task.
     #[gpui::test]
     fn test_a_new_task_starts_in_the_mode_last_picked_for_one(cx: &mut TestAppContext) {
+        let _settings = crate::settings::SETTINGS_IO_LOCK.lock();
         use maple_agent::agent::AgentPermissionMode;
         cx.executor().allow_parking();
         let screen = screen(cx);
@@ -6307,6 +6309,7 @@ mod state_tests {
     /// auto-selects as before.
     #[gpui::test]
     fn test_project_switch_keeps_the_draft(cx: &mut TestAppContext) {
+        let _settings = crate::settings::SETTINGS_IO_LOCK.lock();
         use maple_agent::agent::AgentPermissionMode;
         cx.executor().allow_parking();
         let screen = screen(cx);
@@ -7174,6 +7177,7 @@ mod state_tests {
     /// and project headings provide the context for their task rows.
     #[gpui::test]
     fn test_project_grouping_keeps_container_order(cx: &mut TestAppContext) {
+        let _settings = crate::settings::SETTINGS_IO_LOCK.lock();
         use crate::settings::SidebarView;
         use crate::ui::chat::sidebar::{SidebarEntry, SidebarSection};
         cx.executor().allow_parking();
@@ -7238,6 +7242,7 @@ mod state_tests {
     /// each row, with pinned work above and archived work at the tail.
     #[gpui::test]
     fn test_project_and_list_grouping_choose_contextual_labels(cx: &mut TestAppContext) {
+        let _settings = crate::settings::SETTINGS_IO_LOCK.lock();
         use crate::settings::{SidebarGroup, SidebarView};
         use crate::ui::chat::sidebar::{SidebarEntry, SidebarSection};
         cx.executor().allow_parking();
@@ -7283,6 +7288,7 @@ mod state_tests {
     /// the Projects header folds every group, never the pinned ones.
     #[gpui::test]
     fn test_folders_and_the_project_list_fold(cx: &mut TestAppContext) {
+        let _settings = crate::settings::SETTINGS_IO_LOCK.lock();
         use crate::settings::SidebarView;
         use crate::ui::chat::sidebar::{SidebarEntry, SidebarSection};
         cx.executor().allow_parking();
@@ -7335,6 +7341,7 @@ mod state_tests {
     /// through activity changes; Last updated then restores activity order.
     #[gpui::test]
     fn test_manual_task_order_survives_activity_changes(cx: &mut TestAppContext) {
+        let _settings = crate::settings::SETTINGS_IO_LOCK.lock();
         use crate::settings::{SidebarGroup, SidebarSort, SidebarView};
         use crate::ui::chat::sidebar::SidebarSection;
         cx.executor().allow_parking();
@@ -7409,6 +7416,7 @@ mod state_tests {
     /// and later task activity leaves those container positions intact.
     #[gpui::test]
     fn test_projects_keep_initial_root_order_after_activity(cx: &mut TestAppContext) {
+        let _settings = crate::settings::SETTINGS_IO_LOCK.lock();
         cx.executor().allow_parking();
         let screen = screen(cx);
         screen.update(cx, |this, cx| {
@@ -7440,6 +7448,7 @@ mod state_tests {
     /// list is empty.
     #[gpui::test]
     fn test_folded_folders_are_not_an_empty_list(cx: &mut TestAppContext) {
+        let _settings = crate::settings::SETTINGS_IO_LOCK.lock();
         use crate::settings::SidebarView;
         use crate::ui::chat::sidebar::{SidebarEmpty, SidebarEntry};
         cx.executor().allow_parking();
@@ -7987,6 +7996,7 @@ mod state_tests {
     /// its arrows, j and Enter pick a grouping in a submenu.
     #[gpui::test]
     fn test_application_vim_drives_the_view_menu(cx: &mut TestAppContext) {
+        let _settings = crate::settings::SETTINGS_IO_LOCK.lock();
         use crate::settings::SidebarGroup;
         use crate::ui::chat::navigation::{ChatRegion, SidebarTarget};
         let (chat, cx) = chat_window(cx, |this, cx| {
@@ -8045,6 +8055,7 @@ mod state_tests {
     /// closes the submenu chain and preserves the independent preference.
     #[gpui::test]
     fn test_sidebar_menu_selects_grouping_and_task_order(cx: &mut TestAppContext) {
+        let _settings = crate::settings::SETTINGS_IO_LOCK.lock();
         use crate::settings::{SidebarGroup, SidebarSort};
         let (chat, cx) = chat_window(cx, |this, cx| {
             this.sessions = vec![summary("s1", "One")];
@@ -9890,6 +9901,7 @@ mod state_tests {
     /// menu, whichever view owns either of them.
     #[gpui::test]
     fn test_opening_a_menu_closes_the_open_one(cx: &mut TestAppContext) {
+        let _settings = crate::settings::SETTINGS_IO_LOCK.lock();
         use crate::settings::SidebarView;
         let (chat, cx) = chat_window(cx, |this, cx| {
             this.sessions = vec![summary("s1", "One")];
@@ -10334,6 +10346,7 @@ mod state_tests {
     /// forcing status sections; changing it preserves pinned membership.
     #[gpui::test]
     fn test_paired_scoped_sidebar_preserves_selected_grouping(cx: &mut TestAppContext) {
+        let _settings = crate::settings::SETTINGS_IO_LOCK.lock();
         use crate::settings::{SidebarGroup, SidebarView};
         use sidebar::SidebarSection;
         let chat = screen(cx);

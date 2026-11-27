@@ -15,7 +15,7 @@ fn snapshot(name: &str) -> HashMap<String, RemoteSidebarSettings> {
 
 fn shell(
     cx: &mut gpui::TestAppContext,
-    settings: &parking_lot::MutexGuard<'_, ()>,
+    settings: &parking_lot::ReentrantMutexGuard<'_, ()>,
 ) -> Entity<MapleApp> {
     let backend =
         Arc::new(AgentBackend::for_test("http://127.0.0.1:9".into(), String::new()).unwrap());
