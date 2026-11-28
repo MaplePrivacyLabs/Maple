@@ -1671,8 +1671,16 @@ chat-settings-menu-update = 설정 메뉴, 업데이트 사용 가능
 chat-settings-menu = 설정 메뉴
 chat-all-settings = 모든 설정
 chat-update-error = 업데이트 실패
+# $version is the application version, not translated.
+chat-update-error-detail = { $version } 설치 실패
 chat-update-restart = 다시 시작하여 업데이트 완료
 chat-update-available = 업데이트 사용 가능
+# $version is the application version, not translated.
+chat-update-ready = Maple { $version } 준비 완료
+chat-update-ready-detail = 다시 시작하여 설치
+# $version is the application version, not translated.
+chat-update-available-version = Maple { $version } 사용 가능
+chat-update-available-detail = '정보'에서 다운로드하세요.
 chat-store-updating = 로컬 데이터 업데이트하는 중…
 chat-host-unavailable = Maple 호스트를 사용할 수 없어요. 작업을 다시 불러오려면 Maple을 다시 여세요. 다시 전송된 메시지는 없어요.
 # $message is the underlying error, which may be untranslated.
