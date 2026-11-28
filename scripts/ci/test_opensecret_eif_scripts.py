@@ -44,22 +44,30 @@ def release_build_candidate(root, *, mode, source_sha, image, pcr):
     )
     uname.chmod(0o755)
     nix = binaries / "nix"
-    nix.write_text(
-        f"#!{sys.executable}\n"
-        "import sys\n"
-        "from pathlib import Path\n"
-        "output = Path(sys.argv[sys.argv.index('--out-link') + 1])\n"
-        "output.mkdir()\n"
-        f"(output / 'image.eif').write_bytes({image!r})\n"
-        f"(output / 'pcr.json').write_bytes({pcr!r})\n"
-    )
+    image_source = root / "fixture-image.eif"
+    if isinstance(image, Path):
+        shutil.copyfile(image, image_source)
+    else:
+        image_source.write_bytes(image)
+    pcr_source = root / "fixture-pcr.json"
+    pcr_source.write_bytes(pcr)
+    nix.write_text(f"""#!{sys.executable}
+import sys
+import shutil
+from pathlib import Path
+output = Path(sys.argv[sys.argv.index('--out-link') + 1])
+output.mkdir()
+shutil.copyfile({str(image_source)!r}, output / 'image.eif')
+shutil.copyfile({str(pcr_source)!r}, output / 'pcr.json')
+""")
     nix.chmod(0o755)
     scratch = root / "producer-tmp"
     scratch.mkdir()
     candidate = root / "candidate"
     subprocess.run([shutil.which("bash"), "--noprofile", "--norc", str(repo / "scripts/ci/build_opensecret_eif.sh"),
                     mode, str(candidate)], cwd=root, check=True, capture_output=True,
-                   env={"PATH": str(binaries), "HOME": str(root), "TMPDIR": str(scratch), "GITHUB_SHA": source_sha})
+                   env={"PATH": str(binaries), "HOME": str(root), "TMPDIR": str(scratch), "GITHUB_SHA": source_sha,
+                        "PYTHONDONTWRITEBYTECODE": "1"})
     return candidate
 
 

@@ -25,8 +25,8 @@ class OperatorBoundaryTests(unittest.TestCase):
         self.temp = tempfile.TemporaryDirectory(prefix="pcr-operator-")
         self.addCleanup(self.temp.cleanup)
         self.root = Path(self.temp.name)
-        self.backend = self.root / "backend"
-        self.backend.mkdir()
+        self.backend = self.root / "services/opensecret"
+        self.backend.mkdir(parents=True)
         (self.backend / "scripts").mkdir()
         (self.backend / "secretspec").mkdir()
         for relative in ("justfile", "pcr_sign.js", "scripts/pcr_compatibility.py", "scripts/ci_sign_pcr.sh",
@@ -46,6 +46,7 @@ class OperatorBoundaryTests(unittest.TestCase):
         self.env = {
             "PATH": os.environ["PATH"], "HOME": str(self.home),
             "XDG_CONFIG_HOME": str(self.home / ".config"),
+            "PYTHONDONTWRITEBYTECODE": "1",
         }
         for name in ("SIGNING_PRIVATE_KEY", "BWS_ACCESS_TOKEN", "SECRETSPEC_FILE",
                      "SECRETSPEC_PROVIDER", "BWS_CONFIG_FILE", "AWS_SECRET_ACCESS_KEY",
@@ -114,7 +115,29 @@ class OperatorBoundaryTests(unittest.TestCase):
         self.assertEqual((self.backend / "pcrDevHistory.json").read_bytes(), before)
         self.assertNotIn(encoded, result.stdout + result.stderr)
 
+    def fixture_git(self, *arguments):
+        result = subprocess.run(
+            ["git", "-C", str(self.root), "-c", "user.name=fixture",
+             "-c", "user.email=fixture@example.invalid", "-c", "commit.gpgsign=false", *arguments],
+            env=self.env, text=True, capture_output=True, check=True,
+        )
+        return result.stdout.strip()
+
     def ci_artifact(self):
+        scripts = self.root / "scripts/ci"
+        scripts.mkdir(parents=True)
+        # This fixture tests the key boundary at the build commit. The backend
+        # check has no monorepo classifier; refuse any nonempty diff in its place.
+        (scripts / "opensecret_change_detection.py").write_text(
+            "import sys\n"
+            "assert sys.argv[1:] == ['--eif-input-paths']\n"
+            "assert sys.stdin.buffer.read() == b''\n"
+            "print('[]')\n"
+        )
+        self.fixture_git("init", "--quiet", "--initial-branch=master")
+        self.fixture_git("add", "services", "scripts")
+        self.fixture_git("commit", "--quiet", "-m", "fixture build")
+        source_sha = self.fixture_git("rev-parse", "HEAD")
         artifact = self.root / "artifact"
         artifact.mkdir()
         (artifact / "pcr.json").write_bytes(fixture(2)["pcrDev.json"])
@@ -122,7 +145,7 @@ class OperatorBoundaryTests(unittest.TestCase):
         (artifact / "SHA256SUMS").write_text("".join(
             f"{hashlib.sha256((artifact / name).read_bytes()).hexdigest()}  {name}\n"
             for name in ("image.eif", "pcr.json")))
-        (artifact / "handoff.json").write_text(json.dumps({"environment": "dev", "source_sha": "0" * 40}))
+        (artifact / "handoff.json").write_text(json.dumps({"environment": "dev", "source_sha": source_sha}))
         return artifact
 
     def run_ci_signing(self, artifact, **env):
@@ -163,10 +186,13 @@ class OperatorBoundaryTests(unittest.TestCase):
         (artifact / "image.eif").write_bytes(b"tampered after attestation")
         result = self.run_ci_signing(artifact, SIGNING_PRIVATE_KEY="fixture_ci_key")
         self.assertNotEqual(result.returncode, 0)
+        self.assertIn("did NOT match", result.stderr)
         (artifact / "image.eif").write_bytes(b"public synthetic EIF fixture")
-        (artifact / "handoff.json").write_text(json.dumps({"environment": "prod", "source_sha": "0" * 40}))
+        source_sha = self.fixture_git("rev-parse", "HEAD")
+        (artifact / "handoff.json").write_text(json.dumps({"environment": "prod", "source_sha": source_sha}))
         result = self.run_ci_signing(artifact, SIGNING_PRIVATE_KEY="fixture_ci_key")
         self.assertNotEqual(result.returncode, 0)
+        self.assertIn("different environment", result.stderr)
         self.assertEqual({name: (self.backend / name).read_bytes() for name in before}, before)
 
     def test_build_does_not_receive_any_operator_credentials(self):

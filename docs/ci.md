@@ -51,6 +51,12 @@ from stdin. It applies no labels, and it lists `os-eif` for any EIF input
 without the same-repository and base-`master` checks (it does drop it for a
 PCR approval edit).
 
+The `repo` lane also runs the legacy signing regressions with explicitly listed
+binary-cache tools from the root's locked nixpkgs. It does not enter the
+OpenSecret development shell or build a patched Git. Missing tools fail this
+CI step. Tests use local fixtures; local harness verification additionally cuts
+off networking. The lane uses an ordinary shallow checkout and no submodules.
+
 ## Tiers
 
 | When | What runs |

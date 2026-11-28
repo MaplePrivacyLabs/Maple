@@ -8,11 +8,11 @@ public Rekor v2 transparency log, timestamped by Sigstore's public timestamp
 authority, and published as a standard Sigstore bundle at a fixed public URL
 keyed by PCR0.
 
-Only Dev statements exist so far. They are produced by
-[`opensecret-release-statement-dev.yml`](../../../.github/workflows/opensecret-release-statement-dev.yml)
-(`OpenSecret Dev release statement`). Production approvals still use the
-legacy signing job in `opensecret-eif-release.yml`; see
-[EIF release workflow](nitro-deploy.md#eif-release-workflow).
+Dev and Production use separate reviewer-gated workflows:
+`opensecret-release-statement-dev.yml` and
+`opensecret-release-statement-prod.yml`. Each approves both the legacy PCR0
+signature and the release statement. Production refuses to start until its
+placeholder signing identity is replaced with reviewed resources.
 
 ## Statement
 
@@ -50,49 +50,78 @@ verified build artifact and its provenance, never from operator input.
 The build's `handoff.json` is internal to CI. It appears in no statement or
 bundle.
 
-## Running the Dev workflow
+## Running a release statement workflow
 
-Dispatch `opensecret-release-statement-dev.yml` on `master` with one input,
-the run ID of a successful `OpenSecret EIF release` run built for `dev`. Its
-single job waits for approval of the protected `pcr-signing-dev` environment
-(required reviewers, `master` only). That one approval covers both signatures
-for the same artifact. The job then:
+Create and protect `pcr-signing-prod` with required reviewers and the master-only
+rule **before** committing its filled identity. GitHub creates an unprotected
+environment when a workflow names an environment that does not exist.
+
+Until the Production identity is filled, builds and Dev approvals work, but
+Production CI approval and Production release statements are unavailable.
+The separately authorized `just update-pcr-prod` recipe remains a manual legacy
+approval path: it builds locally, uses the operator's Bitwarden login and always
+copies the snapshot. It does not approve a CI artifact or create a release statement.
+
+Dispatch the workflow for the intended environment on `master`, with the run
+ID of a successful `OpenSecret EIF release` build for that environment. The
+single job waits for approval of `pcr-signing-dev` or `pcr-signing-prod`.
+One approval covers both signatures for the same verified artifact. The
+build workflow itself never signs. The signing job then:
 
 1. **Refuses to start** if the fixed signing identity in the workflow is
    incomplete: the KMS key ARN or signer role ARN is a placeholder or not the
    expected shape, or the reviewed public key file is not a file the
    checked-out commit tracks, differs from that commit's content, is reached
-   through a symlink, or is not a P-384 public key.
+   through a symlink, or is not a P-384 public key. It also refuses a key ARN,
+   public key file or key material shared with the other environment. The bucket
+   must match the mode's fixed target, and the storage account ID must be valid.
 2. **Verifies the build.** The run must be `opensecret-eif-release.yml`,
    dispatched on `master` in this public repository, completed successfully,
    and its commit must be in the checked-out `master` history. The artifact
-   `opensecret-eif-dev-<commit>` must belong to that run and contain exactly
+   `opensecret-eif-<mode>-<commit>` must belong to that run and contain exactly
    `image.eif`, `pcr.json`, `handoff.json` and `SHA256SUMS`, all matching.
    GitHub's build attestation from that workflow, commit and run must cover
-   all three files, and `handoff.json` must say `dev` and agree with the EIF
-   digest and measurements. Any earlier successful master build qualifies,
+   all three files. `handoff.json` must say the selected mode and agree with
+   the EIF digest and measurements. Any earlier successful master build qualifies,
    but its artifact is never substituted or rebuilt. Builds from before
    `handoff.json` was listed in `SHA256SUMS` have no attested build mode and
    are refused.
-3. **Signs the legacy PCR0 approval** with the existing key, exactly as the
-   release workflow's signing job does, so installed clients keep working.
-4. **Signs the release statement** with `cosign attest-blob` and the Dev KMS
-   key, using the pinned Cosign release and signing configuration below. AWS
+   The job resolves the publisher credential before either signature. Only the
+   publication step receives it; an unreadable credential stops approval before
+   any KMS signing or public log write.
+3. **Signs the legacy PCR0 approval** with the existing key, so installed
+   clients keep working.
+   It signs the artifact's measurements directly and appends only a missing
+   history entry. The source must be an ancestor of the signing checkout.
+   The existing OpenSecret change classifier examines the tree diff from the
+   authenticated source to the signing checkout. If no EIF input differs, the
+   candidate is current and may update `pcrDev.json` or `pcrProd.json` after the
+   append succeeds. Docs, approval-file changes and fully reverted changes do
+   not make the candidate older. An EIF-input difference adds history without
+   touching the snapshot. Neither history order nor timestamps choose the
+   current measurements.
+   The classifier is conservative: CI-only changes it routes as EIF inputs,
+   such as the EIF workflow or build script, also make an already-built release
+   count as older. Rebuild that release before proposing a current approval.
+   The log and step summary name the classification and the paths that made a
+   build older. History-only approvals omit the current-release deployment handoff.
+4. **Signs the release statement** with `cosign attest-blob` and the
+   environment KMS key, using the pinned Cosign release and signing configuration below. AWS
    access comes from the job's GitHub OIDC token, exchanged for short-lived
-   credentials of the Dev signer role; it reaches only the Cosign process.
+   credentials of the environment signer role; it reaches only the Cosign process.
    Before signing, the job compares the KMS public key with the reviewed key
    and stops on a mismatch.
 5. **Verifies the bundle** before anything is published: Cosign verifies it
    against the reviewed public key, the pinned trusted root and the exact EIF,
    and the producer requires the evidence profile below.
 6. **Retains** the EIF, its build files and the original bundle as the
-   workflow artifact `opensecret-approved-dev-<commit>-<run>-<attempt>`.
+   workflow artifact `opensecret-approved-<mode>-<commit>-<run>-<attempt>`.
    GitHub keeps it for 90 days at most, so it is not durable rollback
    retention; copy the EIF and its bundle to deployment storage for that.
-7. **Publishes** the bundle to the `maple-attestations-dev` bucket as
+7. **Publishes** the bundle to the fixed environment bucket as
    `<PCR0>.json` with `Content-Type: application/json` and
    `Cache-Control: public, max-age=300`, reads it back from
-   `https://attestations-dev.maple.ai/<PCR0>.json` with a browser `Origin`,
+   the fixed environment host with a browser `Origin`,
    checks the bytes, content type, cache policy and CORS header, and verifies
    the downloaded copy again.
 8. **Pushes the legacy approval branch** for an ordinary review pull request,
@@ -125,7 +154,9 @@ measurements are already approved is accepted: the legacy step finds nothing
 to sign, and its statement replaces the object for those PCRs. The replaced
 bundle stays with its EIF in the earlier run's retained artifact, so
 deployment can still check the exact EIF digest while that artifact lasts.
-A failed upload or a readback that never returns the uploaded bytes fails the
+An existing pending legacy branch is reused only after verifying all of its
+signatures, history preservation and the candidate measurements. A failed
+upload or a readback that never returns the uploaded bytes fails the
 job and is not reported as published.
 
 Every signing attempt that reaches Rekor makes a permanent public entry, even
@@ -149,41 +180,52 @@ producer then fails closed until they are updated. The producer in
 [`opensecret_release_statement.py`](../../../scripts/ci/opensecret_release_statement.py)
 holds the Cosign digests, environment mapping, bucket and host.
 
-## Configuration before the first Dev run
+After the move, remove the retired `pcr-signing` GitHub environment and revoke
+its old BWS machine token. Keep the separate Dev and Production environments
+and their tokens.
+
+## Signing configuration
 
 The workflow fails closed until all of the following exist.
 
-Committed to this repository once the Dev signing resources exist:
+Each workflow fixes its own identity. Production currently has `REPLACE_ME`
+ARNs and no public key; preflight refuses before credentials or signing.
+Commit the reviewed Production resources before using it:
 
 | Value | Where |
 | --- | --- |
-| Dev KMS key's full ARN, `arn:aws:kms:us-east-1:<account>:key/<key-id>` (never an alias) | `SIGNING_KEY_ARN` in the workflow's job `env` |
-| Dev signer role ARN, `arn:aws:iam::<same account>:role/maple-pcr-signer-dev` | `SIGNER_ROLE_ARN` in the workflow's job `env` |
-| Reviewed Dev public key, SPKI PEM (P-384) | `scripts/ci/opensecret-release/dev-signing-key.pem` |
+| Environment KMS key's full ARN, `arn:aws:kms:us-east-1:<account>:key/<key-id>` (never an alias) | `SIGNING_KEY_ARN` in the workflow's job `env` |
+| Environment signer role ARN, `arn:aws:iam::<same account>:role/maple-pcr-signer-<mode>` | `SIGNER_ROLE_ARN` in the workflow's job `env` |
+| Reviewed environment public key, SPKI PEM (P-384) | `scripts/ci/opensecret-release/<mode>-signing-key.pem` |
 
-The protected GitHub environment `pcr-signing-dev`: required reviewers,
-deployment branches limited to `master`, administrator bypass disabled. It
+Each protected GitHub environment (`pcr-signing-dev` and `pcr-signing-prod`)
+requires reviewers, deployment branches limited to `master`, and administrator
+bypass disabled. It
 holds exactly this one secret and these five variables, all set on the
 environment, not the repository:
 
 | Name | Kind | Value |
 | --- | --- | --- |
-| `OPENSECRET_PCR_SIGNING_BWS_ACCESS_TOKEN` | Secret | A Bitwarden Secrets Manager machine token for Dev only. It can read the existing legacy PCR signing key item and the Dev bucket's two publisher items, and nothing for Production. Same name as the secret in `pcr-signing`, but its own value and grants. |
+| `OPENSECRET_PCR_SIGNING_BWS_ACCESS_TOKEN` | Secret | A Bitwarden Secrets Manager machine token for that environment only. It can read the existing legacy signing key and its own bucket publisher items, never the opposite publisher credential. |
 | `OPENSECRET_PCR_SIGNING_KEY_ID` | Variable | BWS item ID of the existing legacy PCR signing key |
 | `ATTESTATIONS_R2_ACCOUNT_ID` | Variable | Cloudflare account ID that owns the bucket (32 hex characters) |
-| `ATTESTATIONS_R2_BUCKET` | Variable | `maple-attestations-dev` |
-| `ATTESTATIONS_R2_ACCESS_KEY_ID_SECRET_ID` | Variable | BWS item ID of the Dev bucket publisher's access key ID |
-| `ATTESTATIONS_R2_SECRET_ACCESS_KEY_SECRET_ID` | Variable | BWS item ID of the Dev bucket publisher's secret access key |
+| `ATTESTATIONS_R2_BUCKET` | Variable | `maple-attestations-dev` or `maple-attestations-prod`, matching the workflow |
+| `ATTESTATIONS_R2_ACCESS_KEY_ID_SECRET_ID` | Variable | BWS item ID of the environment bucket publisher's access key ID |
+| `ATTESTATIONS_R2_SECRET_ACCESS_KEY_SECRET_ID` | Variable | BWS item ID of the environment bucket publisher's secret access key |
 
-Outside this repository: the signer role can be assumed only by a job whose
-OIDC token matches this repository's `pcr-signing-dev` environment subject, the
-`master` ref, and this workflow file at `master`, and it may sign only with the
-Dev key. Renaming this workflow file therefore stops signing until the role is
-updated;
-the Dev publisher credential can write only `maple-attestations-dev`; and the
-bucket's `attestations-dev.maple.ai` custom domain serves public `GET`/`HEAD`
-with CORS. No zone cache setting may replace the object's
-`Cache-Control: public, max-age=300`, or the readback check fails.
+| Mode | Protected environment | Bucket | Public host |
+| --- | --- | --- | --- |
+| `dev` | `pcr-signing-dev` | `maple-attestations-dev` | `attestations-dev.maple.ai` |
+| `prod` | `pcr-signing-prod` | `maple-attestations-prod` | `attestations.maple.ai` |
+
+Outside this repository, each signer role must accept only its protected
+environment subject, the `master` ref and its exact workflow file at `master`.
+The Production trust pins
+`MaplePrivacyLabs/Maple/.github/workflows/opensecret-release-statement-prod.yml@refs/heads/master`.
+Each role may sign only its own KMS key; each publisher may write only its own
+bucket. Required reviewers, no administrator bypass, signing alerts, BWS grants,
+public domains and CORS require operator configuration and live verification.
+No zone cache setting may replace `Cache-Control: public, max-age=300`.
 
 ## Verifying a published bundle
 
@@ -191,7 +233,7 @@ With the reviewed Dev public key and the EIF:
 
 ```sh
 curl -fsS -o bundle.json "https://attestations-dev.maple.ai/<PCR0>.json"
-cosign verify-blob-attestation --bundle bundle.json \
+COSIGN_MAX_ATTACHMENT_SIZE=2147483648 cosign verify-blob-attestation --bundle bundle.json \
   --key scripts/ci/opensecret-release/dev-signing-key.pem \
   --type https://maple.ai/attestations/enclave-release/v1 \
   --use-signed-timestamps \

@@ -1,12 +1,16 @@
 #!/usr/bin/env python3
-"""Select backend checks and SDK compatibility without rebuilding desktop apps."""
+"""Classify backend CI paths and EIF input differences for release approvals."""
 
 from __future__ import annotations
 
 import argparse
+import json
 from collections.abc import Iterable
 import sys
 
+
+EIF_CHECK = "eif"
+PCR_APPROVAL_OUTPUT = "pcr_approvals"
 
 CHECK_OUTPUTS = ("rust", "nix", "integration", "audit", "eif", "helpers")
 OUTPUTS = (*CHECK_OUTPUTS, "pcr_approvals")
@@ -115,6 +119,17 @@ def classify_paths(paths: Iterable[str]) -> dict[str, bool]:
     return {name: name in selected for name in OUTPUTS}
 
 
+def eif_input_paths(paths: Iterable[str]) -> list[str]:
+    """Paths conservatively routed to EIF builds, excluding approval-only edits."""
+    inputs = []
+    for path in paths:
+        checks = classify_path(path)
+        is_eif_input = EIF_CHECK in checks and PCR_APPROVAL_OUTPUT not in checks
+        if is_eif_input:
+            inputs.append(path)
+    return inputs
+
+
 def classify_pcr(path: str) -> bool:
     """The `pcr` output for ci.yml's os-pcr lane: the offline PCR tooling and the
     approvals it verifies. Kept out of OUTPUTS, so the approval workflow's outputs
@@ -126,12 +141,21 @@ def classify_pcr(path: str) -> bool:
 def main() -> int:
     parser = argparse.ArgumentParser()
     parser.add_argument("--all", action="store_true", help="Select all checks without claiming approvals changed")
+    parser.add_argument("--eif-input-paths", action="store_true", help="List EIF input paths as JSON")
+    parser.add_argument("--eif-inputs", action="store_true", help="Report EIF input changes, excluding approval files")
     args = parser.parse_args()
     if args.all:
         result = {name: name in ALL_CHECKS for name in OUTPUTS}
     else:
         paths = (path.decode("utf-8", errors="surrogateescape")
                  for path in sys.stdin.buffer.read().split(b"\0") if path)
+        if args.eif_inputs or args.eif_input_paths:
+            inputs = eif_input_paths(paths)
+            if args.eif_input_paths:
+                print(json.dumps(inputs))
+            else:
+                print("true" if inputs else "false")
+            return 0
         result = classify_paths(paths)
     for name in OUTPUTS:
         print(f"{name}={'true' if result[name] else 'false'}")

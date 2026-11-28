@@ -4,8 +4,7 @@ This operator runbook remains manual. Run repository-local build and `just`
 commands from `services/opensecret/` in the Maple monorepo using its pinned Nix
 flake. The root EIF approval workflow builds dev/prod and compares measurements
 without updating approvals. Only reviewer-gated workflows sign: the
-[EIF release workflow](#eif-release-workflow) for Production and the
-[Dev release statement workflow](release-statements.md) for Dev.
+[release statement workflows](release-statements.md) for Dev and Production.
 For legacy client compatibility, follow
 [the PCR publication procedure](pcr-compatibility.md).
 
@@ -22,13 +21,17 @@ credential-isolation and publication gates.
 ## EIF release workflow
 
 `opensecret-eif-release.yml` (`OpenSecret EIF release`) builds and attests
-an EIF candidate and, for Production, produces a signed approval from CI. It is
-manual only: dispatch it on `master` with the environment (`dev` or `prod`),
-and leave `dry_run` checked to build, attest and compare without signing.
-A `dev` build is never signed here: approve it by dispatching
-`opensecret-release-statement-dev.yml` with this run's ID, whose one gated job
-signs the legacy approval and the Sigstore release statement together and
-pushes the same approval branch. See [release statements](release-statements.md).
+an EIF candidate without signing. Dispatch it on `master` with the environment
+(`dev` or `prod`). Then dispatch
+`opensecret-release-statement-dev.yml` or `opensecret-release-statement-prod.yml`
+with that successful run's ID. Its single protected job signs both approvals,
+publishes the bundle and pushes the legacy review branch. Production uses
+`pcr-signing-prod` and refuses to run until its signing identity is configured.
+Create and protect that environment before committing the filled identity;
+GitHub creates an unprotected environment if a workflow names one that is absent.
+After moving to the separate signing environments, remove the retired
+`pcr-signing` environment and revoke its old BWS machine token.
+See [release statements](release-statements.md) for setup and rollback handling.
 
 1. The `build` job runs on the trusted ARM64 runner with FlakeHub cache, builds
    the EIF, copies `image.eif` and `pcr.json` into a workflow artifact named
@@ -36,15 +39,11 @@ pushes the same approval branch. See [release statements](release-statements.md)
    source commit, EIF digest and measurements) and a `SHA256SUMS` covering all
    three, attests every file listed in `SHA256SUMS`, and reports whether the
    approved snapshot already covers the measurements.
-2. For `prod`, with `dry_run` unchecked and new measurements, the `sign` job
-   waits for approval of the protected `pcr-signing` environment. It downloads the
-   attested artifact, resolves the existing signing key through Bitwarden's
-   Secrets Manager action using that environment's read-only machine token, and
-   runs the same `append-pcr-<env>` recipe operators use. The key reaches only
-   the `node pcr_sign.js` child; the verifier checks the signature against the
-   pinned public key before the history is rewritten atomically. Setup is in
-   [`secretspec/README.md`](../secretspec/README.md).
-3. The job commits the two changed approval files to
+2. After environment approval, the selected release statement workflow verifies
+   the artifact and its build provenance, then uses the existing key
+   for the legacy signature plus the environment KMS key for the statement.
+   The protected job verifies and retains the bundle before publication.
+3. The job commits any changed approval files to
    `opensecret/pcr-approval-<commit>` and prints the compare link. That branch
    is shared by both environments' runs for the same source commit: when both
    measurement sets change, the second run lands its commit on top of the

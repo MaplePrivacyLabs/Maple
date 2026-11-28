@@ -118,6 +118,7 @@ class AgentSelectionTests(unittest.TestCase):
             "scripts/ci/windows-artifact-sign.ps1", "scripts/ci/install-windows-artifact-signing.ps1",
             # The release cache key: no ci.yml lane reads the release cache.
             "scripts/ci/cargo_graph_key.py",
+            "scripts/ci/test_opensecret_legacy_signing.py",
         ):
             with self.subTest(path=path):
                 self.assertEqual(selected([path]), {"repo"})
@@ -315,6 +316,17 @@ class HookTests(unittest.TestCase):
         ):
             with self.subTest(paths=paths):
                 self.assert_selects(paths, *names)
+
+    def test_signing_implementation_inputs_select_repo_without_sdk_hooks(self):
+        paths = ("services/opensecret/scripts/ci_sign_pcr.sh", "services/opensecret/justfile",
+                 "services/opensecret/scripts/pcr_compatibility.py", "services/opensecret/pcr_sign.js")
+        for path in paths:
+            with self.subTest(path=path):
+                self.assertIn("repo", selected([path]))
+                self.assertIn("repo", selected([path], PUSH))
+                hooks = set(plan.hook_components([path]))
+                self.assertIn("repo", hooks)
+                self.assertFalse(hooks & {"sdk_ts", "sdk_rust", "research_frontend", "research_rust"})
 
     def test_shared_crates_do_not_fan_out_to_their_consumers(self):
         self.assert_selects(["proxy/src/proxy.rs", "sdk/rust/src/client.rs"], "proxy", "sdk_rust")
@@ -576,7 +588,7 @@ class OpenSecretLaneTests(unittest.TestCase):
             (backend + "deny.toml", {"deps-opensecret"}, {"deps-opensecret"}),
             (backend + "nitro-toolkit/logging/Dockerfile", {"os-helpers"}, {"os-helpers"}),
             (backend + "nix/kernel-upstream.nix", {"os-flake-check", "os-eif"}, {"os-flake-check"}),
-            (backend + "scripts/pcr_compatibility.py", {"os-pcr"}, {"os-pcr"}),
+            (backend + "scripts/pcr_compatibility.py", {"os-pcr", "repo"}, {"os-pcr", "repo"}),
             # An approval edit is compared by opensecret-eif.yml, never built as a candidate.
             (backend + "pcrDev.json", {"os-pcr"}, {"os-pcr"}),
             (backend + "docs/nitro-deploy.md", set(), set()),
@@ -613,6 +625,7 @@ class OpenSecretLaneTests(unittest.TestCase):
         for lane in ("os-rust", "os-flake-check", "deps-opensecret"):  # Nix needs revCount: blobless full history
             self.assertEqual(checkout[lane], ("recursive", 0, "blob:none"))
         self.assertEqual(checkout["os-pcr"], ("false", 1, ""))
+        self.assertEqual(checkout["repo"], ("false", 1, ""))
         self.assertEqual(plan.OPENSECRET_OUTPUTS, OUTPUTS)
 
 
@@ -765,6 +778,28 @@ class PlannerTests(unittest.TestCase):
                                    "bash", "-euo", "pipefail", "-c", "cd apps/maple-agent && just ci-test"])
         self.assertEqual(run.call_args.args[0][:2], ["C:/Git/usr/bin/bash.exe", "-euo"])
         self.assertEqual(run.call_args.kwargs["env"]["RUSTFLAGS"], "-D warnings")
+
+    def test_repo_lane_propagates_check_failure(self):
+        with mock.patch.object(plan.subprocess, "run") as run, contextlib.redirect_stdout(io.StringIO()):
+            run.return_value.returncode = 11
+            self.assertEqual(plan.run("repo"), 11)
+
+    def test_repo_lane_requires_the_signing_tests_after_root_checks(self):
+        lane = next(lane for lane in lanes.LANES if lane.id == "repo")
+        # One failed check must stop the lane before later checks run.
+        with tempfile.TemporaryDirectory() as temporary:
+            nix = Path(temporary) / "nix"
+            nix.write_text("#!/bin/sh\nif [ \"$1\" = flake ]; then exit \"$FLAKE_EXIT\"; fi\nexit \"$SIGNING_EXIT\"\n")
+            nix.chmod(0o755)
+            for flake_exit, signing_exit in ((7, 0), (0, 11), (0, 0)):
+                env = {"PATH": f"{temporary}:{os.environ['PATH']}",
+                       "FLAKE_EXIT": str(flake_exit), "SIGNING_EXIT": str(signing_exit)}
+                with mock.patch.dict(os.environ, env):
+                    result = subprocess.run(["bash", "-c", lane.run], capture_output=True)
+                expected = flake_exit or signing_exit
+                self.assertEqual(result.returncode, expected)
+        self.assertIn("CI=true", lane.run)
+        self.assertIn("test_opensecret_legacy_signing.py", lane.run)
 
     def verdict(self, lanes_on, quarantine=(), **results):
         needs = {"plan": {"result": "success", "outputs": {"lanes": json.dumps(dict.fromkeys(lanes_on, True)),

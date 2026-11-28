@@ -11,7 +11,7 @@ import unittest
 
 from change_detection import classify_path as research_routes
 from lanes import PUSH
-from opensecret_change_detection import CHECK_OUTPUTS, OUTPUTS, classify_pcr, classify_paths
+from opensecret_change_detection import CHECK_OUTPUTS, OUTPUTS, classify_pcr, classify_paths, eif_input_paths
 from test_plan import AGENT_PUSH, selected
 from test_workflow_policy import ROOT
 
@@ -179,6 +179,34 @@ class OpenSecretChangeDetectionTests(unittest.TestCase):
             expected = "".join(f"{name}={'true' if name in selected else 'false'}\n" for name in OUTPUTS)
             self.assertEqual(result.stdout.decode(), expected)
 
+    def test_eif_input_paths_preserve_runtime_and_unknown_paths_but_exclude_approvals(self):
+        runtime = "services/opensecret/src/name with\nnewline.rs"
+        unknown = "new-root-file"
+        paths = ["docs/release.md", "services/opensecret/pcrProdHistory.json", runtime, unknown]
+        self.assertEqual(eif_input_paths(paths), [runtime, unknown])
+        self.assertEqual(eif_input_paths([]), [])
+
+    def test_eif_input_path_cli_emits_json_for_operator_diagnostics(self):
+        script = Path(__file__).with_name("opensecret_change_detection.py")
+        path = "services/opensecret/src/name with\nnewline.rs"
+        result = subprocess.run([sys.executable, "-B", str(script), "--eif-input-paths"],
+                                input=(path + "\0docs/release.md\0").encode(), check=True, capture_output=True)
+        self.assertEqual(json.loads(result.stdout), [path])
+
+    def test_eif_input_cli_excludes_approvals_but_keeps_runtime_changes(self):
+        script = Path(__file__).with_name("opensecret_change_detection.py")
+        approvals = b"services/opensecret/pcrProdHistory.json\0"
+        cases = (
+            (b"", b"false\n"),
+            (approvals + b"docs/release.md\0", b"false\n"),
+            (approvals + b"services/opensecret/src/main.rs\0", b"true\n"),
+        )
+        for paths, expected in cases:
+            with self.subTest(paths=paths):
+                result = subprocess.run([sys.executable, str(script), "--eif-inputs"],
+                                        input=paths, check=True, capture_output=True)
+                self.assertEqual(result.stdout, expected)
+
     def test_provider_manifests_only_select_the_flake_check(self):
         for path in ("services/opensecret/secretspec.toml",
                      "services/opensecret/secretspec/pcr-signing.toml",
@@ -214,6 +242,7 @@ class OpenSecretDiffSelectionTests(unittest.TestCase):
         self.git("config", "user.email", "ci@example.invalid")
         self.git("config", "user.name", "CI fixture")
         self.git("config", "core.hooksPath", "/dev/null")
+        self.git("config", "commit.gpgsign", "false")
         scripts = self.root / "scripts/ci"
         scripts.mkdir(parents=True)
         for name in ("plan.py", "lanes.py", "opensecret_change_detection.py"):

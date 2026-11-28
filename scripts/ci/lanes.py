@@ -33,6 +33,12 @@ def cache_store(label: str) -> str:
     return "blacksmith" if label.startswith("blacksmith-") else "github"
 
 
+SIGNING_TEST_RUN = (
+    "nix shell --no-update-lock-file --impure --file scripts/ci/signing-test-tools.nix"
+    " -c env CI=true PYTHONDONTWRITEBYTECODE=1 python3 -B -I -m unittest discover"
+    " -s scripts/ci -p test_opensecret_legacy_signing.py"
+)
+
 # The override variables are unset; set one to fail over during an outage.
 LINUX = Runner("blacksmith-8vcpu-ubuntu-2404", "CI_LINUX_RUNNER")
 LINUX_HEAVY = Runner("blacksmith-32vcpu-ubuntu-2404", "CI_LINUX_HEAVY_RUNNER")
@@ -307,14 +313,18 @@ LANES: Tuple[Lane, ...] = (
          run=WINDOWS_PACKAGE,
          env=(("MAPLE_WINDOWS_ARCH", "aarch64"), ("RUSTFLAGS", "-D warnings -C target-feature=+crt-static")) + FAST_RELEASE,
          timeout=120, gate=False),
-    # Every root flake check: actionlint, workflow policy and contracts, CI script
-    # tests, the release gates, and release metadata (read from the version files).
+    # Root flake checks cover workflows, CI contracts, release gates and metadata.
+    # Legacy signing also runs with explicit cached tools; missing tools fail CI.
     Lane("repo", (
         ".github/**", "scripts/ci/**", ".githooks/**", "flake.nix", "flake.lock", "justfile", "setup-hooks.sh",
         ".agents/skills/release-maple/scripts/**",
         "scripts/update-version.py", "proxy/Cargo.toml", "proxy/justfile",
         RESEARCH + "package.json", TAURI + "Cargo.toml", TAURI + "tauri.conf.json",
-    ), runner=GITHUB, run="nix flake check --no-update-lock-file --print-build-logs", timeout=15, hook="repo"),
+        "services/opensecret/scripts/ci_sign_pcr.sh", "services/opensecret/justfile",
+        "services/opensecret/scripts/pcr_compatibility.py", "services/opensecret/pcr_sign.js",
+    ), runner=GITHUB,
+         run="nix flake check --no-update-lock-file --print-build-logs && " + SIGNING_TEST_RUN,
+         timeout=15, hook="repo"),
 
     # The SDKs, proxy and container. build-sdk-publish.sh is the publishers' own builder.
     Lane("sdk-ts", SDK_TS + ("sdk/.prettierrc.json", "sdk/eslint.config.js", "sdk/justfile", "sdk/.env.example",

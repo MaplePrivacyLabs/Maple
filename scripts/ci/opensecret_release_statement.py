@@ -1,9 +1,9 @@
 """Verify one OpenSecret EIF build, sign its release statement and publish the bundle.
 
-The reviewer-gated job in opensecret-release-statement-dev.yml runs these
+Each reviewer-gated release statement workflow runs these
 subcommands in order. Each one re-checks what it relies on and fails closed:
 
-  preflight MODE                     the fixed signing identity is complete
+  preflight MODE                     signing identity and public storage settings are valid
   prepare MODE RUN_ID CANDIDATE RELEASE
                                      the build run, artifact and build provenance
                                      are the selected master release build; writes
@@ -275,6 +275,30 @@ def reviewed_public_key(environ):
     return path, public_key_der(committed.decode(errors="replace"))
 
 
+def workflow_signing_identity(mode):
+    """Read the other workflow's reviewed literals without a second identity table."""
+    workflow = f".github/workflows/opensecret-release-statement-{mode}.yml"
+    committed = committed_file(workflow)
+    require(committed is not None, f"The signing workflow {workflow} is not committed")
+    parsed = subprocess.run(["yq", "-o=json", ".jobs.sign.env"], input=committed,
+                            check=True, stdout=subprocess.PIPE)
+    return json_object(strict_json(parsed.stdout), "Workflow signing identity")
+
+
+def require_distinct_identity(target, key_arn, path, der):
+    opposite_mode = "dev"
+    if target.mode == "dev":
+        opposite_mode = "prod"
+    opposite = workflow_signing_identity(opposite_mode)
+    require(key_arn != opposite["SIGNING_KEY_ARN"], "Signing key ARN belongs to the other environment")
+    opposite_path = ROOT / opposite["SIGNING_PUBLIC_KEY"]
+    require(path != opposite_path.resolve(), "Reviewed public key file belongs to the other environment")
+    opposite_key = committed_file(opposite["SIGNING_PUBLIC_KEY"])
+    if opposite_key is not None:
+        opposite_der = public_key_der(opposite_key.decode(errors="replace"))
+        require(der != opposite_der, "Reviewed public key matches the other environment's key")
+
+
 def signing_identity(target, environ):
     """Validate the workflow's fixed key and role. Placeholders and aliases never pass."""
     key_arn = environ.get("SIGNING_KEY_ARN", "")
@@ -288,12 +312,14 @@ def signing_identity(target, environ):
             f"SIGNER_ROLE_ARN must be the {target.signer_role} role")
     require(role["account"] == key["account"], "Signer role and key must be in the same account")
     path, der = reviewed_public_key(environ)
+    require_distinct_identity(target, key_arn, path, der)
     return key_arn, role_arn, path, der
 
 
 def preflight(mode):
     target = target_for(mode)
     key_arn, role_arn, path, der = signing_identity(target, os.environ)
+    storage_settings(target, os.environ)
     print(f"Signing identity for {target.environment}: {key_arn} via {role_arn}; "
           f"reviewed key {path.relative_to(ROOT)} (SPKI SHA-256 {hashlib.sha256(der).hexdigest()}).")
 
@@ -864,11 +890,17 @@ def public_get(url):
     return body
 
 
-def upload(target, bundle, key):
-    account = os.environ.get("ATTESTATIONS_R2_ACCOUNT_ID", "")
+def storage_settings(target, environ):
+    """Check public storage configuration before signing and again before upload."""
+    account = environ.get("ATTESTATIONS_R2_ACCOUNT_ID", "")
     require(is_hex(account, 32), "ATTESTATIONS_R2_ACCOUNT_ID must be a Cloudflare account ID")
-    require(os.environ.get("ATTESTATIONS_R2_BUCKET") == target.bucket,
+    require(environ.get("ATTESTATIONS_R2_BUCKET") == target.bucket,
             f"This workflow publishes only to {target.bucket}")
+    return account
+
+
+def upload(target, bundle, key):
+    account = storage_settings(target, os.environ)
     access_key, secret_key = os.environ.get("AWS_ACCESS_KEY_ID"), os.environ.get("AWS_SECRET_ACCESS_KEY")
     require(access_key and secret_key, "Missing the bucket publisher credential")
     # The CLI adds its own checksums only where an operation requires them;
