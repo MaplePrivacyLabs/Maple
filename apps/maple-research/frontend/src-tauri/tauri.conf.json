@@ -57,7 +57,7 @@
       }
     ],
     "security": {
-      "csp": "default-src 'self'; connect-src 'self' https://opensecret.cloud https://*.opensecret.cloud https://trymaple.ai https://*.trymaple.ai https://secretgpt.ai https://*.secretgpt.ai https://*.maple-ca8.pages.dev https://raw.githubusercontent.com localhost:* http://localhost:* http://0.0.0.0:* http://127.0.0.1:*; script-src 'self' 'unsafe-inline'; style-src 'self' 'unsafe-inline'; img-src 'self' data: blob:; font-src 'self' data:; worker-src 'self' blob:; media-src 'self' blob: mediastream:"
+      "csp": "default-src 'self'; connect-src 'self' https://opensecret.cloud https://*.opensecret.cloud https://trymaple.ai https://*.trymaple.ai https://secretgpt.ai https://*.secretgpt.ai https://*.maple-ca8.pages.dev https://raw.githubusercontent.com https://attestations-dev.maple.ai https://attestations.maple.ai localhost:* http://localhost:* http://0.0.0.0:* http://127.0.0.1:*; script-src 'self' 'unsafe-inline'; style-src 'self' 'unsafe-inline'; img-src 'self' data: blob:; font-src 'self' data:; worker-src 'self' blob:; media-src 'self' blob: mediastream:"
     }
   },
   "bundle": {
