@@ -17,7 +17,7 @@ use crate::models::org_project_secrets::{
 use crate::models::org_projects::{NewOrgProject, OrgProject, OrgProjectError};
 use crate::models::orgs::{NewOrg, Org, OrgError};
 use crate::models::password_reset::{
-    NewPasswordResetRequest, PasswordResetError, PasswordResetRequest,
+    NewPasswordResetRequest, PasswordResetError, PasswordResetRequest, ResetProofAttempt,
 };
 use crate::models::platform_email_verification::{
     NewPlatformEmailVerification, PlatformEmailVerification, PlatformEmailVerificationError,
@@ -239,6 +239,21 @@ pub trait DBConnection {
         &self,
         new_request: NewPasswordResetRequest,
     ) -> Result<PasswordResetRequest, DBError>;
+    /// Creates the request only while the account still has durable email
+    /// budget in the rolling hour. `Ok(None)` means the account is capped:
+    /// no request row and no reset email may be created.
+    fn create_password_reset_request_within_email_budget(
+        &self,
+        new_request: NewPasswordResetRequest,
+    ) -> Result<Option<PasswordResetRequest>, DBError>;
+    /// Decides one reset proof attempt against the durable guess budget and
+    /// charges a failed guess, serialized per reset secret.
+    fn attempt_password_reset_proof(
+        &self,
+        user_id: Uuid,
+        hashed_secret: &str,
+        encrypted_code: Vec<u8>,
+    ) -> Result<ResetProofAttempt<PasswordResetRequest>, DBError>;
     fn get_password_reset_request_by_user_id_and_code(
         &self,
         user_id: Uuid,
@@ -552,12 +567,19 @@ pub trait DBConnection {
         &self,
         new_request: NewPlatformPasswordResetRequest,
     ) -> Result<PlatformPasswordResetRequest, DBError>;
-
-    fn get_platform_password_reset_request_by_user_id_and_code(
+    /// Platform mirror of
+    /// [`DBConnection::create_password_reset_request_within_email_budget`].
+    fn create_platform_password_reset_request_within_email_budget(
+        &self,
+        new_request: NewPlatformPasswordResetRequest,
+    ) -> Result<Option<PlatformPasswordResetRequest>, DBError>;
+    /// Platform mirror of [`DBConnection::attempt_password_reset_proof`].
+    fn attempt_platform_password_reset_proof(
         &self,
         user_id: Uuid,
+        hashed_secret: &str,
         encrypted_code: Vec<u8>,
-    ) -> Result<Option<PlatformPasswordResetRequest>, DBError>;
+    ) -> Result<ResetProofAttempt<PlatformPasswordResetRequest>, DBError>;
 
     fn platform_password_reset_request_is_active_for_secret(
         &self,
@@ -1112,6 +1134,36 @@ impl DBConnection for PostgresConnection {
         let result = new_request.insert(conn).map_err(DBError::from);
         if let Err(ref e) = result {
             error!("Failed to create password reset request: {:?}", e);
+        }
+        result
+    }
+
+    fn create_password_reset_request_within_email_budget(
+        &self,
+        new_request: NewPasswordResetRequest,
+    ) -> Result<Option<PasswordResetRequest>, DBError> {
+        let conn = &mut self.db.get().map_err(|_| DBError::ConnectionError)?;
+        let result = new_request
+            .insert_within_email_budget(conn)
+            .map_err(DBError::from);
+        if let Err(ref e) = result {
+            error!("Failed to create password reset request: {:?}", e);
+        }
+        result
+    }
+
+    fn attempt_password_reset_proof(
+        &self,
+        user_id: Uuid,
+        hashed_secret: &str,
+        encrypted_code: Vec<u8>,
+    ) -> Result<ResetProofAttempt<PasswordResetRequest>, DBError> {
+        let conn = &mut self.db.get().map_err(|_| DBError::ConnectionError)?;
+        let result =
+            PasswordResetRequest::attempt_proof(conn, user_id, hashed_secret, &encrypted_code)
+                .map_err(DBError::from);
+        if let Err(ref e) = result {
+            error!("Failed to check password reset proof: {:?}", e);
         }
         result
     }
@@ -2344,17 +2396,36 @@ impl DBConnection for PostgresConnection {
         result
     }
 
-    fn get_platform_password_reset_request_by_user_id_and_code(
+    fn create_platform_password_reset_request_within_email_budget(
         &self,
-        user_id: Uuid,
-        encrypted_code: Vec<u8>,
+        new_request: NewPlatformPasswordResetRequest,
     ) -> Result<Option<PlatformPasswordResetRequest>, DBError> {
         let conn = &mut self.db.get().map_err(|_| DBError::ConnectionError)?;
-        let result =
-            PlatformPasswordResetRequest::get_by_user_id_and_code(conn, user_id, &encrypted_code)
-                .map_err(DBError::from);
+        let result = new_request
+            .insert_within_email_budget(conn)
+            .map_err(DBError::from);
         if let Err(ref e) = result {
-            error!("Failed to get platform password reset request: {:?}", e);
+            error!("Failed to create platform password reset request: {:?}", e);
+        }
+        result
+    }
+
+    fn attempt_platform_password_reset_proof(
+        &self,
+        user_id: Uuid,
+        hashed_secret: &str,
+        encrypted_code: Vec<u8>,
+    ) -> Result<ResetProofAttempt<PlatformPasswordResetRequest>, DBError> {
+        let conn = &mut self.db.get().map_err(|_| DBError::ConnectionError)?;
+        let result = PlatformPasswordResetRequest::attempt_proof(
+            conn,
+            user_id,
+            hashed_secret,
+            &encrypted_code,
+        )
+        .map_err(DBError::from);
+        if let Err(ref e) = result {
+            error!("Failed to check platform password reset proof: {:?}", e);
         }
         result
     }
