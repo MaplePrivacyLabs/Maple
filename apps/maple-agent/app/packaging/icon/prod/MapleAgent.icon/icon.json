@@ -1,0 +1,92 @@
+{
+  "fill-specializations": [
+    {
+      "value": {
+        "solid": "srgb:0.96863,0.96863,0.97647,1.00000"
+      }
+    },
+    {
+      "appearance": "dark",
+      "value": {
+        "solid": "srgb:0.15294,0.15294,0.18039,1.00000"
+      }
+    }
+  ],
+  "groups": [
+    {
+      "name": "M",
+      "layers": [
+        {
+          "name": "M",
+          "image-name": "m.svg",
+          "glass": false,
+          "fill-specializations": [
+            {
+              "value": {
+                "solid": "srgb:0.15294,0.15294,0.18039,1.00000"
+              }
+            },
+            {
+              "appearance": "dark",
+              "value": {
+                "solid": "srgb:0.96863,0.96863,0.97647,1.00000"
+              }
+            },
+            {
+              "appearance": "tinted",
+              "value": {
+                "solid": "srgb:1.00000,1.00000,1.00000,1.00000"
+              }
+            }
+          ]
+        }
+      ],
+      "shadow": {
+        "kind": "none",
+        "opacity": 0.5
+      },
+      "translucency": {
+        "enabled": false,
+        "value": 0.5
+      },
+      "specular": false
+    },
+    {
+      "name": "Sheet",
+      "layers": [
+        {
+          "name": "Sheet",
+          "image-name": "sheet.svg",
+          "glass": false,
+          "fill-specializations": [
+            {
+              "value": {
+                "solid": "srgb:0.96471,0.49020,0.34118,1.00000"
+              }
+            },
+            {
+              "appearance": "tinted",
+              "value": {
+                "solid": "srgb:0.50000,0.50000,0.50000,1.00000"
+              }
+            }
+          ]
+        }
+      ],
+      "shadow": {
+        "kind": "none",
+        "opacity": 0.5
+      },
+      "translucency": {
+        "enabled": false,
+        "value": 0.5
+      },
+      "specular": false
+    }
+  ],
+  "supported-platforms": {
+    "squares": [
+      "macOS"
+    ]
+  }
+}

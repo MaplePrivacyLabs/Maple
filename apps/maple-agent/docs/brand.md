@@ -153,7 +153,18 @@ rgba(0,0,0,.1)`. Active: scale 0.95. Disabled: 40 % opacity. Transition
   `#9c9dab` at 90 % opacity, white glyph centred; sizes 120, 80, 56, 40,
   32 px (the 32 px size uses the single "M" chevron).
 - Favicon 16 px (radius 4) and icon 32 px (radius 8) are a white "M" on
-  Pebble 800; the 64 px app icon (radius 14) uses the avatar gradient.
+  Pebble 800.
+- App icon, from the App Icons board of the Figma file "Maple Brand Kit"
+  (https://www.figma.com/design/d5qqJPUb8fNHDsBBLbfOf2): Maple Work stacks
+  an Ink `#27272e` M on a Maple orange `#f67d57` copy of itself, offset
+  13/128 down and right, on a Cloud `#f7f7f9` tile. The M is the
+  wordmark's, scaled. Windows and Linux round the tile at 29/128; macOS
+  applies its own mask. Dark mode turns the tile Graphite `#27272e` and
+  the M Cloud; the tinted and clear styles keep the M brightest and the
+  sheet a lighter tone than the tile. Dev builds shrink the mark to 84 %,
+  with a Cloud M on the Graphite tile, above a Warning `#d4a35a` "DEV"
+  pill. The sources are Icon Composer documents in `app/packaging/icon/`,
+  and `scripts/app-icons.py` builds every platform's icon from them.
 
 ## Part 2: how the app applies it
 

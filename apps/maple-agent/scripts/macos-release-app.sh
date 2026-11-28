@@ -136,9 +136,12 @@ macos_release_main() {
     mkdir -p "$frameworks" "$app/Contents/MacOS" "$app/Contents/Resources"
     cp "$binary" "$executable"
     chmod 0755 "$executable"
-    local icon=maple-agent.icns
-    [[ "$profile" != dev ]] || icon=maple-agent-dev.icns
-    cp "$component/app/packaging/$icon" "$app/Contents/Resources/MapleAgent.icns"
+    local icon=maple-agent
+    [[ "$profile" != dev ]] || icon=maple-agent-dev
+    # The asset catalog draws the icon in every macOS 26 style, with flat
+    # copies for macOS 15. The .icns is the CFBundleIconFile fallback.
+    cp "$component/app/packaging/$icon.car" "$app/Contents/Resources/Assets.car"
+    cp "$component/app/packaging/$icon.icns" "$app/Contents/Resources/MapleAgent.icns"
     python3 "$component/scripts/release-info.py" plist "$profile" "$output_dir/build-info.json" \
         --build-number "$build_number" --output "$app/Contents/Info.plist"
     macos_embed_dylibs "$component" "$binary" "$app"

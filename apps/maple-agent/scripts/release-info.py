@@ -107,6 +107,8 @@ def write_plist(info, path, build_number):
         "CFBundleShortVersionString": info["version"].split("-", 1)[0],
         "CFBundleVersion": build_number,
         "CFBundleIconFile": "MapleAgent.icns",
+        # The icon in Resources/Assets.car (scripts/app-icons.py).
+        "CFBundleIconName": "MapleAgent",
         # The native CUA recorder uses SCRecordingOutput (macOS 15+). Do not
         # promise older OS support based only on the prototype's plist.
         "LSMinimumSystemVersion": "15.0",
