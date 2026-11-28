@@ -5,6 +5,7 @@ pub mod chat;
 pub mod context_ring;
 pub mod decorations;
 pub mod effort_slider;
+pub mod empty_title;
 pub(crate) mod i18n;
 pub mod icons;
 pub mod login;
