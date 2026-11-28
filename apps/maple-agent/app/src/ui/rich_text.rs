@@ -44,9 +44,9 @@ pub struct Inline {
 const REGISTRY_CAP: usize = 8192;
 const REGISTRY_WINDOW: u64 = 2048;
 
-/// Background drawn under selected text: Maple coral at ~40% alpha.
+/// Background drawn under selected text: the theme's accent at ~40% alpha.
 fn selection_background() -> gpui::Hsla {
-    gpui::rgba(0xff977166).into()
+    crate::ui::theme::transcript_selection().into()
 }
 
 /// Snap a byte index to the nearest char boundary at or before it.

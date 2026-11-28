@@ -182,9 +182,9 @@ pub(crate) fn start(backend: &crate::backend::AgentBackend, cx: &mut gpui::App) 
             if let Some(scheme) = scheme {
                 cx.update(|cx| {
                     crate::ui::theme::set_system_appearance(scheme.appearance());
-                    if crate::ui::theme::preference() == crate::ui::theme::Preference::System {
-                        cx.refresh_windows();
-                    }
+                    // Resolve at app level: the main window may be closed to
+                    // the tray with only a dialog left to repaint.
+                    crate::ui::theme::sync(cx);
                 });
             }
         }

@@ -288,6 +288,9 @@ pub struct SettingsScreen {
     update: crate::update::Snapshot,
     /// `settings.theme` parsed once; render only reads the label.
     theme: theme::Preference,
+    /// One focus handle per theme choice, in `Preference::ALL` order, so
+    /// arrow keys can move focus between them as in a radio group.
+    theme_focus: Vec<gpui::FocusHandle>,
     section: Section,
     #[cfg(feature = "acp")]
     developer_tab: DeveloperTab,
@@ -666,6 +669,7 @@ impl SettingsScreen {
             remote_screen,
             user_id,
             theme: theme::Preference::parse(&settings.theme),
+            theme_focus: general::theme_focus_handles(cx),
             settings,
             update: crate::update::Snapshot::initial(),
             section,

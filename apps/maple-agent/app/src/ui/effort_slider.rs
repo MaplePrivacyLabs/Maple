@@ -926,7 +926,7 @@ impl Element for EffortSlider {
             thumb,
             round,
             gpui::rgb(if self.enabled {
-                theme::on_accent()
+                theme::slider_thumb()
             } else {
                 theme::text_muted()
             }),

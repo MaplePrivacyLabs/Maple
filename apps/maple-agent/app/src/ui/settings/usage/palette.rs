@@ -18,8 +18,6 @@ struct Palette {
     input: u32,
     cached: u32,
     output: u32,
-    grid: u32,
-    axis: u32,
 }
 
 const LIGHT: Palette = Palette {
@@ -34,8 +32,6 @@ const LIGHT: Palette = Palette {
     input: 0x64748b,
     cached: 0x94a3b8,
     output: 0x334155,
-    grid: 0xededed,
-    axis: 0xd4d4d4,
 };
 
 const DARK: Palette = Palette {
@@ -50,8 +46,6 @@ const DARK: Palette = Palette {
     input: 0x7c8ba1,
     cached: 0x475569,
     output: 0xcbd5e1,
-    grid: 0x262626,
-    axis: 0x3a3a3a,
 };
 
 fn palette() -> &'static Palette {
@@ -104,10 +98,12 @@ pub(super) fn model(model: &str, named_models: &[String]) -> u32 {
     )
 }
 
+/// Gridlines and the axis rule follow the active theme's chrome; the
+/// series colors keep their validated light and dark sets.
 pub(super) fn grid() -> u32 {
-    palette().grid
+    theme::chart_grid()
 }
 
 pub(super) fn axis() -> u32 {
-    palette().axis
+    theme::chart_axis()
 }

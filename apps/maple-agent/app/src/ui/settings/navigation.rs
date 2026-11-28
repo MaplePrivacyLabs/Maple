@@ -213,19 +213,18 @@ impl SettingsScreen {
                 SettingsTarget::PromptSave,
             ])
             .collect(),
-            Section::Appearance => [
-                AppearanceTarget::Theme(crate::ui::theme::Preference::System),
-                AppearanceTarget::Theme(crate::ui::theme::Preference::Dark),
-                AppearanceTarget::Theme(crate::ui::theme::Preference::Light),
-                AppearanceTarget::ReduceMotion,
-                AppearanceTarget::ChatFont,
-                AppearanceTarget::ChatSize,
-                AppearanceTarget::ToolDetails,
-                AppearanceTarget::ToolSummaries,
-            ]
-            .into_iter()
-            .map(SettingsTarget::Appearance)
-            .collect(),
+            Section::Appearance => crate::ui::theme::Preference::ALL
+                .into_iter()
+                .map(AppearanceTarget::Theme)
+                .chain([
+                    AppearanceTarget::ReduceMotion,
+                    AppearanceTarget::ChatFont,
+                    AppearanceTarget::ChatSize,
+                    AppearanceTarget::ToolDetails,
+                    AppearanceTarget::ToolSummaries,
+                ])
+                .map(SettingsTarget::Appearance)
+                .collect(),
             Section::Account => self.account_targets(),
             Section::Usage => self.usage_targets(),
             Section::Billing => self.billing_targets(),
@@ -1495,6 +1494,7 @@ mod tests {
     fn spanish_general_preserves_controls_and_saved_values(cx: &mut TestAppContext) {
         let _settings = crate::settings::SETTINGS_IO_LOCK.lock();
         let _localization = crate::ui::i18n::TestLocalizationGuard::enable();
+        let _theme = crate::ui::theme::TestThemeGuard::acquire();
         crate::ui::i18n::initialize_saved_preference(Some("es"));
         let (settings, cx) = dropdown_window(cx, true);
         cx.run_until_parked();
@@ -2256,6 +2256,7 @@ mod tests {
     #[gpui::test]
     fn appearance_segmented_theme_switches_on_pointer_and_vim_activation(cx: &mut TestAppContext) {
         let _guard = crate::settings::SETTINGS_IO_LOCK.lock();
+        let _theme = crate::ui::theme::TestThemeGuard::acquire();
         crate::settings::install_test_settings(crate::settings::AppSettings::default());
         let (settings, cx) = dropdown_window(cx, true);
         // The Settings header Sign out is removed; Sign out lives only in Account.
@@ -2268,13 +2269,47 @@ mod tests {
 
         let dark = cx
             .debug_bounds("setting-appearance-dark")
-            .expect("Dark segmented pill renders");
+            .expect("Dark theme choice renders");
         cx.simulate_click(dark.center(), gpui::Modifiers::default());
         cx.run_until_parked();
         settings.update(cx, |this, _| {
             assert_eq!(this.settings.theme, "dark");
             assert_eq!(this.theme, crate::ui::theme::Preference::Dark);
         });
+        // Every named theme is a choice, and selecting one saves its ID.
+        for (selector, slug, preference) in [
+            (
+                "setting-appearance-dracula",
+                "dracula",
+                crate::ui::theme::Preference::Dracula,
+            ),
+            (
+                "setting-appearance-americana",
+                "americana",
+                crate::ui::theme::Preference::Americana,
+            ),
+            (
+                "setting-appearance-neon-dusk",
+                "neon-dusk",
+                crate::ui::theme::Preference::NeonDusk,
+            ),
+            (
+                "setting-appearance-cherry-blossom",
+                "cherry-blossom",
+                crate::ui::theme::Preference::CherryBlossom,
+            ),
+        ] {
+            let choice = cx
+                .debug_bounds(selector)
+                .expect("named theme choice renders");
+            cx.simulate_click(choice.center(), gpui::Modifiers::default());
+            cx.run_until_parked();
+            settings.update(cx, |this, _| {
+                assert_eq!(this.settings.theme, slug);
+                assert_eq!(this.theme, preference);
+                assert_eq!(crate::ui::theme::preference(), preference);
+            });
+        }
 
         cx.update(|window, app| {
             settings.update(app, |this, cx| {
@@ -2290,12 +2325,66 @@ mod tests {
         crate::settings::discard_decrypted_cache();
     }
 
-    /// Without Application Vim, the pills are ordinary tab stops: Tab walks
-    /// them and Space or Enter presses the focused one. (Under Application
+    /// Arrow keys move between theme choices as in a radio group: they
+    /// select the next or previous choice, wrap at the ends, take focus
+    /// with them, and Home and End jump to the first and last choice.
+    #[gpui::test]
+    fn appearance_theme_choices_follow_radio_arrow_keys(cx: &mut TestAppContext) {
+        let _guard = crate::settings::SETTINGS_IO_LOCK.lock();
+        let _theme = crate::ui::theme::TestThemeGuard::acquire();
+        crate::settings::install_test_settings(crate::settings::AppSettings::default());
+        let (settings, cx) = dropdown_window(cx, false);
+        settings.update(cx, |this, cx| {
+            this.select_section(Section::Appearance, cx);
+        });
+        cx.run_until_parked();
+        let dark = cx
+            .debug_bounds("setting-appearance-dark")
+            .expect("Dark theme choice renders");
+        cx.simulate_click(dark.center(), gpui::Modifiers::default());
+        cx.run_until_parked();
+
+        use crate::ui::theme::Preference;
+        let position = |preference: Preference| {
+            Preference::ALL
+                .iter()
+                .position(|candidate| *candidate == preference)
+                .expect("listed choice")
+        };
+        for (keys, expected) in [
+            ("right", Preference::Dracula),
+            ("down", Preference::Americana),
+            ("left up", Preference::Dark),
+            ("end", Preference::CherryBlossom),
+            ("right", Preference::System),
+            ("left", Preference::CherryBlossom),
+            ("home", Preference::System),
+        ] {
+            cx.simulate_keystrokes(keys);
+            cx.run_until_parked();
+            settings.update(cx, |this, _| {
+                assert_eq!(this.theme, expected, "after {keys}");
+                assert_eq!(this.settings.theme, expected.as_str(), "after {keys}");
+            });
+            cx.update(|window, app| {
+                let focused = settings.read(app).theme_focus[position(expected)].is_focused(window);
+                assert!(focused, "focus follows the selection after {keys}");
+            });
+        }
+        // Modified arrows are left to other bindings.
+        cx.simulate_keystrokes("shift-right");
+        cx.run_until_parked();
+        settings.update(cx, |this, _| assert_eq!(this.theme, Preference::System));
+        crate::settings::discard_decrypted_cache();
+    }
+
+    /// Without Application Vim, the theme choices are ordinary tab stops:
+    /// Tab walks them and Space or Enter presses the focused one. (Under Application
     /// Vim, Space is the leader prefix and Enter activates the Vim target.)
     #[gpui::test]
     fn appearance_theme_pills_are_keyboard_tab_stops(cx: &mut TestAppContext) {
         let _guard = crate::settings::SETTINGS_IO_LOCK.lock();
+        let _theme = crate::ui::theme::TestThemeGuard::acquire();
         crate::settings::install_test_settings(crate::settings::AppSettings::default());
         let (settings, cx) = dropdown_window(cx, false);
         settings.update(cx, |this, cx| {
@@ -2303,21 +2392,28 @@ mod tests {
         });
         cx.run_until_parked();
 
-        // Clicking Dark focuses it; Tab then reaches Light.
-        let dark = cx
-            .debug_bounds("setting-appearance-dark")
-            .expect("Dark segmented pill renders");
-        cx.simulate_click(dark.center(), gpui::Modifiers::default());
+        // Clicking Light focuses it; Tab then reaches Maple Dark, and
+        // another Tab reaches Dracula.
+        let light = cx
+            .debug_bounds("setting-appearance-light")
+            .expect("Light theme choice renders");
+        cx.simulate_click(light.center(), gpui::Modifiers::default());
         cx.simulate_keystrokes("tab space");
         cx.run_until_parked();
         settings.update(cx, |this, _| {
-            assert_eq!(this.settings.theme, "light");
-            assert_eq!(this.theme, crate::ui::theme::Preference::Light);
+            assert_eq!(this.settings.theme, "dark");
+            assert_eq!(this.theme, crate::ui::theme::Preference::Dark);
         });
-        cx.simulate_keystrokes("shift-tab enter");
+        cx.simulate_keystrokes("tab enter");
         cx.run_until_parked();
         settings.update(cx, |this, _| {
-            assert_eq!(this.settings.theme, "dark");
+            assert_eq!(this.settings.theme, "dracula");
+            assert_eq!(this.theme, crate::ui::theme::Preference::Dracula);
+        });
+        cx.simulate_keystrokes("shift-tab shift-tab enter");
+        cx.run_until_parked();
+        settings.update(cx, |this, _| {
+            assert_eq!(this.settings.theme, "light");
         });
         crate::settings::discard_decrypted_cache();
     }

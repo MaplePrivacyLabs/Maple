@@ -1140,7 +1140,7 @@ settings-api-keys-see-plans 7e03b8e39f23e6ef
 settings-api-keys-unlock-api-access a90cb417d8f6464c
 settings-api-learn-more 06c6f22d1aac7c3e
 settings-appearance 63e047288ee0cb56
-settings-appearance-description 84484ee03a5c94e8
+settings-appearance-description 8eeb81e7ba9ce848
 settings-appearance-subtitle c75b22e89b7b9857
 settings-application-vim ecd8f5b842be0c94
 settings-application-vim-description cc1b8b9e7bf4249c
@@ -1271,7 +1271,7 @@ settings-integration-install-codex f2505116f461e834
 settings-integration-version d94dbeea131c72f3
 settings-keywords-about 14eb017c25602e9d
 settings-keywords-account 291c31da702e369d
-settings-keywords-appearance 2810172f7551c986
+settings-keywords-appearance 3e0842f68c52369f
 settings-keywords-apps cf504915b2ac1282
 settings-keywords-billing 2f018149058b669c
 settings-keywords-developer 136446487145060e
@@ -1885,9 +1885,13 @@ settings-steer-active-run-messages 11d0a16e3c2b4c7a
 settings-steer-active-run-messages-description 0bf4d597e6510b9d
 settings-text-size aa4d8e4805ea9511
 settings-text-size-description 5cd2782d7f3991c4
-settings-theme-label-dark aa6ad56172aedfb3
-settings-theme-label-light b07617440bda646d
-settings-theme-label-system bccecf593daa2259
+settings-theme-label-americana f2b107dc181ca7e9
+settings-theme-label-cherry-blossom 5f629f7314d16472
+settings-theme-label-dark 46c9f4ff3736e822
+settings-theme-label-dracula a1d683e6bec14bd1
+settings-theme-label-light 521cdb5811a1d5ea
+settings-theme-label-neon-dusk 2b55e88cd75a6e78
+settings-theme-label-system bb8127d04a5e76b2
 settings-theme-motion 84bd2a0bffa4588d
 settings-title 90c87c9fc4bd308d
 settings-tool-details a5cbd93d86bbbab8
