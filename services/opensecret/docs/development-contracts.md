@@ -130,30 +130,45 @@ inputs, never in command arguments or logs.
 #### Password reset
 
 User (`/password-reset/*`) and platform (`/platform/password-reset/*`) accounts
-have the same two limits, each with its own state.
+have the same two limits, each with its own tables. PostgreSQL holds both
+limits, so they survive restarts and hold across enclave processes. The
+process-local limiters in `web/rate_limit.rs` stay as a cheap first line.
 
-Reset requests are limited to 5 per targeted account in a rolling hour. Past
-that, the request route returns its ordinary generic answer but creates no
-request and sends no email, so a throttled, unknown, OAuth-only and valid
-account stay indistinguishable. Because a request lives 24 hours, this also
-bounds the reset codes that can be live for one account. Any caller can spend an
-account's allowance; the cost to its owner is a delayed reset email, never a
-changed credential.
+Reset requests are limited to 5 per targeted account in a rolling hour. Every
+request row created in the hour counts, consumed or not. Creation locks the
+account row, counts and inserts in one transaction, so concurrent processes
+cannot exceed the cap together. Past that, the request route returns its
+ordinary generic answer but creates no request and sends no email, so a
+throttled, unknown, OAuth-only and valid account stay indistinguishable.
+Because a request lives 24 hours, this also bounds the reset codes that can be
+live for one account. Any caller can spend an account's allowance; the cost to
+its owner is a delayed reset email, never a changed credential.
 
-Each reset request allows 5 confirmation attempts for its whole 24-hour life.
-The confirm route first matches the submitted secret to a request of that
-account. A submission whose secret matches none cannot complete anything and is
-refused without being counted. An exhausted budget returns a generic 429 even
-with the right code. Only the party that started a request holds its secret,
-so nobody else can spend its attempts; the owner of an exhausted request
-starts a new one.
+Each reset request allows 5 failed confirmation attempts for its whole 24-hour
+life, counted in its `failed_attempts` column. The confirm route first matches
+the submitted secret to a request of that account. A submission whose secret
+matches none cannot complete anything and is refused without being counted.
+Each admitted attempt then runs in one transaction that locks every unconsumed
+request carrying the submitted secret, so attempts that could succeed run one
+at a time and always see current counters. In that transaction:
+
+- the request the code selects is refused as expired, or with a generic 429
+  when its budget is spent, before its secret is compared, even with the right
+  code;
+- a wrong code, or a correct code with another request's secret, charges every
+  active request carrying the submitted secret; when all of them are spent the
+  answer is the generic 429;
+- expired requests are never charged.
+
+Only the party that started a request holds its secret, so nobody else can
+spend its attempts; the owner of an exhausted request starts a new one.
 
 User reset proof verification is shared by legacy confirmation and V2 options
-and completion. Failed proofs with a matching client secret spend the budget;
-valid proofs check availability without spending it. Repeated valid options
-checks and a later completion therefore work within the same budget. An
-exhausted request returns the same generic 429 on all three paths, even with
-the right code. Platform confirmation still counts every admitted attempt,
+and completion. Valid proofs spend no budget, so repeated valid options checks
+and a later completion work within the same budget. An exhausted request
+returns the same generic 429 on all three paths, even with the right code.
+Every failed user proof also spends the process-local budget. Platform
+confirmation spends the process-local budget on every admitted attempt,
 including a correct one, since successful confirmation consumes its request.
 
 ### Responses context scope

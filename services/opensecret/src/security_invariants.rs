@@ -786,7 +786,8 @@ fn user_password_reset_uses_mac_lookup_and_destructive_reseed() {
         "user.get_email().is_none()",
         "user.password_enc.is_none()",
         "password_reset_code_mac(",
-        "get_password_reset_request_by_user_id_and_code(user.uuid, reset_code_mac.to_vec())",
+        "attempt_password_reset_proof(",
+        "reset_code_mac.to_vec()",
     ] {
         assert!(
             proof_body.contains(required_pattern),

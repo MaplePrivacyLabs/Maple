@@ -1,3 +1,4 @@
+use crate::models::password_reset::{decide_proof_attempt, ResetProofAttempt, ResetRequestRow};
 use crate::models::schema::platform_password_reset_requests;
 use chrono::{DateTime, Utc};
 use diesel::prelude::*;
@@ -11,8 +12,6 @@ pub enum PlatformPasswordResetError {
     DatabaseError(#[from] diesel::result::Error),
     #[error("Invalid expiration hours: {0}")]
     InvalidExpirationHours(String),
-    #[error("No attempt budget left for this reset request")]
-    AttemptBudgetExhausted,
 }
 
 /// Durable per-request guess budget for platform (developer) accounts,
@@ -49,7 +48,10 @@ impl PlatformPasswordResetRequest {
             .filter(platform_password_reset_requests::platform_user_id.eq(lookup_user_id))
             .filter(platform_password_reset_requests::encrypted_code.eq(lookup_encrypted_code))
             .filter(platform_password_reset_requests::is_reset.eq(false))
-            .filter(platform_password_reset_requests::expiration_time.gt(Utc::now()))
+            // Expiry is left to the caller, which reports an expired request
+            // as such instead of treating its correct code as a wrong guess.
+            // Codes can repeat across open requests; pick the newest.
+            .order(platform_password_reset_requests::id.desc())
             .first::<PlatformPasswordResetRequest>(conn)
             .optional()
             .map_err(PlatformPasswordResetError::DatabaseError)
@@ -92,39 +94,56 @@ impl PlatformPasswordResetRequest {
         self.failed_attempts < PLATFORM_PASSWORD_RESET_MAX_FAILED_ATTEMPTS
     }
 
-    /// Charges one failed guess to the durable budget of the account's oldest
-    /// active request created with `hashed_secret`.
-    ///
-    /// Used when the submitted code matched no request: the secret has
-    /// already been proven to belong to at least one active request (the
-    /// admission check), so the wrong code is charged to that request's
-    /// owner. The guarded `UPDATE` matches only rows carrying that secret,
-    /// so nobody without the secret can spend this budget.
-    pub fn charge_failed_attempt_for_secret(
+    /// Platform mirror of
+    /// [`crate::models::password_reset::PasswordResetRequest::attempt_proof`]:
+    /// locks every unconsumed request carrying the secret, then decides and
+    /// charges the attempt in one transaction.
+    pub fn attempt_proof(
         conn: &mut PgConnection,
         lookup_user_id: Uuid,
         lookup_hashed_secret: &str,
-    ) -> Result<(), PlatformPasswordResetError> {
-        let charged = diesel::update(
-            platform_password_reset_requests::table
+        lookup_encrypted_code: &[u8],
+    ) -> Result<ResetProofAttempt<PlatformPasswordResetRequest>, PlatformPasswordResetError> {
+        conn.transaction(|conn| {
+            let secret_requests = platform_password_reset_requests::table
                 .filter(platform_password_reset_requests::platform_user_id.eq(lookup_user_id))
                 .filter(platform_password_reset_requests::hashed_secret.eq(lookup_hashed_secret))
                 .filter(platform_password_reset_requests::is_reset.eq(false))
-                .filter(platform_password_reset_requests::expiration_time.gt(Utc::now()))
-                .filter(
+                .order(platform_password_reset_requests::id.asc())
+                .for_update()
+                .load::<PlatformPasswordResetRequest>(conn)?;
+            let selected =
+                Self::get_by_user_id_and_code(conn, lookup_user_id, lookup_encrypted_code)?;
+            let (attempt, charge) =
+                decide_proof_attempt(&secret_requests, selected, lookup_hashed_secret);
+            if !charge.is_empty() {
+                diesel::update(
+                    platform_password_reset_requests::table
+                        .filter(platform_password_reset_requests::id.eq_any(charge)),
+                )
+                .set(
                     platform_password_reset_requests::failed_attempts
-                        .lt(PLATFORM_PASSWORD_RESET_MAX_FAILED_ATTEMPTS),
-                ),
-        )
-        .set(
-            platform_password_reset_requests::failed_attempts
-                .eq(platform_password_reset_requests::failed_attempts + 1),
-        )
-        .execute(conn)?;
-        if charged == 0 {
-            return Err(PlatformPasswordResetError::AttemptBudgetExhausted);
-        }
-        Ok(())
+                        .eq(platform_password_reset_requests::failed_attempts + 1),
+                )
+                .execute(conn)?;
+            }
+            Ok(attempt)
+        })
+    }
+}
+
+impl ResetRequestRow for PlatformPasswordResetRequest {
+    fn row_id(&self) -> i32 {
+        self.id
+    }
+    fn row_hashed_secret(&self) -> &str {
+        &self.hashed_secret
+    }
+    fn expired(&self) -> bool {
+        self.is_expired()
+    }
+    fn has_budget(&self) -> bool {
+        self.has_attempt_budget()
     }
 }
 

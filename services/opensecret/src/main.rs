@@ -15,7 +15,7 @@ use crate::models::account_deletion::{AccountDeletionError, NewAccountDeletionRe
 use crate::models::email_verification::{EmailVerificationError, NewEmailVerification};
 use crate::models::oauth::{NewUserOAuthConnection, OAuthError};
 use crate::models::password_reset::{
-    NewPasswordResetRequest, PasswordResetError, PasswordResetRequest,
+    NewPasswordResetRequest, PasswordResetRequest, ResetProofAttempt,
 };
 use crate::models::platform_password_reset::NewPlatformPasswordResetRequest;
 use crate::models::platform_users::PlatformUser;
@@ -2186,7 +2186,7 @@ impl AppState {
                         Ok(None) => {
                             // Throttled: the account is at its rolling-hour
                             // email cap, so no request and no email.
-                            debug!("Password reset email cap reached for existing account");
+                            debug!("No password reset request created: email cap reached or account removed");
                         }
                         Err(e) => {
                             error!("Error during password reset request: {:?}", e);
@@ -2242,8 +2242,8 @@ impl AppState {
     /// secret must match the stored hash. Valid proofs spend no guess budget
     /// and leave the request unchanged. Failed proofs charge the request's
     /// durable database budget: the counter lives on the request row, so the
-    /// limit holds across enclave processes and restarts, and the guarded
-    /// charge matches the request's own secret, so nobody else can spend its
+    /// limit holds across enclave processes and restarts, and the charge is
+    /// scoped to the submitted secret, so nobody without it can spend its
     /// attempts.
     fn verify_password_reset_proof(
         &self,
@@ -2279,61 +2279,26 @@ impl AppState {
             password_reset_code_mac(&self.enclave_key, project_id, user.uuid, &alphanumeric_code)
                 .map_err(|e| Error::EncryptionError(e.to_string()))?;
 
-        let reset_request = self
-            .db
-            .get_password_reset_request_by_user_id_and_code(user.uuid, reset_code_mac.to_vec())?;
-        let failure = match &reset_request {
-            Some(request) if request.is_expired() => {
-                // Expired requests keep their spent budget and charge
-                // nothing: the expiry itself has already ended guessing.
-                return Err(Error::PasswordResetExpired);
-            }
-            Some(request) => {
-                // The durable budget is checked on the request this code
-                // selects, not on any other request sharing the secret: a
-                // spent request stays closed even to its correct code, and a
-                // fresh request sharing the secret cannot reopen it.
-                if !request.has_attempt_budget() {
-                    return Err(Error::RateLimited(ApiError::RateLimited {
-                        retry_after: web::rate_limit::reset_request_retry_after(),
-                    }));
-                }
-                if hashed_plaintext
-                    .as_bytes()
-                    .ct_eq(request.hashed_secret.as_bytes())
-                    .into()
-                {
-                    // A correct code with the matching secret proves the
-                    // request owner: never charge the budget.
-                    return Ok((user, request.clone()));
-                }
-                // Correct code, wrong secret for this request: refused
-                // without charging, so an attacker who guesses the code
-                // cannot burn the owner's budget.
-                Error::InvalidPasswordResetSecret
-            }
-            None => Error::InvalidPasswordResetRequest,
-        };
-        // A wrong code against the request this secret belongs to: charge
-        // the durable per-secret budget before reporting the failure. Only a
-        // genuinely spent budget maps to the rate-limited response, and a
-        // secret whose requests have all expired reports the failure without
-        // charging; any other database failure stays an infrastructure error.
-        match self
-            .db
-            .charge_password_reset_attempt_for_secret(user.uuid, &hashed_plaintext)
-        {
-            Ok(()) => {}
-            Err(DBError::PasswordResetRequestNotFound) => {
+        // The budget check, the code and secret comparison, and the charge
+        // of a failed guess run in one transaction serialized per secret.
+        let failure = match self.db.attempt_password_reset_proof(
+            user.uuid,
+            &hashed_plaintext,
+            reset_code_mac.to_vec(),
+        )? {
+            ResetProofAttempt::Valid(request) => return Ok((user, request)),
+            ResetProofAttempt::Exhausted => {
                 return Err(Error::RateLimited(ApiError::RateLimited {
                     retry_after: web::rate_limit::reset_request_retry_after(),
-                }));
+                }))
             }
-            Err(DBError::PasswordResetError(PasswordResetError::NoActivePasswordResetRequest)) => {
-                return Err(failure)
-            }
-            Err(other) => return Err(Error::DatabaseError(other)),
-        }
+            ResetProofAttempt::Expired => Error::PasswordResetExpired,
+            ResetProofAttempt::WrongSecret => Error::InvalidPasswordResetSecret,
+            ResetProofAttempt::WrongCode => Error::InvalidPasswordResetRequest,
+        };
+        // Every failure also spends the process-local budget, including a
+        // secret whose requests have all expired and so has no durable
+        // budget left to charge.
         attempts.check(attempt_key).map_err(Error::RateLimited)?;
         Err(failure)
     }
@@ -2583,7 +2548,7 @@ impl AppState {
                         }
                         Ok(None) => {
                             debug!(
-                                "Platform password reset email cap reached for existing account"
+                                "No platform password reset request created: email cap reached or account removed"
                             );
                         }
                         Err(e) => {
@@ -2637,107 +2602,70 @@ impl AppState {
             .map_err(|e| Error::EncryptionError(e.to_string()))?;
         let encrypted_code = encrypt_key_deterministic(&secret_key, alphanumeric_code.as_bytes());
 
-        let reset_request = self
-            .db
-            .get_platform_password_reset_request_by_user_id_and_code(
-                platform_user.uuid,
-                encrypted_code,
-            )?;
-
-        // The durable budget closes the request once its attempts are spent,
-        // even to the correct code: check it before the code is examined,
-        // mirroring the user-side proof and the process-local limiter.
-        if let Some(ref request) = reset_request {
-            if !request.is_expired() && !request.has_attempt_budget() {
+        // The budget check, the code and secret comparison, and the charge
+        // of a failed guess run in one transaction serialized per secret.
+        let reset_request = match self.db.attempt_platform_password_reset_proof(
+            platform_user.uuid,
+            &hashed_plaintext,
+            encrypted_code,
+        )? {
+            ResetProofAttempt::Valid(request) => request,
+            ResetProofAttempt::Exhausted => {
                 return Err(Error::RateLimited(ApiError::RateLimited {
                     retry_after: web::rate_limit::reset_request_retry_after(),
-                }));
+                }))
             }
-        }
-
-        if let Some(reset_request) = reset_request {
-            if reset_request.is_expired() {
+            ResetProofAttempt::Expired => {
                 warn!(
                     "Platform password reset expired for user: {}",
                     platform_user.uuid
                 );
                 return Err(Error::PasswordResetExpired);
             }
-
-            // Compare the hashed values using constant-time comparison
-            if hashed_plaintext
-                .as_bytes()
-                .ct_eq(reset_request.hashed_secret.as_bytes())
-                .into()
-            {
-                // Password verification succeeded, continue with reset
-                // Hash the new password
-                let password_hash = password_auth::generate_hash(new_password.clone());
-
-                // Encrypt the hashed password
-                let secret_key = SecretKey::from_slice(&self.enclave_key)
-                    .map_err(|e| Error::EncryptionError(e.to_string()))?;
-                let encrypted_password =
-                    encrypt_with_key(&secret_key, password_hash.as_bytes()).await;
-
-                // Update the platform user's password
-                self.db
-                    .update_platform_user_password(&platform_user, encrypted_password)?;
-                self.db
-                    .mark_platform_password_reset_as_complete(&reset_request)?;
-
-                // Send confirmation email in the background
-                let user_email = platform_user.email.clone();
-                let app_state = self.clone();
-                spawn(async move {
-                    if let Err(e) = send_platform_password_reset_confirmation_email(
-                        &app_state,
-                        app_state.resend_api_key.clone(),
-                        user_email,
-                    )
-                    .await
-                    {
-                        error!(
-                            "Failed to send platform password reset confirmation email: {:?}",
-                            e
-                        );
-                    }
-                });
-
-                Ok(())
-            } else {
-                // Correct code, wrong secret for this request: refused
-                // without charging, so a code guess cannot burn the owner's
-                // durable budget.
+            ResetProofAttempt::WrongSecret => {
                 warn!(
                     "Password verification failed for platform user {}. Hashes do not match.",
                     platform_user.uuid
                 );
-                Err(Error::InvalidPasswordResetSecret)
+                return Err(Error::InvalidPasswordResetSecret);
             }
-        } else {
-            // No live request for this code: a wrong code against the request
-            // this secret belongs to, so charge the durable per-request
-            // budget before reporting the failure. The platform lookup
-            // filters active requests by code; the secret was proven to
-            // belong to at least one active request above. Only a genuinely
-            // spent budget maps to the rate-limited response; any other
-            // database failure stays an infrastructure error.
-            self.db
-                .charge_platform_password_reset_attempt_for_secret(
-                    platform_user.uuid,
-                    &hashed_plaintext,
-                )
-                .map_err(|e| match e {
-                    DBError::PlatformPasswordResetRequestNotFound => {
-                        Error::RateLimited(ApiError::RateLimited {
-                            retry_after: web::rate_limit::reset_request_retry_after(),
-                        })
-                    }
-                    other => Error::DatabaseError(other),
-                })?;
-            Err(Error::InvalidPasswordResetRequest)
-        }
+            ResetProofAttempt::WrongCode => return Err(Error::InvalidPasswordResetRequest),
+        };
+
+        // Password verification succeeded, continue with reset
+        // Hash the new password
+        let password_hash = password_auth::generate_hash(new_password.clone());
+
+        // Encrypt the hashed password
+        let secret_key = SecretKey::from_slice(&self.enclave_key)
+            .map_err(|e| Error::EncryptionError(e.to_string()))?;
+        let encrypted_password = encrypt_with_key(&secret_key, password_hash.as_bytes()).await;
+
+        // Update the platform user's password
+        self.db
+            .update_platform_user_password(&platform_user, encrypted_password)?;
+        self.db
+            .mark_platform_password_reset_as_complete(&reset_request)?;
+
+        // Send confirmation email in the background
+        let user_email = platform_user.email.clone();
+        let app_state = self.clone();
+        spawn(async move {
+            if let Err(e) = send_platform_password_reset_confirmation_email(
+                &app_state,
+                app_state.resend_api_key.clone(),
+                user_email,
+            )
+            .await
+            {
+                error!(
+                    "Failed to send platform password reset confirmation email: {:?}",
+                    e
+                );
+            }
+        });
+
+        Ok(())
     }
 
     async fn update_user_password_and_seed_wrap(

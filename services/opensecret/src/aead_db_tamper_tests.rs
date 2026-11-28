@@ -3559,8 +3559,10 @@ mod password_reset_limits {
         // check is synchronous Diesel work, so plain OS threads overlap the
         // separate pooled connections.
         let attempts = 20;
+        let refused = std::sync::atomic::AtomicUsize::new(0);
         std::thread::scope(|scope| {
             let state = &app_state;
+            let refused = &refused;
             for _ in 0..attempts {
                 let email = email.clone();
                 let code = code.clone();
@@ -3569,14 +3571,13 @@ mod password_reset_limits {
                     let outcome = state
                         .verify_password_reset_proof(email, wrong_code(&code), secret, project.id)
                         .expect_err("every concurrent guess must fail");
-                    assert!(
-                        matches!(
-                            outcome,
-                            Error::InvalidPasswordResetRequest
-                                | Error::RateLimited(ApiError::RateLimited { .. })
-                        ),
-                        "a wrong guess is refused or rate-limited, never accepted: {outcome:?}"
-                    );
+                    match outcome {
+                        Error::InvalidPasswordResetRequest => {
+                            refused.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+                        }
+                        Error::RateLimited(ApiError::RateLimited { .. }) => {}
+                        other => panic!("a wrong guess is refused or rate-limited: {other:?}"),
+                    }
                 });
             }
         });
@@ -3594,9 +3595,17 @@ mod password_reset_limits {
                 .first::<i32>(conn)
                 .expect("the request row should load")
         };
-        assert!(
-            stored <= crate::models::password_reset::PASSWORD_RESET_MAX_FAILED_ATTEMPTS,
-            "the durable counter must never exceed its cap, got {stored}"
+        let max = crate::models::password_reset::PASSWORD_RESET_MAX_FAILED_ATTEMPTS;
+        assert_eq!(
+            stored, max,
+            "the durable counter must stop exactly at its cap"
+        );
+        // Attempts are serialized per secret, so exactly the budget's worth of
+        // guesses was examined; every other one was refused as exhausted.
+        assert_eq!(
+            refused.load(std::sync::atomic::Ordering::Relaxed),
+            max as usize,
+            "exactly the budget of concurrent guesses may be examined"
         );
 
         // Whatever the interleaving, the request is now closed: the next
@@ -3613,9 +3622,79 @@ mod password_reset_limits {
         assert!(matches!(
             result,
             Err(Error::RateLimited(ApiError::RateLimited { .. }))
-                | Err(Error::InvalidPasswordResetRequest)
         ));
         assert!(!password_opens_account(&app_state, &project, &user, new_password).await);
+
+        app_state.db.delete_user(&user).unwrap();
+    }
+
+    /// A correct proof waits for an in-flight failed guess on the same
+    /// secret and sees its charge: it can never read a budget that a
+    /// concurrent guess is about to spend.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    #[ignore = "requires AEAD_TAMPER_TEST_DATABASE_URL pointing at disposable migrated local Postgres"]
+    async fn db_correct_proof_waits_for_an_in_flight_guess_on_the_same_secret() {
+        use crate::models::schema::password_reset_requests;
+        use diesel::Connection;
+        let database_url =
+            std::env::var("AEAD_TAMPER_TEST_DATABASE_URL").expect("disposable migrated Postgres");
+        let app_state = Arc::new(build_local_test_app_state(database_url).await);
+        let project = first_active_project(&app_state);
+        let user = create_user(&app_state, &project, "in-flight").await;
+        let email = user.email.clone().expect("test user has an email");
+        let secret = "in-flight-secret".to_string();
+        let hashed_secret = generate_reset_hash(secret.clone());
+        let code = app_state
+            .create_password_reset_request(email.clone(), hashed_secret.clone(), project.id)
+            .await
+            .unwrap();
+        let max = crate::models::password_reset::PASSWORD_RESET_MAX_FAILED_ATTEMPTS;
+
+        let conn = &mut app_state
+            .db
+            .get_pool()
+            .get()
+            .expect("test database connection should be available");
+        // One guess short of the cap.
+        diesel::update(password_reset_requests::table)
+            .filter(password_reset_requests::user_id.eq(user.uuid))
+            .set(password_reset_requests::failed_attempts.eq(max - 1))
+            .execute(conn)
+            .expect("the fixture counter should be set");
+
+        let proof = conn
+            .transaction::<_, diesel::result::Error, _>(|conn| {
+                // Stand in for a failed guess holding the secret's row locks.
+                password_reset_requests::table
+                    .filter(password_reset_requests::user_id.eq(user.uuid))
+                    .filter(password_reset_requests::hashed_secret.eq(&hashed_secret))
+                    .select(password_reset_requests::id)
+                    .for_update()
+                    .load::<i32>(conn)?;
+                let state = app_state.clone();
+                let (email, code, secret) = (email.clone(), code.clone(), secret.clone());
+                let proof = std::thread::spawn(move || {
+                    state.verify_password_reset_proof(email, code, secret, project.id)
+                });
+                std::thread::sleep(std::time::Duration::from_millis(500));
+                assert!(
+                    !proof.is_finished(),
+                    "the correct proof must wait for the in-flight guess"
+                );
+                // The in-flight guess spends the last attempt and commits.
+                diesel::update(password_reset_requests::table)
+                    .filter(password_reset_requests::user_id.eq(user.uuid))
+                    .set(password_reset_requests::failed_attempts.eq(max))
+                    .execute(conn)?;
+                Ok(proof)
+            })
+            .expect("the in-flight guess should commit")
+            .join()
+            .expect("the proof thread should not panic");
+        assert!(
+            matches!(proof, Err(Error::RateLimited(ApiError::RateLimited { .. }))),
+            "the correct proof must see the spent budget, got {proof:?}"
+        );
 
         app_state.db.delete_user(&user).unwrap();
     }
@@ -3995,5 +4074,145 @@ mod password_reset_limits {
         assert!(password_opens_account(&app_state, &project, &user, new_password).await);
 
         app_state.db.delete_user(&user).unwrap();
+    }
+
+    /// A secret whose requests have all expired has no durable budget to
+    /// charge, so its failed guesses still spend the process-local budget
+    /// instead of running unthrottled.
+    #[tokio::test]
+    #[ignore = "requires AEAD_TAMPER_TEST_DATABASE_URL pointing at disposable migrated local Postgres"]
+    async fn db_failed_guesses_for_an_expired_secret_stay_throttled() {
+        use crate::models::schema::password_reset_requests;
+        let database_url =
+            std::env::var("AEAD_TAMPER_TEST_DATABASE_URL").expect("disposable migrated Postgres");
+        let app_state = Arc::new(build_local_test_app_state(database_url).await);
+        let project = first_active_project(&app_state);
+        let user = create_user(&app_state, &project, "expired-throttle").await;
+        let email = user.email.clone().expect("test user has an email");
+        let secret = "expired-throttle-secret".to_string();
+        let code = app_state
+            .create_password_reset_request(
+                email.clone(),
+                generate_reset_hash(secret.clone()),
+                project.id,
+            )
+            .await
+            .unwrap();
+        {
+            let conn = &mut app_state
+                .db
+                .get_pool()
+                .get()
+                .expect("test database connection should be available");
+            diesel::update(password_reset_requests::table)
+                .filter(password_reset_requests::user_id.eq(user.uuid))
+                .set(
+                    password_reset_requests::expiration_time
+                        .eq(chrono::Utc::now() - chrono::Duration::hours(1)),
+                )
+                .execute(conn)
+                .expect("the fixture row should expire");
+        }
+
+        for _ in 0..5 {
+            let result = app_state.verify_password_reset_proof(
+                email.clone(),
+                wrong_code(&code),
+                secret.clone(),
+                project.id,
+            );
+            assert!(matches!(result, Err(Error::InvalidPasswordResetRequest)));
+        }
+        let result =
+            app_state.verify_password_reset_proof(email, wrong_code(&code), secret, project.id);
+        assert!(
+            matches!(
+                result,
+                Err(Error::RateLimited(ApiError::RateLimited { .. }))
+            ),
+            "failed guesses for an expired secret must stay throttled, got {result:?}"
+        );
+
+        app_state.db.delete_user(&user).unwrap();
+    }
+
+    /// Platform confirmation reports a correct code for an expired request as
+    /// expired without charging a same-secret sibling, and charges a correct
+    /// code submitted with another request's secret to the submitted secret.
+    #[tokio::test]
+    #[ignore = "requires AEAD_TAMPER_TEST_DATABASE_URL pointing at disposable migrated local Postgres"]
+    async fn db_platform_expired_and_wrong_secret_proofs_charge_like_user_proofs() {
+        use crate::models::schema::platform_password_reset_requests as requests;
+        let app_state = test_app_state().await;
+        let user = create_platform_user(&app_state, "platform-expiry").await;
+        let new_password = test_credential("platform-expiry-new");
+        let secret = "platform-expiry-secret".to_string();
+        let other_secret = "platform-expiry-other-secret".to_string();
+        let mut codes = Vec::new();
+        for hashed in [&secret, &secret, &other_secret] {
+            codes.push(
+                app_state
+                    .create_platform_password_reset_request(
+                        user.email.clone(),
+                        generate_reset_hash(hashed.clone()),
+                    )
+                    .await
+                    .unwrap(),
+            );
+        }
+        let conn = &mut app_state
+            .db
+            .get_pool()
+            .get()
+            .expect("test database connection should be available");
+        let ids: Vec<i32> = requests::table
+            .filter(requests::platform_user_id.eq(user.uuid))
+            .order(requests::id.asc())
+            .select(requests::id)
+            .load(conn)
+            .expect("the fixture rows should load");
+        diesel::update(requests::table.find(ids[0]))
+            .set(requests::expiration_time.eq(chrono::Utc::now() - chrono::Duration::hours(1)))
+            .execute(conn)
+            .expect("the first fixture row should expire");
+        let attempts = |conn: &mut diesel::PgConnection| -> Vec<i32> {
+            requests::table
+                .filter(requests::platform_user_id.eq(user.uuid))
+                .order(requests::id.asc())
+                .select(requests::failed_attempts)
+                .load(conn)
+                .expect("the counters should load")
+        };
+
+        let result = app_state
+            .confirm_platform_password_reset(
+                user.email.clone(),
+                codes[0].clone(),
+                secret.clone(),
+                new_password.to_string(),
+            )
+            .await;
+        assert!(
+            matches!(result, Err(Error::PasswordResetExpired)),
+            "an expired request must report expiry, got {result:?}"
+        );
+        assert_eq!(attempts(conn), vec![0, 0, 0], "expiry charges nothing");
+
+        let result = app_state
+            .confirm_platform_password_reset(
+                user.email.clone(),
+                codes[2].clone(),
+                secret,
+                new_password.to_string(),
+            )
+            .await;
+        assert!(matches!(result, Err(Error::InvalidPasswordResetSecret)));
+        assert_eq!(
+            attempts(conn),
+            vec![0, 1, 0],
+            "a wrong secret charges only the submitted secret's active request"
+        );
+
+        delete_platform_user(&app_state, &user);
     }
 }

@@ -17,7 +17,7 @@ use crate::models::org_project_secrets::{
 use crate::models::org_projects::{NewOrgProject, OrgProject, OrgProjectError};
 use crate::models::orgs::{NewOrg, Org, OrgError};
 use crate::models::password_reset::{
-    NewPasswordResetRequest, PasswordResetError, PasswordResetRequest,
+    NewPasswordResetRequest, PasswordResetError, PasswordResetRequest, ResetProofAttempt,
 };
 use crate::models::platform_email_verification::{
     NewPlatformEmailVerification, PlatformEmailVerification, PlatformEmailVerificationError,
@@ -246,14 +246,14 @@ pub trait DBConnection {
         &self,
         new_request: NewPasswordResetRequest,
     ) -> Result<Option<PasswordResetRequest>, DBError>;
-    /// Atomically charges one failed email-code guess to the durable budget
-    /// of the account's active requests created with the secret. Fails
-    /// closed once every matching request's budget is exhausted.
-    fn charge_password_reset_attempt_for_secret(
+    /// Decides one reset proof attempt against the durable guess budget and
+    /// charges a failed guess, serialized per reset secret.
+    fn attempt_password_reset_proof(
         &self,
         user_id: Uuid,
         hashed_secret: &str,
-    ) -> Result<(), DBError>;
+        encrypted_code: Vec<u8>,
+    ) -> Result<ResetProofAttempt<PasswordResetRequest>, DBError>;
     fn get_password_reset_request_by_user_id_and_code(
         &self,
         user_id: Uuid,
@@ -573,19 +573,13 @@ pub trait DBConnection {
         &self,
         new_request: NewPlatformPasswordResetRequest,
     ) -> Result<Option<PlatformPasswordResetRequest>, DBError>;
-    /// Charges one failed guess to the durable budget of the account's active
-    /// request(s) created with `hashed_secret`. Fails closed once every
-    /// matching request's budget is exhausted.
-    fn charge_platform_password_reset_attempt_for_secret(
+    /// Platform mirror of [`DBConnection::attempt_password_reset_proof`].
+    fn attempt_platform_password_reset_proof(
         &self,
         user_id: Uuid,
         hashed_secret: &str,
-    ) -> Result<(), DBError>;
-    fn get_platform_password_reset_request_by_user_id_and_code(
-        &self,
-        user_id: Uuid,
         encrypted_code: Vec<u8>,
-    ) -> Result<Option<PlatformPasswordResetRequest>, DBError>;
+    ) -> Result<ResetProofAttempt<PlatformPasswordResetRequest>, DBError>;
 
     fn platform_password_reset_request_is_active_for_secret(
         &self,
@@ -1158,25 +1152,20 @@ impl DBConnection for PostgresConnection {
         result
     }
 
-    fn charge_password_reset_attempt_for_secret(
+    fn attempt_password_reset_proof(
         &self,
         user_id: Uuid,
         hashed_secret: &str,
-    ) -> Result<(), DBError> {
+        encrypted_code: Vec<u8>,
+    ) -> Result<ResetProofAttempt<PasswordResetRequest>, DBError> {
         let conn = &mut self.db.get().map_err(|_| DBError::ConnectionError)?;
-        match PasswordResetRequest::charge_failed_attempt_for_secret(conn, user_id, hashed_secret) {
-            Ok(()) => Ok(()),
-            Err(PasswordResetError::AttemptBudgetExhausted) => {
-                Err(DBError::PasswordResetRequestNotFound)
-            }
-            Err(PasswordResetError::NoActivePasswordResetRequest) => Err(
-                DBError::PasswordResetError(PasswordResetError::NoActivePasswordResetRequest),
-            ),
-            Err(e) => {
-                error!("Failed to charge password reset attempt: {:?}", e);
-                Err(DBError::from(e))
-            }
+        let result =
+            PasswordResetRequest::attempt_proof(conn, user_id, hashed_secret, &encrypted_code)
+                .map_err(DBError::from);
+        if let Err(ref e) = result {
+            error!("Failed to check password reset proof: {:?}", e);
         }
+        result
     }
 
     fn get_password_reset_request_by_user_id_and_code(
@@ -2421,39 +2410,22 @@ impl DBConnection for PostgresConnection {
         result
     }
 
-    fn charge_platform_password_reset_attempt_for_secret(
+    fn attempt_platform_password_reset_proof(
         &self,
         user_id: Uuid,
         hashed_secret: &str,
-    ) -> Result<(), DBError> {
+        encrypted_code: Vec<u8>,
+    ) -> Result<ResetProofAttempt<PlatformPasswordResetRequest>, DBError> {
         let conn = &mut self.db.get().map_err(|_| DBError::ConnectionError)?;
-        match PlatformPasswordResetRequest::charge_failed_attempt_for_secret(
+        let result = PlatformPasswordResetRequest::attempt_proof(
             conn,
             user_id,
             hashed_secret,
-        ) {
-            Ok(()) => Ok(()),
-            Err(PlatformPasswordResetError::AttemptBudgetExhausted) => {
-                Err(DBError::PlatformPasswordResetRequestNotFound)
-            }
-            Err(e) => {
-                error!("Failed to charge platform password reset attempt: {:?}", e);
-                Err(DBError::from(e))
-            }
-        }
-    }
-
-    fn get_platform_password_reset_request_by_user_id_and_code(
-        &self,
-        user_id: Uuid,
-        encrypted_code: Vec<u8>,
-    ) -> Result<Option<PlatformPasswordResetRequest>, DBError> {
-        let conn = &mut self.db.get().map_err(|_| DBError::ConnectionError)?;
-        let result =
-            PlatformPasswordResetRequest::get_by_user_id_and_code(conn, user_id, &encrypted_code)
-                .map_err(DBError::from);
+            &encrypted_code,
+        )
+        .map_err(DBError::from);
         if let Err(ref e) = result {
-            error!("Failed to get platform password reset request: {:?}", e);
+            error!("Failed to check platform password reset proof: {:?}", e);
         }
         result
     }

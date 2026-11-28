@@ -2,6 +2,7 @@ use crate::models::schema::password_reset_requests;
 use chrono::{DateTime, Utc};
 use diesel::prelude::*;
 use serde::{Deserialize, Serialize};
+use subtle::ConstantTimeEq;
 use thiserror::Error;
 use uuid::Uuid;
 
@@ -9,10 +10,6 @@ use uuid::Uuid;
 pub enum PasswordResetError {
     #[error("Database error: {0}")]
     DatabaseError(#[from] diesel::result::Error),
-    #[error("No attempt budget left for this reset request")]
-    AttemptBudgetExhausted,
-    #[error("No active reset request carries this secret")]
-    NoActivePasswordResetRequest,
 }
 
 /// Durable per-request guess budget shared by every process that reaches the
@@ -89,74 +86,134 @@ impl PasswordResetRequest {
         Utc::now() > self.expiration_time
     }
 
-    /// Charges one failed guess to the durable budget of the account's
-    /// active requests created with `hashed_secret`.
+    /// Decides one reset proof attempt for the code-selected request and
+    /// charges a failed guess, all inside one transaction.
     ///
-    /// Used when the submitted code matched no request: the secret has
-    /// already been proven to belong to at least one unconsumed request (the
-    /// admission check), so the wrong code is charged to that request's
-    /// owner. The guarded `UPDATE` matches only active rows carrying that
-    /// secret, so nobody without the secret can spend this budget, an
-    /// unrelated secret cannot burn anyone else's, and expired requests keep
-    /// their spent budget without charging further.
-    pub fn charge_failed_attempt_for_secret(
+    /// Every unconsumed request created with `lookup_hashed_secret` is
+    /// locked first. Only those requests can ever be completed by this
+    /// secret, so every attempt that could succeed queues on the same row
+    /// locks and sees the charges of the attempts before it: concurrent
+    /// guesses cannot read a stale budget. See [`decide_proof_attempt`].
+    pub fn attempt_proof(
         conn: &mut PgConnection,
         lookup_user_id: Uuid,
         lookup_hashed_secret: &str,
-    ) -> Result<(), PasswordResetError> {
-        let charged = diesel::update(
-            password_reset_requests::table
+        lookup_encrypted_code: &[u8],
+    ) -> Result<ResetProofAttempt<PasswordResetRequest>, PasswordResetError> {
+        conn.transaction(|conn| {
+            let secret_requests = password_reset_requests::table
                 .filter(password_reset_requests::user_id.eq(lookup_user_id))
                 .filter(password_reset_requests::hashed_secret.eq(lookup_hashed_secret))
                 .filter(password_reset_requests::is_reset.eq(false))
-                .filter(
-                    password_reset_requests::expiration_time.gt(diesel::dsl::sql::<
-                        diesel::sql_types::Timestamptz,
-                    >(
-                        "clock_timestamp()"
-                    )),
+                .order(password_reset_requests::id.asc())
+                .for_update()
+                .load::<PasswordResetRequest>(conn)?;
+            let selected =
+                Self::get_by_user_id_and_code(conn, lookup_user_id, lookup_encrypted_code)?;
+            let (attempt, charge) =
+                decide_proof_attempt(&secret_requests, selected, lookup_hashed_secret);
+            if !charge.is_empty() {
+                diesel::update(
+                    password_reset_requests::table
+                        .filter(password_reset_requests::id.eq_any(charge)),
                 )
-                .filter(
-                    password_reset_requests::failed_attempts.lt(PASSWORD_RESET_MAX_FAILED_ATTEMPTS),
-                ),
-        )
-        .set(
-            password_reset_requests::failed_attempts
-                .eq(password_reset_requests::failed_attempts + 1),
-        )
-        .execute(conn)?;
-        if charged == 0 {
-            // Distinguish a spent budget from a secret whose requests have
-            // all left the active window: only the former is a budget
-            // failure the caller reports as rate-limited.
-            let any_active = diesel::select(diesel::dsl::exists(
-                password_reset_requests::table
-                    .filter(password_reset_requests::user_id.eq(lookup_user_id))
-                    .filter(password_reset_requests::hashed_secret.eq(lookup_hashed_secret))
-                    .filter(password_reset_requests::is_reset.eq(false))
-                    .filter(
-                        password_reset_requests::expiration_time.gt(diesel::dsl::sql::<
-                            diesel::sql_types::Timestamptz,
-                        >(
-                            "clock_timestamp()"
-                        )),
-                    ),
-            ))
-            .get_result::<bool>(conn)?;
-            if !any_active {
-                return Err(PasswordResetError::NoActivePasswordResetRequest);
+                .set(
+                    password_reset_requests::failed_attempts
+                        .eq(password_reset_requests::failed_attempts + 1),
+                )
+                .execute(conn)?;
             }
-            return Err(PasswordResetError::AttemptBudgetExhausted);
-        }
-        Ok(())
+            Ok(attempt)
+        })
     }
 
-    /// Whether this request still has unused guess budget. A read-only view
-    /// of the same durable counter `charge_failed_attempt_for_secret`
-    /// spends.
+    /// Whether this request still has unused guess budget.
     pub fn has_attempt_budget(&self) -> bool {
         self.failed_attempts < PASSWORD_RESET_MAX_FAILED_ATTEMPTS
     }
+}
+
+impl ResetRequestRow for PasswordResetRequest {
+    fn row_id(&self) -> i32 {
+        self.id
+    }
+    fn row_hashed_secret(&self) -> &str {
+        &self.hashed_secret
+    }
+    fn expired(&self) -> bool {
+        self.is_expired()
+    }
+    fn has_budget(&self) -> bool {
+        self.has_attempt_budget()
+    }
+}
+
+/// Outcome of one reset proof attempt, shared by user and platform resets.
+#[derive(Debug)]
+pub enum ResetProofAttempt<R> {
+    /// Correct code and secret for an active request with budget left.
+    Valid(R),
+    /// The code selects an expired request; nothing was charged.
+    Expired,
+    /// The code-selected request, or every active request carrying the
+    /// submitted secret, has spent its budget.
+    Exhausted,
+    /// The code selects another secret's request; the guess was charged.
+    WrongSecret,
+    /// The code selects no request; the guess was charged.
+    WrongCode,
+}
+
+/// The fields the shared proof decision reads from either reset table.
+pub(crate) trait ResetRequestRow {
+    fn row_id(&self) -> i32;
+    fn row_hashed_secret(&self) -> &str;
+    fn expired(&self) -> bool;
+    fn has_budget(&self) -> bool;
+}
+
+/// Decides a proof attempt from the locked rows carrying the submitted
+/// secret and the row the submitted code selects. Returns the outcome and
+/// the ids of the rows a failed guess charges.
+///
+/// The code-selected row's budget is checked before its secret is compared,
+/// so a spent request stays closed even to its correct proof. Any failed
+/// guess (wrong code, or correct code with a wrong secret) charges every
+/// active row carrying the submitted secret, so nobody without that secret
+/// can spend its budget. Expired rows are never charged; a secret with no
+/// active row left has nothing durable to charge.
+pub(crate) fn decide_proof_attempt<R: ResetRequestRow>(
+    secret_rows: &[R],
+    selected: Option<R>,
+    submitted_hashed_secret: &str,
+) -> (ResetProofAttempt<R>, Vec<i32>) {
+    let failure = match selected {
+        Some(row) if row.expired() => return (ResetProofAttempt::Expired, Vec::new()),
+        Some(row) if !row.has_budget() => return (ResetProofAttempt::Exhausted, Vec::new()),
+        Some(row)
+            if bool::from(
+                submitted_hashed_secret
+                    .as_bytes()
+                    .ct_eq(row.row_hashed_secret().as_bytes()),
+            ) =>
+        {
+            return (ResetProofAttempt::Valid(row), Vec::new())
+        }
+        Some(_) => ResetProofAttempt::WrongSecret,
+        None => ResetProofAttempt::WrongCode,
+    };
+    let mut any_active = false;
+    let mut charge = Vec::new();
+    for row in secret_rows.iter().filter(|row| !row.expired()) {
+        any_active = true;
+        if row.has_budget() {
+            charge.push(row.row_id());
+        }
+    }
+    if any_active && charge.is_empty() {
+        return (ResetProofAttempt::Exhausted, Vec::new());
+    }
+    (failure, charge)
 }
 
 #[derive(Insertable)]
@@ -241,5 +298,100 @@ impl NewPasswordResetRequest {
             .values(self)
             .get_result::<PasswordResetRequest>(conn)
             .map_err(PasswordResetError::DatabaseError)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{decide_proof_attempt, ResetProofAttempt, ResetRequestRow};
+
+    #[derive(Debug, Clone)]
+    struct Row {
+        id: i32,
+        secret: &'static str,
+        expired: bool,
+        budget: bool,
+    }
+
+    impl ResetRequestRow for Row {
+        fn row_id(&self) -> i32 {
+            self.id
+        }
+        fn row_hashed_secret(&self) -> &str {
+            self.secret
+        }
+        fn expired(&self) -> bool {
+            self.expired
+        }
+        fn has_budget(&self) -> bool {
+            self.budget
+        }
+    }
+
+    fn row(id: i32, secret: &'static str, expired: bool, budget: bool) -> Row {
+        Row {
+            id,
+            secret,
+            expired,
+            budget,
+        }
+    }
+
+    #[test]
+    fn valid_proof_is_accepted_without_charging() {
+        let rows = [row(1, "s", false, true)];
+        let (attempt, charge) = decide_proof_attempt(&rows, Some(rows[0].clone()), "s");
+        assert!(matches!(
+            attempt,
+            ResetProofAttempt::Valid(Row { id: 1, .. })
+        ));
+        assert!(charge.is_empty());
+    }
+
+    #[test]
+    fn spent_or_expired_selected_request_is_refused_before_the_secret_is_compared() {
+        let spent = [row(1, "s", false, false)];
+        let (attempt, charge) = decide_proof_attempt(&spent, Some(spent[0].clone()), "s");
+        assert!(matches!(attempt, ResetProofAttempt::Exhausted));
+        assert!(charge.is_empty());
+
+        let expired = [row(1, "s", true, true)];
+        let (attempt, charge) = decide_proof_attempt(&expired, Some(expired[0].clone()), "s");
+        assert!(matches!(attempt, ResetProofAttempt::Expired));
+        assert!(charge.is_empty());
+    }
+
+    #[test]
+    fn failed_guess_charges_only_active_secret_rows_with_budget() {
+        let rows = [
+            row(1, "s", true, true),
+            row(2, "s", false, true),
+            row(3, "s", false, false),
+        ];
+        let (attempt, charge) = decide_proof_attempt(&rows, None, "s");
+        assert!(matches!(attempt, ResetProofAttempt::WrongCode));
+        assert_eq!(charge, vec![2]);
+
+        // Correct code for another secret's request is a charged failure too.
+        let other = row(9, "other", false, true);
+        let (attempt, charge) = decide_proof_attempt(&rows, Some(other), "s");
+        assert!(matches!(attempt, ResetProofAttempt::WrongSecret));
+        assert_eq!(charge, vec![2]);
+    }
+
+    #[test]
+    fn failed_guess_with_no_budget_left_is_exhausted() {
+        let rows = [row(1, "s", true, true), row(2, "s", false, false)];
+        let (attempt, charge) = decide_proof_attempt(&rows, None, "s");
+        assert!(matches!(attempt, ResetProofAttempt::Exhausted));
+        assert!(charge.is_empty());
+    }
+
+    #[test]
+    fn failed_guess_with_no_active_secret_row_charges_nothing() {
+        let rows = [row(1, "s", true, true)];
+        let (attempt, charge) = decide_proof_attempt(&rows, None, "s");
+        assert!(matches!(attempt, ResetProofAttempt::WrongCode));
+        assert!(charge.is_empty());
     }
 }
