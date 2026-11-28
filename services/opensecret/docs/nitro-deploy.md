@@ -1220,7 +1220,8 @@ sudo vim /etc/nitro_enclaves/vsock-proxy.yaml
 Add these lines:
 ```
 - {address: github-proxy.tinfoil.sh, port: 443}
-# Retained unchanged by this migration; tinfoil-rs v0.2.0 embeds its trust root.
+# Retained unchanged; tinfoil-rs 0.3 verifies offline and no longer contacts the
+# GitHub, Sigstore TUF or KDS hosts. Router discovery still needs atc.tinfoil.sh.
 - {address: tuf-repo-cdn.sigstore.dev, port: 443}
 - {address: kds-proxy.tinfoil.sh, port: 443}
 - {address: atc.tinfoil.sh, port: 443}
