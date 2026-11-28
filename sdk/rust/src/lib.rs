@@ -6,6 +6,7 @@ pub mod crypto;
 pub mod error;
 pub mod pcr;
 pub mod push;
+mod release_verification;
 pub mod remote;
 pub mod session;
 pub mod system_one;
@@ -22,5 +23,9 @@ pub use client_app::ClientApp;
 pub use error::{Error, Result};
 pub use pcr::{Pcr0Environment, Pcr0TrustPolicy};
 pub use push::*;
+pub use release_verification::{
+    ReleaseBundleSource, ReleaseVerificationIdentity, ReleaseVerificationOutcome,
+    ReleaseVerificationResult,
+};
 pub use system_one::*;
 pub use types::*;

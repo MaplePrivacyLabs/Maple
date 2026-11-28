@@ -3,13 +3,13 @@ use std::{
     net::IpAddr,
     pin::Pin,
     str::FromStr,
-    sync::Arc,
+    sync::{Arc, Mutex, RwLock},
     time::{Duration, Instant},
 };
 
 use base64::{engine::general_purpose::STANDARD, Engine as _};
 use bytes::{Bytes, BytesMut};
-use futures::{Stream, StreamExt};
+use futures::{Future, Stream, StreamExt};
 use rand_core::{OsRng, RngCore};
 use reqwest::{header, redirect::Policy, Client, Url};
 use serde::{Deserialize, Serialize};
@@ -20,6 +20,9 @@ use crate::{
     attestation::{AttestationDocument, AttestationVerifier},
     cbor::{self, Value as CborValue},
     pcr::Pcr0TrustPolicy,
+    release_verification::{
+        ReleaseVerificationOutcome, ReleaseVerificationResult, ReleaseVerifier,
+    },
 };
 
 use super::{
@@ -43,11 +46,110 @@ const REQUEST_CONTENT_TYPE: &str = "application/octet-stream";
 pub(crate) type ResponseEventStream =
     Pin<Box<dyn Stream<Item = Result<ResponseEvent>> + Send + 'static>>;
 
+#[cfg(test)]
+type AttestationVerifierForTest = dyn Fn(&str, &[u8]) -> Result<AttestationDocument> + Send + Sync;
+#[cfg(test)]
+type ReleaseObserverForTest = dyn Fn(AttestationDocument) -> futures::future::BoxFuture<'static, ReleaseVerificationResult>
+    + Send
+    + Sync;
+
+#[derive(Default)]
+struct ReleaseObservationState {
+    tasks: Mutex<Vec<tokio::task::JoinHandle<()>>>,
+    last_result: RwLock<Option<ReleaseVerificationResult>>,
+}
+
+#[derive(Default)]
+struct ReleaseObservationOwner {
+    state: Arc<ReleaseObservationState>,
+}
+
+impl ReleaseObservationOwner {
+    fn start(&self, observation: impl Future<Output = ReleaseVerificationResult> + Send + 'static) {
+        let state = Arc::clone(&self.state);
+        let handle = tokio::spawn(async move {
+            let result = observation.await;
+            if let Ok(mut last_result) = state.last_result.write() {
+                *last_result = Some(result.clone());
+            }
+            log_release_result(&result);
+        });
+        let mut tasks = self
+            .state
+            .tasks
+            .lock()
+            .unwrap_or_else(|poison| poison.into_inner());
+        tasks.retain(|task| !task.is_finished());
+        tasks.push(handle);
+    }
+
+    fn last_result(&self) -> Option<ReleaseVerificationResult> {
+        let last_result = self.state.last_result.read().ok()?;
+        last_result.clone()
+    }
+}
+
+fn log_release_result(result: &ReleaseVerificationResult) {
+    let is_verified = result.outcome == ReleaseVerificationOutcome::Verified;
+    let verified_identity = result.identity.as_ref().filter(|_| is_verified);
+    if let Some(identity) = verified_identity {
+        let environment = identity.environment.release_name();
+        let pcr0 = identity.pcr0.as_str();
+        let repository = identity.repository.as_str();
+        let commit = identity.commit.as_str();
+        let build_run = format!("{}/{}", identity.build_run_id, identity.build_run_attempt);
+        tracing::info!(
+            target: "maple_sdk::release_verification",
+            outcome = ?result.outcome,
+            category = result.category,
+            source = ?result.source,
+            tlog_verified = result.tlog_verified,
+            refresh_error = result.refresh_error,
+            environment,
+            pcr0,
+            repository,
+            commit,
+            build_run = %build_run,
+            log_index = identity.log_index,
+            "release verification observation completed"
+        );
+        return;
+    }
+    tracing::info!(
+        target: "maple_sdk::release_verification",
+        outcome = ?result.outcome,
+        category = result.category,
+        source = ?result.source,
+        tlog_verified = result.tlog_verified,
+        refresh_error = result.refresh_error,
+        "release verification observation completed"
+    );
+}
+
+impl Drop for ReleaseObservationOwner {
+    fn drop(&mut self) {
+        let mut tasks = match self.state.tasks.lock() {
+            Ok(tasks) => tasks,
+            Err(poison) => poison.into_inner(),
+        };
+        for task in tasks.drain(..) {
+            task.abort();
+        }
+    }
+}
+
+#[derive(Clone)]
 pub(crate) struct TransportV2Client {
     client: Client,
     base_url: String,
     use_mock_attestation: bool,
     pcr0_trust_policy: Pcr0TrustPolicy,
+    release_verifier: Arc<ReleaseVerifier>,
+    release_observations: Arc<ReleaseObservationOwner>,
+    #[cfg(test)]
+    attestation_verifier_for_test: Option<Arc<AttestationVerifierForTest>>,
+    #[cfg(test)]
+    release_observer_for_test: Option<Arc<ReleaseObserverForTest>>,
 }
 
 pub(crate) struct TransportV2Session {
@@ -138,12 +240,72 @@ impl TransportV2Client {
             .retry(reqwest::retry::never())
             .build()
             .map_err(|_| TransportV2Error::InvalidConfiguration)?;
+        let release_verifier = ReleaseVerifier::new(pcr0_trust_policy.release_environment())
+            .map_err(|_| TransportV2Error::InvalidConfiguration)?;
         Ok(Self {
             client,
             base_url,
             use_mock_attestation,
             pcr0_trust_policy,
+            release_verifier: Arc::new(release_verifier),
+            release_observations: Arc::new(ReleaseObservationOwner::default()),
+            #[cfg(test)]
+            attestation_verifier_for_test: None,
+            #[cfg(test)]
+            release_observer_for_test: None,
         })
+    }
+
+    fn authenticate_session_document(
+        &self,
+        document: &str,
+        challenge: &[u8],
+    ) -> Result<AttestationDocument> {
+        #[cfg(test)]
+        if let Some(verifier) = &self.attestation_verifier_for_test {
+            return verifier(document, challenge);
+        }
+        AttestationVerifier::new()
+            .verify_attestation_document_bytes(document, challenge)
+            .map_err(|_| TransportV2Error::AttestationRejected)
+    }
+
+    fn observe_authenticated_document(&self, document: AttestationDocument) {
+        #[cfg(test)]
+        if let Some(observer) = &self.release_observer_for_test {
+            self.release_observations.start(observer(document));
+            return;
+        }
+        let verifier = Arc::clone(&self.release_verifier);
+        self.release_observations
+            .start(async move { verifier.observe(&document).await });
+    }
+
+    #[cfg(test)]
+    fn with_attestation_verifier_for_test(
+        mut self,
+        verifier: impl Fn(&str, &[u8]) -> Result<AttestationDocument> + Send + Sync + 'static,
+    ) -> Self {
+        // Only the test seam can select the authenticated branch for a local
+        // HTTP fixture. Production always uses the real Nitro verifier above.
+        self.use_mock_attestation = false;
+        self.attestation_verifier_for_test = Some(Arc::new(verifier));
+        self
+    }
+
+    #[cfg(test)]
+    fn with_release_observer_for_test<F, O>(mut self, observer: F) -> Self
+    where
+        F: Fn(AttestationDocument) -> O + Send + Sync + 'static,
+        O: Future<Output = ReleaseVerificationResult> + Send + 'static,
+    {
+        self.release_observer_for_test =
+            Some(Arc::new(move |document| Box::pin(observer(document))));
+        self
+    }
+
+    pub(crate) fn last_release_verification(&self) -> Option<ReleaseVerificationResult> {
+        self.release_observations.last_result()
     }
 
     /// Establish one session from a single attested X25519 exchange.
@@ -185,14 +347,16 @@ impl TransportV2Client {
             return Err(TransportV2Error::InvalidSessionResponse);
         }
 
-        let document = if self.use_mock_attestation {
-            parse_mock_attestation(&response.attestation_document)?
+        let (document, authenticated_document) = if self.use_mock_attestation {
+            (
+                parse_mock_attestation(&response.attestation_document)?,
+                None,
+            )
         } else {
-            let document = AttestationVerifier::new()
-                .verify_attestation_document_bytes(&response.attestation_document, &challenge)
-                .map_err(|_| TransportV2Error::AttestationRejected)?;
+            let document =
+                self.authenticate_session_document(&response.attestation_document, &challenge)?;
             verify_attested_pcr0(&self.pcr0_trust_policy, &document).await?;
-            document
+            (document.clone(), Some(document))
         };
 
         let server_public_key =
@@ -202,6 +366,11 @@ impl TransportV2Client {
         let stated_session_id = SessionId::from_str(&response.session_id)?;
         if secrets.session_id() != stated_session_id {
             return Err(TransportV2Error::InvalidSessionResponse);
+        }
+        if let Some(document) = authenticated_document {
+            // Only the Nitro-authenticated, PCR-authorized branch reaches this
+            // point. Transcript and session-ID checks completed before scheduling.
+            self.observe_authenticated_document(document);
         }
         Ok(TransportV2Session {
             secrets: Arc::new(secrets),
@@ -682,6 +851,12 @@ mod tests {
 
     impl Respond for SessionResponder {
         fn respond(&self, request: &Request) -> ResponseTemplate {
+            self.respond_to_request(request)
+        }
+    }
+
+    impl SessionResponder {
+        fn respond_to_request(&self, request: &Request) -> ResponseTemplate {
             let request: serde_json::Value = serde_json::from_slice(&request.body).unwrap();
             let challenge: [u8; 32] = STANDARD
                 .decode(request["challenge"].as_str().unwrap())
@@ -734,6 +909,21 @@ mod tests {
                 Some(delay) => response.set_delay(delay),
                 None => response,
             }
+        }
+    }
+
+    pub(crate) struct MeasuredSessionResponder {
+        pub(crate) server_secret: [u8; 32],
+    }
+
+    impl Respond for MeasuredSessionResponder {
+        fn respond(&self, request: &Request) -> ResponseTemplate {
+            SessionResponder {
+                server_secret: self.server_secret,
+                state: None,
+                delay: None,
+            }
+            .respond_to_request(request)
         }
     }
 
@@ -929,6 +1119,388 @@ mod tests {
             canonical_base_url("http://10.0.2.2:3000".into()).is_ok(),
             cfg!(target_os = "android")
         );
+    }
+
+    fn release_pcrs() -> HashMap<usize, Vec<u8>> {
+        [
+            "b422d5fcb25929a1b76f0eb8aa10c26a78c635a86a58039b48f22eb0dc4dc6f8ae6e646aa2fbbc57db756e6f06cad3dc",
+            "e83dc536d4cf82daf0e0821e7fdbddf25cd76090602cb67bef7c9d5ab2914417ee6a94bd0c9c1e7ed15a3c3c3bfcc0a3",
+            "57b7e86919f571beff7539cb8643baafe81ec9f2ffb3434d683268978675a664e0d043dead3367aba14a5d2814a4be97",
+        ]
+        .into_iter()
+        .enumerate()
+        .map(|(index, pcr)| (index, hex::decode(pcr).unwrap()))
+        .collect()
+    }
+
+    fn release_policy(
+        environment: crate::pcr::Pcr0Environment,
+        pcrs: &HashMap<usize, Vec<u8>>,
+    ) -> Pcr0TrustPolicy {
+        let pcr0 = hex::encode(pcrs.get(&0).expect("release fixture supplies PCR0"));
+        Pcr0TrustPolicy::official_for(environment)
+            .with_additional_pcr0s([pcr0])
+            .unwrap()
+            .without_remote_history()
+    }
+
+    async fn authenticated_session_client(
+        environment: crate::pcr::Pcr0Environment,
+        pcrs: HashMap<usize, Vec<u8>>,
+    ) -> (
+        TransportV2Client,
+        MockServer,
+        Arc<std::sync::atomic::AtomicBool>,
+    ) {
+        use std::sync::atomic::{AtomicBool, Ordering};
+
+        let server = MockServer::start().await;
+        Mock::given(method("POST"))
+            .and(path("/v2/session"))
+            .respond_with(MeasuredSessionResponder {
+                server_secret: [0x77; 32],
+            })
+            .expect(1)
+            .mount(&server)
+            .await;
+        let authenticated = Arc::new(AtomicBool::new(false));
+        let authenticated_by_verifier = Arc::clone(&authenticated);
+        let policy = release_policy(environment, &pcrs);
+        let authenticated_pcrs = pcrs.clone();
+        let client = TransportV2Client::new(server.uri(), policy)
+            .unwrap()
+            .with_attestation_verifier_for_test(move |document, challenge| {
+                let mut document = parse_mock_attestation(document)?;
+                let has_expected_nonce = document.nonce.as_deref() == Some(challenge);
+                if !has_expected_nonce {
+                    return Err(TransportV2Error::AttestationRejected);
+                }
+                // This callback represents the successful verifier boundary,
+                // including measurements returned by a real Nitro verifier.
+                // The real PCR0 and transcript gates still run below it.
+                document.pcrs = authenticated_pcrs.clone();
+                authenticated_by_verifier.store(true, Ordering::Release);
+                Ok(document)
+            });
+        (client, server, authenticated)
+    }
+
+    fn verified_observer_result() -> ReleaseVerificationResult {
+        ReleaseVerificationResult {
+            outcome: crate::release_verification::ReleaseVerificationOutcome::Verified,
+            category: "verified",
+            source: crate::release_verification::ReleaseBundleSource::Embedded,
+            tlog_verified: true,
+            refresh_error: None,
+            identity: Some(crate::release_verification::ReleaseVerificationIdentity {
+                environment: crate::pcr::Pcr0Environment::Development,
+                pcr0: "b422d5fcb25929a1b76f0eb8aa10c26a78c635a86a58039b48f22eb0dc4dc6f8ae6e646aa2fbbc57db756e6f06cad3dc".to_owned(),
+                repository: "https://github.com/MaplePrivacyLabs/Maple".to_owned(),
+                commit: "bcf6e84476be2cf08b575c5303f5a83d98adbf40".to_owned(),
+                build_run_id: "44636648269".to_owned(),
+                build_run_attempt: 1,
+                log_index: 207746380,
+            }),
+        }
+    }
+
+    async fn completed_release_result(client: &TransportV2Client) -> ReleaseVerificationResult {
+        tokio::time::timeout(Duration::from_secs(2), async {
+            loop {
+                if let Some(result) = client.last_release_verification() {
+                    return result;
+                }
+                tokio::time::sleep(Duration::from_millis(5)).await;
+            }
+        })
+        .await
+        .expect("completed release result becomes readable")
+    }
+
+    #[derive(Clone, Default)]
+    struct CapturedLog(Arc<StdMutex<Vec<u8>>>);
+
+    impl std::io::Write for CapturedLog {
+        fn write(&mut self, bytes: &[u8]) -> std::io::Result<usize> {
+            let mut captured = self.0.lock().unwrap();
+            captured.extend_from_slice(bytes);
+            Ok(bytes.len())
+        }
+
+        fn flush(&mut self) -> std::io::Result<()> {
+            Ok(())
+        }
+    }
+
+    #[tokio::test]
+    async fn verified_release_log_names_the_environment_and_authenticated_pcr0() {
+        let verifier = ReleaseVerifier::new(crate::pcr::Pcr0Environment::Development).unwrap();
+        let document = crate::attestation::AttestationDocument {
+            module_id: "local-test".to_owned(),
+            timestamp: 0,
+            digest: "SHA384".to_owned(),
+            pcrs: release_pcrs(),
+            certificate: Vec::new(),
+            cabundle: Vec::new(),
+            public_key: None,
+            user_data: None,
+            nonce: None,
+        };
+        let result = verifier.observe(&document).await;
+        assert_eq!(
+            result.outcome,
+            crate::release_verification::ReleaseVerificationOutcome::Verified
+        );
+
+        let captured = CapturedLog::default();
+        let writer = captured.clone();
+        let subscriber = tracing_subscriber::fmt()
+            .with_ansi(false)
+            .with_writer(move || writer.clone())
+            .finish();
+        tracing::subscriber::with_default(subscriber, || log_release_result(&result));
+
+        let logged = String::from_utf8(captured.0.lock().unwrap().clone()).unwrap();
+        let expected_pcr0 = hex::encode(&release_pcrs()[&0]);
+        assert!(logged.contains("release verification observation completed"));
+        assert!(logged.contains("environment=\"development\""));
+        assert!(logged.contains(&format!("pcr0=\"{expected_pcr0}\"")));
+        assert!(logged.contains("source=Embedded"));
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn authenticated_session_starts_injected_observer_after_checks_without_waiting() {
+        use std::sync::atomic::{AtomicUsize, Ordering};
+        use tokio::sync::Notify;
+
+        let (client, _server, authenticated) =
+            authenticated_session_client(crate::pcr::Pcr0Environment::Development, release_pcrs())
+                .await;
+        let calls = Arc::new(AtomicUsize::new(0));
+        let started = Arc::new(Notify::new());
+        let finish = Arc::new(Notify::new());
+        let observer_calls = Arc::clone(&calls);
+        let observer_started = Arc::clone(&started);
+        let observer_finish = Arc::clone(&finish);
+        let authenticated_before_observer = Arc::clone(&authenticated);
+        let client = client.with_release_observer_for_test(move |_document| {
+            assert!(authenticated_before_observer.load(Ordering::Acquire));
+            observer_calls.fetch_add(1, Ordering::SeqCst);
+            let observer_finish = Arc::clone(&observer_finish);
+            let observer_started = Arc::clone(&observer_started);
+            async move {
+                observer_started.notify_one();
+                observer_finish.notified().await;
+                verified_observer_result()
+            }
+        });
+        let session = tokio::time::timeout(Duration::from_millis(100), client.establish_session())
+            .await
+            .expect("blocked observer cannot consume the caller deadline")
+            .unwrap();
+        tokio::time::timeout(Duration::from_millis(100), started.notified())
+            .await
+            .unwrap();
+        assert_eq!(calls.load(Ordering::SeqCst), 1);
+        assert!(authenticated.load(Ordering::Acquire));
+        assert!(client.last_release_verification().is_none());
+
+        finish.notify_one();
+        let result = completed_release_result(&client).await;
+        assert_eq!(
+            result.outcome,
+            crate::release_verification::ReleaseVerificationOutcome::Verified
+        );
+        drop(session);
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn slow_bundle_host_does_not_consume_the_session_caller_deadline() {
+        let measurements = release_pcrs();
+        let bundle_path = format!("/{}.json", hex::encode(&measurements[&0]));
+        let bundle_server = MockServer::start().await;
+        Mock::given(method("GET"))
+            .and(path(bundle_path))
+            .respond_with(
+                ResponseTemplate::new(200)
+                    .set_delay(Duration::from_millis(500))
+                    .set_body_bytes(include_bytes!(
+                        "../../assets/release/development/b422d5fcb25929a1b76f0eb8aa10c26a78c635a86a58039b48f22eb0dc4dc6f8ae6e646aa2fbbc57db756e6f06cad3dc.json"
+                    )),
+            )
+            .expect(1)
+            .mount(&bundle_server)
+            .await;
+        let (mut client, _session_server, authenticated) =
+            authenticated_session_client(crate::pcr::Pcr0Environment::Development, measurements)
+                .await;
+        client.release_verifier = Arc::new(
+            crate::release_verification::ReleaseVerifier::fetching_for_test(
+                Url::parse(&bundle_server.uri()).unwrap(),
+            ),
+        );
+
+        let started = Instant::now();
+        let session = tokio::time::timeout(Duration::from_millis(100), client.establish_session())
+            .await
+            .expect("500 ms bundle host cannot consume the 100 ms caller deadline")
+            .unwrap();
+        let session_elapsed = started.elapsed();
+        assert!(authenticated.load(std::sync::atomic::Ordering::Acquire));
+        assert!(client.last_release_verification().is_none());
+        let result = completed_release_result(&client).await;
+        assert_eq!(
+            result.outcome,
+            crate::release_verification::ReleaseVerificationOutcome::Verified
+        );
+        assert_eq!(
+            result.source,
+            crate::release_verification::ReleaseBundleSource::Remote
+        );
+        assert!(result.tlog_verified);
+        drop(session);
+        println!("session with 500 ms bundle host returned in {session_elapsed:?}");
+    }
+
+    #[tokio::test]
+    async fn loopback_session_never_starts_release_observation() {
+        use std::sync::atomic::{AtomicUsize, Ordering};
+
+        let server = MockServer::start().await;
+        Mock::given(method("POST"))
+            .and(path("/v2/session"))
+            .respond_with(MeasuredSessionResponder {
+                server_secret: [0x77; 32],
+            })
+            .expect(1)
+            .mount(&server)
+            .await;
+        Mock::given(method("GET"))
+            .respond_with(ResponseTemplate::new(404))
+            .expect(0)
+            .mount(&server)
+            .await;
+        let client = TransportV2Client::new(
+            server.uri(),
+            release_policy(crate::pcr::Pcr0Environment::Development, &release_pcrs()),
+        )
+        .unwrap();
+        let calls = Arc::new(AtomicUsize::new(0));
+        let observer_calls = Arc::clone(&calls);
+        let client = client.with_release_observer_for_test(move |_document| {
+            observer_calls.fetch_add(1, Ordering::SeqCst);
+            async { verified_observer_result() }
+        });
+        assert!(client.use_mock_attestation);
+        client.establish_session().await.unwrap();
+        tokio::time::sleep(Duration::from_millis(20)).await;
+        assert_eq!(calls.load(Ordering::SeqCst), 0);
+        assert!(client.last_release_verification().is_none());
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn last_client_drop_cancels_observation_and_discards_its_pending_result() {
+        use std::sync::atomic::{AtomicBool, Ordering};
+        use tokio::sync::Notify;
+
+        struct CancelSignal {
+            cancelled: Arc<AtomicBool>,
+            signal: Arc<Notify>,
+        }
+        impl Drop for CancelSignal {
+            fn drop(&mut self) {
+                self.cancelled.store(true, Ordering::Release);
+                self.signal.notify_one();
+            }
+        }
+
+        let (client, _server, _) =
+            authenticated_session_client(crate::pcr::Pcr0Environment::Development, release_pcrs())
+                .await;
+        let started = Arc::new(Notify::new());
+        let cancelled = Arc::new(AtomicBool::new(false));
+        let cancelled_signal = Arc::new(Notify::new());
+        let completed = Arc::new(AtomicBool::new(false));
+        let observer_started = Arc::clone(&started);
+        let observer_cancelled = Arc::clone(&cancelled);
+        let observer_cancelled_signal = Arc::clone(&cancelled_signal);
+        let observer_completed = Arc::clone(&completed);
+        let client = client.with_release_observer_for_test(move |_document| {
+            let signal = CancelSignal {
+                cancelled: Arc::clone(&observer_cancelled),
+                signal: Arc::clone(&observer_cancelled_signal),
+            };
+            let observer_started = Arc::clone(&observer_started);
+            let completed = Arc::clone(&observer_completed);
+            async move {
+                let _cancel_on_drop = signal;
+                observer_started.notify_one();
+                futures::future::pending::<()>().await;
+                completed.store(true, Ordering::Release);
+                verified_observer_result()
+            }
+        });
+        client.establish_session().await.unwrap();
+        let cloned_client = client.clone();
+        drop(client);
+        tokio::time::timeout(Duration::from_millis(100), started.notified())
+            .await
+            .expect("another client clone keeps observation alive");
+        let observation_state = Arc::clone(&cloned_client.release_observations.state);
+        drop(cloned_client);
+        tokio::time::timeout(Duration::from_secs(1), cancelled_signal.notified())
+            .await
+            .expect("last client drop aborts the observation task");
+        assert!(cancelled.load(Ordering::Acquire));
+        assert!(!completed.load(Ordering::Acquire));
+        assert!(observation_state.last_result.read().unwrap().is_none());
+    }
+
+    #[tokio::test]
+    async fn authenticated_development_session_stores_verified_release_result() {
+        let (client, _server, _) =
+            authenticated_session_client(crate::pcr::Pcr0Environment::Development, release_pcrs())
+                .await;
+        client.establish_session().await.unwrap();
+        let result = completed_release_result(&client).await;
+        assert_eq!(
+            result.outcome,
+            crate::release_verification::ReleaseVerificationOutcome::Verified
+        );
+        assert_eq!(
+            result.source,
+            crate::release_verification::ReleaseBundleSource::Embedded
+        );
+        assert!(result.tlog_verified);
+    }
+
+    #[tokio::test]
+    async fn authenticated_session_survives_release_measurement_rejection() {
+        let mut pcrs = release_pcrs();
+        pcrs.get_mut(&1).unwrap()[0] ^= 1;
+        let (client, _server, _) =
+            authenticated_session_client(crate::pcr::Pcr0Environment::Development, pcrs).await;
+        client.establish_session().await.unwrap();
+        let result = completed_release_result(&client).await;
+        assert_eq!(
+            result.outcome,
+            crate::release_verification::ReleaseVerificationOutcome::Rejected
+        );
+        assert_eq!(result.category, "statement-measurement-mismatch");
+    }
+
+    #[tokio::test]
+    async fn authenticated_session_survives_missing_production_release_key() {
+        let (client, _server, _) =
+            authenticated_session_client(crate::pcr::Pcr0Environment::Production, release_pcrs())
+                .await;
+        client.establish_session().await.unwrap();
+        let result = completed_release_result(&client).await;
+        assert_eq!(
+            result.outcome,
+            crate::release_verification::ReleaseVerificationOutcome::Rejected
+        );
+        assert_eq!(result.category, "approval-key-not-configured");
     }
 
     #[tokio::test]

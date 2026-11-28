@@ -30,7 +30,14 @@ import subprocess
 import sys
 
 root, stage = map(Path, sys.argv[1:])
-tracked = subprocess.check_output(["git", "-C", str(root), "ls-files", "-z", "sdk"])
+# The Rust SDK tests compare their embedded trust inputs with these copies.
+trust_anchors = [
+    "scripts/ci/opensecret-release/dev-signing-key.pem",
+    "scripts/ci/opensecret-release/trusted_root.json",
+]
+tracked = subprocess.check_output([
+    "git", "-C", str(root), "ls-files", "-z", "sdk", *trust_anchors,
+])
 for raw in tracked.split(b"\0"):
     if not raw:
         continue

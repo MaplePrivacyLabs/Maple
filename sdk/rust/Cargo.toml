@@ -41,6 +41,16 @@ hex = "0.4"  # For debug output
 subtle = "2.6"
 zeroize = { version = "1.8", features = ["derive"] }
 
+# Enclave release approval and public Sigstore evidence. Upstream sigstore-verify
+# cannot yet verify P-384 keys logged in Rekor v2 or require a checkpoint from
+# the entry's own log, so it comes from Maple's published fork under a new
+# package name; its library name, and so every import, is unchanged. The fork
+# pins the unmodified upstream crates to exactly this release, so these must
+# move together.
+sigstore-types = { version = "=0.17.0", default-features = false }
+sigstore-trust-root = { version = "=0.17.0", default-features = false, features = ["tuf", "rustls", "aws-lc-rs"] }
+sigstore-verify = { package = "maple-sigstore-verify", version = "=0.17.0-maple.1", default-features = false, features = ["rustls", "aws-lc-rs"] }
+
 # X.509 and certificate handling
 x509-parser = "0.16"
 yasna = "0.5"
